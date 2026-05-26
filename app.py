@@ -19,7 +19,13 @@ Adding a new monitor (it's meant to be easy):
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
 import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
+try:
+    from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
+                                   REGISTRY, CollectorRegistry)
+    _PROM_OK = True
+except ImportError:
+    _PROM_OK = False
 
 VERSION      = "0.3.1"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
@@ -36,6 +42,22 @@ OOM_RE       = re.compile(r"(out of memory|cuda error: out of memory|failed to a
 REAL_FS      = {"ext4", "ext3", "xfs", "btrfs", "zfs", "vfat"}
 
 app = Flask(__name__, static_url_path="/static", static_folder="static")
+
+# ── Prometheus gauges (defined once at module level) ──────────────────────────
+if _PROM_OK:
+    _G = {
+        "gpu_vram_used":     Gauge("homelab_gpu_vram_used_mb",    "GPU VRAM used (MB)",                ["gpu"]),
+        "gpu_vram_total":    Gauge("homelab_gpu_vram_total_mb",   "GPU VRAM total (MB)",               ["gpu"]),
+        "gpu_util":          Gauge("homelab_gpu_util_pct",        "GPU utilisation (%)",               ["gpu"]),
+        "gpu_temp":          Gauge("homelab_gpu_temp_c",          "GPU temperature (°C)",              ["gpu"]),
+        "gpu_power":         Gauge("homelab_gpu_power_w",         "GPU power draw (W)",                ["gpu"]),
+        "host_cpu":          Gauge("homelab_host_cpu_pct",        "Host CPU usage (%)"),
+        "host_mem_used":     Gauge("homelab_host_mem_used_pct",   "Host memory used (%)"),
+        "host_disk_used":    Gauge("homelab_host_disk_used_pct",  "Host disk used (%)",                ["mountpoint"]),
+        "container_state":   Gauge("homelab_container_state",     "Container state (1=running)",       ["name", "state"]),
+        "systemd_unit":      Gauge("homelab_systemd_unit_state",  "Systemd unit state (1=active)",     ["unit",  "state"]),
+        "model_vram":        Gauge("homelab_model_loaded_vram_mb","Model VRAM loaded (MB)",             ["server", "model"]),
+    }
 LOCK = threading.Lock()
 DB = sqlite3.connect(DB_PATH, check_same_thread=False)
 DB.execute("PRAGMA journal_mode=WAL")
@@ -549,6 +571,59 @@ def api_health():
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "docker": docker, "systemd": systemd,
                     "overview": build_overview(now, docker, systemd)})
+
+@app.route("/metrics")
+def metrics():
+    """Prometheus text-format scrape endpoint.
+
+    Reads exclusively from the in-memory snapshots (LATEST / HEALTH) that the
+    background collector keeps fresh.  No new I/O is triggered on each scrape,
+    so double-sampling is impossible.
+    """
+    if not _PROM_OK:
+        return Response("# prometheus_client not installed\n", mimetype="text/plain", status=503)
+
+    # ── GPU ──────────────────────────────────────────────────────────────────
+    gpu_label = "gpu0"
+    _G["gpu_vram_used"].labels(gpu=gpu_label).set(LATEST.get("mem_used", 0))
+    _G["gpu_vram_total"].labels(gpu=gpu_label).set(LATEST.get("mem_total", 0))
+    _G["gpu_util"].labels(gpu=gpu_label).set(LATEST.get("util", 0))
+    _G["gpu_temp"].labels(gpu=gpu_label).set(LATEST.get("temp", 0))
+    _G["gpu_power"].labels(gpu=gpu_label).set(LATEST.get("power", 0))
+
+    # ── Host ─────────────────────────────────────────────────────────────────
+    host = LATEST.get("host") or {}
+    _G["host_cpu"].set(host.get("cpu", 0))
+    ram_total = host.get("ram_total") or 1
+    ram_used  = host.get("ram_used", 0)
+    _G["host_mem_used"].set(round(100 * ram_used / ram_total, 1))
+    for disk in (host.get("disks") or []):
+        _G["host_disk_used"].labels(mountpoint=disk["mount"]).set(disk.get("pct", 0))
+
+    # ── Model VRAM ───────────────────────────────────────────────────────────
+    for entry in (LATEST.get("models") or []):
+        vram = entry.get("vram")
+        if vram is not None:
+            _G["model_vram"].labels(server=entry.get("service", "?"),
+                                    model=entry.get("model", "?")).set(vram)
+
+    # ── Docker containers ────────────────────────────────────────────────────
+    docker = HEALTH.get("docker") or {}
+    for ct in (docker.get("containers") or []):
+        name  = ct.get("name", "?")
+        state = ct.get("state", "unknown")
+        _G["container_state"].labels(name=name, state=state).set(1)
+
+    # ── Systemd units ────────────────────────────────────────────────────────
+    systemd = HEALTH.get("systemd") or {}
+    for svc in (systemd.get("services") or []):
+        unit   = svc.get("name", "?")
+        active = svc.get("active", "unknown")
+        _G["systemd_unit"].labels(unit=unit, state=active).set(
+            1 if active == "active" else 0)
+
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
 
 @app.route("/")
 def index():

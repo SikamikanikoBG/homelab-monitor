@@ -3,7 +3,7 @@ WORKDIR /app
 
 # flask = web layer; jeepney = pure-Python D-Bus client used to read systemd
 # (no native libs, keeps the image slim). curl only needed to vendor Chart.js below.
-RUN pip install --no-cache-dir flask==3.0.3 jeepney==0.8.0 \
+RUN pip install --no-cache-dir flask==3.0.3 jeepney==0.8.0 prometheus_client==0.20.0 \
  && apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*

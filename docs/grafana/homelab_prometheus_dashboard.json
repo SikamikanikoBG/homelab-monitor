@@ -1,0 +1,65 @@
+{
+  "__inputs": [{ "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus" }],
+  "__requires": [{ "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }],
+  "title": "Homelab Monitor",
+  "uid": "homelab-monitor-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "gauge", "title": "GPU VRAM Used %",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "100 * homelab_gpu_vram_used_mb{gpu=\"gpu0\"} / homelab_gpu_vram_total_mb{gpu=\"gpu0\"}", "legendFormat": "VRAM %" }]
+    },
+    {
+      "id": 2, "type": "gauge", "title": "GPU Utilisation %",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 95}] } },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_util_pct{gpu=\"gpu0\"}", "legendFormat": "GPU Util %" }]
+    },
+    {
+      "id": 3, "type": "gauge", "title": "GPU Temp °C",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}] } },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_temp_c{gpu=\"gpu0\"}", "legendFormat": "Temp °C" }]
+    },
+    {
+      "id": 4, "type": "gauge", "title": "Host CPU %",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_cpu_pct", "legendFormat": "CPU %" }]
+    },
+    {
+      "id": 5, "type": "gauge", "title": "Host RAM %",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}] } },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_mem_used_pct", "legendFormat": "RAM %" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "GPU VRAM Over Time (MB)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_vram_used_mb", "legendFormat": "VRAM Used (MB)" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "GPU Utilisation & Temp",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_util_pct", "legendFormat": "Util %" },
+        { "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_temp_c",   "legendFormat": "Temp °C" }
+      ]
+    },
+    {
+      "id": 8, "type": "table", "title": "Disk Usage",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_disk_used_pct", "legendFormat": "{{mountpoint}}", "instant": true }]
+    },
+    {
+      "id": 9, "type": "table", "title": "Model VRAM Loaded (MB)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_model_loaded_vram_mb", "legendFormat": "{{server}} / {{model}}", "instant": true }]
+    }
+  ]
+}
