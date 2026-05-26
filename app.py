@@ -583,6 +583,11 @@ def metrics():
     if not _PROM_OK:
         return Response("# prometheus_client not installed\n", mimetype="text/plain", status=503)
 
+    # Clear all multi-label gauges before re-populating so stale series vanish.
+    for key in ("gpu_vram_used", "gpu_vram_total", "gpu_util", "gpu_temp", "gpu_power",
+                "host_disk_used", "model_vram", "container_state", "systemd_unit"):
+        _G[key].clear()
+
     # ── GPU ──────────────────────────────────────────────────────────────────
     gpu_label = "gpu0"
     _G["gpu_vram_used"].labels(gpu=gpu_label).set(LATEST.get("mem_used", 0))
