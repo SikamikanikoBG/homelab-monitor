@@ -27,7 +27,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.6.1"
+VERSION      = "0.6.2"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
@@ -37,7 +37,12 @@ PORT         = int(os.environ.get("PORT", "9800"))
 PRESSURE_MB  = int(os.environ.get("PRESSURE_FREE_MB", "2048"))
 CHECK_UPDATES = os.environ.get("CHECK_UPDATES", "true").strip().lower() not in ("0", "false", "no", "off")
 UPDATE_REPO   = os.environ.get("UPDATE_REPO", "SikamikanikoBG/homelab-monitor")
-UPDATE_TTL    = 6 * 3600                                         # GitHub releases API cache window
+# Split cache: once we know there's an update, the answer won't change for hours
+# so we can cache it long. But "no update found" / network errors should expire
+# sooner — otherwise a release published right after deploy stays invisible for
+# the full 6h, and a transient GitHub blip sticks for the same window.
+UPDATE_TTL_POSITIVE = 6 * 3600
+UPDATE_TTL_NEGATIVE = 30 * 60
 MAX_POINTS   = 360
 HEX64        = re.compile(r"[0-9a-f]{64}")
 OOM_RE       = re.compile(r"(out of memory|cuda error: out of memory|failed to allocate|bfcarena|"
@@ -396,8 +401,11 @@ def collect_update():
         return {"available": False, "current": VERSION, "disabled": True}
     now = int(time.time())
     with _UPDATE_LOCK:
-        if _UPDATE_CACHE["data"] and (now - _UPDATE_CACHE["at"]) < UPDATE_TTL:
-            return _UPDATE_CACHE["data"]
+        cached = _UPDATE_CACHE["data"]
+        if cached:
+            ttl = UPDATE_TTL_POSITIVE if cached.get("available") else UPDATE_TTL_NEGATIVE
+            if (now - _UPDATE_CACHE["at"]) < ttl:
+                return cached
     try:
         req = urllib.request.Request(
             f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
