@@ -460,9 +460,39 @@ def collect_update():
         _UPDATE_CACHE.update({"at": now, "data": data})
     return data
 
+
+def collect_processes():
+    import os
+    processes = []
+    try:
+        pids = [p for p in os.listdir('/proc') if p.isdigit()]
+        for pid in pids:
+            try:
+                with open(f'/proc/{pid}/stat', 'r') as f:
+                    stat = f.read().split()
+                name = stat[1].strip('()')
+                
+                mem = 0
+                with open(f'/proc/{pid}/status', 'r') as f:
+                    for line in f:
+                        if line.startswith('VmRSS:'):
+                            mem = int(line.split()[1]) // 1024
+                            break
+                
+                if mem > 0:
+                    processes.append({"pid": pid, "name": name, "mem_mb": mem})
+            except (IOError, IndexError):
+                continue
+    except Exception:
+        return []
+
+    top_mem = sorted(processes, key=lambda x: x['mem_mb'], reverse=True)[:10]
+    return {"top_memory": top_mem}
+
 def health_scan():
     HEALTH["docker"]  = collect_docker()
     HEALTH["systemd"] = collect_systemd()
+    HEALTH["processes"] = collect_processes()
     HEALTH["update"]  = collect_update()
     HEALTH["at"]      = int(time.time())
 
