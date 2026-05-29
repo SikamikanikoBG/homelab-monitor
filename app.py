@@ -35,6 +35,9 @@ DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 HOST_ROOT    = os.environ.get("HOST_ROOT", "/rootfs")          # host / mounted read-only (optional)
 PORT         = int(os.environ.get("PORT", "9800"))
 PRESSURE_MB  = int(os.environ.get("PRESSURE_FREE_MB", "2048"))
+CHECK_UPDATES = os.environ.get("CHECK_UPDATES", "true").strip().lower() not in ("0", "false", "no", "off")
+UPDATE_REPO   = os.environ.get("UPDATE_REPO", "SikamikanikoBG/homelab-monitor")
+UPDATE_TTL    = 6 * 3600                                         # GitHub releases API cache window
 MAX_POINTS   = 360
 HEX64        = re.compile(r"[0-9a-f]{64}")
 OOM_RE       = re.compile(r"(out of memory|cuda error: out of memory|failed to allocate|bfcarena|"
@@ -82,7 +85,7 @@ LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "te
           "procs": [], "models": [], "host": {}}
 # Current state of the "status" monitors (Docker + systemd). The background
 # collector refreshes these; /api/health just serves the cached snapshot.
-HEALTH = {"docker": None, "systemd": None, "at": 0}
+HEALTH = {"docker": None, "systemd": None, "update": None, "at": 0}
 WATCH_SERVICES = [s.strip() for s in os.environ.get("WATCH_SERVICES", "").split(",") if s.strip()]
 SYSTEMD_ADMIN_DIR = "/etc/systemd/system/"   # units here are admin/user-authored (vs vendor)
 _ct_cache = {"list": [], "at": 0}
@@ -369,9 +372,65 @@ def build_overview(now, docker, systemd):
                       "metric": "—", "detail": "unavailable"})
     return cards
 
+# ── Update check (GitHub releases) ────────────────────────────────────────────
+# Hits the public releases endpoint, caches for UPDATE_TTL, compares against
+# VERSION. Surfaces via /api/health → dashboard badge. Off when CHECK_UPDATES
+# is false; degrades silently to "not available" on network/rate-limit errors
+# so the UI never lights up red because GitHub blinked.
+_UPDATE_CACHE = {"at": 0, "data": None}
+_UPDATE_LOCK  = threading.Lock()
+
+def _parse_semver(v):
+    """Tolerant semver parser: 'v0.5.0' / '0.5.0-beta' → (0, 5, 0). Missing
+    components → 0. Anything unparseable falls back to 0 so a malformed tag
+    just looks like an older version, never crashes the comparison."""
+    s = (v or "").lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    out = []
+    for p in s.split("."):
+        try: out.append(int(p))
+        except ValueError: out.append(0)
+    return tuple(out) or (0,)
+
+def collect_update():
+    if not CHECK_UPDATES:
+        return {"available": False, "current": VERSION, "disabled": True}
+    now = int(time.time())
+    with _UPDATE_LOCK:
+        if _UPDATE_CACHE["data"] and (now - _UPDATE_CACHE["at"]) < UPDATE_TTL:
+            return _UPDATE_CACHE["data"]
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": f"homelab-monitor/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            payload = json.loads(r.read())
+    except Exception as e:
+        # Network down, rate-limited, no releases yet — degrade silently. We
+        # still cache the negative result so we don't hammer GitHub on retry.
+        data = {"available": False, "current": VERSION, "error": str(e)[:200]}
+        with _UPDATE_LOCK:
+            _UPDATE_CACHE.update({"at": now, "data": data})
+        return data
+    latest = (payload.get("tag_name") or "").lstrip("vV")
+    data = {
+        "available":    bool(latest) and _parse_semver(latest) > _parse_semver(VERSION),
+        "current":      VERSION,
+        "latest":       latest or None,
+        "release_url":  payload.get("html_url"),
+        "release_name": payload.get("name") or (latest and f"v{latest}") or None,
+        "release_notes": payload.get("body") or "",
+        "published_at": payload.get("published_at"),
+        "checked_at":   now,
+    }
+    with _UPDATE_LOCK:
+        _UPDATE_CACHE.update({"at": now, "data": data})
+    return data
+
 def health_scan():
     HEALTH["docker"]  = collect_docker()
     HEALTH["systemd"] = collect_systemd()
+    HEALTH["update"]  = collect_update()
     HEALTH["at"]      = int(time.time())
 
 # ── Settings (UI-managed; persisted in SQLite, no env required) ───────────────
@@ -767,8 +826,9 @@ def api_health():
                                     "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
+    update  = HEALTH["update"]  or {"available": False, "current": VERSION}
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
-                    "docker": docker, "systemd": systemd,
+                    "docker": docker, "systemd": systemd, "update": update,
                     "overview": build_overview(now, docker, systemd)})
 
 @app.route("/metrics")

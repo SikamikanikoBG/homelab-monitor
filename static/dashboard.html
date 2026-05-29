@@ -53,8 +53,25 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:760px){.cols{grid-template-columns:1fr}}
 .cap{color:var(--mut);font-size:12px;margin-top:9px}.pill{font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:5px;padding:1px 6px}
 .muted{color:var(--mut)}a{color:#58a6ff}
+/* update-available badge (header) + modal */
+.upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
+.upd:hover{border-color:var(--info)}
+.upd.show{display:inline-flex}
+.umodal{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
+.umodal.show{display:flex}
+.umodal .box{background:var(--card);border:1px solid var(--bd);border-radius:12px;max-width:640px;width:100%;max-height:84vh;display:flex;flex-direction:column}
+.umodal .hd{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--bd)}
+.umodal .hd .x{margin-left:auto;background:none;border:0;color:var(--mut);font-size:22px;line-height:1;cursor:pointer;padding:0 4px}
+.umodal .hd .x:hover{color:var(--tx)}
+.umodal .bd{padding:14px 18px;overflow:auto}
+.umodal pre.cmd{background:#0d1117;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;font-size:12.5px;white-space:pre-wrap;word-break:break-all;margin:8px 0 0;color:var(--tx)}
+.umodal .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.umodal .btn{background:#0d1117;border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:7px 12px;cursor:pointer;font:inherit;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.umodal .btn:hover{border-color:var(--mut)}
+.umodal .notes{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd);font-size:13px;color:var(--tx);white-space:pre-wrap;line-height:1.45;max-height:32vh;overflow:auto}
 </style></head><body><div class="wrap">
 <header><h1>🛰️ HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
+<button type="button" class="upd" id="updbadge" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> available</button>
 <a class="ghstar" href="https://github.com/SikamikanikoBG/homelab-monitor" target="_blank" rel="noopener" title="Star HomeLab Monitor on GitHub"><span class="st">★</span> Star <span class="cnt" id="ghcount"></span></a>
 <span class="live"><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
@@ -191,6 +208,26 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 <p class="cap">Self-hosted &amp; open source • single container • no Prometheus/Grafana required • history downsampled on read.
 GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker API.</p>
 </div>
+
+<!-- ───────── Update-available modal ───────── -->
+<div class="umodal" id="updmodal" role="dialog" aria-modal="true" aria-labelledby="updtitle">
+  <div class="box">
+    <div class="hd">
+      <strong id="updtitle">Update available</strong>
+      <button class="x" type="button" id="updclose" aria-label="Close">×</button>
+    </div>
+    <div class="bd">
+      <div class="muted" id="updmeta"></div>
+      <div style="margin-top:12px">To update, run this on the host that's running the container:</div>
+      <pre class="cmd" id="updcmd">cd &lt;your-clone-dir&gt; &amp;&amp; git pull &amp;&amp; docker compose up -d --build</pre>
+      <div class="row">
+        <button class="btn" type="button" id="updcopy">📋 Copy command</button>
+        <a class="btn" id="updlink" href="#" target="_blank" rel="noopener">View on GitHub →</a>
+      </div>
+      <div class="notes" id="updnotes" hidden></div>
+    </div>
+  </div>
+</div>
 <script>
 // ── Tab registry. Add a monitor: append one entry here + a matching <section
 //    data-tab="..."> above + a render in renderData()/renderHealth(). ──────────
@@ -305,6 +342,17 @@ function renderHealth(){
   if(!HH) return;
   document.getElementById('ver').textContent='v'+HH.version;
 
+  // Update-available badge — only visible when GitHub releases shows a newer tag.
+  const up = HH.update || {};
+  const ub = document.getElementById('updbadge');
+  if(up.available && up.latest){
+    document.getElementById('updlatest').textContent = 'v'+up.latest;
+    ub.classList.add('show');
+    ub.onclick = () => openUpdateModal(up);
+  } else {
+    ub.classList.remove('show');
+  }
+
   // Overview status cards (one per subsystem; click to jump to its tab)
   document.getElementById('ovcards').innerHTML = (HH.overview||[]).map(c=>
     `<button class="ov ${c.status}" data-go="${c.key}"><div class="h"><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.label)}</div>
@@ -348,6 +396,21 @@ function renderHealth(){
       <p class="cap">Showing the units you deployed (under <code>/etc/systemd/system</code>), anything you set in <code>WATCH_SERVICES</code>, and any failed unit.</p>`;
   }
 }
+
+// ── Update-available modal ────────────────────────────────────────────────────
+function openUpdateModal(up){
+  document.getElementById('updtitle').textContent = (up.release_name || ('v'+up.latest)) + ' available';
+  const when = up.published_at ? ' (published ' + new Date(up.published_at).toLocaleDateString() + ')' : '';
+  document.getElementById('updmeta').textContent = "You're on v" + up.current + '. Latest is v' + up.latest + when + '.';
+  document.getElementById('updlink').href = up.release_url
+    || ('https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v' + up.latest);
+  const notes = document.getElementById('updnotes');
+  if(up.release_notes && up.release_notes.trim()){
+    notes.hidden = false; notes.textContent = up.release_notes;
+  } else { notes.hidden = true; notes.textContent = ''; }
+  document.getElementById('updmodal').classList.add('show');
+}
+function closeUpdateModal(){ document.getElementById('updmodal').classList.remove('show'); }
 
 // ── Charts (only built for the visible tab) ───────────────────────────────────
 function buildCharts(){
@@ -458,6 +521,22 @@ document.querySelector(`.rb[data-r="${R}"]`)?.classList.add('on');
 window.addEventListener('hashchange',()=>{const h=location.hash.slice(1); if(h && TABS.some(t=>t.id===h) && h!==TAB) showTab(h);});
 document.getElementById('al_save').onclick = saveAlerts;
 document.getElementById('al_test').onclick = testAlerts;
+// Update modal: close via × button, Escape, or backdrop click; copy command to clipboard.
+document.getElementById('updclose').onclick = closeUpdateModal;
+document.getElementById('updmodal').addEventListener('click', e => { if(e.target.id==='updmodal') closeUpdateModal(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeUpdateModal(); });
+document.getElementById('updcopy').onclick = async () => {
+  const cmd = document.getElementById('updcmd').textContent;
+  try { await navigator.clipboard.writeText(cmd); }
+  catch(e){
+    // Fallback: select the <pre> so the user can Ctrl+C manually.
+    const r = document.createRange(); r.selectNodeContents(document.getElementById('updcmd'));
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    return;
+  }
+  const b = document.getElementById('updcopy'), t = b.textContent;
+  b.textContent = '✓ Copied'; setTimeout(() => { b.textContent = t; }, 1500);
+};
 showTab(TAB);
 loadData(); loadHealth();
 setInterval(()=>{if(document.getElementById('auto').checked){loadData();loadHealth();}},15000);

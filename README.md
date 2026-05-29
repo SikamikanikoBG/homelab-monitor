@@ -100,6 +100,7 @@ Set these under `environment:` in `docker-compose.yml` (all optional):
 | `PORT` | `9800` | Dashboard port |
 | `WATCH_CONTAINERS` | — | Extra containers to scan for OOM (comma-separated) |
 | `WATCH_SERVICES` | — | systemd units to always show, even vendor ones (comma-separated) |
+| `CHECK_UPDATES` | `true` | Set to `false` to disable the daily GitHub-releases check (no outbound calls) |
 
 History lives in `./data/gpu.db` (a bind mount), so it survives restarts and upgrades.
 
