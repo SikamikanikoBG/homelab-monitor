@@ -15,6 +15,7 @@ RUN mkdir -p /app/static \
 
 COPY app.py /app/app.py
 COPY static/dashboard.html /app/static/dashboard.html
+COPY static/favicon.svg    /app/static/favicon.svg
 
 ENV PORT=8099
 EXPOSE 8099
