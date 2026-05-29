@@ -5,7 +5,7 @@
 [![Clones (14d)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FSikamikanikoBG%2Fhomelab-monitor%2Fstats%2Fclones.json&style=social&logo=git&cacheSeconds=300)](https://github.com/SikamikanikoBG/homelab-monitor)
 [![Unique cloners (14d)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FSikamikanikoBG%2Fhomelab-monitor%2Fstats%2Fclones-unique.json&style=social&logo=git&cacheSeconds=300)](https://github.com/SikamikanikoBG/homelab-monitor)
 
-![version](https://img.shields.io/badge/version-0.6.3-blue)
+![version](https://img.shields.io/badge/version-0.7.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![docker](https://img.shields.io/badge/deploy-docker--compose-2496ED?logo=docker&logoColor=white)
 ![gpu](https://img.shields.io/badge/GPU-NVIDIA-76B900?logo=nvidia&logoColor=white)
@@ -151,6 +151,11 @@ host /proc, /sys, statvfs ─► CPU / RAM / load / temp / disk
 
 A background thread samples on an interval; the web layer buckets any range down to
 ~360 points so it stays responsive over months.
+
+The container also exposes a tiny **`GET /healthz`** liveness endpoint (no DB, no
+locks — just a 200 with the running version) that the image's `HEALTHCHECK` polls
+every 30s. The Containers tab therefore lists the monitor itself as `(healthy)`,
+and any container orchestrator can pick it up the same way.
 
 ## Adding your own monitor
 

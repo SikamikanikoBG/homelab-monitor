@@ -19,4 +19,12 @@ COPY static/favicon.svg    /app/static/favicon.svg
 
 ENV PORT=8099
 EXPOSE 8099
+
+# Self-healthcheck so the container reports its own status to Docker (and to
+# our own Containers tab, which reads the same Docker API). /healthz is a
+# locks-free 200 that returns the running version — never blocks on the
+# collector. start-period covers the initial Flask boot.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-9800}/healthz" || exit 1
+
 CMD ["python", "app.py"]

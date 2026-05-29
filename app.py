@@ -27,7 +27,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.6.3"
+VERSION      = "0.7.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
@@ -846,6 +846,13 @@ def api_data():
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
                     "mem_total": mem_total, "peak_mem": peak, "now": LATEST})
+
+@app.route("/healthz")
+def healthz():
+    """Cheap liveness probe for Docker's HEALTHCHECK and any uptime monitor.
+    No DB, no locks — just a 200 with the running version so the answer is
+    instant and never gets blocked behind a slow collector pass."""
+    return jsonify({"status": "ok", "version": VERSION}), 200
 
 @app.route("/favicon.ico")
 def favicon():
