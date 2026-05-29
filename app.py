@@ -27,7 +27,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.6.2"
+VERSION      = "0.6.3"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
@@ -385,6 +385,25 @@ def build_overview(now, docker, systemd):
 _UPDATE_CACHE = {"at": 0, "data": None}
 _UPDATE_LOCK  = threading.Lock()
 
+def _render_markdown(md_text):
+    """Render Markdown to HTML via GitHub's /markdown endpoint so the update modal
+    can show release notes as proper prose (headings, lists, code, tables) rather
+    than raw `##` markup. GitHub sanitises the output server-side, so it's safe to
+    set as innerHTML. Returns None on failure — caller falls back to plain text."""
+    if not md_text:
+        return None
+    try:
+        body = json.dumps({"text": md_text, "mode": "gfm", "context": UPDATE_REPO}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.github.com/markdown", data=body,
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/vnd.github+json",
+                     "User-Agent": f"homelab-monitor/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.read().decode("utf-8")
+    except Exception:
+        return None
+
 def _parse_semver(v):
     """Tolerant semver parser: 'v0.5.0' / '0.5.0-beta' → (0, 5, 0). Missing
     components → 0. Anything unparseable falls back to 0 so a malformed tag
@@ -431,6 +450,12 @@ def collect_update():
         "published_at": payload.get("published_at"),
         "checked_at":   now,
     }
+    # Only render markdown when there's actually an update — the rendered HTML
+    # is only ever shown inside the "update available" modal, so rendering on
+    # the up-to-date path would waste a GitHub API call every cycle.
+    if data["available"]:
+        html = _render_markdown(data["release_notes"])
+        if html: data["release_notes_html"] = html
     with _UPDATE_LOCK:
         _UPDATE_CACHE.update({"at": now, "data": data})
     return data

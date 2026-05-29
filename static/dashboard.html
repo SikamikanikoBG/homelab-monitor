@@ -76,7 +76,24 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .umodal .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .umodal .btn{background:#0d1117;border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:7px 12px;cursor:pointer;font:inherit;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
 .umodal .btn:hover{border-color:var(--mut)}
-.umodal .notes{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd);font-size:13px;color:var(--tx);white-space:pre-wrap;line-height:1.45;max-height:32vh;overflow:auto}
+.umodal .notes{margin-top:14px;padding-top:12px;border-top:1px solid var(--bd);font-size:13px;color:var(--tx);line-height:1.5;max-height:40vh;overflow:auto}
+/* Prose styling for GitHub-rendered release notes (innerHTML from /api/markdown). */
+.umodal .notes h1,.umodal .notes h2,.umodal .notes h3,.umodal .notes h4{margin:.9em 0 .35em;font-weight:600;color:var(--tx);text-transform:none;letter-spacing:0}
+.umodal .notes h1{font-size:1.15em}.umodal .notes h2{font-size:1.05em}.umodal .notes h3{font-size:.98em}
+.umodal .notes p{margin:.5em 0}
+.umodal .notes ul,.umodal .notes ol{padding-left:1.5em;margin:.4em 0}
+.umodal .notes li{margin:.2em 0}
+.umodal .notes code{background:#0d1117;border:1px solid var(--bd);border-radius:4px;padding:0 5px;font-size:.9em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.umodal .notes pre{background:#0d1117;border:1px solid var(--bd);border-radius:6px;padding:9px 11px;overflow-x:auto;font-size:12px;margin:.5em 0}
+.umodal .notes pre code{background:none;border:0;padding:0;font-size:12px}
+.umodal .notes table{border-collapse:collapse;margin:.6em 0;font-size:12.5px;display:block;overflow-x:auto}
+.umodal .notes th,.umodal .notes td{border:1px solid var(--bd);padding:5px 9px;text-align:left}
+.umodal .notes th{background:#0d1117;font-weight:600}
+.umodal .notes a{color:#58a6ff;text-decoration:none}
+.umodal .notes a:hover{text-decoration:underline}
+.umodal .notes blockquote{border-left:3px solid var(--bd);padding:.2em 0 .2em 10px;color:var(--mut);margin:.5em 0}
+.umodal .notes hr{border:0;border-top:1px solid var(--bd);margin:1em 0}
+.umodal .notes img{max-width:100%}
 </style></head><body><div class="wrap">
 <header><h1>🛰️ HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> available</button>
@@ -415,10 +432,18 @@ function openUpdateModal(up){
   document.getElementById('updmeta').textContent = "You're on v" + up.current + '. Latest is v' + up.latest + when + '.';
   document.getElementById('updlink').href = up.release_url
     || ('https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v' + up.latest);
+  // Prefer the server-rendered HTML (GitHub /markdown returns sanitised
+  // GitHub-flavoured markdown). Fall back to plain text if the render call
+  // failed for any reason — better to show raw markdown than show nothing.
   const notes = document.getElementById('updnotes');
-  if(up.release_notes && up.release_notes.trim()){
+  if(up.release_notes_html){
+    notes.hidden = false; notes.innerHTML = up.release_notes_html;
+  } else if(up.release_notes && up.release_notes.trim()){
     notes.hidden = false; notes.textContent = up.release_notes;
-  } else { notes.hidden = true; notes.textContent = ''; }
+    notes.style.whiteSpace = 'pre-wrap';
+  } else {
+    notes.hidden = true; notes.innerHTML = '';
+  }
   document.getElementById('updmodal').classList.add('show');
 }
 function closeUpdateModal(){ document.getElementById('updmodal').classList.remove('show'); }
