@@ -27,7 +27,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.5.0"
+VERSION      = "0.6.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
@@ -813,6 +813,13 @@ def api_data():
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
                     "mem_total": mem_total, "peak_mem": peak, "now": LATEST})
+
+@app.route("/favicon.ico")
+def favicon():
+    """Default-favicon URL — browsers ask for /favicon.ico even when an explicit
+    <link rel="icon"> points elsewhere (during early page load, or for tabs that
+    open without rendering HTML). Serve the SVG we ship in static/."""
+    return app.send_static_file("favicon.svg")
 
 @app.route("/api/health")
 def api_health():

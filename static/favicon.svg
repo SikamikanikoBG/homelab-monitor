@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HomeLab Monitor">
+  <rect width="64" height="64" rx="12" fill="#0d1117"/>
+  <text x="32" y="48" text-anchor="middle" font-size="44"
+        font-family="Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif">🛰️</text>
+</svg>
