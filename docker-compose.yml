@@ -8,6 +8,12 @@ services:
     # and bind the dashboard directly on the host; pid:host maps GPU PIDs->containers.
     network_mode: host
     pid: host
+    # SYS_PTRACE lets us resolve /proc/<pid>/fd/* symlinks for processes we
+    # don't own, which is what powers the Services tab's Ports column (we
+    # join /proc/net/tcp listen-inodes back to MainPID). Common in monitoring
+    # stacks; the container is already otherwise host-privileged.
+    cap_add:
+      - SYS_PTRACE
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: utility   # injects nvidia-smi into the container

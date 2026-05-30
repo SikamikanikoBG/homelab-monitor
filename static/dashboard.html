@@ -1161,14 +1161,12 @@ function fmtMBshort(v){
   if(v==null) return '—';
   return v>=1024 ? (v/1024).toFixed(1)+' GB' : Math.round(v)+' MB';
 }
-// Bytes → human, for container/service memory + container disk. Distinct from
-// fmtMBshort (which is fed already-aggregated MB host stats).
+// Bytes → "0,00 GB" (European decimal). One unit across the Containers and
+// Services tables so values line up vertically and small footprints stay
+// comparable to the big ones at a glance.
 function fmtBytes(b){
   if(b==null||b<0) return '—';
-  if(b<1024) return b+' B';
-  if(b<1048576) return (b/1024).toFixed(1)+' KB';
-  if(b<1073741824) return (b/1048576|0)+' MB';
-  return (b/1073741824).toFixed(1)+' GB';
+  return (b/1073741824).toFixed(2).replace('.', ',') + ' GB';
 }
 function fmtUpShort(s){
   if(s==null||s<0) return '—';
