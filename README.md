@@ -41,11 +41,11 @@ active host:
   timeline.
 - **AI Models** — for recognised model servers, *which model* is loaded and its VRAM,
   read live from the server's own API.
-- **Containers** — health of **every** Docker container: running / stopped /
-  restarting, and whether its health-check is passing.
+- **Containers** — health of **every** Docker container with uptime, memory,
+  disk footprint and **clickable port chips** that open `host:port` in a new tab.
 - **Services** — **systemd** service health for the active host (local *or*
-  remote), with the units *you* deployed highlighted and any failed unit
-  surfaced first.
+  remote), with the units *you* deployed highlighted, any failed unit surfaced
+  first, plus per-unit uptime, memory, and listen ports.
 - **Host** — CPU, RAM, load, uptime, temperature and disk usage. History is
   local-only for now; live KPIs work for any registered host.
 - **Hosts** — a registry and onboarding wizard: paste the hub's public key,

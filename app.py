@@ -28,7 +28,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.8.0"
+VERSION      = "0.9.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
