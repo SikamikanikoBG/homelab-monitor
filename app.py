@@ -380,40 +380,77 @@ def _svc_status(active):
     return {"failed": "crit", "active": "ok",
             "activating": "warn", "deactivating": "warn"}.get(active, "info")
 
-# `ss -Hlntp` row example:
-#   LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1234,fd=3))
-# We capture the local address (column 4) and the whole `users:(...)` tail so
-# the inner `pid=N` matches survive parens/quote noise from multi-owner sockets.
-_LISTEN_RE = re.compile(r"^LISTEN\s+\S+\s+\S+\s+(?P<local>\S+)\s+\S+\s+users:\((?P<users>.*)\)\s*$")
-_LISTEN_PORT_RE = re.compile(r":(\d+)$")
-_LISTEN_PID_RE = re.compile(r"pid=(\d+)")
 # MemoryCurrent on a unit with no accounting comes back as the sentinel 2^64-1.
 _DBUS_U64_MAX = 0xFFFFFFFFFFFFFFFF
+_SOCK_INODE_RE = re.compile(r"^socket:\[(\d+)\]$")
 
-def _collect_listen_ports():
-    """Snapshot of TCP/TCPv6 LISTEN sockets keyed by owning PID.
+def _listen_inode_to_port():
+    """Map socket inodes of LISTEN TCP/TCP6 sockets to their local port.
 
-    Single `ss` call per scan, used to attribute ports to systemd units via
-    their MainPID. Needs `iproute2` (provides `ss`) installed in the image;
-    pid:host + network_mode:host in compose makes the PIDs/ports the real
-    host's, not the container's."""
-    by_pid = {}
-    for args in (["ss", "-Hlntp"], ["ss", "-Hln6tp"]):
+    /proc/net/tcp[6] columns: sl local rem st ... inode. `local` is
+    "<hex-ip>:<hex-port>"; `st` is `0A` for LISTEN. We use /proc directly
+    instead of `ss -p` because the container's default cap set excludes
+    CAP_NET_ADMIN — `ss` can't attribute PIDs to sockets without it. With
+    pid:host + network_mode:host (per docker-compose) the inodes here are
+    the real host's."""
+    inodes = {}
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            r = subprocess.run(args, capture_output=True, timeout=3, text=True)
+            with open(path) as f:
+                next(f, None)  # header
+                for ln in f:
+                    cols = ln.split()
+                    if len(cols) < 10 or cols[3] != "0A":
+                        continue
+                    local = cols[1]
+                    if ":" not in local:
+                        continue
+                    try:
+                        inodes[int(cols[9])] = int(local.rsplit(":", 1)[1], 16)
+                    except ValueError:
+                        continue
         except Exception:
             continue
-        for ln in (r.stdout or "").splitlines():
-            m = _LISTEN_RE.match(ln)
+    return inodes
+
+def _ports_for_pid(pid, inode_to_port):
+    """LISTEN ports owned by `pid` by walking /proc/<pid>/fd/* for socket:[N]
+    symlinks and joining inodes to ports. Empty list on any access failure —
+    services that fork (Type=forking) may own LISTEN sockets in a child PID
+    rather than MainPID, so an empty result here is silent degradation."""
+    if not pid or not inode_to_port:
+        return []
+    out = set()
+    try:
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            m = _SOCK_INODE_RE.match(target)
             if not m:
                 continue
-            pm = _LISTEN_PORT_RE.search(m.group("local"))
-            if not pm:
-                continue
-            port = int(pm.group(1))
-            for pid in (int(x) for x in _LISTEN_PID_RE.findall(m.group("users"))):
-                by_pid.setdefault(pid, set()).add(port)
-    return {pid: sorted(ports) for pid, ports in by_pid.items()}
+            port = inode_to_port.get(int(m.group(1)))
+            if port is not None:
+                out.add(port)
+    except (FileNotFoundError, PermissionError):
+        return []
+    return sorted(out)
+
+def _proc_rss_bytes(pid):
+    """VmRSS in bytes for a single PID. Memory fallback used when systemd's
+    MemoryCurrent is unset (DefaultMemoryAccounting=no — the default on most
+    distros). Returns None on any failure."""
+    if not pid:
+        return None
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for ln in f:
+                if ln.startswith("VmRSS:"):
+                    return int(ln.split()[1]) * 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        return None
+    return None
 
 def _dbus_get_all(conn, addr_cls, new_method_call_fn, path, interface):
     """Wrap Properties.GetAll for a single unit object path. Returns a flat
@@ -476,7 +513,7 @@ def collect_systemd():
         # uptime, ports, exit code) is only done for these — touching every unit
         # would mean ~hundreds of D-Bus round-trips on a busy host.
         shown = [s for s in services if s["admin"] or s["watched"] or s["status"] == "crit"]
-        listen = _collect_listen_ports()
+        inode_to_port = _listen_inode_to_port()
         now_us = time.time() * 1_000_000
         for s in shown:
             svc_props = _dbus_get_all(conn, DBusAddress, new_method_call,
@@ -485,14 +522,20 @@ def collect_systemd():
                                        s["_obj_path"], "org.freedesktop.systemd1.Unit")
             pid = int(svc_props.get("MainPID") or 0)
             mem = svc_props.get("MemoryCurrent")
-            s["mem_bytes"] = int(mem) if isinstance(mem, int) and 0 < mem < _DBUS_U64_MAX else None
+            if isinstance(mem, int) and 0 < mem < _DBUS_U64_MAX:
+                s["mem_bytes"] = int(mem)
+            else:
+                # MemoryAccounting off (the default on most distros) — read the
+                # main process's RSS as a coarse fallback. Underestimates for
+                # multi-process services but better than showing nothing.
+                s["mem_bytes"] = _proc_rss_bytes(pid)
             enter_us = unit_props.get("ActiveEnterTimestamp") or 0
             s["uptime_s"] = max(0, int((now_us - enter_us) / 1_000_000)) if enter_us else 0
             if s["status"] == "crit":
                 ex = svc_props.get("ExecMainStatus")
                 if ex is not None:
                     s["exit_status"] = int(ex)
-            s["ports"] = listen.get(pid, []) if pid else []
+            s["ports"] = _ports_for_pid(pid, inode_to_port)
             s.pop("_obj_path", None)
     except Exception as e:
         return {"available": False, "reason": f"systemd query failed: {e}", "services": [], "summary": {}}
