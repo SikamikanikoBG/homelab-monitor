@@ -452,8 +452,9 @@ function showTab(id){
   // Multi-host: scope notice on tabs that are still local-only, plus
   // host-aware renderers on the ones that already speak per-host.
   if(LOCAL_ONLY_TABS.has(id)){
-    if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
-    else renderLocalOnlyNotice(id);
+    const m = describeMissingCapability(id);
+    if(m) renderLocalOnlyNotice(id);
+    else clearLocalOnlyNotice(id);
   }
   if(id==='overview') renderFleet();
   if(id==='host')     renderHostTab();
@@ -1262,6 +1263,7 @@ function describeMissingCapability(tabId){
                                  : 'GPU monitoring relies on the NVIDIA driver + nvidia-smi.')};
     }
     if(nv && nv.status === 'ok'){
+      if(CURRENT_HOST === 'local') return null;
       return {ic:'🛠️',
         title:`Per-host ${tabId.toUpperCase()} view is on the way`,
         detail:`${CURRENT_HOST} has ${esc(nv.detail || 'a GPU')}, but per-host VRAM and process attribution lands in the next slice. For now, switch to <b>Local</b> to see the hub's ${tabId.toUpperCase()} view.`};
@@ -1283,6 +1285,7 @@ function describeMissingCapability(tabId){
         detail:`${esc(dk.detail || '')} Open the Hosts tab and use the <b>Run on remote</b> button on this host to fix it, then come back.`};
     }
     if(dk && dk.status === 'ok'){
+      if(CURRENT_HOST === 'local') return null;
       return {ic:'🛠️',
         title:`Per-host Containers view is on the way`,
         detail:`${CURRENT_HOST} has Docker (server ${esc(dk.detail||'')}), but the per-host container table lands in the next slice. Meanwhile, switch to <b>Local</b> to see the hub's containers.`};
@@ -1291,13 +1294,9 @@ function describeMissingCapability(tabId){
       title:`Docker info not yet probed for ${CURRENT_HOST}`,
       detail:'Open the <b>Hosts</b> tab and click <b>Test</b> on this host first.'};
   }
-  return {ic:'ℹ️',
-    title:`${tabId[0].toUpperCase()+tabId.slice(1)} is local-only for now`,
-    detail:'Per-host support lands in the next slice.'};
-}
+    if(CURRENT_HOST === 'local') return null;
 
 function renderLocalOnlyNotice(tabId){
-  if(CURRENT_HOST === 'local') return;
   const sec = document.querySelector(`section[data-tab="${tabId}"]`);
   if(!sec) return;
   sec.querySelectorAll(':scope > .card, :scope > .cols').forEach(el => el.style.display='none');
@@ -1323,8 +1322,9 @@ function clearLocalOnlyNotice(tabId){
 // notice appears (and cards hide) without needing to leave/return to the tab.
 function refreshLocalOnlyNotices(){
   LOCAL_ONLY_TABS.forEach(t => {
-    if(CURRENT_HOST === 'local') clearLocalOnlyNotice(t);
-    else renderLocalOnlyNotice(t);
+    const m = describeMissingCapability(t);
+    if(m) renderLocalOnlyNotice(t);
+    else clearLocalOnlyNotice(t);
   });
 }
 

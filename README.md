@@ -129,9 +129,10 @@ capability check — per-host versions land in subsequent releases. See
 broader design and follow-up slices.
 
 ## Quick start
-Requirements: Docker, and — for the GPU panels — an NVIDIA GPU with the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-(No GPU? The container, service and host panels still work fine.)
+Requirements: Docker (and optionally an NVIDIA GPU with the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+if you want the GPU panels).
+(No GPU? The container, service and host panels still work fine. Raspberry Pi 4/5 and ARM-based mini-PCs are fully supported too!)
 
 **Option A — pre-built image (recommended).** No clone, no build:
 

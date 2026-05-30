@@ -103,7 +103,7 @@ for col in ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp 
         pass
 DB.commit()
 
-LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
+LATEST = {"ts": 0, "util": None, "mem_used": None, "mem_total": None, "power": None, "temp": None,
           "procs": [], "models": [], "host": {}}
 # Current state of the "status" monitors (Docker + systemd). The background
 # collector refreshes these; /api/health just serves the cached snapshot.
@@ -1368,7 +1368,10 @@ def notify_scan():
 
 # ── Sampling ────────────────────────────────────────────────────────────────
 def smi(args):
-    return subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, timeout=15).stdout.strip()
+    try:
+        return subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, timeout=15).stdout.strip()
+    except FileNotFoundError:
+        return ""
 
 def service_for_pid(pid, nm):
     try:
@@ -1382,16 +1385,25 @@ def service_for_pid(pid, nm):
         return f"pid:{pid}"
 
 def sample_once():
-    g = smi(["--query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu",
-             "--format=csv,noheader,nounits"]).splitlines()[0].split(",")
-    util, mem_used, mem_total, power, temp = (float(x.strip() or 0) for x in g)
+    g_out = smi(["--query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu",
+             "--format=csv,noheader,nounits"])
+    if g_out and g_out.splitlines():
+        g = g_out.splitlines()[0].split(",")
+        def safe_float(v):
+            try: return float(v.strip())
+            except ValueError: return 0.0
+        util, mem_used, mem_total, power, temp = (safe_float(x) for x in g)
+    else:
+        util = mem_used = mem_total = power = temp = None
+
     nm = {c["id"]: c["name"] for c in containers()}
     procs = {}
-    for line in smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).splitlines():
-        if line.strip():
-            pid, mem = (p.strip() for p in line.split(","))
-            svc = service_for_pid(pid, nm)
-            procs[svc] = procs.get(svc, 0) + float(mem or 0)
+    if g_out:
+        for line in smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).splitlines():
+            if line.strip():
+                pid, mem = (p.strip() for p in line.split(","))
+                svc = service_for_pid(pid, nm)
+                procs[svc] = procs.get(svc, 0) + float(mem or 0)
 
     by_name = {c["name"]: c for c in containers()}
     models = []
@@ -1547,9 +1559,9 @@ def api_data():
             if row:
                 e["blame"] = (f"{e['service']} lost to {row[0]} (holding {round(row[1])} MB) at "
                               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(e['ts']))}.")
-        mem_total = LATEST["mem_total"] or 24576
+        mem_total = LATEST["mem_total"]
         peak = max(total["mempk"]) if total["mempk"] else 0
-        insights = build_insights(total, services, mem_total, evs, LATEST["host"])
+        insights = build_insights(total, services, mem_total, evs, LATEST["host"]) if mem_total else []
     return jsonify({"version": VERSION, "range": rng, "bucket_sec": bk, "labels": labels, "total": total,
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
@@ -1574,7 +1586,7 @@ def api_health():
     """Current state of the status monitors (Docker + systemd) plus a light GPU/host
     snapshot. Cheap and DB-free, so the dashboard can poll it often."""
     now = {"gpu": {"util": LATEST["util"], "mem_used": LATEST["mem_used"],
-                   "mem_total": LATEST["mem_total"] or 24576, "power": LATEST["power"],
+                   "mem_total": LATEST["mem_total"], "power": LATEST["power"],
                    "temp": LATEST["temp"]},
            "host": LATEST["host"]}
     docker  = HEALTH["docker"]  or {"available": False, "reason": "warming up…",
@@ -1718,10 +1730,15 @@ def api_fleet():
     rows  = []
 
     # Local row
+    local_nvidia_status = "ok" if (LATEST.get("mem_total") and LATEST.get("mem_total") > 0) else "info"
     rows.append({"name": "local", "label": socket.gethostname() + " (this hub)",
                  "ssh_target": None, "host": _local_now_snapshot(),
                  "at": int(time.time()), "online": True, "is_local": True,
-                 "last_check": {"summary": {"overall": "ok"}}})
+                 "last_check": {"summary": {"overall": "ok"}, "checks": [
+                     {"id": "nvidia", "status": local_nvidia_status, "detail": "NVIDIA GPU local capability"},
+                     {"id": "docker", "status": "ok", "detail": ""},
+                     {"id": "dbus", "status": "ok", "detail": ""}
+                 ]}})
 
     with HOST_DATA_LOCK:
         for h in hosts:

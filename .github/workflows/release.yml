@@ -1,8 +1,8 @@
 name: Publish Docker image
 
-# Builds a multi-arch (amd64 + arm64) image and pushes to Docker Hub so users
-# can `docker compose pull` instead of cloning + rebuilding. Fires on every
-# `v*` tag push, and is also dispatchable manually for re-builds.
+# Builds a multi-arch (amd64 + arm64) image and pushes to Docker Hub and GHCR
+# so users can `docker compose pull` instead of cloning + rebuilding.
+# Fires on every `v*` tag push, and is also dispatchable manually for re-builds.
 
 on:
   push:
@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   publish:
@@ -32,10 +33,18 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: sikamikaniko123/homelab-monitor
+          images: |
+            sikamikaniko123/homelab-monitor
+            ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}},value=${{ github.event.inputs.tag || github.ref_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ github.event.inputs.tag || github.ref_name }}
