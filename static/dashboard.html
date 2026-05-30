@@ -44,6 +44,14 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);font:inherit;font-size:13.5px;padding:9px 13px;cursor:pointer;display:flex;align-items:center;gap:6px}
 .tab:hover{color:var(--tx)}.tab.on{color:var(--tx);border-bottom-color:var(--accent)}
 .tab .tdot{width:8px;height:8px;border-radius:50%}
+/* settings drawer — config tabs (Hosts, Alerts) sit behind a gear, not in the monitoring row */
+.navrow{display:flex;align-items:flex-end;border-bottom:1px solid var(--bd);margin:0 0 4px}
+.navrow .nav{flex:1 1 auto;min-width:0;border-bottom:0;margin:0}
+.nav[hidden]{display:none}            /* .nav{display:flex} would otherwise beat the hidden attr */
+.gear{background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:8px 12px;flex:none}
+.gear:hover{color:var(--tx)}
+.gear.on{color:var(--accent);border-bottom-color:var(--accent)}
+.tab.back{color:var(--mut);font-size:13px}.tab.back:hover{color:var(--tx)}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:17px 19px;margin:16px 0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px}
 .kpi{background:#0d1117;border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
@@ -194,7 +202,11 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
     <span class="label">Host:</span>
     <span class="muted" style="font-size:12px">loading…</span>
   </div>
-  <nav class="nav" id="nav"></nav>
+  <div class="navrow">
+    <nav class="nav" id="nav"></nav>
+    <nav class="nav subnav" id="subnav" hidden></nav>
+    <button class="gear" id="gearbtn" type="button" title="Settings" aria-label="Settings">⚙</button>
+  </div>
 </div>
 
 <div class="card" id="controls" hidden><div class="ranges">
@@ -416,12 +428,17 @@ const TABS = [
   {id:'containers', label:'Containers', charts:false},
   {id:'services',   label:'Services',   charts:false},
   {id:'host',       label:'Host',       charts:true},
-  {id:'hosts',      label:'Hosts',      charts:false},
-  {id:'alerts',     label:'Alerts',     charts:false},
+  {id:'hosts',      label:'Hosts',      charts:false, settings:true},
+  {id:'alerts',     label:'Alerts',     charts:false, settings:true},
 ];
 let R = localStorage.getItem('hl_range') || '6h';
 let TAB = (location.hash.slice(1)) || localStorage.getItem('hl_tab') || 'overview';
 if(!TABS.some(t=>t.id===TAB)) TAB='overview';
+// Settings drawer: the monitoring tab to return to when leaving Settings, plus
+// whether the drawer is currently open (kept in sync by showTab()).
+let LAST_MONITOR_TAB = localStorage.getItem('hl_montab') || 'overview';
+if(!TABS.some(t=>t.id===LAST_MONITOR_TAB && !t.settings)) LAST_MONITOR_TAB='overview';
+let SETTINGS_OPEN = false;
 let charts = {}, D = null, HH = null;
 
 // Multi-machine state. CURRENT_HOST is the active host context for per-host
@@ -443,13 +460,32 @@ function fmtLabels(L){ if(!L.length)return[]; const md=(L[L.length-1]-L[0])>2*86
   return md?(d.getMonth()+1)+'/'+d.getDate()+' '+hm:hm;});}
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
+const tabBtn = t => `<button class="tab" data-t="${t.id}"><span class="tdot" id="ndot-${t.id}" style="display:none"></span>${t.label}</button>`;
+const isSettingsTab = id => !!(TABS.find(t=>t.id===id)||{}).settings;
 function buildNav(){
-  document.getElementById('nav').innerHTML = TABS.map(t=>
-    `<button class="tab" data-t="${t.id}"><span class="tdot" id="ndot-${t.id}" style="display:none"></span>${t.label}</button>`).join('');
-  document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>showTab(b.dataset.t));
+  // Monitoring tabs go in the main row; settings tabs (Hosts, Alerts) live in the
+  // gear's sub-nav. Adding a monitor still = one TABS entry + one <section>.
+  document.getElementById('nav').innerHTML = TABS.filter(t=>!t.settings).map(tabBtn).join('');
+  document.getElementById('subnav').innerHTML =
+    '<button class="tab back" data-back="1">← Monitoring</button>' + TABS.filter(t=>t.settings).map(tabBtn).join('');
+  document.querySelectorAll('#nav .tab, #subnav .tab').forEach(b=>
+    b.onclick = b.dataset.back ? leaveSettings : (()=>showTab(b.dataset.t)));
+  document.getElementById('gearbtn').onclick = () =>
+    SETTINGS_OPEN ? leaveSettings() : showTab((TABS.find(t=>t.settings)||{}).id || 'overview');
 }
+// The drawer just swaps which nav row is visible. showTab() is the single source
+// of truth and calls this, so deep links (#hosts) open in settings mode too.
+function setSettingsMode(on){
+  SETTINGS_OPEN = on;
+  document.getElementById('nav').hidden = on;
+  document.getElementById('subnav').hidden = !on;
+  document.getElementById('gearbtn').classList.toggle('on', on);
+}
+function leaveSettings(){ showTab(LAST_MONITOR_TAB || 'overview'); }
 function showTab(id){
   TAB=id; localStorage.setItem('hl_tab',id);
+  if(!isSettingsTab(id)){ LAST_MONITOR_TAB=id; localStorage.setItem('hl_montab',id); }
+  setSettingsMode(isSettingsTab(id));
   if(location.hash.slice(1)!==id) history.replaceState(null,'','#'+id);
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
   document.querySelectorAll('section[data-tab]').forEach(s=>s.hidden = s.dataset.tab!==id);
