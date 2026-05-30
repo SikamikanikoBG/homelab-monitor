@@ -9,7 +9,13 @@ Linux with Python 3.6+.
 JSON shape is a deliberate subset of the hub's own /api/health.now block so the
 UI can render local and remote with the same code paths.
 """
-import json, os, socket, subprocess, sys, time, glob
+import json, os, re, socket, subprocess, sys, time, glob
+
+# ss listen-row parser, mirrored from app.py so service ports can be attributed
+# on the remote without depending on the iproute2 *Python* bindings.
+_LISTEN_RE = re.compile(r"^LISTEN\s+\S+\s+\S+\s+(?P<local>\S+)\s+\S+\s+users:\((?P<users>.*)\)\s*$")
+_LISTEN_PORT_RE = re.compile(r":(\d+)$")
+_LISTEN_PID_RE = re.compile(r"pid=(\d+)")
 
 
 def read_loadavg():
@@ -124,6 +130,47 @@ def read_disks():
     return out
 
 
+def _collect_listen_ports():
+    """{pid: [ports]} from `ss -Hlntp` (IPv4 + IPv6). Best-effort: if `ss`
+    isn't installed on the remote, returns {} and ports just stay empty."""
+    by_pid = {}
+    for args in (["ss", "-Hlntp"], ["ss", "-Hln6tp"]):
+        try:
+            r = subprocess.run(args, capture_output=True, timeout=3)
+        except Exception:
+            continue
+        for ln in r.stdout.decode("utf-8", "replace").splitlines():
+            m = _LISTEN_RE.match(ln)
+            if not m:
+                continue
+            pm = _LISTEN_PORT_RE.search(m.group("local"))
+            if not pm:
+                continue
+            port = int(pm.group(1))
+            for pid in (int(x) for x in _LISTEN_PID_RE.findall(m.group("users"))):
+                by_pid.setdefault(pid, set()).add(port)
+    return {pid: sorted(ports) for pid, ports in by_pid.items()}
+
+
+def _systemd_props(unit):
+    """systemctl show on a single unit, parsed into a flat key=value dict."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "--no-pager", unit,
+             "-p", "MainPID", "-p", "MemoryCurrent",
+             "-p", "ActiveEnterTimestampMonotonic", "-p", "ExecMainStatus"],
+            capture_output=True, timeout=3,
+        )
+    except Exception:
+        return {}
+    out = {}
+    for ln in r.stdout.decode("utf-8", "replace").splitlines():
+        if "=" in ln:
+            k, v = ln.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
 def read_systemd():
     """Inventory systemd services via the CLI — no D-Bus client needed on the
     remote. Output matches the hub's HH.systemd shape so the existing Services
@@ -189,6 +236,37 @@ def read_systemd():
                 "admin": is_admin, "watched": False,
             })
 
+    # Enrich only the shown rows (admin/failed) — calling `systemctl show` per
+    # unit on the full list would be a lot of fork-exec on a busy host.
+    try:
+        boot_uptime_s = float(open("/proc/uptime").read().split()[0])
+    except Exception:
+        boot_uptime_s = 0
+    listen = _collect_listen_ports()
+    for s in services:
+        props = _systemd_props(s["name"])
+        try:
+            pid = int(props.get("MainPID") or 0)
+        except ValueError:
+            pid = 0
+        try:
+            mem = int(props.get("MemoryCurrent") or 0)
+        except ValueError:
+            mem = 0
+        # 2^64-1 is systemd's sentinel for "no accounting / unset".
+        s["mem_bytes"] = mem if 0 < mem < 0xFFFFFFFFFFFFFFFF else None
+        try:
+            enter_us = int(props.get("ActiveEnterTimestampMonotonic") or 0)
+        except ValueError:
+            enter_us = 0
+        s["uptime_s"] = max(0, int(boot_uptime_s - enter_us / 1_000_000)) if (enter_us and boot_uptime_s) else 0
+        if s["status"] == "crit":
+            try:
+                s["exit_status"] = int(props.get("ExecMainStatus", "0"))
+            except ValueError:
+                pass
+        s["ports"] = listen.get(pid, []) if pid else []
+
     # Failed first, then admin units (running first), alphabetical within.
     def k(x):
         if x["status"] == "crit": return (0, x["name"])
@@ -249,7 +327,7 @@ def main():
             "hostname": socket.gethostname(),
         },
         "at": int(time.time()),
-        "probe_version": "0.3",
+        "probe_version": "0.4",
     }
     json.dump(data, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")

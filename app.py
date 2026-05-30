@@ -259,6 +259,15 @@ def read_host():
 # These describe *current state* (is it up? healthy? failed?) rather than a time
 # series, so they live behind /api/health and are refreshed by health_scan().
 _DOCKER_HEALTH = re.compile(r"\((healthy|unhealthy|health: starting)\)")
+# "Up 14 days, 2 hours" / "Up About a minute" / "Up 12 seconds (healthy)" — Docker
+# already builds a human Status string, so we parse it instead of issuing N more
+# inspect calls just for StartedAt.
+_DOCKER_UP_DUR = re.compile(r"^Up\s+(.+?)(?:\s*\(.*\))?$", re.I)
+_DUR_UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000, "year": 31536000}
+# Heavy enrichment (per-container `stats` + Docker layer-size scan) is too costly
+# to hit on every 10 s health_scan, so we keep a separate 30 s cache for it.
+_DOCKER_ENRICH_TTL = 30
+_docker_enrich = {"data": {}, "at": 0}
 
 def _docker_status(state, status):
     """Map a Docker container's state/status string to a (level, label) pair."""
@@ -279,6 +288,60 @@ def _docker_status(state, status):
     if st == "created":                  return "info", "created"
     return "info", st or "unknown"
 
+def _parse_docker_uptime(status_text):
+    """Turn Docker's 'Up 14 days, 2 hours' status text into a uptime in seconds.
+
+    Returns 0 for stopped/restarting/dead/etc. — anything that isn't 'Up …'."""
+    if not status_text:
+        return 0
+    m = _DOCKER_UP_DUR.match(status_text.strip())
+    if not m:
+        return 0
+    total = 0
+    for n, unit in re.findall(r"(\d+|a|an|about)\s*(second|minute|hour|day|week|month|year)s?", m.group(1).lower()):
+        try:
+            total += (1 if n in ("a", "an", "about") else int(n)) * _DUR_UNITS[unit]
+        except (KeyError, ValueError):
+            continue
+    return total
+
+def _container_published_ports(ct):
+    """Unique published host-side ports for a container (de-duped across v4/v6)."""
+    seen = []
+    for p in ct.get("Ports") or []:
+        port = p.get("PublicPort")
+        if isinstance(port, int) and port not in seen:
+            seen.append(port)
+    return sorted(seen)
+
+def _container_stats(cid):
+    """One-shot memory snapshot for a running container. Returns bytes or None."""
+    try:
+        d = json.loads(_docker(f"/containers/{cid}/stats?stream=false&one-shot=true"))
+    except Exception:
+        return None
+    mem = (d.get("memory_stats") or {}).get("usage")
+    # Docker counts page cache against `usage`; subtract it like `docker stats` does.
+    cache = ((d.get("memory_stats") or {}).get("stats") or {}).get("cache", 0)
+    return max(0, (mem or 0) - cache) if mem is not None else None
+
+def _refresh_docker_enrich(running_ids):
+    """Pull SizeRw (one Docker call with size=1) + memory (per-container, in
+    parallel). Cached for _DOCKER_ENRICH_TTL seconds — heavy enough that we
+    don't want it on the 10 s health-scan path."""
+    out = {}
+    try:
+        sized = json.loads(_docker("/containers/json?all=1&size=1"))
+        for ct in sized:
+            out[ct["Id"][:12]] = {"disk_bytes": ct.get("SizeRw") or 0}
+    except Exception:
+        pass
+    if running_ids:
+        with ThreadPoolExecutor(max_workers=min(8, len(running_ids))) as ex:
+            for cid, mem in zip(running_ids, ex.map(_container_stats, running_ids)):
+                out.setdefault(cid, {})["mem_bytes"] = mem
+    return out
+
 def collect_docker():
     try:
         raw = json.loads(_docker("/containers/json?all=1"))
@@ -288,9 +351,24 @@ def collect_docker():
     items = []
     for ct in raw:
         level, label = _docker_status(ct.get("State"), ct.get("Status"))
-        items.append({"name": (ct.get("Names") or ["/?"])[0].lstrip("/"),
-                      "image": ct.get("Image", ""), "state": (ct.get("State") or "").lower(),
-                      "status_text": ct.get("Status", ""), "status": level, "label": label})
+        state = (ct.get("State") or "").lower()
+        status_text = ct.get("Status", "")
+        items.append({"id": ct["Id"][:12],
+                      "name": (ct.get("Names") or ["/?"])[0].lstrip("/"),
+                      "image": ct.get("Image", ""), "state": state,
+                      "status_text": status_text, "status": level, "label": label,
+                      "ports": _container_published_ports(ct),
+                      "uptime_s": _parse_docker_uptime(status_text) if state == "running" else 0})
+    # Merge cached enrichment (memory + disk). Refresh on a slower cadence than
+    # the basic state pass — see _DOCKER_ENRICH_TTL.
+    if time.time() - _docker_enrich["at"] > _DOCKER_ENRICH_TTL:
+        running_ids = [c["id"] for c in items if c["state"] == "running"]
+        _docker_enrich["data"] = _refresh_docker_enrich(running_ids)
+        _docker_enrich["at"] = time.time()
+    for c in items:
+        e = _docker_enrich["data"].get(c["id"]) or {}
+        c["mem_bytes"]  = e.get("mem_bytes")
+        c["disk_bytes"] = e.get("disk_bytes")
     rank = {"crit": 0, "warn": 1, "ok": 2, "info": 3}
     items.sort(key=lambda c: (rank.get(c["status"], 9), c["name"].lower()))
     return {"available": True, "containers": items,
@@ -301,6 +379,57 @@ def collect_docker():
 def _svc_status(active):
     return {"failed": "crit", "active": "ok",
             "activating": "warn", "deactivating": "warn"}.get(active, "info")
+
+# `ss -Hlntp` row example:
+#   LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1234,fd=3))
+# We capture the local address (column 4) and the whole `users:(...)` tail so
+# the inner `pid=N` matches survive parens/quote noise from multi-owner sockets.
+_LISTEN_RE = re.compile(r"^LISTEN\s+\S+\s+\S+\s+(?P<local>\S+)\s+\S+\s+users:\((?P<users>.*)\)\s*$")
+_LISTEN_PORT_RE = re.compile(r":(\d+)$")
+_LISTEN_PID_RE = re.compile(r"pid=(\d+)")
+# MemoryCurrent on a unit with no accounting comes back as the sentinel 2^64-1.
+_DBUS_U64_MAX = 0xFFFFFFFFFFFFFFFF
+
+def _collect_listen_ports():
+    """Snapshot of TCP/TCPv6 LISTEN sockets keyed by owning PID.
+
+    Single `ss` call per scan, used to attribute ports to systemd units via
+    their MainPID. Needs `iproute2` (provides `ss`) installed in the image;
+    pid:host + network_mode:host in compose makes the PIDs/ports the real
+    host's, not the container's."""
+    by_pid = {}
+    for args in (["ss", "-Hlntp"], ["ss", "-Hln6tp"]):
+        try:
+            r = subprocess.run(args, capture_output=True, timeout=3, text=True)
+        except Exception:
+            continue
+        for ln in (r.stdout or "").splitlines():
+            m = _LISTEN_RE.match(ln)
+            if not m:
+                continue
+            pm = _LISTEN_PORT_RE.search(m.group("local"))
+            if not pm:
+                continue
+            port = int(pm.group(1))
+            for pid in (int(x) for x in _LISTEN_PID_RE.findall(m.group("users"))):
+                by_pid.setdefault(pid, set()).add(port)
+    return {pid: sorted(ports) for pid, ports in by_pid.items()}
+
+def _dbus_get_all(conn, addr_cls, new_method_call_fn, path, interface):
+    """Wrap Properties.GetAll for a single unit object path. Returns a flat
+    {name: value} dict (variants unwrapped) or {} on any failure."""
+    props_addr = addr_cls(path, bus_name="org.freedesktop.systemd1",
+                          interface="org.freedesktop.DBus.Properties")
+    try:
+        body = conn.send_and_get_reply(new_method_call_fn(props_addr, "GetAll", "s", (interface,))).body
+    except Exception:
+        return {}
+    # jeepney decodes `v` (variant) entries as (signature, value) tuples; be
+    # defensive in case the library version returns the value directly.
+    out = {}
+    for k, v in (body[0] or {}).items():
+        out[k] = v[1] if isinstance(v, tuple) and len(v) == 2 else v
+    return out
 
 def collect_systemd():
     """Read systemd *system* units over the host D-Bus socket (pure-Python jeepney).
@@ -329,26 +458,47 @@ def collect_systemd():
             files = conn.send_and_get_reply(new_method_call(mgr, "ListUnitFiles")).body[0]
         except Exception:
             files = []
+        admin = {os.path.basename(p) for p, _state in files
+                 if p.startswith(SYSTEMD_ADMIN_DIR) and p.endswith(".service")}
+        services, running, failed = [], 0, 0
+        for name, desc, _load, active, sub, _follow, obj_path, *_rest in units:
+            if not name.endswith(".service"):
+                continue
+            running += active == "active"
+            failed  += active == "failed"
+            services.append({"name": name, "desc": desc, "active": active, "sub": sub,
+                             "admin": name in admin,
+                             "watched": name in WATCH_SERVICES or name[:-8] in WATCH_SERVICES,
+                             "status": _svc_status(active),
+                             "_obj_path": obj_path})
+        # Default view = the units you actually care about: ones you deployed, ones
+        # you asked to watch, and anything currently failing. Enrichment (mem,
+        # uptime, ports, exit code) is only done for these — touching every unit
+        # would mean ~hundreds of D-Bus round-trips on a busy host.
+        shown = [s for s in services if s["admin"] or s["watched"] or s["status"] == "crit"]
+        listen = _collect_listen_ports()
+        now_us = time.time() * 1_000_000
+        for s in shown:
+            svc_props = _dbus_get_all(conn, DBusAddress, new_method_call,
+                                      s["_obj_path"], "org.freedesktop.systemd1.Service")
+            unit_props = _dbus_get_all(conn, DBusAddress, new_method_call,
+                                       s["_obj_path"], "org.freedesktop.systemd1.Unit")
+            pid = int(svc_props.get("MainPID") or 0)
+            mem = svc_props.get("MemoryCurrent")
+            s["mem_bytes"] = int(mem) if isinstance(mem, int) and 0 < mem < _DBUS_U64_MAX else None
+            enter_us = unit_props.get("ActiveEnterTimestamp") or 0
+            s["uptime_s"] = max(0, int((now_us - enter_us) / 1_000_000)) if enter_us else 0
+            if s["status"] == "crit":
+                ex = svc_props.get("ExecMainStatus")
+                if ex is not None:
+                    s["exit_status"] = int(ex)
+            s["ports"] = listen.get(pid, []) if pid else []
+            s.pop("_obj_path", None)
     except Exception as e:
         return {"available": False, "reason": f"systemd query failed: {e}", "services": [], "summary": {}}
     finally:
         conn.close()
 
-    admin = {os.path.basename(p) for p, _state in files
-             if p.startswith(SYSTEMD_ADMIN_DIR) and p.endswith(".service")}
-    services, running, failed = [], 0, 0
-    for name, desc, _load, active, sub, *_ in units:
-        if not name.endswith(".service"):
-            continue
-        running += active == "active"
-        failed  += active == "failed"
-        services.append({"name": name, "desc": desc, "active": active, "sub": sub,
-                         "admin": name in admin,
-                         "watched": name in WATCH_SERVICES or name[:-8] in WATCH_SERVICES,
-                         "status": _svc_status(active)})
-    # Default view = the units you actually care about: ones you deployed, ones
-    # you asked to watch, and anything currently failing.
-    shown = [s for s in services if s["admin"] or s["watched"] or s["status"] == "crit"]
     rank = {"crit": 0, "warn": 1, "ok": 2, "info": 3}
     shown.sort(key=lambda s: (rank.get(s["status"], 9), s["name"].lower()))
     return {"available": True, "services": shown,

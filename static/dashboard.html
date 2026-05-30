@@ -84,6 +84,15 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:760px){.cols{grid-template-columns:1fr}}
 .cap{color:var(--mut);font-size:12px;margin-top:9px}.pill{font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:5px;padding:1px 6px}
 .muted{color:var(--mut)}a{color:#58a6ff}
+/* clickable port chips on the Containers/Services tabs — opens the host:port in a new tab */
+.ports{display:inline-flex;flex-wrap:wrap;gap:4px}
+.portpill{font-size:11px;padding:1px 7px;border:1px solid var(--bd);border-radius:10px;color:var(--mut);text-decoration:none;line-height:1.6;background:#0d1117;white-space:nowrap;transition:color .2s,border-color .2s,background .2s}
+.portpill:hover{border-color:var(--accent);color:var(--accent);background:#d2992211}
+/* hide non-essential columns on narrow screens so the table doesn't horiz-scroll */
+@media(max-width:1100px){
+  th[data-col="image"],td[data-col="image"],
+  th[data-col="disk"], td[data-col="disk"]  { display:none }
+}
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
 .upd:hover{border-color:var(--info)}
@@ -266,7 +275,13 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 <section data-tab="containers" hidden>
   <div class="card"><h2>📦 Docker containers</h2>
     <div class="grid" id="ctkpis"></div>
-    <table style="margin-top:14px"><thead><tr><th>Container</th><th>State</th><th>Image</th><th>Status</th></tr></thead><tbody id="cttbl"></tbody></table>
+    <table style="margin-top:14px"><thead><tr>
+      <th>Container</th><th>State</th>
+      <th data-col="image">Image</th>
+      <th>Ports</th><th>Uptime</th><th>Memory</th>
+      <th data-col="disk">Disk</th>
+      <th>Status</th>
+    </tr></thead><tbody id="cttbl"></tbody></table>
   </div>
 </section>
 
@@ -610,12 +625,21 @@ function renderHealth(){
     {v:ds.problems||0,l:'Need attention'},{v:(ds.total||0)-(ds.running||0),l:'Stopped'},
   ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div></div>`).join('')
     : `<div class="ins info"><div class="ic">ℹ️</div><div><div class="t">Docker unavailable</div><div class="d">${esc(dk.reason||'')}</div></div></div>`;
-  document.getElementById('cttbl').innerHTML = (dk.containers||[]).map(c=>
-    `<tr><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.name)}</td>
+  document.getElementById('cttbl').innerHTML = (dk.containers||[]).map(c=>{
+    // Uptime now has its own column, so trim it out of the status text and
+    // keep only the trailing health/exit detail (if any).
+    const stext = c.status_text || '';
+    const upStripped = stext.replace(/^Up\s+[^()]+\s*/i,'').trim() || (stext.startsWith('Up ') ? '' : stext);
+    return `<tr><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.name)}</td>
      <td><span class="badge ${c.status}">${esc(c.label)}</span></td>
-     <td class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}</td>
-     <td class="muted">${esc(c.status_text)}</td></tr>`).join('')
-    || (dk.available?'<tr><td class="muted">No containers found.</td></tr>':'');
+     <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}</td>
+     <td>${renderPorts(c.ports)}</td>
+     <td class="muted">${c.state==='running'?fmtUpShort(c.uptime_s):'—'}</td>
+     <td class="muted">${fmtBytes(c.mem_bytes)}</td>
+     <td data-col="disk" class="muted">${fmtBytes(c.disk_bytes)}</td>
+     <td class="muted">${upStripped?esc(upStripped):'—'}</td></tr>`;
+  }).join('')
+    || (dk.available?'<tr><td colspan="8" class="muted">No containers found.</td></tr>':'');
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
   if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
@@ -632,17 +656,30 @@ function renderServicesBlock(sd){
     svc.innerHTML = `<div class="ins info"><div class="ic">ℹ️</div><div><div class="t">systemd monitoring is off</div><div class="d">${esc(sd.reason||'No D-Bus / systemd detected.')}</div></div></div>`;
     return;
   }
+  // Port pills link to <host>:<port> — locally that's this page's host; per-host
+  // tab uses CURRENT_HOST (typically the registry name, e.g. "ardi").
+  const portHost = CURRENT_HOST === 'local' ? location.hostname : CURRENT_HOST;
   const kpis=[{v:ss.loaded||0,l:'Loaded services'},{v:ss.running||0,l:'Running'},
               {v:ss.failed||0,l:'Failed'},{v:ss.admin||0,l:'Your units'}]
     .map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div></div>`).join('');
-  const rows=(sd.services||[]).map(s=>
-    `<tr><td><span class="sdot" style="background:${SC[s.status]}"></span>${esc(s.name)}
+  const rows=(sd.services||[]).map(s=>{
+    // For failed units, the exit code is more useful than a zero uptime.
+    const upCell = s.status==='crit' && s.exit_status!=null
+      ? `exit ${s.exit_status}`
+      : (s.uptime_s ? fmtUpShort(s.uptime_s) : '—');
+    return `<tr><td><span class="sdot" style="background:${SC[s.status]}"></span>${esc(s.name)}
        ${s.admin?'<span class="pill">yours</span>':''}${s.watched?'<span class="pill">watched</span>':''}</td>
      <td><span class="badge ${s.status}">${esc(s.active)}${s.sub&&s.sub!==s.active?' / '+esc(s.sub):''}</span></td>
-     <td class="muted">${esc(s.desc)}</td></tr>`).join('')
-    || '<tr><td colspan="3" class="muted">No user-deployed or failed services found.</td></tr>';
+     <td>${renderPorts(s.ports, portHost)}</td>
+     <td class="muted">${upCell}</td>
+     <td class="muted">${fmtBytes(s.mem_bytes)}</td>
+     <td class="muted">${esc(s.desc)}</td></tr>`;
+  }).join('')
+    || '<tr><td colspan="6" class="muted">No user-deployed or failed services found.</td></tr>';
   svc.innerHTML=`<div class="grid">${kpis}</div>
-    <table style="margin-top:14px"><thead><tr><th>Unit</th><th>State</th><th>Description</th></tr></thead><tbody>${rows}</tbody></table>
+    <table style="margin-top:14px"><thead><tr>
+      <th>Unit</th><th>State</th><th>Ports</th><th>Uptime</th><th>Memory</th><th>Description</th>
+    </tr></thead><tbody>${rows}</tbody></table>
     <p class="cap">Showing the units you deployed (under <code>/etc/systemd/system</code>) plus any failed unit. Vendor services are hidden by default to keep the table readable.</p>`;
 }
 
@@ -1124,10 +1161,30 @@ function fmtMBshort(v){
   if(v==null) return '—';
   return v>=1024 ? (v/1024).toFixed(1)+' GB' : Math.round(v)+' MB';
 }
+// Bytes → human, for container/service memory + container disk. Distinct from
+// fmtMBshort (which is fed already-aggregated MB host stats).
+function fmtBytes(b){
+  if(b==null||b<0) return '—';
+  if(b<1024) return b+' B';
+  if(b<1048576) return (b/1024).toFixed(1)+' KB';
+  if(b<1073741824) return (b/1048576|0)+' MB';
+  return (b/1073741824).toFixed(1)+' GB';
+}
 function fmtUpShort(s){
-  if(s==null) return '—';
+  if(s==null||s<0) return '—';
+  if(s<60) return s+'s';
   const d=s/86400|0, h=s%86400/3600|0, m=s%3600/60|0;
-  return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;
+  return d?`${d}d ${h.toString().padStart(2,'0')}h`:h?`${h}h ${m}m`:`${m}m`;
+}
+// Build a host:port pill row that opens in a new tab. host defaults to the
+// current page's hostname; pass a remote host for the per-host Services tab.
+function renderPorts(ports, host){
+  if(!ports || !ports.length) return '<span class="muted">—</span>';
+  host = host || location.hostname;
+  const proto = location.protocol || 'http:';
+  return '<span class="ports">' + ports.map(p =>
+    `<a class="portpill" href="${proto}//${esc(host)}:${p}" target="_blank" rel="noopener" title="Open ${esc(host)}:${p} in a new tab">↗${p}</a>`
+  ).join('') + '</span>';
 }
 function fmtAge(at){
   if(!at) return '—';

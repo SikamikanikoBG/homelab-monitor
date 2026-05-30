@@ -4,9 +4,12 @@ WORKDIR /app
 # flask = web layer; jeepney = pure-Python D-Bus client used to read systemd
 # (no native libs, keeps the image slim). curl only needed to vendor Chart.js below.
 # openssh-client provides ssh + ssh-keygen for the multi-host registry probes.
+# iproute2 provides `ss`, used to attribute listening TCP ports to systemd units
+# (services tab Ports column). pid:host + network_mode:host in compose makes
+# the visible PIDs/ports the real host's.
 RUN pip install --no-cache-dir flask==3.0.3 jeepney==0.8.0 prometheus_client==0.20.0 \
  && apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates openssh-client \
+ && apt-get install -y --no-install-recommends curl ca-certificates openssh-client iproute2 \
  && rm -rf /var/lib/apt/lists/*
 
 # Vendor Chart.js so the dashboard works fully offline / on a LAN with no internet.
