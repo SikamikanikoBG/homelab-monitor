@@ -382,7 +382,7 @@ a{color:var(--info)}
 <section data-tab="models" hidden>
   <div class="card"><h2>🧠 AI model servers</h2>
     <table class="mtbl"><thead><tr>
-      <th style="width:24px"></th><th>Model</th><th>Server</th><th>Status</th><th>VRAM now</th><th>Peak</th><th>% time</th>
+      <th style="width:24px"></th><th>Model</th><th>Server</th><th>Status</th><th>VRAM now</th><th>Peak</th>
     </tr></thead><tbody id="modelstbl"></tbody></table>
     <p class="cap" style="margin-top:10px">Click a row for its <b>VRAM timeline</b> &amp; details. Recognised servers: Ollama (live VRAM/model), vLLM, HF TGI, llama.cpp, Stable Diffusion, ComfyUI.</p>
   </div>
@@ -755,27 +755,31 @@ function renderModels(){
   const n=D.now, tot=D.mem_total;
   const live=n.models||[], sums=D.model_summary||[];
   const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
+  // Per-model peak comes from model_summary (keyed by model+service); current VRAM
+  // from n.models. The VRAM-over-time series + %-resident are only available PER
+  // SERVER (D.services/D.summary keyed by service), so they're shown as server-level
+  // stats in the expanded panel — not per-model columns (which caused the "all the
+  // same" bug when several models share one server, e.g. ollama).
+  const peakOf={}; sums.forEach(m=>{peakOf[m.model+'|'+m.service]=m.peak;});
   const seen=new Set(), rows=[];
-  live.forEach(m=>{const k=m.model+'|'+m.service; seen.add(k); rows.push({model:m.model,service:m.service,vram:m.vram,loaded:true});});
+  live.forEach(m=>{const k=m.model+'|'+m.service; seen.add(k); rows.push({model:m.model,service:m.service,vram:m.vram,loaded:true,peak:peakOf[k]});});
   sums.forEach(m=>{const k=m.model+'|'+m.service; if(!seen.has(k)){seen.add(k); rows.push({model:m.model,service:m.service,vram:null,loaded:false,peak:m.peak});}});
   const body=document.getElementById('modelstbl'); if(!body) return;
-  if(!rows.length){ body.innerHTML='<tr><td colspan="7" class="muted">No model server is holding the GPU right now.</td></tr>'; return; }
+  if(!rows.length){ body.innerHTML='<tr><td colspan="6" class="muted">No model server is holding the GPU right now.</td></tr>'; return; }
   body.innerHTML = rows.map((m,i)=>{
     const ss=svcSum[m.service]||{};
-    const peak=m.peak!=null?m.peak:ss.peak;
-    const present=ss.present!=null?ss.present+'%':'—';
     const status=m.loaded?'<span class="badge ok">Loaded</span>':'<span class="badge info">Idle</span>';
     const head=`<tr class="mrow" data-i="${i}"><td><span class="exp">▶</span></td>
       <td><span class="dot" style="background:${colorFor(m.service)}"></span>${esc(m.model)}</td>
       <td class="muted">${esc(m.service)}</td><td>${status}</td>
-      <td>${m.vram?fmtMB(m.vram):'—'}</td><td>${peak!=null?fmtMB(peak):'—'}</td><td class="muted">${present}</td></tr>`;
-    const det=`<tr class="mdet" data-d="${i}"><td colspan="7">
+      <td>${m.vram?fmtMB(m.vram):'—'}</td><td>${m.peak!=null?fmtMB(m.peak):'—'}</td></tr>`;
+    const det=`<tr class="mdet" data-d="${i}"><td colspan="6">
       <div class="grid2">
-        <div class="kv"><div class="k">Server / backend</div><div class="vv">${esc(m.service)}</div></div>
+        <div class="kv"><div class="k">Model</div><div class="vv">${esc(m.model)}</div></div>
         <div class="kv"><div class="k">Current VRAM</div><div class="vv">${m.vram?fmtMB(m.vram):'—'}</div></div>
-        <div class="kv"><div class="k">Peak (range)</div><div class="vv">${peak!=null?fmtMB(peak):'—'}</div></div>
-        <div class="kv"><div class="k">Avg (range)</div><div class="vv">${ss.avg!=null?fmtMB(ss.avg):'—'}</div></div>
-        <div class="kv"><div class="k">% time resident</div><div class="vv">${present}</div></div>
+        <div class="kv"><div class="k">Peak VRAM (range)</div><div class="vv">${m.peak!=null?fmtMB(m.peak):'—'}</div></div>
+        <div class="kv"><div class="k">Server resident %</div><div class="vv">${ss.present!=null?ss.present+'%':'—'}</div></div>
+        <div class="kv"><div class="k">Server avg VRAM</div><div class="vv">${ss.avg!=null?fmtMB(ss.avg):'—'}</div></div>
       </div>${modelSpark(m.service,tot)}</td></tr>`;
     return head+det;
   }).join('');
@@ -794,7 +798,7 @@ function modelSpark(service,tot){
   const marks=evs.map(i=>`<line x1="${(i/den*100).toFixed(1)}" y1="0" x2="${(i/den*100).toFixed(1)}" y2="100" stroke="var(--crit)" stroke-width="1" opacity=".8"/>`).join('');
   return `<svg class="mspark" viewBox="0 0 100 100" preserveAspectRatio="none">`
     + `<polyline fill="none" stroke="${colorFor(service)}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"/>${marks}</svg>`
-    + `<div class="mspark-cap">VRAM held by <b>${esc(service)}</b> over the selected range`
+    + `<div class="mspark-cap">Server VRAM — <b>${esc(service)}</b> (shared by all its models) over the selected range`
     + `${evs.length?` · <span style="color:var(--crit)">▲ ${evs.length} OOM event${evs.length>1?'s':''}</span>`:''} · peak axis ${fmtMB(max)}.</div>`;
 }
 

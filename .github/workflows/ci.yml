@@ -38,7 +38,9 @@ jobs:
 
       - name: Boot it and hit /healthz
         run: |
-          docker run -d --name hlm -e PORT=9800 -p 9800:9800 homelab-monitor:ci
+          # /data is a compose volume in real deploys; for a bare run point the
+          # SQLite DB + SSH dir at writable paths so the app can boot headless.
+          docker run -d --name hlm -e PORT=9800 -e DB_PATH=/tmp/gpu.db -e SSH_DIR=/tmp/.ssh -p 9800:9800 homelab-monitor:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:9800/healthz >/dev/null; then
               echo "healthz OK after ${i}s"; docker rm -f hlm; exit 0
