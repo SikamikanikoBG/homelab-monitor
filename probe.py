@@ -77,19 +77,26 @@ def read_cpu():
 
 
 def read_temp():
-    """First plausible CPU temp from /sys/class/thermal. Coarse, but matches
-    what the hub itself reports for its own box."""
+    """Hottest plausible CPU temp from /sys/class/thermal. Coarse, but matches
+    what the hub itself reports for its own box (app.py takes the max zone too).
+
+    Taking the *max* — not the first zone — matters on boxes that expose an
+    `acpitz` board/ambient sensor alongside the real `x86_pkg_temp`/`coretemp`
+    die sensor. `acpitz` sorts first (thermal_zone0) and reads ~ambient, so the
+    old first-match logic under-reported the CPU by 20-30 °C (e.g. a Celeron
+    reading 28 °C off acpitz while its package sat at 59 °C)."""
+    best = None
     try:
-        for z in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
+        for z in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
             try:
                 t = int(open(z).read().strip()) / 1000.0
-                if 10 < t < 130:
-                    return {"ctemp": round(t, 1)}
+                if 10 < t < 130 and (best is None or t > best):
+                    best = t
             except Exception:
                 continue
     except Exception:
         pass
-    return {}
+    return {"ctemp": round(best, 1)} if best is not None else {}
 
 
 def read_disks():
@@ -327,7 +334,7 @@ def main():
             "hostname": socket.gethostname(),
         },
         "at": int(time.time()),
-        "probe_version": "0.4",
+        "probe_version": "0.5",
     }
     json.dump(data, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
