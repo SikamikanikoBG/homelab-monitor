@@ -290,6 +290,27 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
   .foot{flex-direction:row;border-top:0;margin-left:auto;align-items:center;padding:6px 10px}
   .content{max-width:none}
 }
+/* ═══════════ light/dark parity — tokenize every surface that was hardcoded ═══════════ */
+a{color:var(--info)}
+/* nav group headers — clearer */
+.navgroup{color:var(--tx);opacity:.78;font-size:10px;font-weight:700;border-bottom:1px solid var(--bd);padding:12px 6px 6px;margin:2px 4px 5px}
+/* port chips */
+.portpill{background:var(--inset);color:var(--mut)}
+.portpill:hover{background:var(--hover);border-color:var(--accent);color:var(--accent)}
+/* ALL form fields (overrides the inline background:#0d1117 on Alerts/Hosts inputs) */
+.content input,.content select,.content textarea{background:var(--inset)!important;color:var(--tx)!important;border-color:var(--bd)}
+.content details > pre{background:var(--hover)!important;color:var(--tx)!important}
+/* inset surfaces */
+.kpi,.ins,.ov,.scope-notice,.hosts-key,.hostrow,.hostrow.ok,.hostrow.warn,.hostrow.fail,.hostrow.untested,.lansug,.btn-mini,.runpanel{background:var(--inset)}
+.hcheck .rem,.runpanel .note,.runpanel pre.out,.runpanel input[type=password],.osbadge,.hostrow .tg-edit{background:var(--hover)}
+/* update modal surfaces */
+.umodal pre.cmd,.umodal .notes code,.umodal .notes pre,.umodal .notes th,.umodal .btn{background:var(--inset)}
+/* range: standalone .rb is a pill; only the top-bar group is segmented */
+.rb{background:var(--inset);border:1px solid var(--bd);border-radius:6px;color:var(--mut)}
+.rb.on{background:var(--sel);border-color:var(--mut);color:var(--tx);box-shadow:none}
+#controls .ranges .rb{border:0;border-right:1px solid var(--bd);border-radius:0;font-family:var(--mono);font-size:11.5px;padding:4px 9px}
+#controls .ranges .rb:last-child{border-right:0}
+#controls .ranges .rb.on{background:var(--sel);color:var(--tx)}
 </style></head><body><div class="app"><aside class="side" id="sidebar"></aside><main class="main"><div class="topbar" id="topbar"></div><div class="content">
 <header><h1>🛰️ HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> available</button>
@@ -620,6 +641,7 @@ function applyTheme(){
   const name = themePref==='system' ? 'System' : (r==='dark'?'Dark':'Light');
   const ic = document.querySelector('#themeBtn .thicon'), nm = document.querySelector('#themeBtn .thlabel');
   if(ic) ic.textContent = icon; if(nm) nm.textContent = name;
+  if(typeof buildCharts === 'function') buildCharts();   // re-colour charts for the new theme
 }
 function initTheme(){
   applyTheme();
@@ -921,12 +943,12 @@ function buildCharts(){
       evIdx.forEach(({i})=>{const px=x.getPixelForValue(i); ctx.strokeStyle='#f85149';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(px,a.top);ctx.lineTo(px,a.bottom);ctx.stroke();
         ctx.fillStyle='#f85149';ctx.beginPath();ctx.moveTo(px-5,a.top);ctx.lineTo(px+5,a.top);ctx.lineTo(px,a.top+8);ctx.fill();});
       ctx.restore();}};
-    mk('vram',{type:'line',data:{labels,datasets:ds},options:baseOpts(tot,'GB',v=>Math.round(v/1024)+'G',true),plugins:[overlay]});
+    mk('vram',{type:'line',data:{labels,datasets:ds},options:baseOpts(tot,'GB',v=>Math.round(v/1024)+'G',true),plugins:[areaBg,overlay]});
     mk('gpu2',{type:'line',data:{labels,datasets:[
       {label:'GPU util %',data:D.total.util,borderColor:'#4dabf7',backgroundColor:'#4dabf733',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
       {label:'Power W',data:D.total.power,borderColor:'#ff922b',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y1'},
       {label:'Temp °C',data:D.total.temp,borderColor:'#f783ac',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}]},
-      options:dualOpts(labels)});
+      options:dualOpts(labels),plugins:[areaBg]});
   }
   if(TAB==='host'){
     const ramPctArr=D.total.ram_used.map((u,i)=>D.total.ram_total[i]?Math.round(u/D.total.ram_total[i]*100):0);
@@ -934,18 +956,23 @@ function buildCharts(){
       {label:'CPU %',data:D.total.cpu,borderColor:'#3fb950',backgroundColor:'#3fb95033',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
       {label:'RAM %',data:ramPctArr,borderColor:'#a371f7',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y'},
       {label:'Load',data:D.total.load1,borderColor:'#e3b341',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}]},
-      options:dualOpts(labels,100)});
+      options:dualOpts(labels,100),plugins:[areaBg]});
   }
 }
-function baseOpts(max,unit,cb,stacked){return{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-  scales:{x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:10,autoSkip:true}},
-   y:{stacked:!!stacked,min:0,max:max*1.02,grid:{color:'#21262d'},ticks:{color:'#8b949e',callback:cb}}},
-  plugins:{legend:{labels:{color:'#e6edf3',boxWidth:12,filter:i=>i.text!=='capacity'}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtMB(c.parsed.y)}}}};}
-function dualOpts(labels,ymax){return{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-  scales:{x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:10,autoSkip:true}},
-   y:{position:'left',min:0,max:ymax||100,grid:{color:'#21262d'},ticks:{color:'#8b949e'}},
-   y1:{position:'right',min:0,grid:{drawOnChartArea:false},ticks:{color:'#8b949e'}}},
-  plugins:{legend:{labels:{color:'#e6edf3',boxWidth:12}}}};}
+// Read a theme token at draw time so charts re-colour with the theme.
+const cv = n => (getComputedStyle(document.documentElement).getPropertyValue(n)||'').trim() || '#888';
+// Fill the plot area with a subtle inset so the data lines stand out on both themes.
+const areaBg = {id:'areaBg',beforeDraw(c){const a=c.chartArea; if(!a) return; const x=c.ctx;
+  x.save(); x.fillStyle=cv('--inset'); x.fillRect(a.left,a.top,a.right-a.left,a.bottom-a.top); x.restore();}};
+function baseOpts(max,unit,cb,stacked){const grid=cv('--free'),tick=cv('--mut'),leg=cv('--tx');return{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+  scales:{x:{grid:{color:grid},ticks:{color:tick,maxTicksLimit:10,autoSkip:true}},
+   y:{stacked:!!stacked,min:0,max:max*1.02,grid:{color:grid},ticks:{color:tick,callback:cb}}},
+  plugins:{legend:{labels:{color:leg,boxWidth:12,filter:i=>i.text!=='capacity'}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtMB(c.parsed.y)}}}};}
+function dualOpts(labels,ymax){const grid=cv('--free'),tick=cv('--mut'),leg=cv('--tx');return{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+  scales:{x:{grid:{color:grid},ticks:{color:tick,maxTicksLimit:10,autoSkip:true}},
+   y:{position:'left',min:0,max:ymax||100,grid:{color:grid},ticks:{color:tick}},
+   y1:{position:'right',min:0,grid:{drawOnChartArea:false},ticks:{color:tick}}},
+  plugins:{legend:{labels:{color:leg,boxWidth:12}}}};}
 function mk(id,cfg){ if(charts[id])charts[id].destroy(); charts[id]=new Chart(document.getElementById(id),cfg); }
 
 // ── Alerts (settings) tab ─────────────────────────────────────────────────────
