@@ -5,8 +5,15 @@
 <link rel="alternate icon" href="/favicon.ico">
 <script src="/static/chart.min.js" onerror="this.remove();var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';document.head.appendChild(s)"></script>
 <style>
-:root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
---crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff}
+:root{--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code",Menlo,Consolas,monospace}
+:root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
+--canvas:#0a0e14;--inset:#0d1117;--hover:#161b22;--sel:#1c232e;--sb:#0b0f15;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918}
+[data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
+--crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
+--canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1140px;margin:0 auto;padding:22px 18px 70px}
 header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -195,7 +202,95 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .scope-notice{display:flex;gap:10px;align-items:flex-start;background:#0d1117;border:1px dashed var(--bd);border-radius:9px;padding:10px 13px;color:var(--mut);font-size:13px;margin-bottom:14px}
 .scope-notice .ic{font-size:16px;line-height:1.3}
 .scope-notice b{color:var(--tx)}
-</style></head><body><div class="wrap">
+
+/* ═══════════ rev 6 migration — Portainer-style shell + enterprise restyle (additive; overrides win by source order) ═══════════ */
+body{background:var(--canvas)}
+.app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
+.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+.sbrand{display:flex;align-items:center;gap:9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
+.sbrand .logo{font-size:17px}.sbrand .nm{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden}
+.sbrand .ver{margin-left:auto;font-family:var(--mono)}
+.navlist{flex:1 1 auto;overflow:auto;padding:8px}
+.navgroup{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
+.nrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer}
+.nrow:hover{background:var(--hover);color:var(--tx)}
+.nrow.on{background:var(--sel);color:var(--tx);font-weight:600}
+.nrow .tdot{width:7px;height:7px;border-radius:2px;margin-left:auto}
+.foot{border-top:1px solid var(--bd);padding:10px;display:flex;flex-direction:column;gap:9px}
+.foot .ghstar{align-self:flex-start}
+.footrow{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.thtoggle{display:inline-flex;align-items:center;gap:6px;border:0;background:none;color:var(--mut);font:inherit;font-size:12px;cursor:pointer;padding:3px 2px}
+.thtoggle:hover{color:var(--tx)}
+.themeswitch{display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden}
+.themeswitch button{border:0;border-right:1px solid var(--bd);background:var(--card);color:var(--mut);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer}
+.themeswitch button:last-child{border-right:0}.themeswitch button.on{background:var(--hover);color:var(--tx);font-weight:600}
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--bg);flex-wrap:wrap;position:sticky;top:0;z-index:6}
+.topbar .envlbl{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.content{padding:16px;max-width:1180px;flex:1 1 auto}
+/* host pills in the top bar — flat, neutral selection */
+#hostbar{padding:0;border:0;gap:6px}
+#hostbar .label{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.hpill{background:var(--inset);border:1px solid var(--bd);border-radius:5px;padding:3px 9px 3px 7px;font-size:12px;font-family:var(--mono)}
+.hpill:hover{border-color:var(--mut)}
+.hpill.on{border-color:var(--mut);background:var(--sel);color:var(--tx)}
+.hpill .pdot{width:7px;height:7px;border-radius:2px}
+.hpill.add{font-family:inherit}
+/* range relocate into the top bar as a flat segmented control */
+#controls{margin:0;padding:0;border:0;background:none}
+#controls .ranges{gap:0;border:1px solid var(--bd);border-radius:5px;overflow:hidden;display:inline-flex;align-items:center}
+.rb{background:var(--inset);border:0;border-right:1px solid var(--bd);border-radius:0;color:var(--mut);font-size:11.5px;padding:4px 9px;font-family:var(--mono)}
+.rb:last-child{border-right:0}
+.rb.on{background:var(--sel);border-color:var(--bd);color:var(--tx)}
+#controls .spacer{display:none}#controls .tg{margin-left:8px;font-size:12px}
+.live{margin-left:auto;font-family:var(--mono);font-size:12px}
+.pulse{width:8px;height:8px;border-radius:2px;animation:none}
+.upd{border-radius:5px;background:var(--inset);border-color:var(--bd);color:var(--accent)}
+/* enterprise flat surfaces */
+.card{background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:14px 15px;margin:0 0 12px}
+h2{font-size:12px}
+.kpi{background:var(--inset);border:1px solid var(--bd);border-radius:6px}
+.kpi .v{font-family:var(--mono);font-size:19px;font-variant-numeric:tabular-nums}
+table{font-size:12.5px}
+th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+.fleet-tbl tbody tr:hover td{background:var(--hover)}
+.fleet-tbl .status .d{border-radius:2px}
+/* badges flat (square + word; colour is not the only channel) */
+.badge{border-radius:4px;font-weight:600;padding:2px 8px}
+.badge.crit{color:var(--crit);background:var(--critbg);border-color:transparent}
+.badge.warn{color:var(--warn);background:var(--warnbg);border-color:transparent}
+.badge.ok{color:var(--ok);background:var(--okbg);border-color:transparent}
+.badge.info{color:var(--mut);background:var(--inset);border-color:var(--bd)}
+.sdot{border-radius:2px}.dot{border-radius:2px}
+.rb.on{box-shadow:none}
+/* AI Models — expandable rows + per-model VRAM timeline */
+.mtbl td{vertical-align:middle}
+.mrow{cursor:pointer}
+.mrow .exp{display:inline-block;width:12px;color:var(--mut);transition:transform .15s;font-size:10px}
+.mrow.open .exp{transform:rotate(90deg)}
+.mdet{display:none}.mdet.open{display:table-row}
+.mdet>td{background:var(--inset);padding:12px 14px}
+.mdet .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:11px}
+.mdet .kv .k{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.mdet .kv .vv{font-family:var(--mono);font-size:14px;margin-top:2px}
+.mspark{width:100%;height:48px;display:block;background:var(--card);border:1px solid var(--bd);border-radius:6px;margin-top:4px}
+.mspark-cap{color:var(--mut);font-size:11px;margin-top:5px}
+/* density */
+.dense .content{padding:11px 16px}
+.dense th,.dense td{padding:5px 9px}
+.dense .nrow{padding:6px 10px}.dense .card{padding:11px 12px}
+/* responsive: sidebar folds to a top bar */
+@media(max-width:860px){
+  .app{grid-template-columns:1fr}
+  .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid var(--bd)}
+  .sbrand{border-bottom:0;border-right:1px solid var(--bd)}
+  .navlist{display:flex;flex-wrap:wrap;flex:1 1 100%;order:3;padding:6px;gap:2px}
+  .navgroup{display:none}
+  .nrow{width:auto}.nrow .tdot{margin-left:6px}
+  .foot{flex-direction:row;border-top:0;margin-left:auto;align-items:center;padding:6px 10px}
+  .content{max-width:none}
+}
+</style></head><body><div class="app"><aside class="side" id="sidebar"></aside><main class="main"><div class="topbar" id="topbar"></div><div class="content">
 <header><h1>🛰️ HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> available</button>
 <a class="ghstar" id="ghstar" href="https://github.com/SikamikanikoBG/homelab-monitor" target="_blank" rel="noopener" title="Star HomeLab Monitor on GitHub">
@@ -264,10 +359,11 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 
 <!-- ───────── AI Models ───────── -->
 <section data-tab="models" hidden>
-  <div class="cols">
-    <div class="card"><h2>🧠 Models loaded now</h2><table><tbody id="modelstbl"></tbody></table>
-      <p class="cap">Recognised servers: Ollama (live VRAM/model), vLLM, HF TGI, llama.cpp, Stable Diffusion, ComfyUI.</p></div>
-    <div class="card"><h2>🧠 Models (selected range)</h2><table><thead><tr><th>Model</th><th>Server</th><th>Peak VRAM</th></tr></thead><tbody id="msumtbl"></tbody></table></div>
+  <div class="card"><h2>🧠 AI model servers</h2>
+    <table class="mtbl"><thead><tr>
+      <th style="width:24px"></th><th>Model</th><th>Server</th><th>Status</th><th>VRAM now</th><th>Peak</th><th>% time</th>
+    </tr></thead><tbody id="modelstbl"></tbody></table>
+    <p class="cap" style="margin-top:10px">Click a row for its <b>VRAM timeline</b> &amp; details. Recognised servers: Ollama (live VRAM/model), vLLM, HF TGI, llama.cpp, Stable Diffusion, ComfyUI.</p>
   </div>
 </section>
 
@@ -412,7 +508,7 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 <p class="cap">Self-hosted &amp; open source • single container • no Prometheus/Grafana required • history downsampled on read.
 GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker API.
 <br>Ideas welcome — see <a href="https://github.com/SikamikanikoBG/homelab-monitor/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md</a> · issues &amp; PRs always open.</p>
-</div>
+</div></main></div>
 
 <!-- ───────── Update-available modal ───────── -->
 <div class="umodal" id="updmodal" role="dialog" aria-modal="true" aria-labelledby="updtitle">
@@ -475,26 +571,69 @@ function fmtLabels(L){ if(!L.length)return[]; const md=(L[L.length-1]-L[0])>2*86
   return md?(d.getMonth()+1)+'/'+d.getDate()+' '+hm:hm;});}
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
-const tabBtn = t => `<button class="tab" data-t="${t.id}"><span class="tdot" id="ndot-${t.id}" style="display:none"></span>${t.label}</button>`;
+// rev6: nav rows live in a grouped sidebar (Monitoring / Settings), both always
+// visible — no gear drawer. tdot = per-section attention square (set in renderHealth).
+const tabBtn = t => `<button class="nrow" data-t="${t.id}"><span>${t.label}</span><span class="tdot" id="ndot-${t.id}" style="display:none"></span></button>`;
 const isSettingsTab = id => !!(TABS.find(t=>t.id===id)||{}).settings;
 function buildNav(){
-  // Monitoring tabs go in the main row; settings tabs (Hosts, Alerts) live in the
-  // gear's sub-nav. Adding a monitor still = one TABS entry + one <section>.
-  document.getElementById('nav').innerHTML = TABS.filter(t=>!t.settings).map(tabBtn).join('');
-  document.getElementById('subnav').innerHTML =
-    '<button class="tab back" data-back="1">← Monitoring</button>' + TABS.filter(t=>t.settings).map(tabBtn).join('');
-  document.querySelectorAll('#nav .tab, #subnav .tab').forEach(b=>
-    b.onclick = b.dataset.back ? leaveSettings : (()=>showTab(b.dataset.t)));
-  document.getElementById('gearbtn').onclick = () =>
-    SETTINGS_OPEN ? leaveSettings() : showTab((TABS.find(t=>t.settings)||{}).id || 'overview');
+  const nl = document.getElementById('navlist'); if(!nl) return;
+  nl.innerHTML =
+    '<div class="navgroup">Monitoring</div>' + TABS.filter(t=>!t.settings).map(tabBtn).join('') +
+    '<div class="navgroup">Settings</div>'   + TABS.filter(t=>t.settings).map(tabBtn).join('');
+  nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
 }
-// The drawer just swaps which nav row is visible. showTab() is the single source
-// of truth and calls this, so deep links (#hosts) open in settings mode too.
-function setSettingsMode(on){
-  SETTINGS_OPEN = on;
-  document.getElementById('nav').hidden = on;
-  document.getElementById('subnav').hidden = !on;
-  document.getElementById('gearbtn').classList.toggle('on', on);
+// Drawer is gone; keep the name as a no-op so showTab() needn't change shape.
+function setSettingsMode(on){ SETTINGS_OPEN = on; }
+
+// Build the Portainer-style shell once, relocating the existing header/host/range/
+// star elements into the sidebar + top bar (so their markup stays untouched).
+function mountShell(){
+  const side = document.getElementById('sidebar'); if(!side) return;
+  side.innerHTML = '<div class="sbrand"><span class="logo">🛰️</span><span class="nm">HomeLab Monitor</span></div>'
+    + '<div class="navlist" id="navlist"></div><div class="foot" id="foot"></div>';
+  const ver = document.getElementById('ver'); if(ver) document.querySelector('.sbrand').appendChild(ver);
+  const tb = document.getElementById('topbar');
+  const hb = document.getElementById('hostbar'); if(hb) tb.appendChild(hb);
+  const ctr = document.getElementById('controls'); if(ctr) tb.appendChild(ctr);
+  const upd = document.getElementById('updbadge'); if(upd) tb.appendChild(upd);
+  const live = document.querySelector('header .live'); if(live) tb.appendChild(live);
+  const foot = document.getElementById('foot');
+  const star = document.getElementById('ghstar'); if(star) foot.appendChild(star);
+  document.querySelectorAll('header .star-cta').forEach(s => foot.appendChild(s));
+  foot.insertAdjacentHTML('beforeend',
+    '<div class="footrow">'
+    + '<button class="thtoggle" id="themeBtn"><span class="thicon">☾</span><span class="thlabel">Dark</span></button>'
+    + '<button class="thtoggle" id="densityBtn">▤ Compact</button></div>'
+    + '<div class="themeswitch" id="themeswitch"><button data-th="dark">Dark</button><button data-th="light">Light</button><button data-th="system">System</button></div>');
+  ['header', '.topnav', '.sub'].forEach(sel => { const el = document.querySelector('.content > ' + sel); if(el) el.remove(); });
+}
+
+// ── Theme (dark / light / system) + density ──────────────────────────────────
+const _mql = window.matchMedia('(prefers-color-scheme: light)');
+let themePref = localStorage.getItem('hl_theme') || 'system';
+function applyTheme(){
+  const r = themePref==='system' ? (_mql.matches?'light':'dark') : themePref;
+  document.documentElement.setAttribute('data-theme', r);
+  const ts = document.getElementById('themeswitch');
+  if(ts) ts.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.th===themePref));
+  const icon = themePref==='system' ? '◐' : (r==='dark'?'☾':'☀');
+  const name = themePref==='system' ? 'System' : (r==='dark'?'Dark':'Light');
+  const ic = document.querySelector('#themeBtn .thicon'), nm = document.querySelector('#themeBtn .thlabel');
+  if(ic) ic.textContent = icon; if(nm) nm.textContent = name;
+}
+function initTheme(){
+  applyTheme();
+  _mql.addEventListener('change', () => { if(themePref==='system') applyTheme(); });
+  const ts = document.getElementById('themeswitch');
+  if(ts) ts.addEventListener('click', e => { const b=e.target.closest('button'); if(!b) return;
+    themePref=b.dataset.th; localStorage.setItem('hl_theme',themePref); applyTheme(); });
+  const tbtn = document.getElementById('themeBtn');
+  if(tbtn) tbtn.addEventListener('click', () => { const C=['dark','light','system'];
+    themePref=C[(C.indexOf(themePref)+1)%3]; localStorage.setItem('hl_theme',themePref); applyTheme(); });
+  const dbtn = document.getElementById('densityBtn');
+  if(dbtn) dbtn.addEventListener('click', () => { const on=document.body.classList.toggle('dense');
+    localStorage.setItem('hl_dense', on?'1':'0'); dbtn.classList.toggle('on', on); });
+  if(localStorage.getItem('hl_dense')==='1'){ document.body.classList.add('dense'); if(dbtn) dbtn.classList.add('on'); }
 }
 function leaveSettings(){ showTab(LAST_MONITOR_TAB || 'overview'); }
 function showTab(id){
@@ -502,7 +641,7 @@ function showTab(id){
   if(!isSettingsTab(id)){ LAST_MONITOR_TAB=id; localStorage.setItem('hl_montab',id); }
   setSettingsMode(isSettingsTab(id));
   if(location.hash.slice(1)!==id) history.replaceState(null,'','#'+id);
-  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
+  document.querySelectorAll('.nrow').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
   document.querySelectorAll('section[data-tab]').forEach(s=>s.hidden = s.dataset.tab!==id);
   document.getElementById('controls').hidden = !(TABS.find(t=>t.id===id)||{}).charts;
   buildCharts();   // charts can only size on a visible canvas, so build on show
@@ -561,14 +700,8 @@ function renderData(){
     `<tr><td><span class="dot" style="background:${colorFor(s.service)}"></span>${esc(s.service)}</td><td>${fmtMB(s.peak)}</td><td>${fmtMB(s.avg)}</td><td>${s.present}%</td></tr>`).join('')
     : '<tr><td class="muted">No GPU activity yet.</td></tr>';
 
-  // AI models
-  document.getElementById('modelstbl').innerHTML = (n.models&&n.models.length)? n.models.map(m=>
-    `<tr><td><span class="dot" style="background:${colorFor(m.service)}"></span>${esc(m.model)}</td>
-     <td class="muted">${esc(m.service)}</td><td>${m.vram?fmtMB(m.vram):'<span class="pill">loaded</span>'}</td></tr>`).join('')
-    : '<tr><td class="muted">No model server is holding the GPU right now.</td></tr>';
-  document.getElementById('msumtbl').innerHTML = D.model_summary.length? D.model_summary.map(m=>
-    `<tr><td>${esc(m.model)}</td><td class="muted">${esc(m.service)}</td><td>${fmtMB(m.peak)}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="muted">No per-model VRAM captured yet.</td></tr>';
+  // AI models — expandable rows + per-model VRAM timeline (see renderModels)
+  renderModels();
 
   // Host KPIs + disks — only when local is the active host. Otherwise
   // renderHostTab() owns these panels with the remote's polled data.
@@ -588,6 +721,59 @@ function renderData(){
   }
 
   buildCharts();
+}
+
+// ── AI Models: expandable rows + per-model VRAM timeline ──────────────────────
+// Joins three existing sources (no new API): n.models (loaded now), D.model_summary
+// (peak per model over range), D.summary (per-service peak/avg/%time). The expanded
+// panel draws a VRAM-over-time sparkline from D.services[service] with OOM markers
+// from D.events — the timeline the AI-engineer review asked for.
+function renderModels(){
+  if(!D) return;
+  const n=D.now, tot=D.mem_total;
+  const live=n.models||[], sums=D.model_summary||[];
+  const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
+  const seen=new Set(), rows=[];
+  live.forEach(m=>{const k=m.model+'|'+m.service; seen.add(k); rows.push({model:m.model,service:m.service,vram:m.vram,loaded:true});});
+  sums.forEach(m=>{const k=m.model+'|'+m.service; if(!seen.has(k)){seen.add(k); rows.push({model:m.model,service:m.service,vram:null,loaded:false,peak:m.peak});}});
+  const body=document.getElementById('modelstbl'); if(!body) return;
+  if(!rows.length){ body.innerHTML='<tr><td colspan="7" class="muted">No model server is holding the GPU right now.</td></tr>'; return; }
+  body.innerHTML = rows.map((m,i)=>{
+    const ss=svcSum[m.service]||{};
+    const peak=m.peak!=null?m.peak:ss.peak;
+    const present=ss.present!=null?ss.present+'%':'—';
+    const status=m.loaded?'<span class="badge ok">Loaded</span>':'<span class="badge info">Idle</span>';
+    const head=`<tr class="mrow" data-i="${i}"><td><span class="exp">▶</span></td>
+      <td><span class="dot" style="background:${colorFor(m.service)}"></span>${esc(m.model)}</td>
+      <td class="muted">${esc(m.service)}</td><td>${status}</td>
+      <td>${m.vram?fmtMB(m.vram):'—'}</td><td>${peak!=null?fmtMB(peak):'—'}</td><td class="muted">${present}</td></tr>`;
+    const det=`<tr class="mdet" data-d="${i}"><td colspan="7">
+      <div class="grid2">
+        <div class="kv"><div class="k">Server / backend</div><div class="vv">${esc(m.service)}</div></div>
+        <div class="kv"><div class="k">Current VRAM</div><div class="vv">${m.vram?fmtMB(m.vram):'—'}</div></div>
+        <div class="kv"><div class="k">Peak (range)</div><div class="vv">${peak!=null?fmtMB(peak):'—'}</div></div>
+        <div class="kv"><div class="k">Avg (range)</div><div class="vv">${ss.avg!=null?fmtMB(ss.avg):'—'}</div></div>
+        <div class="kv"><div class="k">% time resident</div><div class="vv">${present}</div></div>
+      </div>${modelSpark(m.service,tot)}</td></tr>`;
+    return head+det;
+  }).join('');
+  body.querySelectorAll('.mrow').forEach(r=>r.onclick=()=>{
+    const i=r.dataset.i, d=body.querySelector(`.mdet[data-d="${i}"]`);
+    r.classList.toggle('open'); if(d) d.classList.toggle('open');
+  });
+}
+function modelSpark(service,tot){
+  const arr=(D.services&&D.services[service])||[];
+  if(!arr.length) return '<div class="mspark-cap muted">No VRAM history captured for this server in the selected range.</div>';
+  const max=Math.max(tot||1, ...arr), n=arr.length, den=(n-1)||1;
+  const pts=arr.map((v,i)=>`${(i/den*100).toFixed(1)},${(100-(v/max*100)).toFixed(1)}`).join(' ');
+  const labels=D.labels||[];
+  const evs=(D.events||[]).map(e=>{let best=0,bd=1e18; labels.forEach((t,i)=>{const dd=Math.abs(t-e.ts); if(dd<bd){bd=dd;best=i;}}); return best;});
+  const marks=evs.map(i=>`<line x1="${(i/den*100).toFixed(1)}" y1="0" x2="${(i/den*100).toFixed(1)}" y2="100" stroke="var(--crit)" stroke-width="1" opacity=".8"/>`).join('');
+  return `<svg class="mspark" viewBox="0 0 100 100" preserveAspectRatio="none">`
+    + `<polyline fill="none" stroke="${colorFor(service)}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"/>${marks}</svg>`
+    + `<div class="mspark-cap">VRAM held by <b>${esc(service)}</b> over the selected range`
+    + `${evs.length?` · <span style="color:var(--crit)">▲ ${evs.length} OOM event${evs.length>1?'s':''}</span>`:''} · peak axis ${fmtMB(max)}.</div>`;
 }
 
 // ── Renderers (status tabs: Overview cards, Containers, Services) ──────────────
@@ -1428,7 +1614,9 @@ function refreshLocalOnlyNotices(){
 }
 
 // ── Wire-up ───────────────────────────────────────────────────────────────────
+mountShell();
 buildNav();
+initTheme();
 document.querySelectorAll('.rb').forEach(b=>b.onclick=()=>{R=b.dataset.r;localStorage.setItem('hl_range',R);
   document.querySelectorAll('.rb').forEach(x=>x.classList.toggle('on',x.dataset.r===R));loadData();});
 document.querySelector(`.rb[data-r="${R}"]`)?.classList.add('on');

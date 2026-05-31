@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HomeLab Monitor — layout (rev 6)</title>
+<style>
+:root{--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code","Cascadia Mono",Menlo,Consolas,monospace}
+:root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;--sb:#0b0f15;--canvas:#070a0e;--inset:#0d1117;--hover:#161b22;
+--sel:#1c232e;--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918}
+[data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
+--crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;--sb:#f6f8fa;--canvas:#eaeef2;--inset:#f6f8fa;--hover:#eef1f4;
+--sel:#e7ebf0;--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--tx);font:14.5px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.page{max-width:1340px;margin:0 auto;padding:24px 20px 70px}
+.lead{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:8px}
+.lead h1{font-size:20px;margin:0 0 4px}.lead p{color:var(--mut);margin:0;font-size:13px;max-width:780px}
+.lead b{color:var(--tx)}
+.themeswitch{display:flex;align-items:center;border:1px solid var(--bd);border-radius:6px;overflow:hidden;flex:none}
+.themeswitch .tlab{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:0 10px;border-right:1px solid var(--bd)}
+.themeswitch button{border:0;border-right:1px solid var(--bd);background:var(--card);color:var(--mut);font:inherit;font-size:12px;padding:5px 12px;cursor:pointer}
+.themeswitch button:last-child{border-right:0}
+.themeswitch button.on{background:var(--hover);color:var(--tx);font-weight:600}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 22px;font-size:12px;color:var(--mut)}
+.legend b{color:var(--accent);font-weight:600}
+.cap{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 9px}
+.cap b{color:var(--tx)}
+.frames{display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap}
+
+/* ── GitHub star ─────────────────────────────────────────────────────────── */
+.ghstar{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tx);text-decoration:none;border:1px solid var(--bd);border-radius:5px;padding:3px 10px;background:var(--inset);cursor:pointer}
+.ghstar:hover{border-color:var(--mut);background:var(--hover)}
+.ghstar svg{width:13px;height:13px;fill:currentColor;flex:none}
+.ghstar .cnt{color:var(--mut);font-family:var(--mono)}
+.ghstar.starred{border-color:var(--bd);color:var(--mut)}.ghstar.starred svg{fill:var(--accent)}
+
+/* ── status badges (text + square; colour is never the only channel) ─────── */
+.st{width:8px;height:8px;border-radius:2px;flex:none;background:var(--mut)}
+.st.ok{background:var(--ok)}.st.warn{background:var(--warn)}.st.crit{background:var(--crit)}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:4px;color:var(--mut);background:var(--inset);border:1px solid var(--bd)}
+.badge .st{width:7px;height:7px}
+.badge.ok{color:var(--ok);background:var(--okbg);border-color:transparent}
+.badge.warn{color:var(--warn);background:var(--warnbg);border-color:transparent}
+.badge.crit{color:var(--crit);background:var(--critbg);border-color:transparent}
+
+/* ── DESKTOP shell: grouped sidebar + content top bar + tables ───────────── */
+.desk{width:900px;max-width:100%;height:640px;border:1px solid var(--bd);border-radius:10px;overflow:hidden;
+display:grid;grid-template-columns:212px 1fr;background:var(--bg);box-shadow:0 16px 46px #0009}
+.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;min-width:0}
+.brand{display:flex;align-items:center;gap:9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
+.brand .logo{font-size:17px}.brand .nm{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden}
+.brand .ver{margin-left:auto;color:var(--mut);font-size:10px;font-family:var(--mono);border:1px solid var(--bd);border-radius:4px;padding:0 5px}
+.navlist{flex:1 1 auto;overflow:auto;padding:8px 8px}
+.group{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
+.nrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;
+text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer}
+.nrow:hover{background:var(--hover);color:var(--tx)}
+.nrow.on{background:var(--sel);color:var(--tx);font-weight:600}     /* neutral selection — no amber, no edge bar */
+.nrow .cnt{margin-left:auto;font-family:var(--mono);font-size:10.5px;font-weight:700;padding:0 6px;border-radius:9px;min-width:18px;text-align:center}
+.nrow .cnt.warn{color:var(--warn);background:var(--warnbg)}
+.nrow .cnt.crit{color:var(--crit);background:var(--critbg)}
+.foot{border-top:1px solid var(--bd);padding:9px 10px;display:flex;flex-direction:column;gap:8px}
+.footrow{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.thtoggle{display:inline-flex;align-items:center;gap:6px;border:0;background:none;color:var(--mut);font:inherit;font-size:12px;cursor:pointer;padding:3px 2px}
+.thtoggle:hover{color:var(--tx)}
+
+.main{display:flex;flex-direction:column;min-width:0}
+/* content top bar = environment (host) selector + range + status */
+.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--bg);flex-wrap:wrap}
+.envlbl{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.hpill{background:var(--inset);border:1px solid var(--bd);color:var(--tx);border-radius:5px;padding:3px 9px 3px 7px;cursor:pointer;font:inherit;font-family:var(--mono);font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.hpill .st{width:7px;height:7px}
+.hpill.on{border-color:var(--mut);background:var(--sel)}
+.range{display:flex;margin-left:6px;border:1px solid var(--bd);border-radius:5px;overflow:hidden}
+.range button{background:var(--inset);border:0;border-right:1px solid var(--bd);color:var(--mut);font:inherit;font-family:var(--mono);font-size:11.5px;padding:3px 9px;cursor:pointer}
+.range button:last-child{border-right:0}.range button.on{background:var(--sel);color:var(--tx)}
+.spacer{margin-left:auto}
+.upd{background:var(--inset);border:1px solid var(--bd);color:var(--accent);border-radius:5px;font:inherit;font-size:11.5px;padding:2px 9px;cursor:pointer}
+.upd:hover{border-color:var(--accent)}
+.live{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;font-family:var(--mono)}
+.live .st{width:8px;height:8px}
+.content{flex:1 1 auto;overflow:auto;padding:14px 16px}
+.ptitle{font-size:16px;font-weight:700;margin:0}.psub{color:var(--mut);font-size:12.5px;margin:2px 0 0}
+.phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+
+/* table toolbar: search + filter + count + density */
+.tbar{display:flex;align-items:center;gap:8px;margin-bottom:9px;flex-wrap:wrap}
+.search{display:flex;align-items:center;gap:6px;border:1px solid var(--bd);border-radius:6px;background:var(--inset);padding:4px 9px;min-width:170px}
+.search input{border:0;background:none;color:var(--tx);font:inherit;font-size:12.5px;outline:none;width:100%}
+.search .ic{color:var(--mut);font-size:12px}
+.tbtn{border:1px solid var(--bd);background:var(--inset);color:var(--mut);font:inherit;font-size:12px;border-radius:6px;padding:4px 10px;cursor:pointer}
+.tbtn:hover{color:var(--tx);border-color:var(--mut)}
+.tbtn.on{color:var(--tx);background:var(--sel)}
+.tcount{margin-left:auto;color:var(--mut);font-size:11.5px;font-family:var(--mono)}
+
+/* cards & metrics */
+.card{background:var(--card);border:1px solid var(--bd);border-radius:7px;margin:0 0 12px;overflow:hidden}
+.card .hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--bd);background:var(--sb)}
+.card .hd .lbl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.card .hd .meta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut)}
+.card .bd{padding:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.kpi{position:relative;background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:10px 12px}
+.kpi .st{position:absolute;top:11px;right:11px}
+.kpi .v{font-family:var(--mono);font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.kpi .v.warn{color:var(--warn)}.kpi .v.crit{color:var(--crit)}
+.kpi .v u{font-style:normal;font-size:12px;color:var(--mut);font-weight:500;margin-left:1px}
+.kpi .l{color:var(--mut);font-size:10.5px;margin-top:3px}
+.bar{height:6px;border-radius:3px;background:var(--free);overflow:hidden;margin-top:9px}.bar>i{display:block;height:100%}
+
+/* data table — the workhorse */
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--card);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);font-weight:600;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sb);cursor:pointer;white-space:nowrap;user-select:none}
+.tbl th .car{opacity:.5;font-size:9px}.tbl th.sort{color:var(--tx)}
+.tbl th.num,.tbl td.num{text-align:right}
+.tbl td{padding:8px 12px;border-bottom:1px solid var(--bd);color:var(--tx)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tbody tr{cursor:pointer}.tbl tbody tr:hover td{background:var(--hover)}
+.tbl td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--mut)}
+.tbl td.name{font-family:var(--mono);color:var(--tx)}
+.dense .tbl th{padding:5px 12px}.dense .tbl td{padding:5px 12px}.dense .nrow{padding:6px 10px}.dense .content{padding:11px 16px}
+
+/* GPU VRAM chart (stacked, capacity line, OOM marker) */
+.vram{width:100%;height:120px;display:block}
+
+/* ── MOBILE ──────────────────────────────────────────────────────────────── */
+.phone{width:332px;height:700px;border:1px solid var(--bd);border-radius:28px;overflow:hidden;background:var(--bg);box-shadow:0 16px 46px #0009;display:flex;flex-direction:column;position:relative}
+.appbar{display:flex;align-items:center;gap:8px;padding:11px 14px 9px;border-bottom:1px solid var(--bd);background:var(--sb)}
+.appbar .logo{font-size:15px}.appbar .nm{font-size:13.5px;font-weight:600}
+.appbar .mtools{margin-left:auto;display:flex;gap:7px}
+.hoststrip{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:7px 12px;border-bottom:1px solid var(--bd);background:var(--sb);scrollbar-width:none}
+.hoststrip::-webkit-scrollbar{display:none}
+.hoststrip .hlabel{color:var(--mut);font-size:9px;text-transform:uppercase;letter-spacing:.05em;flex:none}
+.hoststrip .hpill{flex:none}.hoststrip .hpill.add{border-style:dashed;color:var(--mut)}
+.updstrip{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:6px 13px;background:var(--warnbg);border-bottom:1px solid var(--bd);font-size:11.5px;color:var(--accent)}
+.updstrip b{cursor:pointer}.updstrip .x{cursor:pointer;color:var(--mut)}
+.mscroll{flex:1 1 auto;overflow:auto;padding:12px 13px}
+.mscroll .tbl{display:block;overflow-x:auto;white-space:nowrap}
+.mtitle{font-size:15px;font-weight:700;margin:0 0 1px}.msub{color:var(--mut);font-size:12px;margin:0 0 12px}
+.botnav{display:flex;border-top:1px solid var(--bd);background:var(--sb)}
+.botnav button{flex:1;border:0;background:none;color:var(--mut);font:inherit;font-size:11px;padding:10px 2px;cursor:pointer;position:relative}
+.botnav button.on{color:var(--tx);font-weight:600}
+.botnav button.on::before{content:"";position:absolute;top:0;left:24%;right:24%;height:2px;background:var(--tx);border-radius:0 0 3px 3px}
+.botnav .cnt{position:absolute;top:5px;right:calc(50% - 26px);font-family:var(--mono);font-size:9px;font-weight:700;padding:0 4px;border-radius:8px}
+.botnav .cnt.warn{color:var(--warn);background:var(--warnbg)}.botnav .cnt.crit{color:var(--crit);background:var(--critbg)}
+.sheet{position:absolute;inset:0;background:#000a;display:none;align-items:flex-end;z-index:9}.sheet.open{display:flex}
+.sheetcard{width:100%;background:var(--card);border-top:1px solid var(--bd);border-radius:16px 16px 0 0;padding:8px 12px 16px;animation:up .18s ease}
+@keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+.sheetcard .handle{width:36px;height:4px;border-radius:3px;background:var(--bd);margin:6px auto 10px}
+.sgroup{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;padding:10px 4px 4px;font-weight:600}
+.srow{display:flex;align-items:center;gap:11px;width:100%;border:0;background:none;color:var(--tx);font:inherit;font-size:14px;text-align:left;padding:10px 6px;border-radius:7px;cursor:pointer}
+.srow:hover{background:var(--hover)}.srow .cnt{margin-left:auto;font-family:var(--mono);font-size:10.5px;font-weight:700;padding:0 6px;border-radius:9px}
+.srow .cnt.crit{color:var(--crit);background:var(--critbg)}
+.ghblock{margin-top:12px;padding:11px;border:1px solid var(--bd);background:var(--inset);border-radius:7px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--mut)}
+.note{margin-top:10px;font-size:11.5px;color:var(--mut);max-width:340px}.note b{color:var(--accent);font-weight:600}
+</style></head>
+<body>
+<div class="page">
+  <div class="lead">
+    <div style="flex:1 1 auto;min-width:280px">
+      <h1>🛰️ HomeLab Monitor — layout <span style="font-size:12px;color:var(--mut)">· rev 6 (converged)</span></h1>
+      <p><b>From the 4-persona review:</b> grouped sidebar + content top bar + searchable/sortable <b>data tables</b> with flat status badges.
+      <b>Overview is the all-hosts fleet table</b> again. Selection is <b>neutral</b> — amber means warning only. Severity shows as a <b>count badge</b>, not a bare dot. GPU keeps a real <b>VRAM + OOM</b> chart.</p>
+    </div>
+    <div class="themeswitch" id="themeswitch">
+      <span class="tlab">Theme</span>
+      <button data-th="dark" class="on">Dark</button><button data-th="light">Light</button><button data-th="system">System</button>
+    </div>
+  </div>
+  <div class="legend">
+    <span><b>Neutral</b> selection · amber = warning · red = critical</span>
+    <span><b>Toolbar</b> search · sort · density on every table</span>
+    <span><b>Overview</b> = fleet table (all hosts)</span>
+    <span><b>Sidebar counts</b> = open issues per section</span>
+  </div>
+
+  <div class="frames">
+    <!-- DESKTOP -->
+    <div>
+      <p class="cap">Desktop · <b>grouped sidebar + table console</b></p>
+      <div class="desk" id="desk">
+        <aside class="side">
+          <div class="brand"><span class="logo">🛰️</span><span class="nm">HomeLab Monitor</span><span class="ver">v0.9</span></div>
+          <div class="navlist" id="dnav">
+            <div class="group">Monitoring</div>
+            <button class="nrow on" data-t="overview">Overview</button>
+            <button class="nrow" data-t="gpu">GPU</button>
+            <button class="nrow" data-t="models">AI Models</button>
+            <button class="nrow" data-t="containers">Containers<span class="cnt crit">1</span></button>
+            <button class="nrow" data-t="services">Services</button>
+            <button class="nrow" data-t="host">Host</button>
+            <div class="group">Settings</div>
+            <button class="nrow" data-t="hosts">Hosts</button>
+            <button class="nrow" data-t="alerts">Alerts<span class="cnt crit">1</span></button>
+          </div>
+          <div class="foot">
+            <a class="ghstar" id="dghstar"><svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span id="dghlabel">Star</span> <span class="cnt">128</span></a>
+            <div class="footrow">
+              <button class="thtoggle inproduct-th"><span class="thicon">☾</span><span class="thlabel">Dark</span></button>
+              <button class="thtoggle density-th" id="densityBtn">▤ Compact</button>
+            </div>
+          </div>
+        </aside>
+        <div class="main">
+          <div class="topbar">
+            <span class="envlbl">Host</span>
+            <button class="hpill on"><span class="st ok"></span>ardi</button>
+            <button class="hpill"><span class="st ok"></span>oldie</button>
+            <button class="hpill"><span class="st warn"></span>nas</button>
+            <div class="range"><button>1h</button><button class="on">6h</button><button>24h</button><button>7d</button></div>
+            <span class="spacer"></span>
+            <button class="upd">⬆ v0.9</button>
+            <span class="live"><span class="st ok"></span>3s</span>
+          </div>
+          <div class="content" id="dcontent"></div>
+        </div>
+      </div>
+      <p class="note"><b>Why this converged:</b> the sidebar groups Monitoring vs Settings; the content top bar folds host + range + status into one strip (no double chrome). Every list is a table with a search/sort/<b>Compact</b> toolbar (try Compact, and the GPU/Containers tabs).</p>
+    </div>
+
+    <!-- MOBILE -->
+    <div>
+      <p class="cap">Mobile · <b>fleet-first, AI Models promoted</b></p>
+      <div class="phone">
+        <div class="appbar">
+          <span class="logo">🛰️</span><span class="nm">HomeLab</span>
+          <div class="mtools"><button class="thtoggle inproduct-th"><span class="thicon">☾</span></button></div>
+        </div>
+        <div class="hoststrip" id="mhosts">
+          <span class="hlabel">Host</span>
+          <button class="hpill on"><span class="st ok"></span>ardi</button>
+          <button class="hpill"><span class="st ok"></span>oldie</button>
+          <button class="hpill"><span class="st warn"></span>nas</button>
+          <button class="hpill"><span class="st ok"></span>jellyfin</button>
+          <button class="hpill add">+ add</button>
+        </div>
+        <div class="updstrip" id="mupd"><b>⬆ v0.9 available — what's new</b><span class="x">✕</span></div>
+        <div class="mscroll" id="mcontent"></div>
+        <nav class="botnav" id="mnav">
+          <button class="on" data-t="overview">Overview</button>
+          <button data-t="gpu">GPU</button>
+          <button data-t="models">Models</button>
+          <button data-t="containers">Containers<span class="cnt crit">1</span></button>
+          <button data-t="__more">More</button>
+        </nav>
+        <div class="sheet" id="sheet">
+          <div class="sheetcard">
+            <div class="handle"></div>
+            <div class="sgroup">Monitoring</div>
+            <button class="srow" data-t="services">Services</button>
+            <button class="srow" data-t="host">Host</button>
+            <div class="sgroup">Settings</div>
+            <button class="srow" data-t="hosts">Hosts</button>
+            <button class="srow" data-t="alerts">Alerts<span class="cnt crit">1</span></button>
+            <button class="srow density-th"><span>Compact density</span></button>
+            <div class="ghblock">
+              <a class="ghstar" id="sghstar"><svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>Star <span class="cnt">128</span></a>
+              <span>if it helps, a ⭐ helps me back</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note"><b>Mobile fixes:</b> <b>AI Models promoted</b> into the bottom bar (Services moved to More). Update strip is dismissible. Star CTA lives only in More now. Tables scroll sideways. Tap <b>More</b>.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const META={
+  overview:{t:'Overview',s:'All hosts — fleet status at a glance'},
+  gpu:{t:'GPU',s:'NVIDIA GPUs on ardi — util, VRAM, temp, OOM events'},
+  models:{t:'AI Models',s:'Local model servers (ollama · open-webui)'},
+  containers:{t:'Containers',s:'Docker containers on ardi'},
+  services:{t:'Services',s:'systemd units being watched'},
+  host:{t:'Host',s:'CPU, memory, disk & network for ardi'},
+  hosts:{t:'Hosts',s:'Fleet registry — boxes polled over SSH'},
+  alerts:{t:'Alerts',s:'Thresholds & notification channels'},
+};
+function th(label,opts){opts=opts||{};return `<th class="${opts.num?'num':''} ${opts.sort?'sort':''}">${label}${opts.sort?' <span class="car">▾</span>':''}</th>`;}
+function tbar(count,extra){return `<div class="tbar"><label class="search"><span class="ic">⌕</span><input placeholder="Filter…"></label>${extra||''}<button class="tbtn density-th">▤ Compact</button><span class="tcount">${count}</span></div>`;}
+function bdg(s,txt){return `<span class="badge ${s}"><span class="st ${s}"></span>${txt}</span>`;}
+function kpi(stat,val,unit,label){const vc=stat==='ok'?'':stat;return `<div class="kpi"><span class="st ${stat}"></span><div class="v ${vc}">${val}${unit?`<u>${unit}</u>`:''}</div><div class="l">${label}</div></div>`;}
+
+function body(id){
+  if(id==='overview'){
+    const r=(st,h,cpu,ram,gpu,up)=>`<tr><td class="name">${h}</td><td>${st}</td><td class="num">${cpu}</td><td class="num">${ram}</td><td class="num">${gpu}</td><td class="num">${up}</td></tr>`;
+    return tbar('4 hosts')+`<table class="tbl"><thead><tr>${th('Host',{sort:1})}${th('Status')}${th('CPU',{num:1})}${th('RAM',{num:1})}${th('GPU',{num:1})}${th('Uptime',{num:1})}</tr></thead><tbody>
+      ${r(bdg('warn','Warning'),'nas','88%','71%','—','21d')}
+      ${r(bdg('ok','Online'),'ardi','41%','38%','63°C','6d')}
+      ${r(bdg('ok','Online'),'oldie','12%','20%','—','9d')}
+      ${r(bdg('ok','Online'),'jellyfin','29%','44%','51°C','3d')}
+    </tbody></table>`;
+  }
+  if(id==='gpu') return `
+    <div class="grid" style="margin-bottom:12px">
+      ${kpi('warn','63','%','Utilisation')}${kpi('ok','41','°C','Temp')}${kpi('ok','142','W','Power')}${kpi('ok','11.2','/24 GB','VRAM')}</div>
+    <div class="card"><div class="hd"><span class="st ok"></span><span class="lbl">VRAM by service · 6h</span><span class="meta">peak 22.1 / 24 GB · 1 OOM</span></div>
+      <div class="bd"><svg class="vram" viewBox="0 0 320 120" preserveAspectRatio="none">
+        <line x1="0" y1="14" x2="320" y2="14" stroke="var(--crit)" stroke-width="1" stroke-dasharray="4 3" opacity=".7"/>
+        <polygon points="0,120 0,80 60,72 120,60 180,40 240,66 300,58 320,60 320,120" fill="var(--info)" opacity=".5"/>
+        <polygon points="0,120 0,98 60,92 120,86 180,70 240,90 300,86 320,88 320,120" fill="var(--accent)" opacity=".55"/>
+        <g transform="translate(180,40)"><polygon points="0,-9 5,-18 -5,-18" fill="var(--crit)"/></g>
+      </svg><div style="display:flex;gap:14px;margin-top:8px;font-size:11px;color:var(--mut)"><span><span class="st info" style="display:inline-block;background:var(--info)"></span> open-webui</span><span><span class="st warn" style="display:inline-block"></span> immich_ml</span><span style="color:var(--crit)">▲ OOM 02:14 — immich_ml exit 137</span></div></div></div>
+    <table class="tbl"><thead><tr>${th('GPU',{sort:1})}${th('Model')}${th('Util',{num:1})}${th('VRAM',{num:1})}${th('Temp',{num:1})}</tr></thead><tbody>
+      <tr><td class="name">GPU 0</td><td>RTX 3090</td><td class="num">63%</td><td class="num">11.2G</td><td class="num">41°C</td></tr>
+      <tr><td class="name">GPU 1</td><td>RTX 3060</td><td class="num">8%</td><td class="num">1.4G</td><td class="num">34°C</td></tr>
+    </tbody></table>`;
+  if(id==='containers'){
+    const r=(st,nm,cpu,mem,up)=>`<tr><td class="name">${nm}</td><td>${st}</td><td class="num">${cpu}</td><td class="num">${mem}</td><td class="num">${up}</td></tr>`;
+    return tbar('14 containers')+`<table class="tbl"><thead><tr>${th('Name')}${th('Status',{sort:1})}${th('CPU',{num:1})}${th('Mem',{num:1})}${th('Uptime',{num:1})}</tr></thead><tbody>
+      ${r(bdg('crit','Unhealthy'),'immich_ml','—','—','3× ↻')}
+      ${r(bdg('ok','Running'),'immich_server','4%','612M','6d')}
+      ${r(bdg('ok','Running'),'open-webui','2%','341M','6d')}
+      ${r(bdg('ok','Running'),'ollama','11%','5.2G','6d')}
+      ${r(bdg('ok','Running'),'n8n','1%','188M','12d')}
+    </tbody></table>`;
+  }
+  if(id==='services'){
+    const r=(st,nm,desc,up)=>`<tr><td class="name">${nm}</td><td>${st}</td><td>${desc}</td><td class="num">${up}</td></tr>`;
+    return tbar('9 units')+`<table class="tbl"><thead><tr>${th('Unit')}${th('State',{sort:1})}${th('Description')}${th('Uptime',{num:1})}</tr></thead><tbody>
+      ${r(bdg('ok','Active'),'sshd','OpenSSH server','41d')}
+      ${r(bdg('ok','Active'),'docker','Container engine','41d')}
+      ${r(bdg('warn','Degraded'),'smbd','Samba — 1 share offline','12d')}
+      ${r(bdg('ok','Active'),'tailscaled','Tailscale VPN','9d')}
+    </tbody></table>`;
+  }
+  if(id==='models'){
+    const r=(st,nm,srv,vram,tps)=>`<tr><td class="name">${nm}</td><td>${st}</td><td>${srv}</td><td class="num">${vram}</td><td class="num">${tps}</td></tr>`;
+    return tbar('3 loaded')+`<table class="tbl"><thead><tr>${th('Model')}${th('Status',{sort:1})}${th('Server')}${th('VRAM',{num:1})}${th('tok/s',{num:1})}</tr></thead><tbody>
+      ${r(bdg('ok','Loaded'),'llama3.1:70b','ollama · GPU0','9.8G','42')}
+      ${r(bdg('ok','Loaded'),'nomic-embed','ollama · GPU1','0.6G','—')}
+      ${r(bdg('warn','Idle'),'qwen2.5:7b','open-webui · GPU0','—','0')}
+    </tbody></table>`;
+  }
+  if(id==='host') return `<div class="grid" style="margin-bottom:12px">
+      ${kpi('ok','41','%','CPU')}${kpi('ok','38','%','Memory')}${kpi('warn','82','%','Disk /')}${kpi('ok','1.2','Gb/s','Network')}</div>
+    <table class="tbl"><thead><tr>${th('Mount')}${th('Used',{num:1})}${th('Size',{num:1})}${th('Use%',{num:1,sort:1})}</tr></thead><tbody>
+      <tr><td class="name">/</td><td class="num">410G</td><td class="num">500G</td><td class="num">82%</td></tr>
+      <tr><td class="name">/mnt/external</td><td class="num">6.1T</td><td class="num">12T</td><td class="num">51%</td></tr>
+    </tbody></table>`;
+  if(id==='hosts') return tbar('4 hosts','<button class="tbtn on">+ Add host</button>')+`<table class="tbl"><thead><tr>${th('Host')}${th('Address')}${th('Probe')}${th('Last seen',{num:1})}</tr></thead><tbody>
+      <tr><td class="name">ardi</td><td class="num">ardi:22</td><td>${bdg('ok','SSH ok')}</td><td class="num">3s</td></tr>
+      <tr><td class="name">nas</td><td class="num">10.0.0.4</td><td>${bdg('warn','slow')}</td><td class="num">41s</td></tr>
+    </tbody></table>`;
+  if(id==='alerts') return tbar('5 rules','<button class="tbtn on">+ Add rule</button>')+`<table class="tbl"><thead><tr>${th('Rule')}${th('Condition')}${th('Channel')}${th('State',{sort:1})}</tr></thead><tbody>
+      <tr><td class="name">GPU temp</td><td>&gt; 85°C for 5m</td><td>Discord</td><td>${bdg('ok','Armed')}</td></tr>
+      <tr><td class="name">Container down</td><td>any unhealthy</td><td>Discord</td><td>${bdg('crit','Firing')}</td></tr>
+    </tbody></table>`;
+  return tbar('—')+`<table class="tbl"><tbody><tr><td>${META[id].t} — sample</td></tr></tbody></table>`;
+}
+function render(host,id){const m=META[id]||META.overview;
+  if(host==='d') document.getElementById('dcontent').innerHTML=`<div class="phead"><div><div class="ptitle">${m.t}</div><div class="psub">${m.s}</div></div></div>`+body(id);
+  else document.getElementById('mcontent').innerHTML=`<div class="mtitle">${m.t}</div><div class="msub">${m.s}</div>`+body(id);
+}
+// nav
+document.getElementById('dnav').addEventListener('click',e=>{const b=e.target.closest('.nrow');if(!b)return;
+  document.querySelectorAll('#dnav .nrow').forEach(x=>x.classList.remove('on'));b.classList.add('on');render('d',b.dataset.t);});
+const sheet=document.getElementById('sheet');
+document.getElementById('mnav').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.t==='__more'){sheet.classList.add('open');return;}
+  document.querySelectorAll('#mnav button').forEach(x=>x.classList.toggle('on',x===b));render('m',b.dataset.t);});
+sheet.addEventListener('click',e=>{if(e.target===sheet){sheet.classList.remove('open');return;}
+  const b=e.target.closest('.srow');if(!b||b.classList.contains('density-th'))return;sheet.classList.remove('open');
+  document.querySelectorAll('#mnav button').forEach(x=>x.classList.remove('on'));
+  document.querySelector('#mnav [data-t="__more"]').classList.add('on');render('m',b.dataset.t);});
+document.getElementById('mhosts').addEventListener('click',e=>{const b=e.target.closest('.hpill');if(!b||b.classList.contains('add'))return;
+  document.querySelectorAll('#mhosts .hpill').forEach(x=>x.classList.remove('on'));b.classList.add('on');});
+document.getElementById('mupd').querySelector('.x').addEventListener('click',()=>document.getElementById('mupd').style.display='none');
+// density (event delegation — buttons are re-rendered inside content)
+document.addEventListener('click',e=>{if(e.target.closest('.density-th')){document.querySelectorAll('.desk,.phone').forEach(f=>f.classList.toggle('dense'));}});
+// theme: dark/light/system
+const mql=window.matchMedia('(prefers-color-scheme: light)');let themePref='dark';
+function applyTheme(){const r=themePref==='system'?(mql.matches?'light':'dark'):themePref;
+  document.documentElement.setAttribute('data-theme',r);
+  document.querySelectorAll('#themeswitch button').forEach(b=>b.classList.toggle('on',b.dataset.th===themePref));
+  const icon=themePref==='system'?'◐':(r==='dark'?'☾':'☀'),name=themePref==='system'?'System':(r==='dark'?'Dark':'Light');
+  document.querySelectorAll('.thicon').forEach(e=>e.textContent=icon);
+  document.querySelectorAll('.inproduct-th .thlabel').forEach(e=>e.textContent=name);}
+mql.addEventListener('change',()=>{if(themePref==='system')applyTheme();});
+document.getElementById('themeswitch').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;themePref=b.dataset.th;applyTheme();});
+const CYCLE=['dark','light','system'];
+document.querySelectorAll('.inproduct-th').forEach(b=>b.addEventListener('click',()=>{themePref=CYCLE[(CYCLE.indexOf(themePref)+1)%3];applyTheme();}));
+// star
+document.querySelectorAll('#dghstar,#sghstar').forEach(el=>el.addEventListener('click',ev=>{ev.preventDefault();
+  document.querySelectorAll('.ghstar').forEach(b=>b.classList.add('starred'));
+  const l=document.getElementById('dghlabel');if(l)l.textContent='✓ Starred';}));
+applyTheme();render('d','overview');render('m','overview');
+</script>
+</body></html>
