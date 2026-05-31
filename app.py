@@ -1995,4 +1995,11 @@ threading.Thread(target=collector, daemon=True).start()
 threading.Thread(target=host_poller, daemon=True).start()
 
 if __name__ == "__main__":
+    print(
+        f"\n  HomeLab Monitor v{VERSION}\n"
+        f"      Open  ->  http://localhost:{PORT}   (or http://<this-host-ip>:{PORT} over your LAN/VPN)\n"
+        f"      Like it? A star on GitHub helps other home-labbers find it:\n"
+        f"      https://github.com/SikamikanikoBG/homelab-monitor\n",
+        flush=True,
+    )
     app.run(host="0.0.0.0", port=PORT, threaded=True)
