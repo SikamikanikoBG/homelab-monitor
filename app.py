@@ -808,8 +808,11 @@ _docker_enrich = {"data": {}, "at": 0}
 # Real disk footprint (writable layer + volumes + bind mounts) needs a `du` over
 # host paths via HOST_ROOT — far heavier than the rest, and disk barely moves
 # minute-to-minute, so it gets a much longer TTL and runs in its own thread so it
-# never stalls the health-scan loop.
-_DOCKER_DISK_TTL = 600
+# never stalls the health-scan loop. A cold `du` of a huge media library on a
+# spinning disk can take minutes; once the kernel has cached the metadata the
+# same scan is seconds, so we allow a generous per-mount timeout and keep the
+# last known value when a scan overruns it.
+_DOCKER_DISK_TTL = 1800
 _docker_disk = {"data": {}, "at": 0, "busy": False}
 
 def _docker_status(state, status):
@@ -879,11 +882,12 @@ def _refresh_docker_enrich(running_ids):
                 out.setdefault(cid, {})["mem_bytes"] = mem
     return out
 
-def _dir_size(host_path, timeout=12):
+def _dir_size(host_path, timeout=120):
     """Apparent size (bytes) of a host path, read through the read-only HOST_ROOT
     bind mount — i.e. `du -sb` as the host would see it. Returns None when the
-    path is unreachable or `du` overruns `timeout` (so a pathologically large
-    bind mount degrades to "not counted" instead of hanging the scan)."""
+    path is unreachable or `du` overruns `timeout` (a cold scan of a huge media
+    library on spinning rust can run for minutes; the caller keeps the previous
+    value on a None so the figure degrades to "stale" rather than "wrong")."""
     base = HOST_ROOT.rstrip("/") if os.path.isdir(HOST_ROOT) else ""
     path = (base + host_path) if base else host_path
     try:
@@ -896,13 +900,18 @@ def _dir_size(host_path, timeout=12):
     except ValueError:
         return None   # du errored (missing path / no access): stdout has no count
 
-def _container_disk(ct):
+def _container_disk(ct, prev=None):
     """A container's real on-disk footprint: writable layer (SizeRw) + every
     read-write volume and bind mount it owns. Read-only mounts (configs, the
     docker socket, our own /rootfs) aren't this container's data, so they're
     skipped. Falls back toward SizeRw alone when host paths can't be measured —
-    e.g. HOST_ROOT not mounted — which is the old behaviour."""
+    e.g. HOST_ROOT not mounted — which is the old behaviour.
+
+    `prev` is this container's last computed total: if a mount's `du` overruns
+    its timeout we keep the larger of (partial new total, prev) so a transient
+    slow scan never makes the number shrink or blink to zero."""
     total = ct.get("SizeRw") or 0
+    incomplete = False
     for m in (ct.get("Mounts") or []):
         if not m.get("RW") or m.get("Type") not in ("volume", "bind"):
             continue
@@ -910,8 +919,12 @@ def _container_disk(ct):
         if not src or not src.startswith("/"):
             continue
         sz = _dir_size(src)
-        if sz is not None:
+        if sz is None:
+            incomplete = True
+        else:
             total += sz
+    if incomplete and prev is not None:
+        return max(total, prev)
     return total
 
 def _refresh_docker_disk():
@@ -925,8 +938,10 @@ def _refresh_docker_disk():
         return out
     if not sized:
         return out
+    prev = _docker_disk.get("data") or {}
+    measure = lambda ct: _container_disk(ct, prev.get(ct["Id"][:12]))
     with ThreadPoolExecutor(max_workers=min(8, len(sized))) as ex:
-        for ct, disk in zip(sized, ex.map(_container_disk, sized)):
+        for ct, disk in zip(sized, ex.map(measure, sized)):
             out[ct["Id"][:12]] = disk
     return out
 
