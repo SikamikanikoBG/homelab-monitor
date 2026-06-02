@@ -207,8 +207,8 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
 .side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
-.sbrand{display:flex;align-items:center;gap:9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
-.sbrand .logo{font-size:17px}.sbrand .nm{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden}
+.sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
+.sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:13.5px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono)}
 .navlist{flex:1 1 auto;overflow:auto;padding:8px}
 .navgroup{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
@@ -418,7 +418,7 @@ a{color:var(--info)}
       <th>Container</th><th>State</th>
       <th data-col="image">Image</th>
       <th>Ports</th><th>Uptime</th><th>Memory</th>
-      <th data-col="disk">Disk</th>
+      <th data-col="disk" title="Writable layer + the container's volumes &amp; read-write bind mounts (so model/data volumes are included, not just the thin writable layer)">Disk</th>
       <th>Status</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
   </div>
@@ -706,7 +706,10 @@ function showTab(id){
   if(location.hash.slice(1)!==id) history.replaceState(null,'','#'+id);
   document.querySelectorAll('.nrow').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
   document.querySelectorAll('section[data-tab]').forEach(s=>s.hidden = s.dataset.tab!==id);
-  document.getElementById('controls').hidden = !(TABS.find(t=>t.id===id)||{}).charts;
+  // Range selector stays visible on every tab (consistent top bar). It drives
+  // the time-series tabs (GPU / System charts, AI Models VRAM timelines); on
+  // snapshot tabs it simply has no effect.
+  document.getElementById('controls').hidden = false;
   buildCharts();   // charts can only size on a visible canvas, so build on show
   if(id==='alerts') loadAlerts();
   if(id==='hosts')  loadHosts();

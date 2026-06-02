@@ -801,10 +801,16 @@ _DOCKER_HEALTH = re.compile(r"\((healthy|unhealthy|health: starting)\)")
 # inspect calls just for StartedAt.
 _DOCKER_UP_DUR = re.compile(r"^Up\s+(.+?)(?:\s*\(.*\))?$", re.I)
 _DUR_UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000, "year": 31536000}
-# Heavy enrichment (per-container `stats` + Docker layer-size scan) is too costly
-# to hit on every 10 s health_scan, so we keep a separate 30 s cache for it.
+# Heavy enrichment (per-container `stats`) is too costly to hit on every 10 s
+# health_scan, so we keep a separate 30 s cache for it.
 _DOCKER_ENRICH_TTL = 30
 _docker_enrich = {"data": {}, "at": 0}
+# Real disk footprint (writable layer + volumes + bind mounts) needs a `du` over
+# host paths via HOST_ROOT — far heavier than the rest, and disk barely moves
+# minute-to-minute, so it gets a much longer TTL and runs in its own thread so it
+# never stalls the health-scan loop.
+_DOCKER_DISK_TTL = 600
+_docker_disk = {"data": {}, "at": 0, "busy": False}
 
 def _docker_status(state, status):
     """Map a Docker container's state/status string to a (level, label) pair."""
@@ -863,21 +869,81 @@ def _container_stats(cid):
     return max(0, (mem or 0) - cache) if mem is not None else None
 
 def _refresh_docker_enrich(running_ids):
-    """Pull SizeRw (one Docker call with size=1) + memory (per-container, in
-    parallel). Cached for _DOCKER_ENRICH_TTL seconds — heavy enough that we
-    don't want it on the 10 s health-scan path."""
+    """Per-running-container memory snapshot (parallel). Cached for
+    _DOCKER_ENRICH_TTL seconds. Disk is measured separately (see
+    _refresh_docker_disk) because a `du` over volumes is far heavier."""
     out = {}
-    try:
-        sized = json.loads(_docker("/containers/json?all=1&size=1"))
-        for ct in sized:
-            out[ct["Id"][:12]] = {"disk_bytes": ct.get("SizeRw") or 0}
-    except Exception:
-        pass
     if running_ids:
         with ThreadPoolExecutor(max_workers=min(8, len(running_ids))) as ex:
             for cid, mem in zip(running_ids, ex.map(_container_stats, running_ids)):
                 out.setdefault(cid, {})["mem_bytes"] = mem
     return out
+
+def _dir_size(host_path, timeout=12):
+    """Apparent size (bytes) of a host path, read through the read-only HOST_ROOT
+    bind mount — i.e. `du -sb` as the host would see it. Returns None when the
+    path is unreachable or `du` overruns `timeout` (so a pathologically large
+    bind mount degrades to "not counted" instead of hanging the scan)."""
+    base = HOST_ROOT.rstrip("/") if os.path.isdir(HOST_ROOT) else ""
+    path = (base + host_path) if base else host_path
+    try:
+        r = subprocess.run(["du", "-sb", "--", path],
+                           capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    try:
+        return int((r.stdout or "").split("\t", 1)[0].strip())
+    except ValueError:
+        return None   # du errored (missing path / no access): stdout has no count
+
+def _container_disk(ct):
+    """A container's real on-disk footprint: writable layer (SizeRw) + every
+    read-write volume and bind mount it owns. Read-only mounts (configs, the
+    docker socket, our own /rootfs) aren't this container's data, so they're
+    skipped. Falls back toward SizeRw alone when host paths can't be measured —
+    e.g. HOST_ROOT not mounted — which is the old behaviour."""
+    total = ct.get("SizeRw") or 0
+    for m in (ct.get("Mounts") or []):
+        if not m.get("RW") or m.get("Type") not in ("volume", "bind"):
+            continue
+        src = m.get("Source")
+        if not src or not src.startswith("/"):
+            continue
+        sz = _dir_size(src)
+        if sz is not None:
+            total += sz
+    return total
+
+def _refresh_docker_disk():
+    """Measure every container's footprint (running or stopped — stopped
+    containers' volumes still occupy disk). One `?size=1` call yields SizeRw +
+    the Mounts list per container; the per-container `du`s run in parallel."""
+    out = {}
+    try:
+        sized = json.loads(_docker("/containers/json?all=1&size=1"))
+    except Exception:
+        return out
+    if not sized:
+        return out
+    with ThreadPoolExecutor(max_workers=min(8, len(sized))) as ex:
+        for ct, disk in zip(sized, ex.map(_container_disk, sized)):
+            out[ct["Id"][:12]] = disk
+    return out
+
+def _maybe_refresh_docker_disk():
+    """Kick a disk refresh in the background when the cache is stale. Never
+    blocks the caller (health_scan): a slow `du` would otherwise hold up Docker +
+    systemd + update collection for everyone."""
+    if _docker_disk["busy"] or time.time() - _docker_disk["at"] <= _DOCKER_DISK_TTL:
+        return
+    _docker_disk["busy"] = True
+    def run():
+        try:
+            _docker_disk["data"] = _refresh_docker_disk()
+            _docker_disk["at"]   = time.time()
+        finally:
+            _docker_disk["busy"] = False
+    threading.Thread(target=run, daemon=True).start()
 
 def collect_docker():
     try:
@@ -902,10 +968,11 @@ def collect_docker():
         running_ids = [c["id"] for c in items if c["state"] == "running"]
         _docker_enrich["data"] = _refresh_docker_enrich(running_ids)
         _docker_enrich["at"] = time.time()
+    _maybe_refresh_docker_disk()   # background; first pass leaves disk_bytes None until it lands
     for c in items:
         e = _docker_enrich["data"].get(c["id"]) or {}
         c["mem_bytes"]  = e.get("mem_bytes")
-        c["disk_bytes"] = e.get("disk_bytes")
+        c["disk_bytes"] = _docker_disk["data"].get(c["id"])
     rank = {"crit": 0, "warn": 1, "ok": 2, "info": 3}
     items.sort(key=lambda c: (rank.get(c["status"], 9), c["name"].lower()))
     return {"available": True, "containers": items,
