@@ -215,6 +215,63 @@ def probe_a1111(ip):
     m = (_http_json(ip, 7860, "/sdapi/v1/options") or {}).get("sd_model_checkpoint")
     return [(m, None)] if m else []
 
+def probe_whisper_asr(ip):
+    """ahmetoner/whisper-asr-webservice (Whisper / WhisperX / faster-whisper
+    engines). It has no model-list endpoint — just `/asr` — so we confirm it's up
+    via `/openapi.json` and show one Idle entry; its GPU VRAM (nvidia-smi)
+    attributes to it while it's transcribing. If something else answers here with
+    the OpenAI shape, fall back to listing its models so we don't hide it."""
+    for port in (9000, 8000):
+        info = (_http_json(ip, port, "/openapi.json") or {}).get("info") or {}
+        if "whisper" in (info.get("title", "") + " " + info.get("description", "")).lower():
+            return [("Whisper ASR webservice", None)]
+    return _openai_models(9000, 8000, 8080)(ip)
+
+def probe_triton(ip):
+    """NVIDIA Triton Inference Server: `GET /v2` returns server metadata. The live
+    model list is a POST (/v2/repository/index), so we show a single Idle entry
+    and let nvidia-smi VRAM attribute to it."""
+    d = _http_json(ip, 8000, "/v2")
+    if d and "triton" in (d.get("name", "") or "").lower():
+        return [("Triton Inference Server", None)]
+    return []
+
+def probe_wyoming(ip):
+    """Wyoming-protocol voice services (Home Assistant: wyoming-faster-whisper /
+    -whisper ASR, -piper TTS, -openwakeword). Plain TCP + JSONL, not HTTP: send a
+    `describe` event and read the `info` reply for the program/model names."""
+    for port in (10300, 10200, 10400, 10500, 10700):
+        try:
+            with socket.create_connection((ip, port), timeout=2) as sk:
+                sk.settimeout(2)
+                sk.sendall(b'{"type": "describe"}\n')
+                buf = b""
+                while b"\n" not in buf and len(buf) < 65536:
+                    chunk = sk.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                header, _, rest = buf.partition(b"\n")
+                evt = json.loads(header.decode("utf-8", "replace") or "{}")
+                if evt.get("type") != "info":
+                    continue
+                need = evt.get("data_length") or 0
+                while len(rest) < need:
+                    chunk = sk.recv(4096)
+                    if not chunk:
+                        break
+                    rest += chunk
+                data = json.loads(rest[:need].decode("utf-8", "replace")) if need else {}
+        except Exception:
+            continue
+        names = []
+        for grp in ("asr", "tts", "wake", "handle", "intent"):
+            for prog in (data.get(grp) or []):
+                got = [m.get("name") for m in (prog.get("models") or []) if m.get("name")]
+                names += got or ([prog["name"]] if prog.get("name") else [])
+        return [(n, None) for n in names] or [("Wyoming service", None)]
+    return []
+
 def probe_comfy(ip):
     """ComfyUI: list installed checkpoints from /object_info (real model names). It has no
     'currently loaded' concept, so checkpoints show Idle and the server's GPU VRAM
@@ -236,9 +293,18 @@ PROBES = [
     ("vllm",                       _openai_models(8000)),
     ("text-generation-inference",  probe_tgi),
     ("text-embeddings-inference",  probe_tgi),
+    ("lorax",                      probe_tgi),
+    # ASR / speech — keep the specific whisper-asr-webservice + WhisperX keys ahead
+    # of the generic "whisper" so they don't fall through to the OpenAI probe.
+    ("whisper-asr-webservice",     probe_whisper_asr),
+    ("asr-webservice",             probe_whisper_asr),
+    ("whisperx",                   probe_whisper_asr),
+    ("whisper-asr",                probe_whisper_asr),
     ("faster-whisper",             _openai_models(8000)),
     ("speaches",                   _openai_models(8000)),
     ("whisper",                    _openai_models(8000, 9000)),
+    ("wyoming",                    probe_wyoming),
+    ("openedai-speech",            _openai_models(8000)),
     ("localai",                    _openai_models(8080)),
     ("local-ai",                   _openai_models(8080)),
     ("llama.cpp",                  _openai_models(8080, 8000)),
@@ -256,6 +322,15 @@ PROBES = [
     ("xorbits",                    _openai_models(9997)),
     ("aphrodite",                  _openai_models(2242)),
     ("mistral-rs",                 _openai_models(1234, 8080)),
+    ("sglang",                     _openai_models(30000, 8000)),
+    ("ramalama",                   _openai_models(8080, 8000)),
+    ("nexa",                       _openai_models(8000)),
+    ("openllm",                    _openai_models(3000, 8000)),
+    ("litellm",                    _openai_models(4000)),
+    ("gpustack",                   _openai_models(80, 8080)),
+    ("cortex",                     _openai_models(39281, 1337)),
+    ("janhq",                      _openai_models(1337)),
+    ("triton",                     probe_triton),
     ("infinity",                   _openai_models(7997)),
     ("invokeai",                   probe_invokeai),
     ("invoke-ai",                  probe_invokeai),

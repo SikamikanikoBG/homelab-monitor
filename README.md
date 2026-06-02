@@ -196,6 +196,12 @@ Recognised even while **Idle**, so the server stays on the dashboard when its mo
 | **faster-whisper / Speaches** | ✅ via `/v1/models` | attributed |
 | **koboldcpp** | ✅ via `/api/v1/model` | attributed |
 | **tabbyAPI · text-generation-webui · LM Studio · xinference · Aphrodite · Infinity** | ✅ via `/v1/models` | attributed |
+| **SGLang · OpenLLM · LiteLLM · GPUStack · Cortex / Jan · Ramalama · Nexa · mistral.rs** | ✅ via `/v1/models` | attributed |
+| **LoRAX** | ✅ via `/info` | attributed |
+| **Whisper ASR webservice / WhisperX** | ✅ up via `/openapi.json` (single entry) | attributed |
+| **Wyoming (HA voice: faster-whisper / Piper / openWakeWord)** | ✅ via `describe` over TCP | attributed |
+| **OpenedAI-Speech** | ✅ via `/v1/models` | attributed |
+| **NVIDIA Triton** | ✅ up via `/v2` (single entry) | attributed |
 | **Stable Diffusion (A1111 / Forge / SD.Next)** | ✅ via `/sdapi/v1/options` | attributed |
 | **InvokeAI** | ✅ via `/api/v2/models/` | attributed |
 | **ComfyUI** | ✅ checkpoints via `/object_info` | attributed |
