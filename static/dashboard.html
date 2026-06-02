@@ -418,7 +418,7 @@ a{color:var(--info)}
       <th>Container</th><th>State</th>
       <th data-col="image">Image</th>
       <th>Ports</th><th>Uptime</th><th>Memory</th>
-      <th data-col="disk" title="Writable layer + the container's volumes &amp; read-write bind mounts (so model/data volumes are included, not just the thin writable layer)">Disk</th>
+      <th data-col="disk" title="Writable layer + the container's volumes &amp; read-write bind mounts (so model/data volumes are included, not just the thin writable layer). Mounts shared by several containers are excluded so they aren't counted against each one.">Disk</th>
       <th>Status</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
   </div>

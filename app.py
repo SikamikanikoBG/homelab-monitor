@@ -975,11 +975,14 @@ def _dir_size(host_path, timeout=120):
     except ValueError:
         return None   # du errored (missing path / no access): stdout has no count
 
-def _container_disk(ct, prev=None):
+def _container_disk(ct, prev=None, shared=frozenset()):
     """A container's real on-disk footprint: writable layer (SizeRw) + every
     read-write volume and bind mount it owns. Read-only mounts (configs, the
     docker socket, our own /rootfs) aren't this container's data, so they're
-    skipped. Falls back toward SizeRw alone when host paths can't be measured —
+    skipped, and so are sources in `shared` — a bind/volume mounted by more than
+    one container (e.g. a common /srv/share) belongs to none of them, and counting
+    it under each both double-counts and makes unrelated rows show the same huge
+    number. Falls back toward SizeRw alone when host paths can't be measured —
     e.g. HOST_ROOT not mounted — which is the old behaviour.
 
     `prev` is this container's last computed total: if a mount's `du` overruns
@@ -991,7 +994,7 @@ def _container_disk(ct, prev=None):
         if not m.get("RW") or m.get("Type") not in ("volume", "bind"):
             continue
         src = m.get("Source")
-        if not src or not src.startswith("/"):
+        if not src or not src.startswith("/") or src in shared:
             continue
         sz = _dir_size(src)
         if sz is None:
@@ -1001,6 +1004,20 @@ def _container_disk(ct, prev=None):
     if incomplete and prev is not None:
         return max(total, prev)
     return total
+
+def _shared_mount_sources(sized):
+    """Sources (volume/bind) mounted read-write by more than one container — i.e.
+    shared infrastructure that shouldn't be attributed to any single container."""
+    users = {}
+    for ct in sized:
+        seen = set()
+        for m in (ct.get("Mounts") or []):
+            if m.get("RW") and m.get("Type") in ("volume", "bind"):
+                src = m.get("Source")
+                if src and src not in seen:        # a container mounting it twice still counts once
+                    seen.add(src)
+                    users[src] = users.get(src, 0) + 1
+    return frozenset(src for src, n in users.items() if n > 1)
 
 def _refresh_docker_disk():
     """Measure every container's footprint (running or stopped — stopped
@@ -1020,9 +1037,10 @@ def _refresh_docker_disk():
     if not sized:
         fresh.clear()
         return
+    shared = _shared_mount_sources(sized)
     def measure(ct):
         cid = ct["Id"][:12]
-        fresh[cid] = _container_disk(ct, prev.get(cid))
+        fresh[cid] = _container_disk(ct, prev.get(cid), shared)
     with ThreadPoolExecutor(max_workers=min(8, len(sized))) as ex:
         list(ex.map(measure, sized))
     live = {ct["Id"][:12] for ct in sized}
