@@ -12,7 +12,7 @@
 ![gpu](https://img.shields.io/badge/GPU-NVIDIA-76B900?logo=nvidia&logoColor=white)
 [![last commit](https://img.shields.io/github/last-commit/SikamikanikoBG/homelab-monitor?color=informational)](https://github.com/SikamikanikoBG/homelab-monitor/commits/main)
 
-> 🆕 **v0.11.0** — **AI Models, upgraded**: every recognised model server now shows even while **Idle** (Ollama, vLLM, llama.cpp, LocalAI, faster-whisper, Stable Diffusion, ComfyUI and ~15 more), so nothing flickers away when a model unloads — plus a **"Driven by"** breakdown revealing *which services are calling each server* (who's actually driving Ollama). [Release notes →](https://github.com/SikamikanikoBG/homelab-monitor/releases)
+> 🆕 **v0.12.0** — **Container disk that's actually right**: the Containers tab now counts each container's true footprint — writable layer **plus its volumes & bind mounts** (mounts shared between containers are excluded), so Ollama and Immich finally show their real GBs instead of a near-empty writable layer. Plus **AI Models** now recognises **WhisperX / whisper-asr-webservice** and a dozen more servers (SGLang, Triton, Wyoming voice, OpenLLM, LiteLLM, GPUStack, Cortex/Jan…), the **time-range picker shows on every tab**, and the sidebar brand no longer truncates. [Release notes →](https://github.com/SikamikanikoBG/homelab-monitor/releases)
 >
 > 🛰️ **Source, issues and roadmap live on [GitHub](https://github.com/SikamikanikoBG/homelab-monitor).** If HomeLab Monitor saves you a browser tab, a ⭐ there genuinely helps other home-labbers find it.
 
