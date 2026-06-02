@@ -929,21 +929,30 @@ def _container_disk(ct, prev=None):
 
 def _refresh_docker_disk():
     """Measure every container's footprint (running or stopped — stopped
-    containers' volumes still occupy disk). One `?size=1` call yields SizeRw +
-    the Mounts list per container; the per-container `du`s run in parallel."""
-    out = {}
+    containers' volumes still occupy disk) and publish results incrementally, so
+    fast volume scans (e.g. Ollama) appear right away instead of waiting on one
+    container's slow cold `du` (e.g. a 300 GB photo library). One `?size=1` call
+    yields SizeRw + the Mounts list per container; the `du`s run in parallel and
+    each writes into the live dict as it lands. Seeded from the previous results
+    so a periodic rescan never blanks the table."""
     try:
         sized = json.loads(_docker("/containers/json?all=1&size=1"))
     except Exception:
-        return out
+        return
+    prev = dict(_docker_disk.get("data") or {})
+    fresh = dict(prev)                 # readers keep seeing old values until each is refreshed
+    _docker_disk["data"] = fresh
     if not sized:
-        return out
-    prev = _docker_disk.get("data") or {}
-    measure = lambda ct: _container_disk(ct, prev.get(ct["Id"][:12]))
+        fresh.clear()
+        return
+    def measure(ct):
+        cid = ct["Id"][:12]
+        fresh[cid] = _container_disk(ct, prev.get(cid))
     with ThreadPoolExecutor(max_workers=min(8, len(sized))) as ex:
-        for ct, disk in zip(sized, ex.map(measure, sized)):
-            out[ct["Id"][:12]] = disk
-    return out
+        list(ex.map(measure, sized))
+    live = {ct["Id"][:12] for ct in sized}
+    for cid in [k for k in fresh if k not in live]:
+        del fresh[cid]                 # drop containers that no longer exist
 
 def _maybe_refresh_docker_disk():
     """Kick a disk refresh in the background when the cache is stale. Never
@@ -954,8 +963,8 @@ def _maybe_refresh_docker_disk():
     _docker_disk["busy"] = True
     def run():
         try:
-            _docker_disk["data"] = _refresh_docker_disk()
-            _docker_disk["at"]   = time.time()
+            _refresh_docker_disk()        # publishes into _docker_disk["data"] as it goes
+            _docker_disk["at"] = time.time()
         finally:
             _docker_disk["busy"] = False
     threading.Thread(target=run, daemon=True).start()
