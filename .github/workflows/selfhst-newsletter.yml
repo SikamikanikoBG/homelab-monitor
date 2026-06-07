@@ -1,0 +1,130 @@
+name: Announce release on selfh.st
+
+# On a published, NON-prerelease, MINOR-or-greater release, submit a "New
+# Release" entry to the selfh.st Self-Host Weekly form (self-hosted Formbricks,
+# no auth, no CAPTCHA), then ping Discord.
+#
+# Patch releases (vX.Y.Z, Z>0) and prereleases are skipped on purpose: the
+# weekly is human-curated and homelab-monitor ships several releases a week —
+# announcing every one would read as spam. Re-run a specific tag by hand via
+# the "Run workflow" button (workflow_dispatch).
+#
+# Form schema captured 2026-06-07 from https://selfh.st/submit/ (newsletter >
+# New Release). Endpoint + field IDs are public, so they live in the file; the
+# only secret is the optional Discord webhook.
+#   secrets.SELFHST_DISCORD_WEBHOOK   (optional) Discord webhook for the result ping
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to (re)submit, e.g. v0.13.0'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  FORMBRICKS_ENDPOINT: https://form.selfh.st/api/v1/client/cmbgutqls0009m4013gnhtefd/responses
+  SURVEY_ID: akv61ne20ttol0pewb1ekvd3
+  Q_CATEGORY: yt95ecfduo3hurkcdr81m42o
+  Q_NAME: tr413uxvm6j8v7ufsmhphbr7
+  Q_LINK: qanxmvz7lwruyab0rh8f2kzx
+  Q_DESC: wzigtdprdnjz0gd865ah7rwh
+  PROJECT_NAME: HomeLab Monitor
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release
+        id: rel
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let r;
+            if (context.eventName === 'workflow_dispatch') {
+              r = (await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner, repo: context.repo.repo,
+                tag: context.payload.inputs.tag,
+              })).data;
+            } else {
+              r = context.payload.release;
+            }
+            core.setOutput('tag', r.tag_name);
+            core.setOutput('name', r.name || r.tag_name);
+            core.setOutput('url', r.html_url);
+            core.setOutput('prerelease', String(r.prerelease));
+            core.setOutput('body', r.body || '');
+
+      - name: Gate (skip prereleases and patch releases)
+        id: gate
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+          PRERELEASE: ${{ steps.rel.outputs.prerelease }}
+        run: |
+          ver="${TAG#v}"
+          IFS='.' read -r major minor patch _ <<< "$ver"
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "::notice::$TAG is a prerelease — skipping"; exit 0
+          fi
+          if [ "${patch:-0}" != "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "::notice::$TAG is a patch release — skipping"; exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::$TAG qualifies — announcing on selfh.st"
+
+      - name: Build description (<=200 chars)
+        if: steps.gate.outputs.skip == 'false'
+        id: desc
+        env:
+          NAME: ${{ steps.rel.outputs.name }}
+          BODY: ${{ steps.rel.outputs.body }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          # Prefer the release title's headline (strip leading "vX.Y.Z — ").
+          d=$(printf '%s' "$NAME" | sed -E 's/^v?[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*[—:\-]*[[:space:]]*//')
+          # Fall back to the first meaningful line of the notes.
+          if [ -z "$d" ] || [ "$d" = "$NAME" ]; then
+            d=$(printf '%s' "$BODY" | sed -E 's/^[#>*_+-]+[[:space:]]*//; s/`//g' | grep -m1 -E '[A-Za-z0-9]' || true)
+          fi
+          [ -z "$d" ] && d="New release of HomeLab Monitor ($TAG)"
+          d=$(printf '%s' "$d" | tr '\n' ' ' | tr -s ' ' | cut -c1-200)
+          { echo "value<<EOF"; echo "$d"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Submit to selfh.st (newsletter > New Release)
+        if: steps.gate.outputs.skip == 'false'
+        id: submit
+        env:
+          LINK: ${{ steps.rel.outputs.url }}
+          DESC: ${{ steps.desc.outputs.value }}
+        run: |
+          body=$(jq -nc \
+            --arg sid "$SURVEY_ID" \
+            --arg qc "$Q_CATEGORY" --arg qn "$Q_NAME" --arg ql "$Q_LINK" --arg qd "$Q_DESC" \
+            --arg name "$PROJECT_NAME" --arg link "$LINK" --arg desc "$DESC" \
+            '{surveyId:$sid, finished:true,
+              data:{($qc):"New Release", ($qn):$name, ($ql):$link, ($qd):$desc},
+              meta:{source:"web", url:"https://selfh.st/submit/"}}')
+          echo "Payload: $body"
+          code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
+            -X POST "$FORMBRICKS_ENDPOINT" -H 'Content-Type: application/json' -d "$body")
+          echo "HTTP $code"; cat /tmp/resp.txt || true
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::selfh.st submission failed (HTTP $code)"; exit 1
+          fi
+
+      - name: Ping Discord
+        if: always() && steps.gate.outputs.skip == 'false'
+        env:
+          WEBHOOK: ${{ secrets.SELFHST_DISCORD_WEBHOOK }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$WEBHOOK" ] && { echo "no webhook configured — skipping ping"; exit 0; }
+          payload=$(jq -nc --arg tag "$TAG" --arg s "$STATUS" --arg u "$RUN_URL" \
+            '{content:("selfh.st **New Release** submission for HomeLab Monitor \($tag): **\($s)** — \($u)")}')
+          curl -fsS -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK" || true
