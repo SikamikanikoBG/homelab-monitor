@@ -77,9 +77,8 @@ jobs:
           # Discord embed description hard limit is 4096 chars; keep headroom
           # and link out to the full notes when we truncate.
           if [ "$(printf '%s' "$desc" | wc -c)" -gt 3500 ]; then
-            desc="$(printf '%s' "$desc" | cut -c1-3500)
-
-… [read the full release notes →]($URL)"
+            head=$(printf '%s' "$desc" | cut -c1-3500)
+            desc=$(printf '%s\n\n… [read the full release notes →](%s)' "$head" "$URL")
           fi
           payload=$(jq -nc \
             --arg name "$NAME" --arg url "$URL" --arg desc "$desc" \
