@@ -295,6 +295,8 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
 .side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+/* visual hierarchy: nav surfaces distinct from content */
+.main{min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 .sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
 .sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:13.5px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut);background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:2px 8px;line-height:1.4}
@@ -313,9 +315,9 @@ body{background:var(--canvas)}
 .themeswitch button{border:0;border-right:1px solid var(--bd);background:var(--card);color:var(--mut);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer}
 .themeswitch button:last-child{border-right:0}.themeswitch button.on{background:var(--hover);color:var(--tx);font-weight:600}
 .main{min-width:0;display:flex;flex-direction:column}
-.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--bg);flex-wrap:wrap;position:sticky;top:0;z-index:6}
+.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--canvas);flex-wrap:wrap;position:sticky;top:0;z-index:6}
 .topbar .envlbl{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
-.content{padding:16px;max-width:1180px;flex:1 1 auto}
+.content{padding:16px;max-width:none;flex:1 1 auto}
 /* host pills in the top bar — flat, neutral selection */
 #hostbar{padding:0;border:0;gap:6px}
 #hostbar .label{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
