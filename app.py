@@ -2661,10 +2661,12 @@ SETTING_DEFAULTS = {
     "discord_webhook_url": "",
     "ntfy_topic":          "",
     "ntfy_server":         "https://ntfy.sh",
+    "telegram_token":      "",
+    "telegram_chat_id":    "",
     "alert_min_level":     "warning",  # "warning" or "critical"
     "disk_alert_pct":      "90",       # disk usage % that trips an alert
 }
-SETTING_SECRETS = {"discord_webhook_url"}   # never round-tripped to the UI in full
+SETTING_SECRETS = {"discord_webhook_url", "telegram_token"}   # never round-tripped to the UI in full
 
 def get_settings():
     """Return the full settings dict (defaults + persisted overrides)."""
@@ -2689,7 +2691,7 @@ def save_settings(updates):
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
 
-# ── Notifier: Discord webhook + ntfy.sh ──────────────────────────────────────
+# ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
 # doesn't spam the channel. A key clears when the underlying condition recovers
 # (container becomes healthy again, disk drops below threshold, etc.), so the
@@ -2729,6 +2731,17 @@ def send_ntfy(server, topic, level, title, detail):
               "Tags":     _NTFY_T.get(level, "information_source")}
     return _post_text(url, detail, hdr)
 
+def _tg_escape(text):
+    """Escape Telegram legacy-Markdown metacharacters in user-supplied text."""
+    return (text or "").replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*") \
+                       .replace("`", "\\`").replace("[", "\\[")
+
+def _post_to_telegram(token, chat_id, level, title, body):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    text = (f"*{_tg_escape(title)}*\n\n{_tg_escape(body)}\n\n"
+            f"_HomeLab Monitor · {level}_")
+    return _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+
 def dispatch_alert(s, level, title, detail):
     """Send to whichever channels are configured. Returns list of (channel, ok, err)."""
     out = []
@@ -2739,6 +2752,10 @@ def dispatch_alert(s, level, title, detail):
         try: send_ntfy(s.get("ntfy_server") or "https://ntfy.sh",
                        s["ntfy_topic"], level, title, detail); out.append(("ntfy", True, None))
         except Exception as e: out.append(("ntfy", False, str(e)))
+    if s.get("telegram_token") and s.get("telegram_chat_id"):
+        try: _post_to_telegram(s["telegram_token"], s["telegram_chat_id"],
+                               level, title, detail); out.append(("telegram", True, None))
+        except Exception as e: out.append(("telegram", False, str(e)))
     return out
 
 def _emit(s, key, level, title, detail):
@@ -2761,7 +2778,8 @@ def notify_scan():
     s = get_settings()
     if s.get("alerts_enabled") != "1":
         return
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")):
+    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
+            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
         return
 
     # ── Docker containers: edge-trigger on crit/warn, clear on ok ─────────────
@@ -3508,9 +3526,10 @@ def api_settings():
 def api_notify_test():
     """Send a one-shot test alert using the currently saved settings."""
     s = get_settings()
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")):
+    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
+            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
         return jsonify({"ok": False, "results": [],
-                        "reason": "No Discord webhook or ntfy topic configured."}), 400
+                        "reason": "No Discord webhook, ntfy topic, or Telegram bot configured."}), 400
     results = dispatch_alert(s, "info",
                              "✅ HomeLab Monitor — test alert",
                              "If you see this, alerts are wired up correctly.")

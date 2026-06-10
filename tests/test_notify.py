@@ -1,0 +1,89 @@
+"""Unit tests for alert dispatch and Telegram notifier (issue #27)."""
+import os
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import app
+
+
+class TestTelegramSettings(unittest.TestCase):
+    def test_public_settings_masks_telegram_token(self):
+        with patch.object(app, "get_settings", return_value={
+            **app.SETTING_DEFAULTS,
+            "telegram_token": "123456:SECRET",
+            "telegram_chat_id": "-10099",
+        }):
+            pub = app._public_settings()
+        self.assertNotIn("telegram_token", pub)
+        self.assertTrue(pub["telegram_token_set"])
+        self.assertEqual(pub["telegram_chat_id"], "-10099")
+
+    def test_telegram_defaults_present(self):
+        self.assertIn("telegram_token", app.SETTING_DEFAULTS)
+        self.assertIn("telegram_chat_id", app.SETTING_DEFAULTS)
+        self.assertIn("telegram_token", app.SETTING_SECRETS)
+
+
+class TestTelegramNotifier(unittest.TestCase):
+    @patch("app._post_json")
+    def test_post_to_telegram_uses_markdown(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        app._post_to_telegram("tok", "12345", "warning", "Disk full", "Root at 95%")
+
+        url, payload = mock_post.call_args[0]
+        self.assertEqual(url, "https://api.telegram.org/bottok/sendMessage")
+        self.assertEqual(payload["chat_id"], "12345")
+        self.assertEqual(payload["parse_mode"], "Markdown")
+        self.assertIn("Disk full", payload["text"])
+        self.assertIn("Root at 95%", payload["text"])
+        self.assertIn("warning", payload["text"])
+
+    @patch("app._post_json")
+    def test_tg_escape_special_chars(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        app._post_to_telegram("tok", "1", "info", "a*b_c", "d`e[f")
+
+        _, payload = mock_post.call_args[0]
+        self.assertIn(r"a\*b\_c", payload["text"])
+        self.assertIn(r"d\`e\[f", payload["text"])
+
+    @patch("app._post_json")
+    def test_dispatch_includes_telegram_when_configured(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        s = {
+            **app.SETTING_DEFAULTS,
+            "telegram_token": "tok",
+            "telegram_chat_id": "99",
+        }
+        results = app.dispatch_alert(s, "info", "Title", "Body")
+        channels = [c for c, ok, _ in results]
+        self.assertIn("telegram", channels)
+        self.assertTrue(all(ok for _, ok, _ in results))
+
+    @patch("app._post_json")
+    def test_dispatch_skips_telegram_without_chat_id(self, mock_post):
+        s = {**app.SETTING_DEFAULTS, "telegram_token": "tok", "telegram_chat_id": ""}
+        results = app.dispatch_alert(s, "info", "Title", "Body")
+        channels = [c for c, _, _ in results]
+        self.assertNotIn("telegram", channels)
+        mock_post.assert_not_called()
+
+    @patch("app._post_json")
+    def test_dispatch_reports_telegram_errors(self, mock_post):
+        mock_post.side_effect = RuntimeError("network down")
+        s = {
+            **app.SETTING_DEFAULTS,
+            "telegram_token": "tok",
+            "telegram_chat_id": "99",
+        }
+        results = app.dispatch_alert(s, "info", "Title", "Body")
+        tg = [r for r in results if r[0] == "telegram"]
+        self.assertEqual(len(tg), 1)
+        self.assertFalse(tg[0][1])
+        self.assertIn("network down", tg[0][2])
+
+
+if __name__ == "__main__":
+    unittest.main()
