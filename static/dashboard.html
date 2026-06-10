@@ -300,6 +300,8 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
 .side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+/* visual hierarchy: nav surfaces distinct from content */
+.main{min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 .sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
 .sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:13.5px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut);background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:2px 8px;line-height:1.4}
@@ -318,9 +320,9 @@ body{background:var(--canvas)}
 .themeswitch button{border:0;border-right:1px solid var(--bd);background:var(--card);color:var(--mut);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer}
 .themeswitch button:last-child{border-right:0}.themeswitch button.on{background:var(--hover);color:var(--tx);font-weight:600}
 .main{min-width:0;display:flex;flex-direction:column}
-.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--bg);flex-wrap:wrap;position:sticky;top:0;z-index:6}
+.topbar{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bd);background:var(--canvas);flex-wrap:wrap;position:sticky;top:0;z-index:6}
 .topbar .envlbl{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
-.content{padding:16px;max-width:1180px;flex:1 1 auto}
+.content{padding:16px;max-width:none;flex:1 1 auto}
 /* host pills in the top bar — flat, neutral selection */
 #hostbar{padding:0;border:0;gap:6px}
 #hostbar .label{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
@@ -573,7 +575,7 @@ a{color:var(--info)}
     <h2>🔔 Alerts</h2>
     <p class="cap" style="margin:-4px 0 12px">
       Push notifications when something noteworthy happens. Configured here — no env vars, no config files.
-      Either channel (Discord or ntfy) can be used; both are optional. Alerts are
+      Any channel (Discord, ntfy, or Telegram) can be used; all are optional. Alerts are
       edge-triggered (one ping per state change) so they don't spam.</p>
 
     <div id="alertstatus" class="ins info" style="display:none"></div>
@@ -602,6 +604,24 @@ a{color:var(--info)}
                  style="flex:1;min-width:160px;background:#0d1117;color:var(--tx);border:1px solid var(--bd);border-radius:7px;padding:7px 10px;font:inherit">
         </div>
         <div class="cap">Topic is required; server defaults to <code>https://ntfy.sh</code>. Self-hosted ntfy works too.</div>
+      </div>
+
+      <div>
+        <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.02em;margin-bottom:5px">Telegram bot token</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="al_telegram_token" placeholder="123456:ABC-DEF…" autocomplete="off" spellcheck="false"
+                 style="flex:1;background:#0d1117;color:var(--tx);border:1px solid var(--bd);border-radius:7px;padding:7px 10px;font:inherit">
+        </div>
+        <div class="cap" id="al_telegram_state" style="margin-top:4px"></div>
+      </div>
+
+      <div>
+        <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.02em;margin-bottom:5px">Telegram chat ID</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="al_telegram_chat_id" placeholder="-1001234567890" autocomplete="off" spellcheck="false"
+                 style="flex:1;background:#0d1117;color:var(--tx);border:1px solid var(--bd);border-radius:7px;padding:7px 10px;font:inherit">
+        </div>
+        <div class="cap">Required with a bot token. Message your bot once, then read <code>chat.id</code> from <code>getUpdates</code>.</div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
@@ -1411,6 +1431,7 @@ async function loadAlerts(){
   document.getElementById('al_enabled').checked = s.alerts_enabled==='1';
   document.getElementById('al_ntfy_topic').value  = s.ntfy_topic||'';
   document.getElementById('al_ntfy_server').value = s.ntfy_server||'';
+  document.getElementById('al_telegram_chat_id').value = s.telegram_chat_id||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
   // The webhook is a secret — server only returns whether one is set.
@@ -1420,6 +1441,13 @@ async function loadAlerts(){
   document.getElementById('al_discord_state').textContent = s.discord_webhook_url_set
     ? 'A webhook is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.'
     : 'No webhook saved yet.';
+  // Bot token is a secret — same mask + *_set pattern as the Discord webhook.
+  const tinp=document.getElementById('al_telegram_token');
+  if(!ALERTS_LOADED){ tinp.value=''; tinp.placeholder = s.telegram_token_set
+    ? '•••••• token saved — type to replace, clear to remove' : '123456:ABC-DEF…'; }
+  document.getElementById('al_telegram_state').textContent = s.telegram_token_set
+    ? 'A bot token is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.'
+    : 'No bot token saved yet.';
   ALERTS_LOADED=true;
 }
 function showAlertStatus(level, text){
@@ -1433,6 +1461,7 @@ async function saveAlerts(){
     alerts_enabled:   document.getElementById('al_enabled').checked ? '1' : '0',
     ntfy_topic:       document.getElementById('al_ntfy_topic').value.trim(),
     ntfy_server:      document.getElementById('al_ntfy_server').value.trim(),
+    telegram_chat_id: document.getElementById('al_telegram_chat_id').value.trim(),
     alert_min_level:  document.getElementById('al_minlevel').value,
     disk_alert_pct:   String(parseInt(document.getElementById('al_disk').value||'90',10)||90),
   };
@@ -1442,9 +1471,13 @@ async function saveAlerts(){
   const dv = document.getElementById('al_discord').value;
   if(dv === 'CLEAR'){ body.discord_webhook_url=''; }
   else if(dv && dv.trim()){ body.discord_webhook_url = dv.trim(); }
+  const tv = document.getElementById('al_telegram_token').value;
+  if(tv === 'CLEAR'){ body.telegram_token=''; }
+  else if(tv && tv.trim()){ body.telegram_token = tv.trim(); }
   let j; try{ j=await(await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not save settings: '+e); return; }
   document.getElementById('al_discord').value='';
+  document.getElementById('al_telegram_token').value='';
   await loadAlerts();
   showAlertStatus('ok','Settings saved.');
 }
@@ -1456,7 +1489,7 @@ async function testAlerts(){
     showAlertStatus('ok','Test alert sent: '+(j.results||[]).map(r=>r.channel).join(', ')+'.');
   }else{
     const fails=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
-    showAlertStatus('critical', fails || j.reason || 'Test failed — check Discord webhook / ntfy topic.');
+    showAlertStatus('critical', fails || j.reason || 'Test failed — check Discord webhook / ntfy topic / Telegram bot.');
   }
 }
 
@@ -1923,6 +1956,7 @@ function refreshCurrentTab(){
   if(TAB === 'host')      { renderHostTab(); return; }
   if(TAB === 'network')   { renderNetwork(); return; }
   if(TAB === 'security')  { renderSecurity(); return; }
+  if(TAB === 'services')  { renderServicesTab(); return; }
   if(LOCAL_ONLY_TABS.has(TAB)) renderLocalOnlyNotice(TAB);
 }
 
