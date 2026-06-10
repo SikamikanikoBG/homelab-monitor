@@ -17,6 +17,7 @@ RUN mkdir -p /app/static \
       -o /app/static/chart.min.js
 
 COPY app.py /app/app.py
+COPY mcp_status.py /app/mcp_status.py
 COPY probe.py /app/probe.py
 # probe.ps1 is the Windows-host probe: the hub pipes it over SSH to Windows
 # remotes (PowerShell, no install) and gets back the same JSON probe.py emits.

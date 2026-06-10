@@ -50,6 +50,11 @@ h1{font-size:22px;margin:0}.ver{color:var(--mut);font-size:12px;border:1px solid
 .spark.go{animation:sparkfly .62s ease-out forwards}
 @keyframes sparkfly{0%{opacity:1;transform:translate(0,0) scale(1)}100%{opacity:0;transform:translate(var(--dx),var(--dy)) scale(.2)}}
 .live{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:13px;margin-left:auto}
+.mcp-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--bd);background:var(--inset);color:var(--mut);cursor:default;white-space:nowrap;line-height:1.3}
+.mcp-pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.mcp-pill.active{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.mcp-pill.idle{color:var(--mut)}
+.mcp-pill.down{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
 .pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);animation:p 2s infinite}
 @keyframes p{0%{box-shadow:0 0 0 0 #3fb95066}70%{box-shadow:0 0 0 8px #3fb95000}100%{box-shadow:0 0 0 0 #3fb95000}}
 .sub{color:var(--mut);margin:4px 0 14px;font-size:13.5px}
@@ -399,6 +404,7 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
   /* keep the header/live stamp from being clipped at the right edge */
   header{gap:8px}
   .live{font-size:11px}
+  .mcp-pill{font-size:10px;padding:2px 6px;gap:4px}
   /* tighter gutters reclaim width for content on small screens */
   .content{padding-left:13px;padding-right:13px}
   .card{padding:13px 13px}
@@ -451,7 +457,7 @@ a{color:var(--info)}
 <header><h1>🛰️ HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> available</button>
 <button type="button" class="upd osupd" id="osupdbadge" title="One or more machines have OS/kernel updates pending — click for details">⬆ <span id="osupdtext">updates</span></button>
-<span class="live"><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
+<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
 
 <div class="topnav">
@@ -922,9 +928,31 @@ async function loadData(){
   renderData();
   if(TAB==='disks') renderDisksTab();   // populate/refresh disk cards (sig-guarded; won't wipe a scan)
 }
+function fmtMcpAge(sec){
+  if(sec < 60) return sec + 's ago';
+  if(sec < 3600) return Math.floor(sec / 60) + 'm ago';
+  return Math.floor(sec / 3600) + 'h ago';
+}
+function renderMcpPill(s){
+  const el = document.getElementById('mcppill');
+  if(!el) return;
+  if(!s || !s.enabled || s.state === 'off'){ el.hidden = true; return; }
+  el.hidden = false;
+  const labels = {active: 'MCP active', idle: 'MCP idle', down: 'MCP down'};
+  el.textContent = labels[s.state] || 'MCP';
+  el.className = 'mcp-pill ' + (s.state || 'idle');
+  const tip = [];
+  if(s.last_activity_age_s != null) tip.push('Last activity: ' + fmtMcpAge(s.last_activity_age_s));
+  else tip.push('Last activity: never');
+  if(s.active_requests > 0) tip.push('Active requests: ' + s.active_requests);
+  if(s.port) tip.push('Port ' + s.port);
+  el.title = tip.join(' · ');
+}
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
   renderHealth();
+  try{ renderMcpPill(await(await fetch('/api/mcp-status')).json()); }
+  catch(e){ /* leave the pill unchanged on a transient fetch error */ }
 }
 
 // ── Renderers (history-backed tabs) ───────────────────────────────────────────

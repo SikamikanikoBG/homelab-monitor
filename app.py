@@ -34,6 +34,7 @@ except ImportError:
 
 VERSION      = "0.14.3"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
+MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
@@ -3186,6 +3187,56 @@ def favicon():
     open without rendering HTML). Serve the SVG we ship in static/."""
     return app.send_static_file("favicon.svg")
 
+def _mcp_enabled():
+    return os.environ.get("ENABLE_MCP", "1").strip().lower() not in ("0", "false", "no")
+
+def _mcp_port():
+    try:
+        return int(os.environ.get("MCP_PORT", "9810") or 9810)
+    except ValueError:
+        return 9810
+
+def _mcp_probe(port, timeout=0.5):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+def build_mcp_status():
+    """MCP liveness + recent-activity signal for the dashboard status pill."""
+    if not _mcp_enabled():
+        return {"enabled": False, "state": "off"}
+    import mcp_status as ms
+    port = _mcp_port()
+    up = _mcp_probe(port)
+    raw = ms.read_status()
+    in_flight = int(raw.get("in_flight") or 0)
+    last_ts = raw.get("last_activity_ts")
+    age_s = None
+    if last_ts is not None:
+        try:
+            age_s = max(0, int(time.time() - float(last_ts)))
+        except (TypeError, ValueError):
+            age_s = None
+    if not up:
+        state = "down"
+    elif in_flight > 0 or (age_s is not None and age_s <= MCP_IDLE_SEC):
+        state = "active"
+    else:
+        state = "idle"
+    out = {"enabled": True, "up": up, "state": state, "port": port,
+           "active_requests": in_flight}
+    if last_ts is not None:
+        out["last_activity_ts"] = last_ts
+    if age_s is not None:
+        out["last_activity_age_s"] = age_s
+    return out
+
+@app.route("/api/mcp-status")
+def api_mcp_status():
+    return jsonify(build_mcp_status())
+
 @app.route("/api/health")
 def api_health():
     """Current state of the status monitors (Docker + systemd) plus a light GPU/host
@@ -3201,16 +3252,11 @@ def api_health():
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
     update  = HEALTH["update"]  or {"available": False, "current": VERSION}
-    mcp_enabled = os.environ.get("ENABLE_MCP", "1").strip().lower() not in ("0", "false", "no")
-    try:
-        mcp_port = int(os.environ.get("MCP_PORT", "9810") or 9810)
-    except ValueError:
-        mcp_port = 9810
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "docker": docker, "systemd": systemd, "update": update,
                     "os_updates": os_updates_summary(),
                     "diagnostics": local_diagnostics(),
-                    "mcp": {"enabled": mcp_enabled, "port": mcp_port},
+                    "mcp": {"enabled": _mcp_enabled(), "port": _mcp_port()},
                     "overview": build_overview(now, docker, systemd)})
 
 @app.route("/metrics")
