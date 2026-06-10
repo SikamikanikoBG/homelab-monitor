@@ -1895,6 +1895,7 @@ function refreshCurrentTab(){
   if(TAB === 'host')      { renderHostTab(); return; }
   if(TAB === 'network')   { renderNetwork(); return; }
   if(TAB === 'security')  { renderSecurity(); return; }
+  if(TAB === 'services')  { renderServicesTab(); return; }
   if(LOCAL_ONLY_TABS.has(TAB)) renderLocalOnlyNotice(TAB);
 }
 
