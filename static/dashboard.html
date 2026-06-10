@@ -630,6 +630,27 @@ a{color:var(--info)}
   </div>
 </section>
 
+<!-- ───────── Backup (Settings) ───────── -->
+<section data-tab="backup" hidden>
+  <div class="card">
+    <h2>💾 Backup &amp; Restore</h2>
+    <p class="cap" style="margin:-4px 0 12px">
+      Export your SQLite history, events, alert settings, and host registry — or restore a snapshot after a container recreate or disk move.
+      SSH keys under <code>/data/.ssh</code> are <b>not</b> included; back those up separately if needed.</p>
+
+    <div id="backupstatus" class="ins info" style="display:none"></div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+      <button class="rb on" id="bk_download">Download backup</button>
+      <button class="rb" id="bk_restore_btn">Restore from file…</button>
+      <input type="file" id="bk_file" accept=".db,application/x-sqlite3" hidden>
+    </div>
+
+    <p class="cap" style="margin-top:10px">Restore <b>replaces all current database contents</b> with the uploaded file.
+      A safety copy of the previous database is kept alongside it as <code>*.pre-restore-*.bak</code>.</p>
+  </div>
+</section>
+
 <!-- ───────── Hosts (multi-machine monitoring — Issue #35) ───────── -->
 <section data-tab="hosts" hidden>
   <div class="card">
@@ -781,6 +802,7 @@ const TABS = [
   {id:'security',   label:'Security',   charts:false},
   {id:'hosts',      label:'Hosts',      charts:false, settings:true},
   {id:'alerts',     label:'Alerts',     charts:false, settings:true},
+  {id:'backup',     label:'Backup',     charts:false, settings:true},
 ];
 let R = localStorage.getItem('hl_range') || '6h';
 let TAB = (location.hash.slice(1)) || localStorage.getItem('hl_tab') || 'overview';
@@ -906,6 +928,7 @@ function showTab(id){
   document.getElementById('controls').hidden = false;
   buildCharts();   // charts can only size on a visible canvas, so build on show
   if(id==='alerts') loadAlerts();
+  if(id==='backup') hideBackupStatus();
   if(id==='hosts')  loadHosts();
   // Multi-host: scope notice on tabs that are still local-only, plus
   // host-aware renderers on the ones that already speak per-host.
@@ -1457,6 +1480,45 @@ async function testAlerts(){
   }else{
     const fails=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
     showAlertStatus('critical', fails || j.reason || 'Test failed — check Discord webhook / ntfy topic.');
+  }
+}
+
+// ── Backup (settings) tab ─────────────────────────────────────────────────────
+function showBackupStatus(level, text){
+  const el=document.getElementById('backupstatus');
+  el.className='ins '+level; el.style.display='flex';
+  el.innerHTML=`<div class="ic">${ICON[level]||'•'}</div><div><div class="t">${esc(text)}</div></div>`;
+}
+function hideBackupStatus(){
+  const el=document.getElementById('backupstatus');
+  if(el) el.style.display='none';
+}
+function downloadBackup(){
+  showBackupStatus('info','Preparing backup…');
+  window.location.href='/api/backup';
+  setTimeout(()=>showBackupStatus('ok','Download started — check your browser downloads.'), 800);
+}
+async function restoreBackup(file){
+  if(!file) return;
+  if(!confirm('Restore replaces ALL current database contents (history, alerts, hosts). Continue?')) return;
+  showBackupStatus('info','Restoring backup…');
+  const body=new FormData();
+  body.append('backup', file);
+  let j;
+  try{
+    const r=await fetch('/api/backup/restore',{method:'POST',body});
+    j=await r.json();
+    if(!r.ok && !j.error) j={ok:false,error:'Restore failed (HTTP '+r.status+').'};
+  }catch(e){
+    showBackupStatus('critical','Restore failed: '+e);
+    return;
+  }
+  document.getElementById('bk_file').value='';
+  if(j.ok){
+    showBackupStatus('ok', j.message || 'Backup restored.');
+    loadData(); loadHealth(); loadFleet(); loadHosts(); loadAlerts();
+  }else{
+    showBackupStatus('critical', j.error || 'Restore failed.');
   }
 }
 
@@ -2574,6 +2636,9 @@ document.querySelector(`.rb[data-r="${R}"]`)?.classList.add('on');
 window.addEventListener('hashchange',()=>{const h=location.hash.slice(1); if(h && TABS.some(t=>t.id===h) && h!==TAB) showTab(h);});
 document.getElementById('al_save').onclick = saveAlerts;
 document.getElementById('al_test').onclick = testAlerts;
+document.getElementById('bk_download').onclick = downloadBackup;
+document.getElementById('bk_restore_btn').onclick = () => document.getElementById('bk_file').click();
+document.getElementById('bk_file').onchange = e => { const f=e.target.files&&e.target.files[0]; if(f) restoreBackup(f); };
 document.getElementById('h_add').onclick = addHost;
 document.getElementById('h_scan').onclick = scanLAN;
 document.getElementById('h_name').addEventListener('keydown', e => { if(e.key==='Enter') addHost(); });

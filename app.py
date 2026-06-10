@@ -18,13 +18,14 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct
+import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
 except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file, after_this_request
+import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
                                    REGISTRY, CollectorRegistry)
@@ -86,21 +87,8 @@ if _PROM_OK:
         "model_vram":        Gauge("homelab_model_loaded_vram_mb","Model VRAM loaded (MB)",             ["server", "model"]),
     }
 LOCK = threading.Lock()
-# Open the history DB, but never let a missing/unwritable /data mount kill the
-# whole container at import — a newbie who forgets the `./data:/data` mount should
-# still get a running dashboard (with a diagnostics warning), not a crash loop.
-# Fall back to an in-memory DB so the app boots; history just doesn't persist.
-DB_EPHEMERAL = False
-try:
-    DB = sqlite3.connect(DB_PATH, check_same_thread=False)
-    DB.execute("PRAGMA journal_mode=WAL")
-except sqlite3.OperationalError as e:
-    print(f"WARNING: cannot open DB at {DB_PATH} ({e}); "
-          f"falling back to in-memory (history will not persist). "
-          f"Mount a writable ./data:/data to keep history.", flush=True)
-    DB = sqlite3.connect(":memory:", check_same_thread=False)
-    DB_EPHEMERAL = True
-DB.executescript("""
+_DB_MAINTENANCE = False   # True during backup/restore — collector skips DB writes
+_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, util REAL, mem_used REAL, mem_total REAL, power REAL, temp REAL);
 CREATE TABLE IF NOT EXISTS proc(ts INTEGER, service TEXT, mem REAL);
 CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL);
@@ -119,13 +107,60 @@ CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
 CREATE INDEX IF NOT EXISTS idx_models_ts ON models(ts);
 CREATE INDEX IF NOT EXISTS idx_edges_ts  ON edges(ts);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_event ON events(ts, service, kind);
-""")
-for col in ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL"):
+"""
+_SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL")
+
+def _data_dir():
+    return os.path.dirname(os.path.abspath(DB_PATH)) or "."
+
+def _data_dir_writable():
+    d = _data_dir()
     try:
-        DB.execute(f"ALTER TABLE samples ADD COLUMN {col}")
-    except sqlite3.OperationalError:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(d, os.W_OK)
+
+def _open_db_connection(path):
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def _apply_schema_migrations(conn):
+    conn.executescript(_DB_SCHEMA)
+    for col in _SAMPLE_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE samples ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+
+def reopen_db():
+    """Close and reopen the global DB handle after a restore (same path, new file)."""
+    global DB, DB_EPHEMERAL
+    try:
+        DB.close()
+    except Exception:
         pass
-DB.commit()
+    os.makedirs(_data_dir(), exist_ok=True)
+    DB = _open_db_connection(DB_PATH)
+    _apply_schema_migrations(DB)
+    DB_EPHEMERAL = False
+
+# Open the history DB, but never let a missing/unwritable /data mount kill the
+# whole container at import — a newbie who forgets the `./data:/data` mount should
+# still get a running dashboard (with a diagnostics warning), not a crash loop.
+# Fall back to an in-memory DB so the app boots; history just doesn't persist.
+DB_EPHEMERAL = False
+try:
+    DB = _open_db_connection(DB_PATH)
+except sqlite3.OperationalError as e:
+    print(f"WARNING: cannot open DB at {DB_PATH} ({e}); "
+          f"falling back to in-memory (history will not persist). "
+          f"Mount a writable ./data:/data to keep history.", flush=True)
+    DB = _open_db_connection(":memory:")
+    DB_EPHEMERAL = True
+_apply_schema_migrations(DB)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
           "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None}
@@ -3007,6 +3042,8 @@ def sample_once():
 
     host = read_host()
     ts = int(time.time())
+    if _DB_MAINTENANCE:
+        return
     with LOCK:
         # When the GPU is absent/failed, store NULL for the GPU columns (not 0) so
         # history charts skip the gap via AVG() instead of showing a fake 0 dip;
@@ -3050,6 +3087,8 @@ def oom_scan():
                 ets = int(time.mktime(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))) if m else int(time.time())
             except Exception:
                 ets = int(time.time())
+            if _DB_MAINTENANCE:
+                continue
             with LOCK:
                 DB.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)", (ets, svc, "oom", line.strip()[:300]))
                 DB.commit()
@@ -3538,6 +3577,85 @@ def api_hosts_run(name):
     if result is None:
         return jsonify({"ok": False, "error": "no such host"}), 404
     return jsonify(result)
+
+@app.route("/api/backup")
+def api_backup_download():
+    """Stream a consistent SQLite snapshot (VACUUM INTO) of the live database."""
+    if _DB_MAINTENANCE:
+        return jsonify({"ok": False, "error": "Database maintenance in progress."}), 503
+    if not _data_dir_writable():
+        return jsonify({"ok": False, "error": "Cannot write backup — mount a writable /data volume."}), 400
+    tmp_path = None
+    try:
+        with LOCK:
+            fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix=".backup_", dir=_data_dir())
+            os.close(fd)
+            db_backup.vacuum_into(DB, tmp_path)
+    except Exception as e:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+        return jsonify({"ok": False, "error": "Backup failed: %s" % e}), 500
+
+    @after_this_request
+    def _cleanup_snapshot(resp):
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        return resp
+
+    return send_file(tmp_path, mimetype="application/x-sqlite3", as_attachment=True,
+                     download_name=db_backup.backup_filename())
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    """Replace the live database with an uploaded backup snapshot."""
+    global _DB_MAINTENANCE
+    if _DB_MAINTENANCE:
+        return jsonify({"ok": False, "error": "Database maintenance already in progress."}), 503
+    if not _data_dir_writable():
+        return jsonify({"ok": False, "error": "Cannot restore — mount a writable /data volume."}), 400
+    upload = request.files.get("backup")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "No backup file uploaded."}), 400
+
+    upload_path = None
+    try:
+        fd, upload_path = tempfile.mkstemp(suffix=".db", prefix=".restore_upload_", dir=_data_dir())
+        os.close(fd)
+        upload.save(upload_path)
+        ok, err = db_backup.validate_backup(upload_path)
+        if not ok:
+            return jsonify({"ok": False, "error": err}), 400
+
+        with LOCK:
+            _DB_MAINTENANCE = True
+            try:
+                if os.path.isfile(DB_PATH):
+                    shutil.copy2(DB_PATH, "%s.pre-restore-%d.bak" % (DB_PATH, int(time.time())))
+                try:
+                    DB.close()
+                except Exception:
+                    pass
+                db_backup.remove_wal_sidecars(DB_PATH)
+                os.replace(upload_path, DB_PATH)
+                upload_path = None
+                db_backup.remove_wal_sidecars(DB_PATH)
+                reopen_db()
+            except Exception as e:
+                try:
+                    reopen_db()
+                except Exception:
+                    pass
+                return jsonify({"ok": False, "error": "Restore failed: %s" % e}), 500
+            finally:
+                _DB_MAINTENANCE = False
+
+        return jsonify({"ok": True,
+                        "message": "Backup restored. History and settings have been reloaded."})
+    finally:
+        if upload_path:
+            try: os.unlink(upload_path)
+            except OSError: pass
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
