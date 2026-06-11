@@ -1289,6 +1289,27 @@ def _listen_inode_to_port():
             continue
     return inodes
 
+def _cgroup_pids(control_group):
+    """Return all PIDs in a systemd service's cgroup.
+
+    Reads /sys/fs/cgroup/<control_group>/cgroup.procs to get every process
+    belonging to the unit. This covers child/forking processes that may own
+    listening sockets even though MainPID does not. Returns an empty list if
+    the cgroup path is empty or unreadable (e.g. on hosts without cgroupfs).
+    """
+    if not control_group:
+        return []
+    # Normalize: systemd may return the cgroup path with a leading slash.
+    # cgroup v1 and v2 both expose cgroup.procs under the same hierarchy.
+    for base in ("/sys/fs/cgroup", "/sys/fs/cgroup/unified"):
+        path = f"{base.rstrip('/')}/{control_group.lstrip('/')}/cgroup.procs"
+        try:
+            with open(path) as f:
+                return [int(line.strip()) for line in f if line.strip()]
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
+            continue
+    return []
+
 def _ports_for_pid(pid, inode_to_port):
     """LISTEN ports owned by `pid` by walking /proc/<pid>/fd/* for socket:[N]
     symlinks and joining inodes to ports. Empty list on any access failure —
@@ -1412,6 +1433,17 @@ def collect_systemd():
                 if ex is not None:
                     s["exit_status"] = int(ex)
             s["ports"] = _ports_for_pid(pid, inode_to_port)
+            if not s["ports"]:
+                # MainPID owns no listening sockets — walk the service's full
+                # cgroup to cover child/forking processes (e.g. Pi-hole FTL,
+                # dnsmasq).  Falls back gracefully if cgroup is unreadable.
+                cgroup = svc_props.get("ControlGroup")
+                for cpid in _cgroup_pids(cgroup):
+                    if cpid == pid:
+                        continue
+                    s["ports"] = _ports_for_pid(cpid, inode_to_port)
+                    if s["ports"]:
+                        break
             s.pop("_obj_path", None)
     except Exception as e:
         return {"available": False, "reason": f"systemd query failed: {e}", "services": [], "summary": {}}
