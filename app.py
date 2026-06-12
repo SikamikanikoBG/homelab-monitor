@@ -18,13 +18,14 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct
+import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
 except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file, after_this_request
+import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
                                    REGISTRY, CollectorRegistry)
@@ -34,6 +35,7 @@ except ImportError:
 
 VERSION      = "0.14.4"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
+MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
@@ -85,21 +87,8 @@ if _PROM_OK:
         "model_vram":        Gauge("homelab_model_loaded_vram_mb","Model VRAM loaded (MB)",             ["server", "model"]),
     }
 LOCK = threading.Lock()
-# Open the history DB, but never let a missing/unwritable /data mount kill the
-# whole container at import — a newbie who forgets the `./data:/data` mount should
-# still get a running dashboard (with a diagnostics warning), not a crash loop.
-# Fall back to an in-memory DB so the app boots; history just doesn't persist.
-DB_EPHEMERAL = False
-try:
-    DB = sqlite3.connect(DB_PATH, check_same_thread=False)
-    DB.execute("PRAGMA journal_mode=WAL")
-except sqlite3.OperationalError as e:
-    print(f"WARNING: cannot open DB at {DB_PATH} ({e}); "
-          f"falling back to in-memory (history will not persist). "
-          f"Mount a writable ./data:/data to keep history.", flush=True)
-    DB = sqlite3.connect(":memory:", check_same_thread=False)
-    DB_EPHEMERAL = True
-DB.executescript("""
+_DB_MAINTENANCE = False   # True during backup/restore — collector skips DB writes
+_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, util REAL, mem_used REAL, mem_total REAL, power REAL, temp REAL);
 CREATE TABLE IF NOT EXISTS proc(ts INTEGER, service TEXT, mem REAL);
 CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL);
@@ -118,13 +107,60 @@ CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
 CREATE INDEX IF NOT EXISTS idx_models_ts ON models(ts);
 CREATE INDEX IF NOT EXISTS idx_edges_ts  ON edges(ts);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_event ON events(ts, service, kind);
-""")
-for col in ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL"):
+"""
+_SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL")
+
+def _data_dir():
+    return os.path.dirname(os.path.abspath(DB_PATH)) or "."
+
+def _data_dir_writable():
+    d = _data_dir()
     try:
-        DB.execute(f"ALTER TABLE samples ADD COLUMN {col}")
-    except sqlite3.OperationalError:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(d, os.W_OK)
+
+def _open_db_connection(path):
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def _apply_schema_migrations(conn):
+    conn.executescript(_DB_SCHEMA)
+    for col in _SAMPLE_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE samples ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+
+def reopen_db():
+    """Close and reopen the global DB handle after a restore (same path, new file)."""
+    global DB, DB_EPHEMERAL
+    try:
+        DB.close()
+    except Exception:
         pass
-DB.commit()
+    os.makedirs(_data_dir(), exist_ok=True)
+    DB = _open_db_connection(DB_PATH)
+    _apply_schema_migrations(DB)
+    DB_EPHEMERAL = False
+
+# Open the history DB, but never let a missing/unwritable /data mount kill the
+# whole container at import — a newbie who forgets the `./data:/data` mount should
+# still get a running dashboard (with a diagnostics warning), not a crash loop.
+# Fall back to an in-memory DB so the app boots; history just doesn't persist.
+DB_EPHEMERAL = False
+try:
+    DB = _open_db_connection(DB_PATH)
+except sqlite3.OperationalError as e:
+    print(f"WARNING: cannot open DB at {DB_PATH} ({e}); "
+          f"falling back to in-memory (history will not persist). "
+          f"Mount a writable ./data:/data to keep history.", flush=True)
+    DB = _open_db_connection(":memory:")
+    DB_EPHEMERAL = True
+_apply_schema_migrations(DB)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
           "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None}
@@ -2707,10 +2743,12 @@ SETTING_DEFAULTS = {
     "discord_webhook_url": "",
     "ntfy_topic":          "",
     "ntfy_server":         "https://ntfy.sh",
+    "telegram_token":      "",
+    "telegram_chat_id":    "",
     "alert_min_level":     "warning",  # "warning" or "critical"
     "disk_alert_pct":      "90",       # disk usage % that trips an alert
 }
-SETTING_SECRETS = {"discord_webhook_url"}   # never round-tripped to the UI in full
+SETTING_SECRETS = {"discord_webhook_url", "telegram_token"}   # never round-tripped to the UI in full
 
 def get_settings():
     """Return the full settings dict (defaults + persisted overrides)."""
@@ -2735,7 +2773,7 @@ def save_settings(updates):
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
 
-# ── Notifier: Discord webhook + ntfy.sh ──────────────────────────────────────
+# ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
 # doesn't spam the channel. A key clears when the underlying condition recovers
 # (container becomes healthy again, disk drops below threshold, etc.), so the
@@ -2775,6 +2813,17 @@ def send_ntfy(server, topic, level, title, detail):
               "Tags":     _NTFY_T.get(level, "information_source")}
     return _post_text(url, detail, hdr)
 
+def _tg_escape(text):
+    """Escape Telegram legacy-Markdown metacharacters in user-supplied text."""
+    return (text or "").replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*") \
+                       .replace("`", "\\`").replace("[", "\\[")
+
+def _post_to_telegram(token, chat_id, level, title, body):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    text = (f"*{_tg_escape(title)}*\n\n{_tg_escape(body)}\n\n"
+            f"_HomeLab Monitor · {level}_")
+    return _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+
 def dispatch_alert(s, level, title, detail):
     """Send to whichever channels are configured. Returns list of (channel, ok, err)."""
     out = []
@@ -2785,6 +2834,10 @@ def dispatch_alert(s, level, title, detail):
         try: send_ntfy(s.get("ntfy_server") or "https://ntfy.sh",
                        s["ntfy_topic"], level, title, detail); out.append(("ntfy", True, None))
         except Exception as e: out.append(("ntfy", False, str(e)))
+    if s.get("telegram_token") and s.get("telegram_chat_id"):
+        try: _post_to_telegram(s["telegram_token"], s["telegram_chat_id"],
+                               level, title, detail); out.append(("telegram", True, None))
+        except Exception as e: out.append(("telegram", False, str(e)))
     return out
 
 def _emit(s, key, level, title, detail):
@@ -2807,7 +2860,8 @@ def notify_scan():
     s = get_settings()
     if s.get("alerts_enabled") != "1":
         return
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")):
+    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
+            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
         return
 
     # ── Docker containers: edge-trigger on crit/warn, clear on ok ─────────────
@@ -3052,6 +3106,8 @@ def sample_once():
 
     host = read_host()
     ts = int(time.time())
+    if _DB_MAINTENANCE:
+        return
     with LOCK:
         # When the GPU is absent/failed, store NULL for the GPU columns (not 0) so
         # history charts skip the gap via AVG() instead of showing a fake 0 dip;
@@ -3095,6 +3151,8 @@ def oom_scan():
                 ets = int(time.mktime(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))) if m else int(time.time())
             except Exception:
                 ets = int(time.time())
+            if _DB_MAINTENANCE:
+                continue
             with LOCK:
                 DB.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)", (ets, svc, "oom", line.strip()[:300]))
                 DB.commit()
@@ -3225,12 +3283,111 @@ def healthz():
     instant and never gets blocked behind a slow collector pass."""
     return jsonify({"status": "ok", "version": VERSION}), 200
 
+@app.route("/api/changelog")
+def api_changelog():
+    """Serve the bundled CHANGELOG.md, sliced to a version range, so the dashboard's
+    one-time 'what's new' modal can show exactly what shipped — straight from the
+    image, no GitHub round-trip (works fully offline). Read-only.
+      ?to=<ver>     newest version to include (default: the running VERSION)
+      ?since=<ver>  exclusive lower bound — return every section newer than it,
+                    up to `to` (the multi-version roll-up). Omit for just `to`."""
+    to_v = request.args.get("to") or VERSION
+    since_v = request.args.get("since")
+    to_t = _parse_semver(to_v)
+    since_t = _parse_semver(since_v) if since_v else None
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return jsonify({"current": VERSION, "sections": [], "markdown": ""})
+    # Split on "## [x.y.z](url) — date" headers (Keep-a-Changelog style).
+    hdr = re.compile(r"^##\s*\[([^\]]+)\]\(([^)]*)\)\s*[—\-–]?\s*(.*)$")
+    sections, cur = [], None
+    for line in text.splitlines():
+        m = hdr.match(line)
+        if m:
+            if cur:
+                sections.append(cur)
+            cur = {"version": m.group(1).strip(), "url": m.group(2).strip(),
+                   "date": m.group(3).strip(), "lines": [line]}
+        elif cur is not None:
+            cur["lines"].append(line)
+    if cur:
+        sections.append(cur)
+    picked = []
+    for s in sections:                       # file is newest-first
+        sv = _parse_semver(s["version"])
+        if sv > to_t:
+            continue
+        if since_t is not None:
+            if sv > since_t:
+                picked.append(s)
+        else:
+            picked.append(s)                 # no lower bound → just the newest <= to
+            break
+    md = "\n".join("\n".join(s["lines"]).rstrip() for s in picked)
+    return jsonify({"current": VERSION, "to": to_v, "since": since_v,
+                    "sections": [{"version": s["version"], "date": s["date"], "url": s["url"]}
+                                 for s in picked],
+                    "markdown": md})
+
 @app.route("/favicon.ico")
 def favicon():
     """Default-favicon URL — browsers ask for /favicon.ico even when an explicit
     <link rel="icon"> points elsewhere (during early page load, or for tabs that
     open without rendering HTML). Serve the SVG we ship in static/."""
     return app.send_static_file("favicon.svg")
+
+def _mcp_enabled():
+    return os.environ.get("ENABLE_MCP", "1").strip().lower() not in ("0", "false", "no")
+
+def _mcp_port():
+    try:
+        return int(os.environ.get("MCP_PORT", "9810") or 9810)
+    except ValueError:
+        return 9810
+
+def _mcp_probe(port, timeout=0.5):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+def build_mcp_status():
+    """MCP liveness + recent-activity signal for the dashboard status pill."""
+    if not _mcp_enabled():
+        return {"enabled": False, "state": "off"}
+    import mcp_status as ms
+    port = _mcp_port()
+    up = _mcp_probe(port)
+    raw = ms.read_status()
+    in_flight = int(raw.get("in_flight") or 0)
+    last_ts = raw.get("last_activity_ts")
+    age_s = None
+    if last_ts is not None:
+        try:
+            age_s = max(0, int(time.time() - float(last_ts)))
+        except (TypeError, ValueError):
+            age_s = None
+    if not up:
+        state = "down"
+    elif in_flight > 0 or (age_s is not None and age_s <= MCP_IDLE_SEC):
+        state = "active"
+    else:
+        state = "idle"
+    out = {"enabled": True, "up": up, "state": state, "port": port,
+           "active_requests": in_flight}
+    if last_ts is not None:
+        out["last_activity_ts"] = last_ts
+    if age_s is not None:
+        out["last_activity_age_s"] = age_s
+    return out
+
+@app.route("/api/mcp-status")
+def api_mcp_status():
+    return jsonify(build_mcp_status())
 
 @app.route("/api/health")
 def api_health():
@@ -3247,16 +3404,11 @@ def api_health():
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
     update  = HEALTH["update"]  or {"available": False, "current": VERSION}
-    mcp_enabled = os.environ.get("ENABLE_MCP", "1").strip().lower() not in ("0", "false", "no")
-    try:
-        mcp_port = int(os.environ.get("MCP_PORT", "9810") or 9810)
-    except ValueError:
-        mcp_port = 9810
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "docker": docker, "systemd": systemd, "update": update,
                     "os_updates": os_updates_summary(),
                     "diagnostics": local_diagnostics(),
-                    "mcp": {"enabled": mcp_enabled, "port": mcp_port},
+                    "mcp": {"enabled": _mcp_enabled(), "port": _mcp_port()},
                     "overview": build_overview(now, docker, systemd)})
 
 @app.route("/metrics")
@@ -3539,6 +3691,85 @@ def api_hosts_run(name):
         return jsonify({"ok": False, "error": "no such host"}), 404
     return jsonify(result)
 
+@app.route("/api/backup")
+def api_backup_download():
+    """Stream a consistent SQLite snapshot (VACUUM INTO) of the live database."""
+    if _DB_MAINTENANCE:
+        return jsonify({"ok": False, "error": "Database maintenance in progress."}), 503
+    if not _data_dir_writable():
+        return jsonify({"ok": False, "error": "Cannot write backup — mount a writable /data volume."}), 400
+    tmp_path = None
+    try:
+        with LOCK:
+            fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix=".backup_", dir=_data_dir())
+            os.close(fd)
+            db_backup.vacuum_into(DB, tmp_path)
+    except Exception as e:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+        return jsonify({"ok": False, "error": "Backup failed: %s" % e}), 500
+
+    @after_this_request
+    def _cleanup_snapshot(resp):
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        return resp
+
+    return send_file(tmp_path, mimetype="application/x-sqlite3", as_attachment=True,
+                     download_name=db_backup.backup_filename())
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    """Replace the live database with an uploaded backup snapshot."""
+    global _DB_MAINTENANCE
+    if _DB_MAINTENANCE:
+        return jsonify({"ok": False, "error": "Database maintenance already in progress."}), 503
+    if not _data_dir_writable():
+        return jsonify({"ok": False, "error": "Cannot restore — mount a writable /data volume."}), 400
+    upload = request.files.get("backup")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "No backup file uploaded."}), 400
+
+    upload_path = None
+    try:
+        fd, upload_path = tempfile.mkstemp(suffix=".db", prefix=".restore_upload_", dir=_data_dir())
+        os.close(fd)
+        upload.save(upload_path)
+        ok, err = db_backup.validate_backup(upload_path)
+        if not ok:
+            return jsonify({"ok": False, "error": err}), 400
+
+        with LOCK:
+            _DB_MAINTENANCE = True
+            try:
+                if os.path.isfile(DB_PATH):
+                    shutil.copy2(DB_PATH, "%s.pre-restore-%d.bak" % (DB_PATH, int(time.time())))
+                try:
+                    DB.close()
+                except Exception:
+                    pass
+                db_backup.remove_wal_sidecars(DB_PATH)
+                os.replace(upload_path, DB_PATH)
+                upload_path = None
+                db_backup.remove_wal_sidecars(DB_PATH)
+                reopen_db()
+            except Exception as e:
+                try:
+                    reopen_db()
+                except Exception:
+                    pass
+                return jsonify({"ok": False, "error": "Restore failed: %s" % e}), 500
+            finally:
+                _DB_MAINTENANCE = False
+
+        return jsonify({"ok": True,
+                        "message": "Backup restored. History and settings have been reloaded."})
+    finally:
+        if upload_path:
+            try: os.unlink(upload_path)
+            except OSError: pass
+
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     if request.method == "POST":
@@ -3554,9 +3785,10 @@ def api_settings():
 def api_notify_test():
     """Send a one-shot test alert using the currently saved settings."""
     s = get_settings()
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")):
+    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
+            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
         return jsonify({"ok": False, "results": [],
-                        "reason": "No Discord webhook or ntfy topic configured."}), 400
+                        "reason": "No Discord webhook, ntfy topic, or Telegram bot configured."}), 400
     results = dispatch_alert(s, "info",
                              "✅ HomeLab Monitor — test alert",
                              "If you see this, alerts are wired up correctly.")

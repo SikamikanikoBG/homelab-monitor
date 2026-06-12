@@ -11,12 +11,17 @@ RUN pip install --no-cache-dir flask==3.0.3 jeepney==0.8.0 prometheus_client==0.
  && apt-get install -y --no-install-recommends curl ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
-# Vendor Chart.js so the dashboard works fully offline / on a LAN with no internet.
+# Vendor Chart.js + html2canvas so the dashboard works fully offline / on a LAN
+# with no internet. html2canvas powers the Snapshot/Share PNG capture (#31/#87).
 RUN mkdir -p /app/static \
  && curl -fsSL https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js \
-      -o /app/static/chart.min.js
+      -o /app/static/chart.min.js \
+ && curl -fsSL https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js \
+      -o /app/static/html2canvas.min.js
 
 COPY app.py /app/app.py
+COPY db_backup.py /app/db_backup.py
+COPY mcp_status.py /app/mcp_status.py
 COPY probe.py /app/probe.py
 # probe.ps1 is the Windows-host probe: the hub pipes it over SSH to Windows
 # remotes (PowerShell, no install) and gets back the same JSON probe.py emits.

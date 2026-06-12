@@ -32,14 +32,19 @@ Guardrails: **read-only**. There are no write tools. Any future write capability
 labelled destructive, and gated behind explicit config — per issue #70.
 """
 
+import functools
 import json
 import os
 import sys
 
-# Make `import homelab_client` work regardless of the caller's cwd.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Make `import homelab_client` / `mcp_status` work regardless of the caller's cwd.
+_here = os.path.dirname(os.path.abspath(__file__))
+for _p in (_here, os.path.dirname(_here)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import homelab_client as hc  # noqa: E402
+import mcp_status as ms  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
@@ -59,9 +64,22 @@ INSTRUCTIONS = (
 mcp = FastMCP("homelab-monitor", instructions=INSTRUCTIONS)
 
 
+def _track(fn):
+    """Bump the shared MCP activity file on every tool/resource invocation."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        ms.record_activity()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            ms.clear_activity()
+    return wrapper
+
+
 # ── tools (read-only) ─────────────────────────────────────────────────────────
 
 @mcp.tool()
+@_track
 def list_hosts() -> dict:
     """List every host in the fleet with headline vitals (hub listed first).
 
@@ -72,6 +90,7 @@ def list_hosts() -> dict:
 
 
 @mcp.tool()
+@_track
 def get_host(name: str) -> dict:
     """Full System / Network / Security inventory for a single host.
 
@@ -81,6 +100,7 @@ def get_host(name: str) -> dict:
 
 
 @mcp.tool()
+@_track
 def get_snapshot() -> dict:
     """Current live vitals across the hub: GPU, host RAM/CPU, Docker and systemd
     health summaries (with any problem containers / failed units), pending OS
@@ -90,6 +110,7 @@ def get_snapshot() -> dict:
 
 
 @mcp.tool()
+@_track
 def get_containers() -> dict:
     """Full Docker container list (Containers tab): per container name, image, state,
     health, exposed ports, RAM (`mem_bytes`), VRAM (`vram_bytes`), image disk and
@@ -99,6 +120,7 @@ def get_containers() -> dict:
 
 
 @mcp.tool()
+@_track
 def get_services() -> dict:
     """Full systemd unit list (Services tab): per unit active/sub state, description,
     listening ports, RAM, uptime, admin/watched flags and status verdict — plus the
@@ -108,6 +130,7 @@ def get_services() -> dict:
 
 
 @mcp.tool()
+@_track
 def get_memory(range: str = "6h") -> dict:
     """RAM breakdown behind the memory treemap: per-service peak/avg/present RAM over
     `range`, the current RAM per process right now, kernel (non-reclaimable) memory,
@@ -117,6 +140,7 @@ def get_memory(range: str = "6h") -> dict:
 
 
 @mcp.tool()
+@_track
 def get_gpu(range: str = "6h") -> dict:
     """GPU detail: current utilisation, VRAM used/total, power and temperature, plus
     per-model VRAM use and the caller→server attribution over `range`. Answers "why
@@ -126,6 +150,7 @@ def get_gpu(range: str = "6h") -> dict:
 
 
 @mcp.tool()
+@_track
 def get_history(range: str = "6h") -> dict:
     """Charted time-series the dashboard graphs over `range`: timestamps + aligned
     arrays for GPU util/VRAM/power/temp and host CPU/RAM/load/temp. Use for trends.
@@ -134,6 +159,7 @@ def get_history(range: str = "6h") -> dict:
 
 
 @mcp.tool()
+@_track
 def scan_disk(path: str = "/", rescan: bool = False) -> dict:
     """WizTree-style nested folder-size treemap for a host path (Disks tab). Wraps the
     monitor's on-demand scan and polls until done. `path` is an absolute host path
@@ -144,6 +170,7 @@ def scan_disk(path: str = "/", rescan: bool = False) -> dict:
 
 
 @mcp.tool()
+@_track
 def get_ai_models(range: str = "6h") -> dict:
     """AI model servers: which models are loaded, their VRAM use, and who is driving
     them (caller→server connection-seconds attribution over `range`, e.g. "6h",
@@ -153,6 +180,7 @@ def get_ai_models(range: str = "6h") -> dict:
 
 
 @mcp.tool()
+@_track
 def get_events(range: str = "6h") -> dict:
     """Recent edge-triggered events over `range` (OOM kills, threshold crossings),
     each with a blame line where one can be attributed, plus derived insights.
@@ -161,6 +189,7 @@ def get_events(range: str = "6h") -> dict:
 
 
 @mcp.tool()
+@_track
 def get_alerts(range: str = "6h") -> dict:
     """Alias for `get_events` — the monitor's alerts are its edge-triggered events."""
     return hc.get_alerts(range)
@@ -169,12 +198,14 @@ def get_alerts(range: str = "6h") -> dict:
 # ── resources ────────────────────────────────────────────────────────────────
 
 @mcp.resource("homelab://metrics", mime_type="text/plain")
+@_track
 def metrics_resource() -> str:
     """Prometheus exposition text from the monitor's /metrics endpoint."""
     return hc.get_metrics()
 
 
 @mcp.resource("homelab://health", mime_type="application/json")
+@_track
 def health_resource() -> str:
     """Monitor liveness + running version (from /healthz)."""
     return json.dumps(hc.get_version(), indent=2)
@@ -194,6 +225,7 @@ def _changelog_path():
 
 
 @mcp.resource("homelab://changelog", mime_type="text/markdown")
+@_track
 def changelog_resource() -> str:
     """The monitor's CHANGELOG, bundled into the image, for version context."""
     path = _changelog_path()
