@@ -1950,10 +1950,15 @@ def get_hub_pubkey():
         return f"# pubkey unavailable: {e}"
 
 def _parse_ssh_target(t):
-    m = _SSH_TARGET_RE.match((t or "").strip())
+    target = (t or "").strip()
+    if target.startswith("-"):
+        return None
+    m = _SSH_TARGET_RE.match(target)
     if not m:
         return None
     g = m.groupdict()
+    if g["user"].startswith("-") or g["host"].startswith("-"):
+        return None
     port = int(g["port"]) if g["port"] else 22
     if not (1 <= port <= 65535):
         return None
@@ -2300,7 +2305,7 @@ def _ssh(user, host, port, cmd, timeout=8):
     t0 = time.time()
     try:
         p = subprocess.run([
-            "ssh", *_SSH_BASE_ARGS, "-p", str(port), f"{user}@{host}", cmd,
+            "ssh", *_SSH_BASE_ARGS, "-p", str(port), "--", f"{user}@{host}", cmd,
         ], capture_output=True, timeout=timeout)
         ms = int((time.time() - t0) * 1000)
         return (p.returncode,
@@ -2319,7 +2324,7 @@ def _ssh_with_stdin(user, host, port, cmd, stdin_bytes, timeout=60):
     t0 = time.time()
     try:
         p = subprocess.run([
-            "ssh", *_SSH_BASE_ARGS, "-p", str(port), f"{user}@{host}", cmd,
+            "ssh", *_SSH_BASE_ARGS, "-p", str(port), "--", f"{user}@{host}", cmd,
         ], input=stdin_bytes, capture_output=True, timeout=timeout)
         ms = int((time.time() - t0) * 1000)
         return (p.returncode,
@@ -2763,15 +2768,29 @@ def get_settings():
         print("settings read error:", e, flush=True)
     return out
 
+def _valid_notify_url(value):
+    value = ("" if value is None else str(value)).strip()
+    if not value:
+        return True
+    try:
+        parsed = urllib.parse.urlparse(value)
+    except Exception:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
 def save_settings(updates):
     """Persist any subset of known setting keys. Unknown keys are ignored."""
+    for key in ("discord_webhook_url", "ntfy_server"):
+        if key in updates and not _valid_notify_url(updates[key]):
+            return f"{key} must be an http(s) URL with a host."
     safe = [(k, "" if v is None else str(v)) for k, v in updates.items() if k in SETTING_DEFAULTS]
     if not safe:
-        return
+        return None
     with LOCK:
         DB.executemany("INSERT INTO settings(key,value) VALUES(?,?) "
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
+    return None
 
 # ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
@@ -3562,7 +3581,7 @@ def _disk_scan_worker(path, real):
         # --max-depth=2 gives two levels at once (folder + its sub-folders) for a
         # nested treemap. du recurses fully regardless of --max-depth, so this is
         # no costlier than depth 1 — it only prints more.
-        r = subprocess.run(["du", "-b", "--max-depth=2", "--one-file-system", real],
+        r = subprocess.run(["du", "-b", "--max-depth=2", "--one-file-system", "--" ,real],
                            capture_output=True, text=True, timeout=600)
         sizes = {}
         for ln in (r.stdout or "").splitlines():
@@ -3778,7 +3797,9 @@ def api_settings():
         # Secrets pass through the "_set: false" sentinel from the UI as a way
         # to clear without revealing the current value.
         updates = {k: body[k] for k in body if k in SETTING_DEFAULTS}
-        save_settings(updates)
+        err = save_settings(updates)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
     return jsonify({"version": VERSION, "settings": _public_settings()})
 
 @app.route("/api/notify/test", methods=["POST"])
