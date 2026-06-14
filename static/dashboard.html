@@ -1256,11 +1256,25 @@ GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker A
     </div>
     <div class="bd">
       <div class="muted" id="updmeta"></div>
-      <div style="margin-top:12px">To update, run this on the host that's running the container:</div>
-      <pre class="cmd" id="updcmd">cd &lt;your-clone-dir&gt; &amp;&amp; git pull &amp;&amp; docker compose up -d --build</pre>
-      <div class="row">
-        <button class="btn" type="button" id="updcopy">📋 Copy command</button>
-        <a class="btn" id="updlink" href="#" target="_blank" rel="noopener">View on GitHub →</a>
+
+      <!-- One-click self-update (only shown when ALLOW_SELF_UPDATE is on) -->
+      <div id="updselfbox" hidden>
+        <div style="margin-top:12px">Update this container in place. It pulls the new image, recreates itself, and verifies it came back healthy — rolling back automatically if it doesn't.</div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" type="button" id="updnowbtn">⬆ Update now</button>
+        </div>
+        <div class="ins" id="updselfstatus" style="display:none"></div>
+        <pre class="cmd" id="updselflog" hidden style="max-height:220px;overflow:auto"></pre>
+      </div>
+
+      <!-- Manual fallback (always available) -->
+      <div id="updmanualbox">
+        <div style="margin-top:12px">To update, run this on the host that's running the container:</div>
+        <pre class="cmd" id="updcmd">cd &lt;your-clone-dir&gt; &amp;&amp; git pull &amp;&amp; docker compose up -d --build</pre>
+        <div class="row">
+          <button class="btn" type="button" id="updcopy">📋 Copy command</button>
+          <a class="btn" id="updlink" href="#" target="_blank" rel="noopener">View on GitHub →</a>
+        </div>
       </div>
       <div class="notes" id="updnotes" hidden></div>
     </div>
@@ -2228,9 +2242,97 @@ function openUpdateModal(up){
   } else {
     notes.hidden = true; notes.innerHTML = '';
   }
+  // One-click self-update is opt-in (ALLOW_SELF_UPDATE on the server). When it's
+  // on, offer the button; the manual command stays as a fallback below it. When
+  // it's off, the box stays hidden and only the manual command shows — exactly
+  // as before.
+  const selfOn = !!up.self_update_enabled;
+  document.getElementById('updselfbox').hidden = !selfOn;
+  if(selfOn){ resetSelfUpdateUI(up.latest); }
+
   document.getElementById('updmodal').classList.add('show');
 }
 function closeUpdateModal(){ document.getElementById('updmodal').classList.remove('show'); }
+
+// ── One-click self-update driver ──────────────────────────────────────────────
+let SELF_UPDATE_POLL = null;       // interval id while polling
+function selfUpdateStatus(level, text){   // reuses the .ins status pattern
+  const el = document.getElementById('updselfstatus');
+  el.className = 'ins ' + level; el.style.display = 'flex';
+  el.innerHTML = `<div class="ic">${ICON[level]||'•'}</div><div><div class="t">${esc(text)}</div></div>`;
+}
+function resetSelfUpdateUI(latest){
+  if(SELF_UPDATE_POLL){ clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null; }
+  const btn = document.getElementById('updnowbtn');
+  btn.disabled = false; btn.textContent = '⬆ Update now';
+  btn.dataset.latest = latest || '';
+  document.getElementById('updselfstatus').style.display = 'none';
+  const log = document.getElementById('updselflog'); log.hidden = true; log.textContent = '';
+}
+async function startSelfUpdate(){
+  const btn = document.getElementById('updnowbtn');
+  const latest = btn.dataset.latest || '';
+  if(!confirm('Update to v'+latest+' now?\n\nThe monitor will pull the new image and restart itself. The dashboard will be briefly unavailable, then reload automatically. If the new version fails its health-check it rolls back to the current one.')) return;
+  btn.disabled = true; btn.textContent = 'Updating…';
+  document.getElementById('updselflog').hidden = false;
+  selfUpdateStatus('info', 'Starting the update…');
+  try{
+    const r = await fetch('/api/update/app', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok){
+      selfUpdateStatus('critical', (j && j.error) || ('Could not start the update (HTTP '+r.status+').'));
+      btn.disabled = false; btn.textContent = '⬆ Update now';
+      return;
+    }
+  }catch(e){
+    selfUpdateStatus('critical', 'Could not start the update: '+e);
+    btn.disabled = false; btn.textContent = '⬆ Update now';
+    return;
+  }
+  pollSelfUpdate();
+}
+function pollSelfUpdate(){
+  if(SELF_UPDATE_POLL) clearInterval(SELF_UPDATE_POLL);
+  const deadline = Date.now() + 3*60*1000;   // tolerate restart/connection-refused for ~3 min
+  const log = document.getElementById('updselflog');
+  SELF_UPDATE_POLL = setInterval(async () => {
+    let st = null;
+    try{
+      const r = await fetch('/api/update/app/status', {cache:'no-store'});
+      st = await r.json();
+    }catch(e){
+      // Expected while the container is mid-restart — keep retrying until the deadline.
+      if(Date.now() > deadline){
+        clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null;
+        selfUpdateStatus('warning', 'Lost contact with the monitor while it restarted. Reload the page to check its status.');
+      }
+      return;
+    }
+    if(st && typeof st.log === 'string'){ log.textContent = st.log; log.scrollTop = log.scrollHeight; }
+    const state = st && st.state;
+    if(state === 'done'){
+      clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null;
+      selfUpdateStatus('ok', 'Updated to v'+((st.target)||'')+'. Reloading…');
+      setTimeout(()=>location.reload(), 2500);
+    } else if(state === 'failed'){
+      clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null;
+      selfUpdateStatus('critical', (st.error||'Update failed.')+' The current version is still running.');
+      document.getElementById('updnowbtn').disabled = false;
+      document.getElementById('updnowbtn').textContent = '⬆ Update now';
+    } else if(state === 'rolled_back'){
+      clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null;
+      selfUpdateStatus('warning', 'The new version failed its health-check, so the previous version was restored. '+(st.error||''));
+      document.getElementById('updnowbtn').disabled = false;
+      document.getElementById('updnowbtn').textContent = '⬆ Update now';
+    } else {
+      selfUpdateStatus('info', state==='restarting' ? 'Restarting on the new version…' : 'Working…');
+    }
+    if(Date.now() > deadline && SELF_UPDATE_POLL){
+      clearInterval(SELF_UPDATE_POLL); SELF_UPDATE_POLL=null;
+      selfUpdateStatus('warning', 'Still working after 3 minutes — reload the page to check its status.');
+    }
+  }, 2000);
+}
 
 // ── OS-updates modal ──────────────────────────────────────────────────────────
 // Severity chips reused by the summary line and each host row, so a glance shows
@@ -4236,6 +4338,7 @@ document.getElementById('updcopy').onclick = async () => {
   b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
   setTimeout(() => { b.textContent = t; }, 1800);
 };
+document.getElementById('updnowbtn').onclick = startSelfUpdate;
 showTab(TAB);
 loadData(); loadHealth(); loadFleet();
 setInterval(()=>{

@@ -14,9 +14,13 @@ It's a thin, well-described wrapper over the monitor's existing **read-only** HT
 endpoints. No collectors are touched, and **nothing is mutated**.
 
 !!! info "Read-only by design"
-    There are no write tools. Any future write capability (run a probe, restart a
-    container, apply an OS update) must be opt-in, clearly labelled destructive, and
-    gated behind explicit config — same philosophy as the rest of the project.
+    There are no write tools in the MCP server. The monitor's **first and only**
+    write action is the opt-in one-click self-update — it lives in the dashboard,
+    is **off by default** (`ALLOW_SELF_UPDATE`), needs the docker socket mounted
+    read-write, and asks for confirmation before it recreates the container. It
+    sets the bar for any future write capability: opt-in, explicitly gated, and
+    clearly labelled — same philosophy as the rest of the project. It is **not**
+    exposed as an MCP tool.
 
 ## Tools
 

@@ -23,7 +23,46 @@ Set these under `environment:` in `docker-compose.yml`. All optional.
 | `WATCH_CONTAINERS` | *(empty)* | Comma-separated container names to always scan for OOM events, even if not GPU-attributed. |
 | `WATCH_SERVICES` | *(empty)* | Comma-separated systemd units to always surface in the Services tab. |
 | `CHECK_UPDATES` | `true` | Whether to poll GitHub releases for "update available" banner. |
+| `ALLOW_SELF_UPDATE` | *(off)* | Opt-in. Adds an **Update now** button to the update modal that pulls the new image, recreates this container, and restarts it (rolling back automatically if the new version fails its health-check). Off by default — see note below. |
+| `SELF_UPDATE_HELPER_IMAGE` | `docker:cli` | Image used for the short-lived detached helper that runs `docker compose` to recreate the container during a self-update. Override only if `docker:cli` isn't reachable in your registry. |
+| `MONITOR_IMAGE` | *(unset)* | Used **internally** by the self-update flow to pin an exact image — the versioned `:x.y.z` tag for the upgrade, the previous image ref/digest for a rollback. You normally never set this by hand; left unset, the shipped compose file falls back to the usual `sikamikaniko123/homelab-monitor:latest`. |
 | `SSH_DIR` | `/data/.ssh` | Where the multi-host SSH keypair lives. Persists across rebuilds. |
+
+### One-click self-update (`ALLOW_SELF_UPDATE`)
+
+This is the first and only action in the monitor that **writes** — everything
+else is read-only. It is therefore **off by default** and must be opted into:
+
+```yaml
+environment:
+  ALLOW_SELF_UPDATE: "1"
+volumes:
+  # Must be read-write (drop the :ro) — creating the update helper is a write
+  # API call. Leave it :ro if you don't enable self-update.
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+When enabled and a newer release exists, the update modal shows an **Update now**
+button. On click (after a confirm) it pulls the new image, launches a detached
+`docker:cli` helper that recreates this container via your compose file, and the
+helper health-checks the result: if the new version doesn't report itself healthy
+within ~60s it rolls back to the image that was running. The dashboard streams the
+log live and reloads itself once the new version is up.
+
+Requirements / caveats:
+
+- The docker socket must be mounted **read-write** (not `:ro`).
+- The container must have been started with **docker compose** (the helper reads
+  the compose project labels to know what to recreate). A plain `docker run`
+  deploy is refused with a clear message — use the manual command instead.
+- The container **restarts**, so the dashboard is briefly unavailable.
+- For the upgrade to pull the **exact** target version (and for a rollback to
+  restore the **exact** previous image), your compose file's image line must use
+  the `image: ${MONITOR_IMAGE:-sikamikaniko123/homelab-monitor:latest}` form —
+  which the shipped `docker-compose.yml` now does. The helper sets `MONITOR_IMAGE`
+  to the immutable `:x.y.z` tag for the pull/up and to the previous image
+  ref/digest on rollback; with a hardcoded `:latest` image line, pinning and
+  rollback would silently degrade to re-pulling `:latest`.
 
 ## Alerts (configured in the UI)
 
@@ -61,7 +100,8 @@ the [repo](https://github.com/SikamikanikoBG/homelab-monitor/blob/main/docker-co
 ```yaml
 services:
   homelab-monitor:
-    image: sikamikaniko123/homelab-monitor:latest
+    # ${MONITOR_IMAGE:-…} lets the self-update flow pin/rollback an exact image
+    image: ${MONITOR_IMAGE:-sikamikaniko123/homelab-monitor:latest}
     container_name: homelab-monitor
     restart: unless-stopped
     network_mode: host          # for direct LAN access + model-server APIs

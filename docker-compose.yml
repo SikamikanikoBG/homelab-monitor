@@ -1,7 +1,8 @@
 services:
   homelab-monitor:
     build: .
-    image: sikamikaniko123/homelab-monitor:latest
+    # MONITOR_IMAGE lets the self-update helper pin an exact image (the versioned tag for the upgrade, the previous digest for rollback); default is identical to before for a normal `docker compose up`.
+    image: ${MONITOR_IMAGE:-sikamikaniko123/homelab-monitor:latest}
     container_name: homelab-monitor
     restart: unless-stopped
     # host networking lets it reach any model server's API (Ollama/vLLM/TGI/…)
@@ -51,8 +52,12 @@ services:
       DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket"
       # WATCH_CONTAINERS: "ollama,immich_machine_learning"  # extra containers to scan for OOM
       # WATCH_SERVICES: "tailscaled,sshd"   # always show these systemd units, even if vendor-shipped
+      # ALLOW_SELF_UPDATE: "1"              # opt-in one-click self-update button (off by default; pulls the new image, recreates & restarts this container)
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # container health, names & model APIs
+      # Read-write (not :ro): the opt-in self-update has to CREATE a detached
+      # docker:cli helper to recreate this container — a write API call. Plain
+      # monitoring only reads; leave :ro if you never set ALLOW_SELF_UPDATE.
+      - /var/run/docker.sock:/var/run/docker.sock      # container health, names & model APIs (+ self-update helper)
       - /:/rootfs:ro                                    # read-only host fs for disk usage
       - ./data:/data                                    # SQLite history persists here
       # systemd service health (optional): expose the host's D-Bus system socket

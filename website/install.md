@@ -30,6 +30,14 @@ Open **`http://<your-host-ip>:9800`** from any device on your LAN or VPN.
     ```
     Your SQLite history at `./data/gpu.db` survives — it's a bind mount.
 
+??? tip "Updating from the dashboard (opt-in)"
+    The commands above are the default way to update. If you'd rather press a
+    button, set `ALLOW_SELF_UPDATE: "1"` and mount the docker socket read-write
+    (drop the `:ro`). When a newer release exists, the update modal then shows an
+    **Update now** button that pulls the new image, recreates the container, and
+    rolls back automatically if the new version fails its health-check. It's off
+    by default — see [Configuration → One-click self-update](configuration.md#one-click-self-update-allow_self_update).
+
 ## Option B — from source
 
 Handy if you're tweaking the code or contributing:

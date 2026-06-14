@@ -50,6 +50,12 @@ CHECK_UPDATES = os.environ.get("CHECK_UPDATES", "true").strip().lower() not in (
 # this network lookup and keep the offline package counts.
 CHECK_OS_UPDATES = os.environ.get("CHECK_OS_UPDATES", "true").strip().lower() not in ("0", "false", "no", "off")
 UPDATE_REPO   = os.environ.get("UPDATE_REPO", "SikamikanikoBG/homelab-monitor")
+# Opt-in one-click self-update button. OFF by default: this is the first action
+# that *writes* (it recreates this very container via a detached docker:cli helper
+# and restarts the app). Needs the docker socket mounted read-write. See
+# start_self_update() and website/configuration.md.
+ALLOW_SELF_UPDATE = os.environ.get("ALLOW_SELF_UPDATE", "").strip().lower() in ("1", "true", "yes", "on")
+SELF_UPDATE_HELPER_IMAGE = os.environ.get("SELF_UPDATE_HELPER_IMAGE", "docker:cli")
 # Split cache: once we know there's an update, the answer won't change for hours
 # so we can cache it long. But "no update found" / network errors should expire
 # sooner — otherwise a release published right after deploy stays invisible for
@@ -226,18 +232,30 @@ _scan_since = {}
 _cpu_prev = {"idle": 0, "total": 0}
 
 # ── Docker API over the unix socket ────────────────────────────────────────────
-def _docker(path):
-    # close() must run even when connect/request/read raise (dockerd slow,
-    # restarting, unreachable) — otherwise the manually-created AF_UNIX socket fd
-    # leaks on every failed call and the process eventually hits its fd limit.
-    c = http.client.HTTPConnection("localhost", timeout=4)
+def _docker_req(method, path, body=None, timeout=8):
+    """Talk to the Docker Engine API over its AF_UNIX socket with an arbitrary
+    method + optional JSON body. Returns (status_code, raw_bytes). Used for the
+    self-update flow, which has to POST (create/start the helper container) —
+    _docker() below is the GET-only convenience wrapper everything else uses.
+    close() runs even on error so the hand-made socket fd never leaks."""
+    c = http.client.HTTPConnection("localhost", timeout=timeout)
     c.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        c.sock.settimeout(4); c.sock.connect(DOCKER_SOCK)
-        c.request("GET", path)
-        return c.getresponse().read()
+        c.sock.settimeout(timeout); c.sock.connect(DOCKER_SOCK)
+        headers, payload = {}, None
+        if body is not None:
+            payload = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        c.request(method, path, body=payload, headers=headers)
+        resp = c.getresponse()
+        return resp.status, resp.read()
     finally:
         c.close()
+
+def _docker(path):
+    # GET-only wrapper kept for the many read-only callers below; returns the raw
+    # body (they json.loads it). Shares the socket pattern via _docker_req.
+    return _docker_req("GET", path, timeout=4)[1]
 
 def containers():
     if time.time() - _ct_cache["at"] < 30 and _ct_cache["list"]:
@@ -1981,6 +1999,262 @@ def collect_update():
     with _UPDATE_LOCK:
         _UPDATE_CACHE.update({"at": now, "data": data})
     return data
+
+# ── Opt-in one-click self-update ──────────────────────────────────────────────
+# A container can't `docker compose up -d` its own container in-process — the
+# process dies mid-recreate. So we delegate the recreate to a DETACHED docker:cli
+# helper that runs the project's compose file and reports progress through the
+# shared ./data bind mount (update_state.json + update.log). The app, once it
+# restarts on the new image, just reads those files back for the status endpoint.
+SELF_UPDATE_IMAGE = "sikamikaniko123/homelab-monitor"   # the image this app ships as
+_SELF_UPDATE_STALE_SEC = 15 * 60   # a non-terminal job older than this is abandoned
+_SELF_UPDATE_DONE = ("done", "failed", "rolled_back")
+
+def _update_state_path():
+    return os.path.join(_data_dir(), "update_state.json")
+
+def _update_log_path():
+    return os.path.join(_data_dir(), "update.log")
+
+def _read_update_state():
+    try:
+        with open(_update_state_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _tail_lines(path, n=200):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except Exception:
+        return ""
+
+def _self_container_name():
+    return os.environ.get("HOSTNAME") or "homelab-monitor"
+
+def _self_update_script(working_dir, project, config_files, service,
+                        target, target_image, previous_image, port):
+    """Build the shell the detached docker:cli helper runs. It writes
+    update_state.json atomically (temp + mv) and appends human lines to
+    update.log at each step, then health-gates the new container and rolls back
+    to previous_image on failure. All label-derived values are shell-quoted.
+
+    The forward pull/up pins MONITOR_IMAGE=<target_image> (the immutable
+    :x.y.z tag) so compose pulls that exact version instead of the moving
+    :latest; rollback pins MONITOR_IMAGE=<previous_image> (the prior digest)
+    so `up` genuinely restores the image we were running before."""
+    q = shlex.quote
+    fflags = " ".join("-f " + q(c) for c in config_files if c)
+    compose = "docker compose %s -p %s" % (fflags, q(project))
+    svc = q(service) if service else ""
+    state_json = q(os.path.join(working_dir, "data", "update_state.json"))
+    log = q(os.path.join(working_dir, "data", "update.log"))
+    # 127.0.0.1 (not "localhost"): the helper's BusyBox wget resolves "localhost"
+    # to IPv6 ::1 first, but the monitor's Flask binds IPv4 0.0.0.0 only — so a
+    # "localhost" gate gets connection-refused on [::1] and the update would
+    # always roll back. Force IPv4 to actually reach the monitor on the host.
+    health = "http://127.0.0.1:%d/api/health" % port
+    # MONITOR_IMAGE=<ref> prefix feeds compose's ${MONITOR_IMAGE:-…}
+    # interpolation. Forward = the versioned target tag; rollback = the
+    # exact previous image ref/digest. Shell-quoted so digests are safe.
+    fwd_env  = "MONITOR_IMAGE=%s " % q(target_image)
+    prev_env = "MONITOR_IMAGE=%s " % q(previous_image)
+    # set_state writes {state, target, previous_image, ...} merging optional
+    # error/new_image; mv makes the replace atomic-ish for the polling reader.
+    return r'''
+set -u
+WD=%(wd)s
+STATE=%(state)s
+LOG=%(log)s
+TARGET=%(target)s
+PREV=%(prev)s
+log(){ printf '%%s %%s\n' "$(date -u +%%H:%%M:%%S)" "$1" >> "$LOG" 2>/dev/null; }
+set_state(){ # $1=state  $2=extra-json (optional, no leading comma)
+  extra=""; [ -n "${2:-}" ] && extra=",$2"
+  printf '{"state":"%%s","target":"%%s","previous_image":"%%s","updated_at":%%s%%s}' \
+    "$1" "$TARGET" "$PREV" "$(date +%%s)" "$extra" > "$STATE.tmp" 2>/dev/null \
+    && mv "$STATE.tmp" "$STATE" 2>/dev/null; }
+cd "$WD" || { log "cannot cd to $WD"; set_state failed '"error":"cd failed"'; exit 1; }
+
+log "pulling new image (%(svc)s)…"
+if ! %(fwd_env)s%(compose)s pull %(svc)s >> "$LOG" 2>&1; then
+  log "pull failed"; set_state failed '"error":"docker compose pull failed"'; exit 1
+fi
+
+log "recreating container on the new image…"
+set_state restarting
+if ! %(fwd_env)s%(compose)s up -d --no-build %(svc)s >> "$LOG" 2>&1; then
+  log "up failed — rolling back to $PREV"
+  %(prev_env)s%(compose)s up -d --no-build %(svc)s >> "$LOG" 2>&1
+  set_state rolled_back '"error":"recreate failed; previous image restored"'; exit 1
+fi
+
+log "waiting for the new version to come up…"
+ok=0
+i=0
+while [ $i -lt 30 ]; do
+  cur=$(wget -qO- %(health)s 2>/dev/null | tr -d ' \n' | sed -n 's/.*"update":{[^}]*"current":"\([^"]*\)".*/\1/p')
+  if [ -n "$cur" ] && [ "$cur" = "$TARGET" ]; then ok=1; break; fi
+  i=$((i+1)); sleep 2
+done
+
+if [ $ok -eq 1 ]; then
+  log "healthy on v$TARGET — update complete"
+  set_state done '"new_image":"%(img)s:'"$TARGET"'"'
+else
+  log "health-gate failed (never reported v$TARGET) — rolling back to $PREV"
+  %(prev_env)s%(compose)s up -d --no-build %(svc)s >> "$LOG" 2>&1
+  set_state rolled_back '"error":"new version failed health-check; previous version restored"'
+fi
+''' % {"wd": q(working_dir), "state": state_json, "log": log,
+       "target": q(target), "prev": q(previous_image),
+       "compose": compose, "svc": svc, "health": health,
+       "fwd_env": fwd_env, "prev_env": prev_env,
+       "img": SELF_UPDATE_IMAGE}
+
+def start_self_update(force=False):
+    """Kick off the detached self-update helper. Returns (status_code, dict).
+    Degrades to error dicts (never raises) so the route can jsonify them."""
+    if not ALLOW_SELF_UPDATE:
+        return 400, {"ok": False, "error": "Self-update is disabled. Set ALLOW_SELF_UPDATE=1 to enable it."}
+
+    upd = collect_update()
+    if not force and not upd.get("available"):
+        return 400, {"ok": False, "error": "No update available."}
+    target = (upd.get("latest") or "").lstrip("vV")
+    if not target:
+        return 400, {"ok": False, "error": "Could not determine the target version to update to."}
+
+    # Singleton guard: a fresh non-terminal job blocks a second run.
+    st = _read_update_state()
+    if st and st.get("state") not in _SELF_UPDATE_DONE:
+        age = time.time() - (st.get("updated_at") or st.get("started_at") or 0)
+        if age < _SELF_UPDATE_STALE_SEC:
+            return 409, {"ok": False, "error": "An update is already in progress.", "state": st}
+
+    # Self-inspect to learn our image + compose labels.
+    name = _self_container_name()
+    try:
+        code, raw = _docker_req("GET", "/containers/%s/json" % urllib.parse.quote(name))
+    except Exception as e:
+        return 400, {"ok": False, "error": "Could not reach the Docker socket: %s" % e}
+    if code != 200:
+        return 400, {"ok": False, "error": "Could not inspect own container '%s' (HTTP %s). Is the docker socket mounted read-write?" % (name, code)}
+    try:
+        info = json.loads(raw)
+    except Exception:
+        return 400, {"ok": False, "error": "Unexpected response inspecting own container."}
+
+    cfg = info.get("Config") or {}
+    labels = cfg.get("Labels") or {}
+    # The repo-qualified ref we were deployed from. Prefer Config.Image (the
+    # "repo:tag" / "repo@digest" the container was created with) over the
+    # top-level Image, which on modern Docker is the bare local image ID
+    # ("sha256:<id>") — that has no repo to derive the versioned target tag from,
+    # so it would yield a bogus target like "sha256:0.16.0".
+    previous_image = cfg.get("Image") or info.get("Image") or ""   # the running image ref/digest
+    project    = labels.get("com.docker.compose.project")
+    cfg_files  = labels.get("com.docker.compose.project.config_files") or ""
+    working_dir = labels.get("com.docker.compose.project.working_dir")
+    service    = labels.get("com.docker.compose.service")
+    config_files = [c.strip() for c in cfg_files.split(",") if c.strip()]
+
+    # PREFLIGHT: refuse on a plain `docker run` deploy — without compose labels we
+    # have nothing to recreate from, so don't half-run.
+    if not (project and config_files and working_dir):
+        return 400, {"ok": False, "error": (
+            "This container wasn't started with docker compose (no compose labels found), "
+            "so the one-click update can't recreate it. Use the manual command instead.")}
+
+    # Derive the immutable target image ref from the image we're currently
+    # running: strip the tag/digest off the running ref to get the repo, then
+    # re-attach the versioned tag. Pulling :x.y.z (not the moving :latest) is
+    # what closes the "pull races a freshly-pushed :latest" window. A digest ref
+    # (repo@sha256:…) splits on '@'; a tag ref (repo:tag) splits on the last ':'
+    # that isn't part of a registry host:port (i.e. after the last '/').
+    repo = previous_image
+    if "@" in repo:
+        repo = repo.split("@", 1)[0]
+    else:
+        last_seg = repo.rsplit("/", 1)[-1]
+        if ":" in last_seg:
+            repo = repo.rsplit(":", 1)[0]
+    target_image = "%s:%s" % (repo, target) if repo else "%s:%s" % (SELF_UPDATE_IMAGE, target)
+
+    started_at = int(time.time())
+    state = {"state": "starting", "target": target, "target_image": target_image,
+             "previous_image": previous_image,
+             "started_at": started_at, "updated_at": started_at, "log": "update.log"}
+    try:
+        os.makedirs(_data_dir(), exist_ok=True)
+        with open(_update_state_path(), "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        open(_update_log_path(), "w").close()   # truncate
+    except Exception as e:
+        return 400, {"ok": False, "error": "Cannot write to the data directory: %s" % e}
+
+    script = _self_update_script(working_dir, project, config_files, service,
+                                 target, target_image, previous_image, PORT)
+    create_body = {
+        "Image": SELF_UPDATE_HELPER_IMAGE,
+        "Cmd": ["sh", "-lc", script],
+        "HostConfig": {
+            "AutoRemove": True,
+            # Host networking so the helper's health-gate can reach the monitor at
+            # the host's localhost:9800. The monitor runs with network_mode: host,
+            # so on the default bridge the helper's "localhost" would be itself and
+            # the gate could never confirm the new version → it'd always roll back.
+            "NetworkMode": "host",
+            "Binds": [
+                "%s:/var/run/docker.sock" % DOCKER_SOCK,
+                # Mount the compose project dir at the same path inside the helper
+                # so `cd <working_dir>` works and ./data is the shared mount where
+                # update.log / update_state.json land (the app reads them back).
+                "%s:%s" % (working_dir, working_dir),
+            ],
+        },
+    }
+    # Ensure the helper image is present. On a fresh host docker:cli isn't pulled
+    # yet, so the create below would fail with "No such image". Split the ref into
+    # repo + tag the same way as the target image above: a digest splits on '@';
+    # a tag is the ':' in the *last* path segment (a ':' before the last '/' is a
+    # registry host:port, not a tag). Default tag is "latest" when none is given.
+    h_ref = SELF_UPDATE_HELPER_IMAGE
+    if "@" in h_ref:
+        h_img, h_tag = h_ref.split("@", 1)            # repo@sha256:… → pull by digest
+    else:
+        last_seg = h_ref.rsplit("/", 1)[-1]
+        if ":" in last_seg:
+            h_img, h_tag = h_ref.rsplit(":", 1)
+        else:
+            h_img, h_tag = h_ref, "latest"
+    try:
+        # The pull API streams a chunked JSON body and only finishes once the pull
+        # is done; _docker_req reads the body to completion, so create can't race
+        # it. It's a fast no-op when the image is already up to date.
+        code, raw = _docker_req("POST", "/images/create?fromImage=%s&tag=%s" % (
+            urllib.parse.quote(h_img), urllib.parse.quote(h_tag)),
+            timeout=600)
+        body_txt = raw.decode("utf-8", "replace")
+        if code not in (200, 201) or '"errorDetail"' in body_txt or '"error"' in body_txt:
+            return 400, {"ok": False, "error": "Could not pull the update helper image '%s:%s': %s" % (
+                h_img, h_tag, (body_txt[:200] if code not in (200, 201) else body_txt[-200:]))}
+    except Exception as e:
+        return 400, {"ok": False, "error": "Could not pull the update helper image '%s:%s': %s" % (h_img, h_tag, e)}
+
+    try:
+        code, raw = _docker_req("POST", "/containers/create", body=create_body)
+        if code not in (200, 201):
+            return 400, {"ok": False, "error": "Could not create the update helper (HTTP %s): %s" % (code, raw[:200].decode("utf-8", "replace"))}
+        cid = (json.loads(raw) or {}).get("Id")
+        code, raw = _docker_req("POST", "/containers/%s/start" % cid)
+        if code not in (204, 304):
+            return 400, {"ok": False, "error": "Could not start the update helper (HTTP %s)." % code}
+    except Exception as e:
+        return 400, {"ok": False, "error": "Failed to launch the update helper: %s" % e}
+
+    return 202, {"ok": True, "state": state}
 
 # ── Newer-OS-release check (endoflife.date) ───────────────────────────────────
 # The probe reports each host's pending *package* updates offline. Detecting that
@@ -5097,7 +5371,11 @@ def api_health():
                                     "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
-    update  = HEALTH["update"]  or {"available": False, "current": VERSION}
+    update  = dict(HEALTH["update"] or {"available": False, "current": VERSION})
+    # Let the frontend decide whether to show the one-click "Update now" button.
+    # Set here (not baked into the cached collect_update payload) so toggling the
+    # env flag takes effect on restart without waiting for the update cache.
+    update["self_update_enabled"] = ALLOW_SELF_UPDATE
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "docker": docker, "systemd": systemd, "update": update,
                     "processes": HEALTH["processes"],
@@ -5494,6 +5772,29 @@ def api_notify_test():
                              "If you see this, alerts are wired up correctly.")
     return jsonify({"ok": all(ok for _, ok, _ in results),
                     "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results]})
+
+@app.route("/api/update/app", methods=["POST"])
+def api_update_app():
+    """Start the opt-in one-click self-update (detached docker:cli helper).
+    400 = disabled / no update / not a compose deploy; 409 = already running;
+    202 = job started. Gated by ALLOW_SELF_UPDATE — off by default."""
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force"))
+    code, payload = start_self_update(force=force)
+    return jsonify(payload), code
+
+@app.route("/api/update/app/status")
+def api_update_app_status():
+    """Read back the self-update progress files from the data dir. Works even
+    right after the restart — it just reads update_state.json + a tail of
+    update.log. No state file yet → idle."""
+    st = _read_update_state()
+    if not st:
+        return jsonify({"state": "idle"})
+    st = dict(st)
+    st["log"] = _tail_lines(_update_log_path(), 200)
+    st["self_update_enabled"] = ALLOW_SELF_UPDATE
+    return jsonify(st)
 
 @app.route("/")
 def index():
