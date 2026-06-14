@@ -2248,6 +2248,7 @@ function openUpdateModal(up){
   // as before.
   const selfOn = !!up.self_update_enabled;
   document.getElementById('updselfbox').hidden = !selfOn;
+  document.getElementById('updmanualbox').hidden = selfOn;
   if(selfOn){ resetSelfUpdateUI(up.latest); }
 
   document.getElementById('updmodal').classList.add('show');
