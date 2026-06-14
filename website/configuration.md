@@ -31,16 +31,17 @@ Set these under `environment:` in `docker-compose.yml`. All optional.
 ### One-click self-update (`ALLOW_SELF_UPDATE`)
 
 This is the first and only action in the monitor that **writes** — everything
-else is read-only. It is therefore **off by default** and must be opted into:
+else is read-only. It is therefore **off by default** and must be opted into
+using the bundled override file:
 
-```yaml
-environment:
-  ALLOW_SELF_UPDATE: "1"
-volumes:
-  # Must be read-write (drop the :ro) — creating the update helper is a write
-  # API call. Leave it :ro if you don't enable self-update.
-  - /var/run/docker.sock:/var/run/docker.sock
+```bash
+docker compose -f docker-compose.yml -f docker-compose.self-update.yml up -d
 ```
+
+`docker-compose.self-update.yml` sets `ALLOW_SELF_UPDATE: "1"` and upgrades the
+docker socket from `:ro` to read-write (needed to create the update helper). The
+main `docker-compose.yml` keeps `:ro` so plain monitoring deployments are
+unaffected.
 
 When enabled and a newer release exists, the update modal shows an **Update now**
 button. On click (after a confirm) it pulls the new image, launches a detached
@@ -51,7 +52,8 @@ log live and reloads itself once the new version is up.
 
 Requirements / caveats:
 
-- The docker socket must be mounted **read-write** (not `:ro`).
+- The docker socket must be mounted **read-write** (not `:ro`) — handled
+  automatically by the override file.
 - The container must have been started with **docker compose** (the helper reads
   the compose project labels to know what to recreate). A plain `docker run`
   deploy is refused with a clear message — use the manual command instead.

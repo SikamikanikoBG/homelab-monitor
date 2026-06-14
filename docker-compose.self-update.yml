@@ -1,0 +1,16 @@
+# Opt-in self-update override — use alongside docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.self-update.yml up -d
+#
+# This upgrades the docker socket from :ro to read-write (needed to create the
+# detached docker:cli helper that recreates this container) and enables the
+# "Update now" button. The main compose keeps :ro so plain monitoring deployments
+# are unaffected.
+services:
+  homelab-monitor:
+    environment:
+      ALLOW_SELF_UPDATE: "1"
+    volumes:
+      # Override the :ro socket with read-write so the self-update helper can
+      # be created via the Docker API.
+      - /var/run/docker.sock:/var/run/docker.sock
