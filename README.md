@@ -1,7 +1,7 @@
 # <img src="docs/logo.svg" width="30" align="top" alt=""> HomeLab Monitor
 
 [![GitHub stars](https://img.shields.io/github/stars/SikamikanikoBG/homelab-monitor?style=social)](https://github.com/SikamikanikoBG/homelab-monitor/stargazers)
-[![Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/sRSHFytWQ)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/yFEf3N2mb9)
 [![version](https://img.shields.io/github/v/release/SikamikanikoBG/homelab-monitor?color=blue&label=version)](CHANGELOG.md)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![docker](https://img.shields.io/badge/deploy-docker--compose-2496ED?logo=docker&logoColor=white)
@@ -127,9 +127,9 @@ If HomeLab Monitor saves you a browser tab or two, a ⭐ on GitHub genuinely hel
 
 ## 💬 Community
 
-Building this is more fun together. **[Join the HomeLab Monitor Discord](https://discord.gg/sRSHFytWQ)** — say hi, show off your rig, swap ideas, ask for help, or just hang out. It's where the roadmap chatter, “should we build X?” questions, and quick help happen — and where new contributors get a warm welcome.
+Building this is more fun together. **[Join the HomeLab Monitor Discord](https://discord.gg/yFEf3N2mb9)** — say hi, show off your rig, swap ideas, ask for help, or just hang out. It's where the roadmap chatter, “should we build X?” questions, and quick help happen — and where new contributors get a warm welcome.
 
-[![Join the Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/sRSHFytWQ)
+[![Join the Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/yFEf3N2mb9)
 
 Bring a friend, post an idea, open an issue — let's grow a friendly, healthy homelab community. 💛
 
