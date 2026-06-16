@@ -3924,9 +3924,9 @@ function renderSysInfo(){
   const gpu = hw.gpu_name ? esc(hw.gpu_name)+(hw.gpu_mem_total?'  ('+fmtMB(hw.gpu_mem_total)+')':'') : null;
   const hwh = [
     infoRow(I18N.t('sys.cpu','CPU'),      hw.cpu_model ? esc(hw.cpu_model)+(hw.cpu_vendor?'  ('+esc(hw.cpu_vendor)+')':'') : null),
-    infoRow(I18N.t('sys.topology','Topology'), topo || null),
+    infoRow(I18N.t('sys.topology','CPU topology'), topo || null),
     infoRow(I18N.t('sys.memory','Memory'),   mem),
-    infoRow(I18N.t('sys.machine','Machine'),  hw.machine ? esc(hw.machine) : null),
+    infoRow(I18N.t('sys.machine','Machine / product'),  hw.machine ? esc(hw.machine) : null),
     infoRow(I18N.t('sys.gpu','GPU'),      gpu),
   ].join('');
   el.innerHTML = `<div class="infogrid">
