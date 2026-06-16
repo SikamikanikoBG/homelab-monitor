@@ -2308,7 +2308,20 @@ function dualOpts(labels,ymax){const grid=cv('--free'),tick=cv('--mut'),leg=cv('
    y:{position:'left',min:0,max:ymax||100,grid:{color:grid},ticks:{color:tick}},
    y1:{position:'right',min:0,grid:{drawOnChartArea:false},ticks:{color:tick}}},
   plugins:{legend:{labels:{color:leg,boxWidth:12}}}};}
-function mk(id,cfg){ if(charts[id])charts[id].destroy(); charts[id]=new Chart(document.getElementById(id),cfg); }
+function mk(id,cfg){
+  const hidden={};
+  if(charts[id]){
+    charts[id].data.datasets.forEach((ds,i)=>{
+      hidden[ds.label]=!charts[id].isDatasetVisible(i);
+    });
+    charts[id].destroy();
+  }
+  charts[id]=new Chart(document.getElementById(id),cfg);
+  Object.keys(hidden).forEach(label=>{
+    const idx=charts[id].data.datasets.findIndex(ds=>ds.label===label);
+    if(idx!==-1 && hidden[label]) charts[id].hide(idx);
+  });
+}
 
 // ── Tariff helper (day/night cost + country prefill) ──────────────────────────
 let TARIFF_DUAL=false, TARIFFS=null;
