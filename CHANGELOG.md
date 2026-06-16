@@ -8,7 +8,7 @@ release notes.
 ## [Unreleased] — `next`
 
 ### Added
-- **Community: we're on Discord.** A "Join the Discord" button in the dashboard sidebar (a small social bar, ready to grow as more channels go live) and a Community section + badge in the README. Come chat, share ideas, and help shape the roadmap: <https://discord.gg/yFEf3N2mb9>
+- **Community: we're on Discord.** A "Join the Discord" button in the dashboard sidebar (a small social bar, ready to grow as more channels go live) and a Community section + badge in the README. Come chat, share ideas, and help shape the roadmap: <https://discord.gg/tpKWKEdSQN>
 
 ### Changed
 - **New logo — radar, not satellite.** A designed radar mark is now *the* logo everywhere instead of a generic line-icon: dashboard sidebar brand + page header, favicon, README title, and the docs site. Two variants of the same artwork — a **transparent** radar for the dark in-app / docs UI (so it pops), and a **tiled** app-icon for the favicon and README. Radar fits what the tool actually does — sweep the fleet, surface the blips. The old satellite glyph is gone; section headings keep their own topical icons (e.g. "All hosts" now uses the monitor glyph) so the radar reads only as the brand.
