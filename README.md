@@ -1,6 +1,7 @@
 # <img src="docs/logo.svg" width="30" align="top" alt=""> HomeLab Monitor
 
 [![GitHub stars](https://img.shields.io/github/stars/SikamikanikoBG/homelab-monitor?style=social)](https://github.com/SikamikanikoBG/homelab-monitor/stargazers)
+[![Docker pulls](https://img.shields.io/docker/pulls/sikamikaniko123/homelab-monitor?logo=docker&logoColor=white&label=docker%20pulls&color=2496ED)](https://hub.docker.com/r/sikamikaniko123/homelab-monitor)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/tpKWKEdSQN)
 [![version](https://img.shields.io/github/v/release/SikamikanikoBG/homelab-monitor?color=blue&label=version)](CHANGELOG.md)
 ![license](https://img.shields.io/badge/license-MIT-green)
