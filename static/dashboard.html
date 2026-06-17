@@ -45,6 +45,7 @@ h1{font-size:22px;margin:0}.ver{color:var(--mut);font-size:12px;border:1px solid
 .soc svg{width:14px;height:14px;fill:currentColor;flex:none}
 .soc:hover{color:var(--tx);border-color:var(--mut);background:var(--hover)}
 .soc.discord:hover{color:#fff;background:#5865F2;border-color:#5865F2}
+.soc.coffee:hover{color:#1a1100;background:#FFDD00;border-color:#FFDD00}
 .star-cta{font-size:11px;color:var(--mut);line-height:1.4}
 .star-cta a{color:var(--accent);text-decoration:none;border-bottom:1px dotted transparent;transition:border-color .2s}
 .star-cta a:hover{border-bottom-color:var(--accent)}
@@ -1753,10 +1754,12 @@ function mountShell(){
   const side = document.getElementById('sidebar'); if(!side) return;
   const REPO = 'https://github.com/SikamikanikoBG/homelab-monitor';
   const DISCORD = 'https://discord.gg/tpKWKEdSQN';
+  const BMC = 'https://www.buymeacoffee.com/SikamikanikoBG';
   const DISCORD_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 0 0-4.8851-1.5152.0741.0741 0 0 0-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 0 0-.0785-.037 19.7363 19.7363 0 0 0-4.8852 1.515.0699.0699 0 0 0-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 0 0 .0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 0 0 .0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 0 0-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 0 1-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 0 1 .0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 0 1 .0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 0 1-.0066.1276 12.2986 12.2986 0 0 1-1.873.8914.0766.0766 0 0 0-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 0 0 .0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 0 0 .0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 0 0-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9554 2.4189-2.1568 2.4189Z"/></svg>';
   const STAR_SVG  = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg>';
   const GH_SVG    = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
   const ISSUE_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0z"/></svg>';
+  const COFFEE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/></svg>';
   side.innerHTML = '<div class="sbrand"><button type="button" class="sbrand-link" id="homeBrand" aria-label="'+I18N.t('brand.home_aria','Go to Overview')+'" title="'+I18N.t('brand.home_aria','Go to Overview')+'"><span class="logo"><img src="/static/logo.svg" alt="" width="22" height="22"></span><span class="nm">'+I18N.t('brand.name','HomeLab Monitor')+'</span></button></div>'
     + '<div class="ghbox">'
     +   '<a class="ghstar" id="ghstar" href="'+REPO+'" target="_blank" rel="noopener" data-i18n-attr="title:sidebar.star_title" title="Star HomeLab Monitor on GitHub — it genuinely helps the project grow">'
@@ -1771,6 +1774,7 @@ function mountShell(){
     +   '<div class="star-cta cta-post" data-i18n-html="sidebar.cta_post_html">Thanks for the star! Got an idea or a bug? <a href="'+REPO+'/issues/new/choose" target="_blank" rel="noopener">Open an issue</a>.</div>'
     +   '<div class="social" data-i18n-attr="aria-label:sidebar.social_aria" aria-label="Community and social">'
     +     '<a class="soc discord" href="'+DISCORD+'" target="_blank" rel="noopener" data-i18n-attr="title:sidebar.discord_title" title="Join the HomeLab Monitor community on Discord — chat, share ideas, get help">'+DISCORD_SVG+'<span data-i18n="sidebar.discord">Join the Discord</span></a>'
+    +     '<a class="soc coffee" href="'+BMC+'" target="_blank" rel="noopener" data-i18n-attr="title:sidebar.coffee_title" title="Buy me a coffee — support HomeLab Monitor and help it grow">'+COFFEE_SVG+'<span data-i18n="sidebar.coffee">Buy me a coffee</span></a>'
     // more social links (LinkedIn, YouTube) drop in here as extra '.soc' anchors once those channels go live
     +   '</div>'
     + '</div>'

@@ -8,6 +8,8 @@
       "nav.group.ai",
       "nav.gpu",
       "brand.name",
+      "sidebar.coffee",
+      "sidebar.coffee_title",
       "col.cpu",
       "col.ram",
       "col.gpu",
@@ -26,7 +28,7 @@
       "diag.lbl.nvidia",
       "diag.lbl.dbus"
     ],
-    "coverage": 0.9639
+    "coverage": 0.9604
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -57,6 +59,8 @@
   "sidebar.cta_post_html": "感谢加星！有想法或发现缺陷？<a href=\"https://github.com/SikamikanikoBG/homelab-monitor/issues/new/choose\" target=\"_blank\" rel=\"noopener\">提交 issue</a>。",
   "sidebar.discord": "加入 Discord",
   "sidebar.discord_title": "加入 HomeLab Monitor 的 Discord 社区 — 交流、分享想法、获取帮助",
+  "sidebar.coffee": "Buy me a coffee",
+  "sidebar.coffee_title": "Buy me a coffee — support HomeLab Monitor and help it grow",
   "sidebar.social_aria": "社区与社交",
   "footer.theme.dark": "深色",
   "footer.theme.light": "浅色",

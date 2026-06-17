@@ -34,6 +34,8 @@
   "sidebar.cta_post_html": "Thanks for the star! Got an idea or a bug? <a href=\"https://github.com/SikamikanikoBG/homelab-monitor/issues/new/choose\" target=\"_blank\" rel=\"noopener\">Open an issue</a>.",
   "sidebar.discord": "Join the Discord",
   "sidebar.discord_title": "Join the HomeLab Monitor community on Discord — chat, share ideas, get help",
+  "sidebar.coffee": "Buy me a coffee",
+  "sidebar.coffee_title": "Buy me a coffee — support HomeLab Monitor and help it grow",
   "sidebar.social_aria": "Community and social",
   "footer.theme.dark": "Dark",
   "footer.theme.light": "Light",
