@@ -4483,28 +4483,35 @@ function mdMini(md){
   const inline = s => esc(s)
     .replace(/`([^`]+)`/g, (_,c)=>`<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, (_,b)=>`<strong>${b}</strong>`)
+    .replace(/\*([^*\n]+)\*/g, (_,i)=>`<em>${i}</em>`)
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, (_,t,u)=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
-  const out = []; let inList = false;
+  const out = []; let inList = false, inQuote = false;
   const closeList = () => { if(inList){ out.push('</ul>'); inList=false; } };
+  const closeQuote = () => { if(inQuote){ out.push('</blockquote>'); inQuote=false; } };
   for(let raw of (md||'').split('\n')){
     const line = raw.replace(/\s+$/,'');
     let m;
     if((m = line.match(/^##\s*\[([^\]]+)\]\((https?:[^)]*)\)\s*[—\-–]?\s*(.*)$/))){
-      closeList();
-      const date = m[3] ? ` <span class="wn-sub">${esc(m[3])}</span>` : '';
+      closeList(); closeQuote();
+      const date = m[3] ? ` <span class="wn-sub">${inline(m[3])}</span>` : '';
       out.push(`<h2><a href="${m[2]}" target="_blank" rel="noopener">v${esc(m[1])}</a>${date}</h2>`);
     } else if((m = line.match(/^#{1,4}\s+(.*)$/))){
-      closeList(); out.push(`<h3>${inline(m[1])}</h3>`);
+      closeList(); closeQuote(); out.push(`<h3>${inline(m[1])}</h3>`);
+    } else if((m = line.match(/^>\s?(.*)$/))){
+      closeList();
+      if(!inQuote){ out.push('<blockquote>'); inQuote=true; }
+      out.push(`<p>${inline(m[1])}</p>`);
     } else if((m = line.match(/^\s*[-*]\s+(.*)$/))){
+      closeQuote();
       if(!inList){ out.push('<ul>'); inList=true; }
       out.push(`<li>${inline(m[1])}</li>`);
     } else if(line.trim() === ''){
-      closeList();
+      closeList(); closeQuote();
     } else {
-      closeList(); out.push(`<p>${inline(line)}</p>`);
+      closeList(); closeQuote(); out.push(`<p>${inline(line)}</p>`);
     }
   }
-  closeList();
+  closeList(); closeQuote();
   return out.join('');
 }
 
