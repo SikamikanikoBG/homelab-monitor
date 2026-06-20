@@ -911,6 +911,11 @@ h2 .hic{ opacity:.9 }
       <p class="cap" id="costs-comp-cap" data-i18n="costs.comp_cap">GPU power is measured (nvidia-smi); CPU/DRAM are measured via RAPL when readable. "Other" appears only if you set a baseline in Settings — wall power is never guessed.</p>
     </div>
   </div>
+  <div class="card" id="costfc-card" hidden>
+    <h2 data-i18n="forecast.cost_title">🔮 This month's cost (projected)</h2>
+    <div class="grid" id="costfc-kpis"></div>
+    <p class="cap" id="costfc-cap" data-i18n="forecast.cost_cap">Month-to-date energy cost extrapolated to a full month at the current daily rate. The estimate firms up as the month progresses.</p>
+  </div>
   <div class="card" id="costs-breakdown-card" hidden>
     <h2 data-i18n="costs.breakdown_title">🧾 Breakdown by process / container / model</h2>
     <table><thead><tr>
@@ -1340,6 +1345,14 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
 
 <!-- ───────── Disks (WizTree-style usage treemaps) ───────── -->
 <section data-tab="disks" hidden>
+  <div class="card" id="diskfc-card" hidden>
+    <h2 data-i18n="forecast.disk_title">🔮 Disk-fill forecast</h2>
+    <p class="cap" data-i18n="forecast.disk_cap">Estimated time until each filesystem fills, from a linear fit over recent usage history. Mounts with a flat or falling trend read “stable”. Forecasts sharpen as more history is collected.</p>
+    <table><thead><tr>
+      <th data-i18n="col.mount">Mount</th><th data-i18n="col.used">Used</th>
+      <th data-i18n="forecast.col_trend">Trend</th><th data-i18n="forecast.col_eta">Fills in</th>
+    </tr></thead><tbody id="diskfc-tbl"></tbody></table>
+  </div>
   <div id="disksbody"></div>
 </section>
 
@@ -2116,13 +2129,16 @@ async function renderCosts(force){
   card.hidden=false;
   const dis=document.getElementById('costs-disabled'), body=document.getElementById('costs-body');
   const bcard=document.getElementById('costs-breakdown-card');
+  const fcc=document.getElementById('costfc-card');
   if(!j.enabled){
     dis.hidden=false; body.hidden=true; bcard.hidden=true; document.getElementById('costs-drill').hidden=true;
+    if(fcc) fcc.hidden=true;
     const lk=document.getElementById('costs-settings-link');
     if(lk) lk.onclick=e=>{e.preventDefault();showTab('alerts'); if(typeof setSettingsPane==='function') setSettingsPane('costs');};
     return;
   }
   dis.hidden=true; body.hidden=false; COSTS_DATA=j;
+  loadForecast();
   const cur=j.currency||'$', money=v=>cur+(+v||0).toFixed(2);
   const m=(j.machines||[])[0]||{}, nowW=m.now_w||{};
   const sub=document.getElementById('costs-sub');
@@ -3781,7 +3797,72 @@ function renderRamTree(){
 // ── Disks tab: WizTree-style folder treemap per disk (on-demand scan) ─────────
 const _diskCrumbs = {};   // cardId -> [{name, path}]
 function _dskId(mount){ return 'dsk_'+mount.replace(/[^a-z0-9]/gi,'_'); }
+// ── Forecasts (disk-fill ETA + cost-this-month projection) ───────────────────
+let FORECAST=null, FORECAST_AT=0;
+async function loadForecast(force){
+  if(CURRENT_HOST!=='local') return;   // history lives on the hub's own DB
+  if(!force && Date.now()-FORECAST_AT < 60000 && FORECAST) { renderForecast(); return; }
+  try{ FORECAST=await(await fetch('/api/forecast')).json(); FORECAST_AT=Date.now(); }
+  catch(e){ return; }
+  renderForecast();
+}
+function _etaText(d){
+  if(d.status==='full') return I18N.t('forecast.full','full now');
+  if(d.status==='collecting') return '<span class="muted">'+I18N.t('forecast.collecting','collecting data…')+'</span>';
+  if(d.status!=='filling' || d.eta_days==null) return '<span class="muted">'+I18N.t('forecast.stable','stable')+'</span>';
+  const days=d.eta_days;
+  let when;
+  if(days<1) when=I18N.t('forecast.under_day','< 1 day');
+  else if(days<60) when=I18N.tf('forecast.in_days','~{n} days',{n:Math.round(days)});
+  else when=I18N.tf('forecast.in_months','~{n} months',{n:Math.round(days/30)});
+  const cls = days<14 ? 'crit' : (days<60 ? 'warn' : 'ok');
+  const date = d.eta_ts ? new Date(d.eta_ts*1000).toLocaleDateString() : '';
+  return `<span class="badge ${cls}">${when}</span>${date?' <span class="muted">· '+esc(date)+'</span>':''}`;
+}
+function renderForecast(){
+  const j=FORECAST||{};
+  // Disk-fill card (Disks tab)
+  const dc=document.getElementById('diskfc-card'), dt=document.getElementById('diskfc-tbl');
+  const disks=(j.disk||[]);
+  if(dc && dt){
+    if(!disks.length){ dc.hidden=true; }
+    else{
+      dc.hidden=false;
+      dt.innerHTML=disks.map(d=>{
+        const trend = d.gb_per_day!=null
+          ? (d.gb_per_day>0 ? '+'+d.gb_per_day+' '+I18N.t('forecast.gb_day','GB/day')
+             : (d.gb_per_day<0 ? d.gb_per_day+' '+I18N.t('forecast.gb_day','GB/day') : I18N.t('forecast.flat','flat')))
+          : '<span class="muted">—</span>';
+        const used = (d.used_gb!=null&&d.total_gb!=null) ? `${d.used_gb} / ${d.total_gb} GB${d.pct!=null?' · '+d.pct+'%':''}` : '—';
+        return `<tr><td>${esc(d.mount)}</td><td>${used}</td><td>${trend}</td><td>${_etaText(d)}</td></tr>`;
+      }).join('');
+    }
+  }
+  // Cost-projection card (Costs tab)
+  const cc=document.getElementById('costfc-card'), ck=document.getElementById('costfc-kpis');
+  const cm=j.cost_month||{};
+  if(cc && ck){
+    if(!cm.enabled){ cc.hidden=true; }
+    else{
+      cc.hidden=false;
+      const cur=cm.currency||'$', money=v=>cur+(+v||0).toFixed(2);
+      const kpis=[
+        {v:money(cm.projected_month), l:I18N.t('forecast.projected','Projected this month'),
+         s:I18N.tf('forecast.based_on','{d} of {tot} days in',{d:cm.elapsed_days,tot:cm.days_in_month})},
+        {v:money(cm.month_to_date), l:I18N.t('forecast.mtd','Spent so far this month')},
+      ];
+      if(cm.last_month!=null){
+        const dp=cm.delta_pct;
+        const arrow = dp==null?'' : (dp>0?'▲ ':(dp<0?'▼ ':''));
+        kpis.push({v:money(cm.last_month), l:I18N.t('forecast.last_month','Last month total'),
+          s: dp==null?'' : (arrow+Math.abs(dp)+'% '+(dp>0?I18N.t('forecast.vs_higher','projected higher'):I18N.t('forecast.vs_lower','projected lower')))});
+      }
+      ck.innerHTML=kpis.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
+    }
+  }
+}
 function renderDisksTab(){
+  loadForecast();
   const root=document.getElementById('disksbody'); if(!root) return;
   if(CURRENT_HOST!=='local'){
     root.innerHTML='<div class="card"><div class="ins info"><div class="ic">ℹ️</div><div><div class="t">'+I18N.t('disks.local_only','Local host only')+'</div>'

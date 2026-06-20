@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS hosts(
   last_check_json TEXT
 );
 CREATE TABLE IF NOT EXISTS power_proc(ts INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, watts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS disk_samples(ts INTEGER NOT NULL, mount TEXT NOT NULL, used REAL, total REAL);
+CREATE INDEX IF NOT EXISTS idx_disk_ts ON disk_samples(mount, ts);
 CREATE INDEX IF NOT EXISTS idx_gpus_ts   ON gpu_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_net_ts    ON net_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
@@ -4235,8 +4237,14 @@ def sample_once():
                            (ts, g["idx"], g["util"], g["mem_used"], g["mem_total"], g["power"], g["temp"]))
         DB.executemany("INSERT INTO net_samples(ts,iface,bytes_in,bytes_out) VALUES(?,?,?,?)",
                        _net_rows(ts, nm))   # host NICs + per-container talkers (#30)
+        # Disk usage barely moves, so sample it sparsely (~5 min) — enough history
+        # for a fill-rate trend without bloating the DB. Feeds /api/forecast.
+        if ts % 300 < INTERVAL:
+            for d in (host.get("disks") or []):
+                DB.execute("INSERT INTO disk_samples(ts,mount,used,total) VALUES(?,?,?,?)",
+                           (ts, d["mount"], d.get("used"), d.get("total")))
         if ts % 360 < INTERVAL:
-            for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc"):
+            for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc", "disk_samples"):
                 DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
         if ts % 60 < INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             DB.execute("UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
@@ -4676,6 +4684,142 @@ def api_costs_entity():
         "series": {"labels": labels, "watts": watts, "cost_cum": cost_cum},
         "resources": {"gpu_vram_peak_mb": round(vram_peak) if vram_peak else None},
     })
+
+# ── Forecasts: pure-Python linear extrapolation over SQLite history (no deps) ──
+def _linfit(xs, ys):
+    """Ordinary least-squares slope+intercept for y = a*x + b, plus R² goodness.
+    Pure stdlib. Returns (slope, intercept, r2) or None when the fit is undefined
+    (fewer than 2 points or zero variance in x)."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx == 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    sst = sum((y - my) ** 2 for y in ys)
+    if sst == 0:
+        r2 = 1.0 if slope == 0 else 0.0
+    else:
+        ssr = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+        r2 = max(0.0, 1.0 - ssr / sst)
+    return slope, intercept, r2
+
+def _disk_forecasts(cur, now):
+    """Per-mount disk-fill ETA from the disk_samples history. Fits used-GB vs time
+    over the recent window; an ETA is reported only when the trend is meaningfully
+    positive and the fit is decent, otherwise the mount reads 'stable'/'collecting'.
+    """
+    WINDOW = 30 * 86400      # look back up to 30 days of disk history
+    MIN_POINTS = 4           # need a few points before any line is trustworthy
+    MIN_GB_PER_DAY = 0.1     # below this, call it stable (noise, not a trend)
+    MIN_R2 = 0.5             # require a halfway-credible linear fit
+    since = now - WINDOW
+    mounts = [r[0] for r in cur.execute(
+        "SELECT DISTINCT mount FROM disk_samples WHERE ts>=? ORDER BY mount", (since,)).fetchall()]
+    out = []
+    for mp in mounts:
+        rows = cur.execute(
+            "SELECT ts, used, total FROM disk_samples WHERE mount=? AND ts>=? ORDER BY ts",
+            (mp, since)).fetchall()
+        rows = [r for r in rows if r[1] is not None and r[2] is not None]
+        total = rows[-1][2] if rows else None
+        used = rows[-1][1] if rows else None
+        pct = round(100 * used / total) if (total and used is not None) else None
+        item = {"mount": mp, "used_gb": used, "total_gb": total, "pct": pct,
+                "status": "collecting", "gb_per_day": None, "eta_days": None,
+                "eta_ts": None, "free_gb": (round(total - used, 1) if (total and used is not None) else None)}
+        if len(rows) < MIN_POINTS:
+            out.append(item); continue
+        xs = [r[0] / 86400.0 for r in rows]    # time in days (keeps slope in GB/day)
+        ys = [r[1] for r in rows]
+        fit = _linfit(xs, ys)
+        if not fit:
+            item["status"] = "stable"; item["gb_per_day"] = 0.0; out.append(item); continue
+        slope, intercept, r2 = fit
+        item["gb_per_day"] = round(slope, 2)
+        item["r2"] = round(r2, 2)
+        if slope < MIN_GB_PER_DAY or r2 < MIN_R2 or total is None:
+            item["status"] = "stable"
+        elif used is not None and used >= total:
+            item["status"] = "full"; item["eta_days"] = 0; item["eta_ts"] = now
+        else:
+            days = (total - used) / slope
+            if days > 3650:                    # >10y out is effectively "stable"
+                item["status"] = "stable"
+            else:
+                item["status"] = "filling"
+                item["eta_days"] = round(days, 1)
+                item["eta_ts"] = int(now + days * 86400)
+        out.append(item)
+    return out
+
+def _cost_projection(cur, ctx, now):
+    """Extrapolate month-to-date machine energy cost to a full-month estimate, with
+    a vs-last-month delta when last month's history is available. Tariff-aware."""
+    if not ctx["day"] or ctx["day"] <= 0:
+        return {"enabled": False}
+    kwh_per = INTERVAL / 3_600_000.0
+    lt = time.localtime(now)
+    month_start = int(time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+    # days in the current month (for projecting the full month)
+    if lt.tm_mon == 12:
+        next_month = int(time.mktime((lt.tm_year + 1, 1, 1, 0, 0, 0, 0, 0, -1)))
+    else:
+        next_month = int(time.mktime((lt.tm_year, lt.tm_mon + 1, 1, 0, 0, 0, 0, 0, -1)))
+    days_in_month = (next_month - month_start) / 86400.0
+    elapsed_days = max(1e-6, (now - month_start) / 86400.0)
+
+    def cost_between(start, end):
+        tot = 0.0
+        for ts, w in cur.execute(f"SELECT ts, {_TOTAL_W_EXPR} w FROM samples WHERE ts>=? AND ts<?", (start, end)):
+            tot += (w or 0) * kwh_per * _price_at(ctx, ts)
+        return tot
+
+    mtd = cost_between(month_start, now)
+    have_data = cur.execute("SELECT 1 FROM samples WHERE ts>=? LIMIT 1", (month_start,)).fetchone() is not None
+    projected = mtd / elapsed_days * days_in_month if elapsed_days > 0 else 0.0
+
+    # last full month, for a comparison delta
+    pm_year, pm_mon = (lt.tm_year - 1, 12) if lt.tm_mon == 1 else (lt.tm_year, lt.tm_mon - 1)
+    last_start = int(time.mktime((pm_year, pm_mon, 1, 0, 0, 0, 0, 0, -1)))
+    last_cost = cost_between(last_start, month_start)
+    have_last = cur.execute("SELECT 1 FROM samples WHERE ts>=? AND ts<? LIMIT 1",
+                            (last_start, month_start)).fetchone() is not None
+    delta_pct = None
+    if have_last and last_cost > 0:
+        delta_pct = round(100 * (projected - last_cost) / last_cost)
+    return {
+        "enabled": True, "currency": ctx["currency"],
+        "month_to_date": round(mtd, 2), "projected_month": round(projected, 2),
+        "elapsed_days": round(elapsed_days, 1), "days_in_month": round(days_in_month),
+        "last_month": round(last_cost, 2) if have_last else None,
+        "delta_pct": delta_pct, "collecting": not have_data,
+    }
+
+@app.route("/api/forecast")
+def api_forecast():
+    """Read-only forecasts computed from the history already in SQLite, using pure
+    Python statistics (no numpy/pandas/new deps):
+      • disk[]      — per-mount fill ETA from a linear fit of used-GB over time
+      • cost_month  — month-to-date energy cost extrapolated to a full-month estimate
+    Degrades gracefully: when there isn't enough history yet, items read 'collecting'
+    or 'stable' rather than guessing — never a 500."""
+    now = int(time.time())
+    ctx = _cost_ctx()
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            disks = _disk_forecasts(cur, now)
+            cost_month = _cost_projection(cur, ctx, now)
+    except Exception as e:
+        print("forecast error:", e, flush=True)
+        return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False}, "error": "forecast_unavailable"})
+    return jsonify({"now": now, "disk": disks, "cost_month": cost_month})
 
 @app.route("/api/sessions")
 def api_sessions():
