@@ -19,6 +19,19 @@ collector keeps fresh — **no extra polling, no double-sampling**.
 | `homelab_container_state` | `name`, `state` | 1 = container is in this state |
 | `homelab_systemd_unit_state` | `unit`, `state` | 1 = unit is active, 0 = otherwise |
 | `homelab_model_loaded_vram_mb` | `server`, `model` | VRAM used by a loaded model (MB) |
+| `homelab_build_info` | `version` | Always 1; app version in the label |
+| `homelab_power_total_w` | — | Total machine power draw (GPU+CPU+DRAM, W) |
+| `homelab_disk_used_bytes` | `mountpoint` | Filesystem used space (bytes) |
+| `homelab_disk_total_bytes` | `mountpoint` | Filesystem total space (bytes) |
+| `homelab_disk_fill_pct` | `mountpoint` | Filesystem fill (%) |
+| `homelab_cost_month_to_date` | `currency` | Energy cost so far this month (when a price is set) |
+| `homelab_cost_month_projected` | `currency` | Projected full-month energy cost (when a price is set) |
+| `homelab_anomaly_active` | `series`, `direction` | 1 = the series is flagged anomalous right now, 0 = normal |
+
+The GPU/host/container/model families come from the `prometheus_client` library;
+the total-power, per-disk-bytes, month-cost and anomaly-flag families are built
+with pure-stdlib string formatting, so the endpoint stays rich even on a build
+without `prometheus_client` installed.
 
 ## Quick verification
 

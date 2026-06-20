@@ -5916,16 +5916,138 @@ def api_health():
                     "mcp": {"enabled": _mcp_enabled(), "port": _mcp_port()},
                     "overview": build_overview(now, docker, systemd)})
 
+# ── Pure-stdlib Prometheus/OpenMetrics exposition (no extra dep) ──────────────
+# The base GPU/host/container series are exported via prometheus_client gauges
+# (when installed). These *extra* series — total power, per-disk bytes + fill %,
+# month-cost projection, and per-series anomaly flags — are built as plain text
+# with their own distinct metric names, so they never clash with the gauges'
+# HELP/TYPE lines and work even when prometheus_client is absent.
+_PROM_NAME_RE = re.compile(r"[^a-zA-Z0-9_]")
+
+def _prom_label_val(v):
+    """Escape a label value per the exposition format (\\, \", newline)."""
+    return (str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
+
+def _prom_num(v):
+    """Format a value as a finite float, or 'NaN' — never raises on junk."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "NaN"
+    if f != f or f in (float("inf"), float("-inf")):
+        return "NaN"
+    return repr(f)
+
+def _prom_metric(out, name, mtype, help_text, samples):
+    """Append one metric family (HELP + TYPE once, then its samples) to `out`.
+    `samples` is an iterable of (labels_dict_or_None, value). Skips empty
+    families so we never emit a TYPE with zero samples and a dangling HELP."""
+    samples = [s for s in samples if s[1] is not None]
+    if not samples:
+        return
+    out.append(f"# HELP {name} {help_text}")
+    out.append(f"# TYPE {name} {mtype}")
+    for labels, val in samples:
+        if labels:
+            lbl = ",".join(f'{k}="{_prom_label_val(v)}"' for k, v in labels.items())
+            out.append(f"{name}{{{lbl}}} {_prom_num(val)}")
+        else:
+            out.append(f"{name} {_prom_num(val)}")
+
+def _extra_metrics_text():
+    """Build the extra pure-stdlib metric families as exposition text. Reads the
+    live snapshots + the same forecast/cost helpers the dashboard uses; never
+    raises (a failing block is simply omitted)."""
+    out = []
+    now = int(time.time())
+
+    # build_info (version pinned as a label, value 1) — handy for dashboards.
+    _prom_metric(out, "homelab_build_info", "gauge",
+                 "Build info (value always 1; version in label)",
+                 [({"version": VERSION}, 1)])
+
+    # Total machine power draw (GPU + CPU + DRAM watts), from the live snapshot.
+    try:
+        total_w = (LATEST.get("power") or 0) + (LATEST.get("cpu_power") or 0) + (LATEST.get("dram_power") or 0)
+        _prom_metric(out, "homelab_power_total_w", "gauge",
+                     "Total machine power draw (GPU+CPU+DRAM, W)", [(None, total_w)])
+    except Exception:
+        pass
+
+    # Per-disk bytes + fill % from the host snapshot (GB fields -> bytes).
+    try:
+        used_s, total_s, pct_s = [], [], []
+        for d in ((LATEST.get("host") or {}).get("disks") or []):
+            mp = d.get("mount")
+            if not mp:
+                continue
+            lbl = {"mountpoint": mp}
+            if d.get("used") is not None:
+                used_s.append((lbl, float(d["used"]) * (1024 ** 3)))
+            if d.get("total") is not None:
+                total_s.append((lbl, float(d["total"]) * (1024 ** 3)))
+            if d.get("pct") is not None:
+                pct_s.append((lbl, d["pct"]))
+        _prom_metric(out, "homelab_disk_used_bytes", "gauge",
+                     "Filesystem used space (bytes)", used_s)
+        _prom_metric(out, "homelab_disk_total_bytes", "gauge",
+                     "Filesystem total space (bytes)", total_s)
+        _prom_metric(out, "homelab_disk_fill_pct", "gauge",
+                     "Filesystem fill (%)", pct_s)
+    except Exception:
+        pass
+
+    # Month-to-date + projected energy cost (only when a price is set).
+    try:
+        ctx = _cost_ctx()
+        with LOCK:
+            cm = _cost_projection(DB.cursor(), ctx, now)
+        if cm.get("enabled"):
+            cur = {"currency": cm.get("currency", "")}
+            _prom_metric(out, "homelab_cost_month_to_date", "gauge",
+                         "Energy cost so far this month (currency unit)",
+                         [(cur, cm.get("month_to_date"))])
+            _prom_metric(out, "homelab_cost_month_projected", "gauge",
+                         "Projected full-month energy cost (currency unit)",
+                         [(cur, cm.get("projected_month"))])
+    except Exception:
+        pass
+
+    # Anomaly flags: 1 when a monitored series is currently flagged, else 0 — one
+    # sample per known series so the gauge never silently disappears.
+    try:
+        with LOCK:
+            anom = _zscore_anomalies(DB.cursor(), now)
+        fired = {it["key"]: it for it in (anom.get("items") or [])}
+        flag_s = []
+        for key, _col, _unit, _md in _ANOMALY_SERIES:
+            it = fired.get(key)
+            flag_s.append(({"series": key,
+                            "direction": (it["direction"] if it else "none")}, 1 if it else 0))
+        _prom_metric(out, "homelab_anomaly_active", "gauge",
+                     "Anomaly flag per series (1=flagged now, 0=normal)", flag_s)
+    except Exception:
+        pass
+
+    return "\n".join(out) + ("\n" if out else "")
+
 @app.route("/metrics")
 def metrics():
     """Prometheus text-format scrape endpoint.
 
     Reads exclusively from the in-memory snapshots (LATEST / HEALTH) that the
     background collector keeps fresh.  No new I/O is triggered on each scrape,
-    so double-sampling is impossible.
+    so double-sampling is impossible. The base GPU/host/container/model series
+    come from prometheus_client gauges (when installed); the extra series (total
+    power, per-disk bytes + fill %, month-cost projection, anomaly flags) are
+    appended as pure-stdlib exposition text with their own distinct names — so
+    the endpoint still serves rich metrics even without prometheus_client.
     """
     if not _PROM_OK:
-        return Response("# prometheus_client not installed\n", mimetype="text/plain", status=503)
+        # No prometheus_client — serve only the pure-stdlib extra families, which
+        # are still valid exposition (HELP/TYPE + numeric samples).
+        body = _extra_metrics_text() or "# no metrics available yet\n"
+        return Response(body, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
     # Clear all multi-label gauges before re-populating so stale series vanish.
     for key in ("gpu_vram_used", "gpu_vram_total", "gpu_util", "gpu_temp", "gpu_power",
@@ -5971,7 +6093,12 @@ def metrics():
         _G["systemd_unit"].labels(unit=unit, state=active).set(
             1 if active == "active" else 0)
 
-    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+    # Gauge families (prometheus_client) + the pure-stdlib extra families. Both
+    # are valid exposition; their metric names are disjoint so there is no
+    # duplicate HELP/TYPE.
+    base = generate_latest().decode("utf-8")
+    extra = _extra_metrics_text()
+    return Response(base + extra, mimetype=CONTENT_TYPE_LATEST)
 
 
 def _public_settings():
