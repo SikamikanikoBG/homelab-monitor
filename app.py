@@ -4946,9 +4946,12 @@ def _copilot_context(now=None):
     except Exception as e:
         print("copilot ctx (live) error:", e, flush=True)
     try:
+        # _cost_ctx() -> get_settings() acquires LOCK itself, so it MUST be called
+        # OUTSIDE our `with LOCK:` block (the lock is non-reentrant) — exactly how
+        # api_forecast() does it. Calling it inside would deadlock permanently.
+        cctx = _cost_ctx()
         with LOCK:
             cur = DB.cursor()
-            cctx = _cost_ctx()
             disks = _disk_forecasts(cur, now)
             ctx["cost_month"] = _cost_projection(cur, cctx, now)
             anoms = _zscore_anomalies(cur, now)
