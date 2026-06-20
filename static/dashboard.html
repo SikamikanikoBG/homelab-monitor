@@ -898,6 +898,11 @@ h2 .hic{ opacity:.9 }
     <div id="anom-body"></div>
     <p class="cap" data-i18n-html="anom.cap">Latest GPU &amp; power readings scored against their own recent baseline (rolling mean ± stddev). A flag means the value is far enough from normal to be worth a look — flat or idle series never raise one.</p>
   </div>
+  <div class="card" id="vramfc-card" hidden>
+    <h2 data-i18n="vramfc.title">🧠 VRAM headroom &amp; ETA</h2>
+    <div class="grid" id="vramfc-kpis"></div>
+    <p class="cap" id="vramfc-cap" data-i18n="vramfc.cap">Free VRAM is total minus what loaded models currently hold. The ETA fits VRAM-used over the last few hours; it only shows a time-to-full when the trend is credibly rising under load, otherwise it reads “stable”.</p>
+  </div>
   <div class="cols">
     <div class="card"><h2 data-i18n="gpu.now_title">🎮 GPU right now</h2>
       <div class="grid" id="gpukpis" style="grid-template-columns:1fr 1fr"></div>
@@ -3885,6 +3890,35 @@ function renderForecast(){
   }
   // Anomalies card (GPU tab)
   renderAnomalies(j.anomalies||{});
+  // VRAM headroom + ETA card (GPU tab)
+  renderVramForecast(j.vram||{});
+}
+function _vramEtaText(v){
+  if(v.status==='full') return I18N.t('forecast.full','full now');
+  if(v.status==='collecting') return '<span class="muted">'+I18N.t('forecast.collecting','collecting data…')+'</span>';
+  if(v.status!=='filling' || v.eta_min==null) return '<span class="muted">'+I18N.t('forecast.stable','stable')+'</span>';
+  const m=v.eta_min; let when;
+  if(m<60) when=I18N.tf('vramfc.in_min','~{n} min',{n:Math.round(m)});
+  else if(m<60*48) when=I18N.tf('vramfc.in_hours','~{n} h',{n:Math.round(m/60)});
+  else when=I18N.tf('forecast.in_days','~{n} days',{n:Math.round(m/1440)});
+  return when;
+}
+function renderVramForecast(v){
+  const card=document.getElementById('vramfc-card'), k=document.getElementById('vramfc-kpis');
+  if(!card||!k) return;
+  if(v.total_gb==null){ card.hidden=true; return; }
+  card.hidden=false;
+  const rate = v.mb_per_min!=null
+    ? (v.mb_per_min>0 ? '+'+v.mb_per_min+' '+I18N.t('vramfc.mb_min','MB/min')
+       : (v.mb_per_min<0 ? v.mb_per_min+' '+I18N.t('vramfc.mb_min','MB/min') : I18N.t('forecast.flat','flat')))
+    : '—';
+  const kpis=[
+    {v:(v.free_gb!=null?v.free_gb:'—')+' GB', l:I18N.t('vramfc.free','Free VRAM'),
+     s:I18N.tf('vramfc.of_total','of {t} GB total',{t:v.total_gb})},
+    {v:(v.models_gb!=null?v.models_gb:'—')+' GB', l:I18N.t('vramfc.loaded','Held by loaded models')},
+    {v:_vramEtaText(v), l:I18N.t('vramfc.eta','Time to full'), s:rate},
+  ];
+  k.innerHTML=kpis.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
 }
 function _anomLabel(key){
   return I18N.t('anom.series.'+key, key);

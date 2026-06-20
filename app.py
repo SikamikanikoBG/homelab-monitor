@@ -4768,6 +4768,86 @@ def _disk_forecasts(cur, now):
         out.append(item)
     return out
 
+def _vram_forecast(cur, now):
+    """GPU VRAM-exhaustion ETA + headroom, from the `samples.mem_used` series.
+
+    Mirrors the disk-fill ETA approach (same _linfit, same R²/slope gating): an
+    ETA-to-full is reported only when VRAM is meaningfully trending up under load
+    with a credible linear fit; otherwise the card reads 'stable'/'collecting'.
+
+    Also reports *headroom*: total VRAM minus the VRAM currently held by loaded
+    models, framed as "X GB free" — using the per-model VRAM the dashboard
+    already tracks (LATEST['models']). All values in MB internally; *_gb fields
+    are GB (÷1024) for the UI.
+
+    Returns a dict; never raises (callers wrap in try, but this degrades on its
+    own to 'collecting'). Units: rate is MB/min so a short window stays legible.
+    """
+    WINDOW   = 6 * 3600     # last ~6h of GPU history (10s cadence)
+    MIN_PTS  = 30           # need a real trend before extrapolating
+    MIN_R2   = 0.5          # half-credible linear fit, same bar as disk ETA
+    MIN_MB_PER_MIN = 1.0    # below this, call it stable (idle drift / noise)
+    out = {"status": "collecting", "total_mb": None, "total_gb": None,
+           "used_mb": None, "used_gb": None, "pct": None,
+           "models_mb": None, "models_gb": None, "free_mb": None, "free_gb": None,
+           "mb_per_min": None, "r2": None, "eta_min": None, "eta_ts": None}
+
+    # Total + currently-loaded headroom from the live snapshot the UI already has.
+    total_mb = LATEST.get("mem_total") or None
+    models_mb = sum((m.get("vram") or 0) for m in (LATEST.get("models") or []))
+    if total_mb:
+        out["total_mb"] = round(total_mb)
+        out["total_gb"] = round(total_mb / 1024.0, 1)
+        out["models_mb"] = round(models_mb)
+        out["models_gb"] = round(models_mb / 1024.0, 1)
+        free_mb = max(0.0, total_mb - models_mb)
+        out["free_mb"] = round(free_mb)
+        out["free_gb"] = round(free_mb / 1024.0, 1)
+
+    since = now - WINDOW
+    try:
+        rows = cur.execute(
+            "SELECT ts, mem_used, mem_total FROM samples WHERE ts>=? ORDER BY ts",
+            (since,)).fetchall()
+    except Exception:
+        rows = []
+    rows = [r for r in rows if r[1] is not None]
+    if rows:
+        used = rows[-1][1]
+        tot = rows[-1][2] or total_mb
+        out["used_mb"] = round(used)
+        out["used_gb"] = round(used / 1024.0, 1)
+        if tot:
+            out["pct"] = round(100 * used / tot)
+            if out["total_mb"] is None:            # fall back to series total
+                out["total_mb"] = round(tot); out["total_gb"] = round(tot / 1024.0, 1)
+
+    if len(rows) < MIN_PTS:
+        return out
+    xs = [r[0] / 60.0 for r in rows]               # time in minutes -> slope MB/min
+    ys = [r[1] for r in rows]
+    fit = _linfit(xs, ys)
+    if not fit:
+        out["status"] = "stable"; out["mb_per_min"] = 0.0; return out
+    slope, _intercept, r2 = fit
+    out["mb_per_min"] = round(slope, 2)
+    out["r2"] = round(r2, 2)
+    tot = out["total_mb"]
+    used = out["used_mb"]
+    if slope < MIN_MB_PER_MIN or r2 < MIN_R2 or not tot or used is None:
+        out["status"] = "stable"
+    elif used >= tot:
+        out["status"] = "full"; out["eta_min"] = 0; out["eta_ts"] = now
+    else:
+        mins = (tot - used) / slope
+        if mins > 60 * 24 * 365:                   # >1y out is effectively stable
+            out["status"] = "stable"
+        else:
+            out["status"] = "filling"
+            out["eta_min"] = round(mins, 1)
+            out["eta_ts"] = int(now + mins * 60)
+    return out
+
 def _cost_projection(cur, ctx, now):
     """Extrapolate month-to-date machine energy cost to a full-month estimate, with
     a vs-last-month delta when last month's history is available. Tariff-aware."""
@@ -4892,6 +4972,8 @@ def api_forecast():
       • cost_month  — month-to-date energy cost extrapolated to a full-month estimate
       • anomalies   — z-score flags on the latest GPU util/VRAM/power/temp + total
                       power draw vs a trailing baseline
+      • vram        — GPU VRAM-exhaustion ETA (linear fit of mem_used over time,
+                      R²/slope-gated) + live headroom (total − loaded-model VRAM)
     Degrades gracefully: when there isn't enough history yet, items read 'collecting'
     or 'stable' rather than guessing — never a 500."""
     now = int(time.time())
@@ -4902,12 +4984,15 @@ def api_forecast():
             disks = _disk_forecasts(cur, now)
             cost_month = _cost_projection(cur, ctx, now)
             anomalies = _zscore_anomalies(cur, now)
+            vram = _vram_forecast(cur, now)
     except Exception as e:
         print("forecast error:", e, flush=True)
         return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False},
                         "anomalies": {"status": "collecting", "checked": 0, "items": []},
+                        "vram": {"status": "collecting"},
                         "error": "forecast_unavailable"})
-    return jsonify({"now": now, "disk": disks, "cost_month": cost_month, "anomalies": anomalies})
+    return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
+                    "anomalies": anomalies, "vram": vram})
 
 # ── Lab Copilot (E1): local-LLM insight layer ────────────────────────────────
 # Read-only. Assembles a compact, already-computed snapshot of the lab (live GPU

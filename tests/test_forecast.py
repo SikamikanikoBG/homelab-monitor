@@ -148,6 +148,88 @@ class TestAnomalies(unittest.TestCase):
         self.assertIn(j["anomalies"]["status"], ("quiet", "collecting"))
 
 
+class TestVramForecast(unittest.TestCase):
+    def setUp(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM samples")
+            app.DB.commit()
+        self._models = list(app.LATEST.get("models") or [])
+        self._mt = app.LATEST.get("mem_total")
+
+    def tearDown(self):
+        app.LATEST["models"] = self._models
+        app.LATEST["mem_total"] = self._mt
+
+    def _seed_mem(self, start_mb, mb_per_min, total_mb, n=60, step_s=60):
+        """Seed `samples.mem_used` as a rising/flat line ending 'now'."""
+        now = int(time.time())
+        with app.LOCK:
+            for i in range(n):
+                ts = now - (n - i) * step_s
+                used = start_mb + mb_per_min * ((n - (n - i)) * step_s / 60.0)
+                app.DB.execute(
+                    "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp) "
+                    "VALUES(?,?,?,?,?,?)", (ts, 0, round(used, 1), total_mb, 0, 0))
+            app.DB.commit()
+        return now
+
+    def test_headroom_from_loaded_models(self):
+        app.LATEST["mem_total"] = 24576           # 24 GB 3090
+        app.LATEST["models"] = [{"service": "ollama", "model": "a", "vram": 8192},
+                                {"service": "vllm", "model": "b", "vram": 4096}]
+        with app.LOCK:
+            v = app._vram_forecast(app.DB.cursor(), int(time.time()))
+        self.assertEqual(v["total_gb"], 24.0)
+        self.assertEqual(v["models_gb"], 12.0)
+        self.assertEqual(v["free_gb"], 12.0)      # 24 - 12
+
+    def test_rising_vram_gives_eta(self):
+        # +200 MB/min rising toward 24576 MB total; latest ~15896 MB -> ~43 min.
+        app.LATEST["mem_total"] = 24576
+        app.LATEST["models"] = []
+        now = self._seed_mem(4096.0, 200.0, 24576.0)
+        with app.LOCK:
+            v = app._vram_forecast(app.DB.cursor(), now)
+        self.assertEqual(v["status"], "filling")
+        self.assertAlmostEqual(v["mb_per_min"], 200.0, delta=20.0)
+        self.assertTrue(20 < v["eta_min"] < 90)
+        self.assertIsNotNone(v["eta_ts"])
+
+    def test_flat_vram_is_stable(self):
+        app.LATEST["mem_total"] = 24576
+        app.LATEST["models"] = []
+        now = self._seed_mem(8000.0, 0.0, 24576.0)
+        with app.LOCK:
+            v = app._vram_forecast(app.DB.cursor(), now)
+        self.assertEqual(v["status"], "stable")
+        self.assertIsNone(v["eta_min"])
+
+    def test_insufficient_history_collecting(self):
+        app.LATEST["mem_total"] = 24576
+        app.LATEST["models"] = []
+        now = self._seed_mem(4096.0, 200.0, 24576.0, n=5)
+        with app.LOCK:
+            v = app._vram_forecast(app.DB.cursor(), now)
+        self.assertEqual(v["status"], "collecting")
+        self.assertIsNone(v["eta_min"])
+        # headroom is still reported even with no trend yet
+        self.assertEqual(v["total_gb"], 24.0)
+
+    def test_empty_state_no_total(self):
+        app.LATEST["mem_total"] = None
+        app.LATEST["models"] = []
+        with app.LOCK:
+            v = app._vram_forecast(app.DB.cursor(), int(time.time()))
+        self.assertEqual(v["status"], "collecting")
+        self.assertIsNone(v["total_gb"])
+        self.assertIsNone(v["free_gb"])
+
+    def test_endpoint_exposes_vram_block(self):
+        j = app.app.test_client().get("/api/forecast").get_json()
+        self.assertIn("vram", j)
+        self.assertIn("status", j["vram"])
+
+
 class TestForecastEndpoint(unittest.TestCase):
     def test_endpoint_shape_and_no_crash(self):
         j = app.app.test_client().get("/api/forecast").get_json()
