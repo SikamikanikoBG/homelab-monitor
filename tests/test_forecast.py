@@ -78,6 +78,76 @@ class TestDiskForecast(unittest.TestCase):
         self.assertEqual(d["status"], "collecting")
 
 
+class TestAnomalies(unittest.TestCase):
+    def setUp(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM samples")
+            app.DB.commit()
+
+    def _seed_util(self, baseline_vals, latest, n_extra=0):
+        """Seed `samples` with a util series: baseline_vals then `latest` last."""
+        now = int(time.time())
+        seq = list(baseline_vals) + [latest]
+        with app.LOCK:
+            for i, v in enumerate(seq):
+                ts = now - (len(seq) - i) * app.INTERVAL
+                app.DB.execute(
+                    "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp) "
+                    "VALUES(?,?,?,?,?,?)", (ts, v, 0, 0, 0, 0))
+            app.DB.commit()
+        return now
+
+    def test_spike_is_flagged(self):
+        # 60 quiet readings around 20% then a 95% spike -> clear anomaly.
+        base = [20.0 + (i % 3) for i in range(60)]
+        now = self._seed_util(base, 95.0)
+        with app.LOCK:
+            res = app._zscore_anomalies(app.DB.cursor(), now)
+        self.assertEqual(res["status"], "quiet")
+        util = [a for a in res["items"] if a["key"] == "gpu_util"]
+        self.assertTrue(util, "expected a gpu_util anomaly")
+        self.assertEqual(util[0]["direction"], "spike")
+        self.assertGreaterEqual(abs(util[0]["z"]), res["threshold"])
+
+    def test_dip_direction(self):
+        base = [90.0 + (i % 3) for i in range(60)]
+        now = self._seed_util(base, 5.0)
+        with app.LOCK:
+            res = app._zscore_anomalies(app.DB.cursor(), now)
+        util = [a for a in res["items"] if a["key"] == "gpu_util"]
+        self.assertTrue(util)
+        self.assertEqual(util[0]["direction"], "dip")
+
+    def test_flat_series_no_false_alarm(self):
+        # Perfectly flat (zero variance) -> below min stddev -> never flagged.
+        now = self._seed_util([42.0] * 60, 42.0)
+        with app.LOCK:
+            res = app._zscore_anomalies(app.DB.cursor(), now)
+        self.assertEqual(res["status"], "quiet")
+        self.assertFalse([a for a in res["items"] if a["key"] == "gpu_util"])
+
+    def test_normal_reading_not_flagged(self):
+        base = [20.0 + (i % 5) for i in range(60)]
+        now = self._seed_util(base, 22.0)        # within the normal band
+        with app.LOCK:
+            res = app._zscore_anomalies(app.DB.cursor(), now)
+        self.assertFalse([a for a in res["items"] if a["key"] == "gpu_util"])
+
+    def test_insufficient_history_collecting(self):
+        now = self._seed_util([20.0, 21.0, 22.0], 95.0)   # only 4 points total
+        with app.LOCK:
+            res = app._zscore_anomalies(app.DB.cursor(), now)
+        self.assertEqual(res["status"], "collecting")
+        self.assertEqual(res["items"], [])
+
+    def test_endpoint_exposes_anomalies_block(self):
+        j = app.app.test_client().get("/api/forecast").get_json()
+        self.assertIn("anomalies", j)
+        self.assertIn("items", j["anomalies"])
+        self.assertIsInstance(j["anomalies"]["items"], list)
+        self.assertIn(j["anomalies"]["status"], ("quiet", "collecting"))
+
+
 class TestForecastEndpoint(unittest.TestCase):
     def test_endpoint_shape_and_no_crash(self):
         j = app.app.test_client().get("/api/forecast").get_json()

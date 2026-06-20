@@ -4801,12 +4801,87 @@ def _cost_projection(cur, ctx, now):
         "delta_pct": delta_pct, "collecting": not have_data,
     }
 
+# ── Anomaly detection (z-score on the GPU/power history) ──────────────────────
+# Robust trailing-window z-score over the per-INTERVAL `samples` series. We flag
+# only the latest reading and only when the baseline is trustworthy (enough
+# points, non-trivial variance) — so a flat/idle rig never cries wolf.
+_ANOMALY_SERIES = (
+    # (key, column, unit, min_dev) — min_dev is the smallest absolute deviation
+    # (in the series' own units) we treat as meaningful. A reading must be both
+    # ≥ Z_THRESH sigma AND at least min_dev away from baseline to flag, so tiny
+    # wobbles on an otherwise-flat series never cry wolf even if z is large.
+    ("gpu_util",  "util",      "%",  10.0),
+    ("gpu_vram",  "mem_used",  "MB", 256.0),
+    ("gpu_power", "power",     "W",  20.0),
+    ("gpu_temp",  "temp",      "°C", 5.0),
+    ("power_draw", _TOTAL_W_EXPR, "W", 20.0),
+)
+
+def _zscore_anomalies(cur, now):
+    """Flag the latest reading of each key series when it sits far from a recent
+    rolling baseline. Pure stdlib. Window = last ~6h of samples; baseline mean +
+    population stddev are computed over the window *excluding* the latest point,
+    so the point is scored against its own recent history, not itself.
+
+    Returns a list of anomaly dicts (only series that actually fired) and a
+    `checked` count, plus a `status` so the UI can show a clear empty state:
+      • 'quiet'      — series checked, nothing anomalous
+      • 'collecting' — not enough history on any series yet
+    Never raises on a bad/short/flat series — those are simply skipped."""
+    WINDOW   = 6 * 3600    # trailing baseline window (~6h at 10s cadence)
+    MIN_PTS  = 30          # need a real baseline before scoring anything
+    Z_THRESH = 3.0         # |z| at/above this is "look here", not noise
+    since = now - WINDOW
+    cols = ", ".join(c for _, c, _, _ in _ANOMALY_SERIES)
+    try:
+        rows = cur.execute(
+            f"SELECT {cols} FROM samples WHERE ts>=? ORDER BY ts", (since,)).fetchall()
+    except Exception:
+        rows = []
+    out, checked = [], 0
+    enough = False
+    for i, (key, _col, unit, min_dev) in enumerate(_ANOMALY_SERIES):
+        vals = [r[i] for r in rows if r[i] is not None]
+        if len(vals) < MIN_PTS:
+            continue
+        enough = True
+        checked += 1
+        latest = vals[-1]
+        base = vals[:-1]                       # score the point vs its own history
+        n = len(base)
+        mean = sum(base) / n
+        var = sum((v - mean) ** 2 for v in base) / n   # population variance
+        sd = var ** 0.5
+        dev = latest - mean
+        if abs(dev) < min_dev:                 # too small to matter (flat/idle/noise)
+            continue
+        if sd <= 0:                            # zero-variance baseline; the min_dev
+            continue                           # gate above already proved it's not flat
+        z = dev / sd
+        if abs(z) < Z_THRESH:
+            continue
+        out.append({
+            "key": key, "unit": unit,
+            "value": round(latest, 1), "baseline": round(mean, 1),
+            "z": round(z, 1), "stddev": round(sd, 1),
+            "direction": "spike" if z > 0 else "dip",
+            "magnitude": round(abs(latest - mean), 1),
+            "samples": n + 1,
+        })
+    # sort most-extreme first so the worst offender leads the card
+    out.sort(key=lambda a: abs(a["z"]), reverse=True)
+    status = "quiet" if enough else "collecting"
+    return {"status": status, "checked": checked, "threshold": Z_THRESH,
+            "window_h": WINDOW // 3600, "items": out}
+
 @app.route("/api/forecast")
 def api_forecast():
     """Read-only forecasts computed from the history already in SQLite, using pure
     Python statistics (no numpy/pandas/new deps):
       • disk[]      — per-mount fill ETA from a linear fit of used-GB over time
       • cost_month  — month-to-date energy cost extrapolated to a full-month estimate
+      • anomalies   — z-score flags on the latest GPU util/VRAM/power/temp + total
+                      power draw vs a trailing baseline
     Degrades gracefully: when there isn't enough history yet, items read 'collecting'
     or 'stable' rather than guessing — never a 500."""
     now = int(time.time())
@@ -4816,10 +4891,13 @@ def api_forecast():
             cur = DB.cursor()
             disks = _disk_forecasts(cur, now)
             cost_month = _cost_projection(cur, ctx, now)
+            anomalies = _zscore_anomalies(cur, now)
     except Exception as e:
         print("forecast error:", e, flush=True)
-        return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False}, "error": "forecast_unavailable"})
-    return jsonify({"now": now, "disk": disks, "cost_month": cost_month})
+        return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False},
+                        "anomalies": {"status": "collecting", "checked": 0, "items": []},
+                        "error": "forecast_unavailable"})
+    return jsonify({"now": now, "disk": disks, "cost_month": cost_month, "anomalies": anomalies})
 
 @app.route("/api/sessions")
 def api_sessions():

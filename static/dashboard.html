@@ -876,6 +876,11 @@ h2 .hic{ opacity:.9 }
 <!-- ───────── GPU ───────── -->
 <section data-tab="gpu" hidden>
   <div id="gpu-throttle" class="ins crit" style="display:none;margin-bottom:14px"></div>
+  <div class="card" id="anom-card" hidden>
+    <h2 data-i18n="anom.title">🚨 Anomalies</h2>
+    <div id="anom-body"></div>
+    <p class="cap" data-i18n-html="anom.cap">Latest GPU &amp; power readings scored against their own recent baseline (rolling mean ± stddev). A flag means the value is far enough from normal to be worth a look — flat or idle series never raise one.</p>
+  </div>
   <div class="cols">
     <div class="card"><h2 data-i18n="gpu.now_title">🎮 GPU right now</h2>
       <div class="grid" id="gpukpis" style="grid-template-columns:1fr 1fr"></div>
@@ -1859,6 +1864,7 @@ function showTab(id){
     else renderLocalOnlyNotice(id);
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); }
+  if(id==='gpu')      loadForecast();   // refresh the Anomalies card on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
   if(id==='host')     renderHostTab();
@@ -3860,6 +3866,40 @@ function renderForecast(){
       ck.innerHTML=kpis.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
     }
   }
+  // Anomalies card (GPU tab)
+  renderAnomalies(j.anomalies||{});
+}
+function _anomLabel(key){
+  return I18N.t('anom.series.'+key, key);
+}
+function renderAnomalies(a){
+  const card=document.getElementById('anom-card'), body=document.getElementById('anom-body');
+  if(!card||!body) return;
+  const items=(a.items||[]);
+  if(a.status==='collecting'){
+    card.hidden=false;
+    body.innerHTML='<div class="muted" style="padding:6px 0">'+I18N.t('anom.collecting','Not enough history yet — collecting baseline…')+'</div>';
+    return;
+  }
+  card.hidden=false;
+  if(!items.length){
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">✅</div><div><div class="t">'
+      +I18N.t('anom.none_title','Nothing unusual')+'</div><div class="d">'
+      +I18N.tf('anom.none_d','All {n} monitored series are within their normal range.',{n:a.checked||0})+'</div></div></div>';
+    return;
+  }
+  body.innerHTML=items.map(it=>{
+    const dirTxt = it.direction==='spike'
+      ? I18N.t('anom.spike','spike') : I18N.t('anom.dip','dip');
+    const arrow = it.direction==='spike' ? '▲' : '▼';
+    const sev = Math.abs(it.z)>=4 ? 'critical' : 'warning';
+    const badgeCls = Math.abs(it.z)>=4 ? 'crit' : 'warn';
+    const detail = I18N.tf('anom.detail','{v}{u} now vs ~{b}{u} baseline ({z}σ)',
+      {v:it.value,u:it.unit,b:it.baseline,z:(it.z>0?'+':'')+it.z});
+    return `<div class="ins ${sev}" style="margin:2px 0"><div class="ic">${arrow}</div><div>`
+      +`<div class="t">${esc(_anomLabel(it.key))} <span class="badge ${badgeCls}">${dirTxt}</span></div>`
+      +`<div class="d">${esc(detail)}</div></div></div>`;
+  }).join('');
 }
 function renderDisksTab(){
   loadForecast();
