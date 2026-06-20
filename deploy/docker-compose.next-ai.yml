@@ -1,0 +1,58 @@
+# 🤖 AI ARENA — the `next_ai` channel on the hub (ardi).
+#
+# This is Claude's competition instance for the human-vs-AI build-off (ends
+# 2026-07-15). It runs the moving `sikamikaniko123/homelab-monitor:next_ai`
+# image — published by .github/workflows/ci.yml on every push to the `next_ai`
+# branch — as a THIRD instance alongside prod and the human `next` preview, on
+# its own ports + data dir so none of the three ever collide:
+#
+#   prod    : dashboard :9800  · MCP :9810  · ./data         (docker-compose.yml)
+#   next    : dashboard :9801  · MCP :9811  · ./data-next     (docker-compose.next.yml)   ← human
+#   next_ai : dashboard :9802  · MCP :9812  · ./data-next-ai  (this file)                 ← Claude
+#
+# The global label-enabled Watchtower already running on ardi polls Docker Hub
+# and redeploys this container whenever the `:next_ai` digest changes — so the
+# loop is: push to `next_ai` → CI publishes `:next_ai` → Watchtower auto-redeploys
+# here. Hands-off.
+#
+# Bring it up on ardi:
+#   docker compose -f docker-compose.next-ai.yml up -d
+# Then open http://ardi:9802 (MCP at http://ardi:9812/mcp).
+#
+# Rollback / pin: set the image to an immutable tag, e.g.
+#   image: sikamikaniko123/homelab-monitor:next_ai-<shortsha>
+# and remove the watchtower enable label so it stops auto-updating.
+
+services:
+  homelab-monitor-next-ai:
+    image: sikamikaniko123/homelab-monitor:next_ai
+    container_name: homelab-monitor-next-ai
+    pull_policy: always          # `up -d` always grabs the freshest :next_ai
+    restart: unless-stopped
+    # Same host-privileged shape as the other instances so the arena behaves
+    # identically (host networking, GPU PID->container mapping, ptrace ports).
+    network_mode: host
+    pid: host
+    cgroup: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor=unconfined
+    labels:
+      # Opt this container in to the global label-scoped Watchtower on ardi.
+      com.centurylinklabs.watchtower.enable: "true"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      PORT: "9802"               # arena dashboard  -> http://ardi:9802
+      MCP_PORT: "9812"           # arena MCP server -> http://ardi:9812/mcp
+      SAMPLE_INTERVAL: "10"
+      RETENTION_DAYS: "180"
+      PRESSURE_FREE_MB: "2048"
+      HOST_ROOT: "/rootfs"
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # container health, names & model APIs
+      - /:/rootfs:ro                                    # read-only host fs for disk usage
+      - ./data-next-ai:/data                            # separate history DB — never touches prod or next
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
