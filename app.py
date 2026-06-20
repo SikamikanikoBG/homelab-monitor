@@ -63,6 +63,16 @@ SELF_UPDATE_HELPER_IMAGE = os.environ.get("SELF_UPDATE_HELPER_IMAGE", "docker:cl
 UPDATE_TTL_POSITIVE = 6 * 3600
 UPDATE_TTL_NEGATIVE = 10 * 60   # re-check for a new release every 10 min (was 30)
 MAX_POINTS   = 360
+# ── Lab Copilot (E1): local-LLM insight layer over the monitor's own data ─────
+# Talks to an ollama-compatible HTTP API already running on the host (host
+# networking → 127.0.0.1:11434 by default). All read-only: it summarises metrics
+# the app already computes, never mutates anything. Degrades gracefully when the
+# LLM is unreachable / no model is pulled — the feature shows a clear "not
+# configured" state, never a 500. Endpoint + model + timeout are env-configurable.
+COPILOT_OLLAMA_URL = os.environ.get("COPILOT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+COPILOT_MODEL      = os.environ.get("COPILOT_MODEL", "gemma3:1b")  # small, fast, usually pulled
+COPILOT_TIMEOUT    = float(os.environ.get("COPILOT_TIMEOUT", "30"))  # seconds, hard cap per call
+COPILOT_ENABLED    = os.environ.get("COPILOT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 # Multi-machine monitoring (Issue #35, slice 1: registry + probe). The hub's own
 # SSH key lives under SSH_DIR — it's inside /data so it persists across rebuilds
 # the same way the SQLite history does. Capability probes run via the system
@@ -4898,6 +4908,202 @@ def api_forecast():
                         "anomalies": {"status": "collecting", "checked": 0, "items": []},
                         "error": "forecast_unavailable"})
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month, "anomalies": anomalies})
+
+# ── Lab Copilot (E1): local-LLM insight layer ────────────────────────────────
+# Read-only. Assembles a compact, already-computed snapshot of the lab (live GPU
+# + RAM, biggest model on the GPU, disk-fill ETA, projected month cost, the top
+# anomaly) and asks a local ollama model to phrase it in plain English. Every
+# externally-visible failure mode is a graceful state, never a 500.
+
+def _copilot_context(now=None):
+    """Assemble a compact dict of the metrics the dashboard already computes,
+    suitable both for prompting the LLM and for a no-LLM fallback summary. Pure
+    reads of LATEST + the forecast helpers; never raises (returns what it can)."""
+    now = now or int(time.time())
+    ctx = {"now": now, "gpu": {}, "ram": {}, "models": [], "disk": [],
+           "cost_month": {}, "anomalies": [], "services": []}
+    try:
+        L = LATEST
+        ctx["host"] = (L.get("host") or {}).get("hostname") or socket.gethostname()
+        ctx["gpu"] = {
+            "available": L.get("gpu_avail"),
+            "util_pct": round(L.get("util") or 0),
+            "vram_used_mb": round(L.get("mem_used") or 0),
+            "vram_total_mb": round(L.get("mem_total") or 0),
+            "power_w": round(L.get("power") or 0),
+            "temp_c": round(L.get("temp") or 0),
+        }
+        # biggest models currently resident on the GPU (drives the "driven by Z")
+        models = []
+        for m in (L.get("models") or []):
+            try:
+                models.append({"service": m.get("service"), "model": m.get("model"),
+                               "vram_mb": round(m.get("vram") or 0)})
+            except Exception:
+                continue
+        models.sort(key=lambda x: -(x["vram_mb"] or 0))
+        ctx["models"] = models[:3]
+    except Exception as e:
+        print("copilot ctx (live) error:", e, flush=True)
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            cctx = _cost_ctx()
+            disks = _disk_forecasts(cur, now)
+            ctx["cost_month"] = _cost_projection(cur, cctx, now)
+            anoms = _zscore_anomalies(cur, now)
+        # only mounts with a real fill ETA are interesting for the digest
+        ctx["disk"] = sorted(
+            [{"mount": d["mount"], "pct": d.get("pct"), "eta_days": d.get("eta_days"),
+              "free_gb": d.get("free_gb"), "status": d.get("status")}
+             for d in disks if d.get("status") == "filling" and d.get("eta_days") is not None],
+            key=lambda d: (d["eta_days"] if d["eta_days"] is not None else 1e9))[:3]
+        ctx["anomalies"] = (anoms.get("items") or [])[:3]
+        ctx["anomaly_status"] = anoms.get("status")
+    except Exception as e:
+        print("copilot ctx (history) error:", e, flush=True)
+    return ctx
+
+
+def _copilot_facts(c):
+    """Render the assembled context as terse, deterministic English bullet facts.
+    This is both the LLM's grounding material AND the no-LLM fallback summary, so
+    the feature is useful even when ollama is down."""
+    lines = []
+    g = c.get("gpu") or {}
+    if g.get("available") is False:
+        lines.append("No GPU detected on this host.")
+    else:
+        vt = g.get("vram_total_mb") or 0
+        vpct = round(100 * (g.get("vram_used_mb") or 0) / vt) if vt else None
+        lines.append(
+            "GPU: {u}% utilisation, {p} W, {t}°C, VRAM {vu} MB of {vt} MB{vp}.".format(
+                u=g.get("util_pct", 0), p=g.get("power_w", 0), t=g.get("temp_c", 0),
+                vu=g.get("vram_used_mb", 0), vt=vt,
+                vp=(" (%d%%)" % vpct) if vpct is not None else ""))
+    models = c.get("models") or []
+    if models:
+        top = models[0]
+        lines.append("Biggest model on the GPU: {m} ({mb} MB, served by {s}).".format(
+            m=top.get("model") or "?", mb=top.get("vram_mb") or 0,
+            s=top.get("service") or "?"))
+    for d in (c.get("disk") or []):
+        lines.append("Disk {mp} is {pct}% full and, at the current rate, fills in ~{n} days.".format(
+            mp=d.get("mount"), pct=d.get("pct"), n=d.get("eta_days")))
+    cm = c.get("cost_month") or {}
+    if cm.get("enabled"):
+        cur = cm.get("currency") or "$"
+        lines.append("Energy cost month-to-date {cur}{mtd}; projected full month {cur}{proj}.".format(
+            cur=cur, mtd=cm.get("month_to_date"), proj=cm.get("projected_month")))
+    anoms = c.get("anomalies") or []
+    if anoms:
+        a = anoms[0]
+        lines.append("Anomaly: {k} {d} — {v}{u} now vs ~{b}{u} baseline ({z}σ).".format(
+            k=a.get("key"), d=a.get("direction"), v=a.get("value"), u=a.get("unit"),
+            b=a.get("baseline"), z=a.get("z")))
+    elif c.get("anomaly_status") == "quiet":
+        lines.append("No anomalies: all monitored series are within their normal range.")
+    if not lines:
+        lines.append("No metrics available yet — the monitor is still collecting data.")
+    return lines
+
+
+def _copilot_digest_prompt(facts):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Write a short, friendly status digest (2-4 sentences, plain English, no "
+        "markdown, no bullet points) summarising the lab RIGHT NOW for its owner. "
+        "Use ONLY the facts below; do not invent numbers. Be concrete and calm.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n\nDIGEST:")
+
+
+def _copilot_ask_prompt(facts, question):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Answer the user's question using ONLY the facts below — these are live "
+        "readings from their lab. If the facts don't contain the answer, say so "
+        "plainly. Keep it to 1-3 sentences, plain English, no markdown.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n\n"
+        "QUESTION: " + question.strip() + "\nANSWER:")
+
+
+def _ollama_generate(prompt, timeout=None):
+    """Call the local ollama /api/generate (non-streaming). Returns (text, error)
+    where exactly one is non-None. Never raises. `error` is a short machine code:
+    'disabled' | 'no_model' | 'unreachable' | 'bad_response'."""
+    if not COPILOT_ENABLED:
+        return None, "disabled"
+    url = COPILOT_OLLAMA_URL + "/api/generate"
+    body = json.dumps({
+        "model": COPILOT_MODEL, "prompt": prompt, "stream": False,
+        "options": {"temperature": 0.2, "num_predict": 220},
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=(timeout or COPILOT_TIMEOUT)) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        txt = (data.get("response") or "").strip()
+        if not txt:
+            return None, "bad_response"
+        return txt, None
+    except urllib.error.HTTPError as e:
+        # 404 from ollama usually means the model isn't pulled
+        if e.code == 404:
+            return None, "no_model"
+        print("copilot ollama HTTP error:", e.code, flush=True)
+        return None, "unreachable"
+    except Exception as e:
+        print("copilot ollama error:", type(e).__name__, flush=True)
+        return None, "unreachable"
+
+
+@app.route("/api/copilot/digest")
+def api_copilot_digest():
+    """Plain-English 'lab right now' digest generated by the local LLM over the
+    monitor's own metrics. Always 200: on any LLM problem it returns the
+    deterministic fact summary plus a `source`/`llm_status` the UI surfaces as a
+    clear graceful state."""
+    now = int(time.time())
+    ctx = _copilot_context(now)
+    facts = _copilot_facts(ctx)
+    out = {"now": now, "model": COPILOT_MODEL, "facts": facts,
+           "context": ctx, "enabled": COPILOT_ENABLED}
+    text, err = _ollama_generate(_copilot_digest_prompt(facts))
+    if text is not None:
+        out.update({"digest": text, "source": "llm", "llm_status": "ok"})
+    else:
+        out.update({"digest": " ".join(facts), "source": "facts", "llm_status": err})
+    return jsonify(out)
+
+
+@app.route("/api/copilot/ask", methods=["POST"])
+def api_copilot_ask():
+    """Free-text question answered by the local LLM over the same assembled
+    context. Always 200; graceful `llm_status` when the LLM can't answer."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    question = (payload.get("question") or "").strip()
+    now = int(time.time())
+    if not question:
+        return jsonify({"now": now, "answer": "", "source": "none",
+                        "llm_status": "no_question", "model": COPILOT_MODEL})
+    if len(question) > 500:
+        question = question[:500]
+    ctx = _copilot_context(now)
+    facts = _copilot_facts(ctx)
+    out = {"now": now, "model": COPILOT_MODEL, "question": question,
+           "facts": facts, "enabled": COPILOT_ENABLED}
+    text, err = _ollama_generate(_copilot_ask_prompt(facts, question))
+    if text is not None:
+        out.update({"answer": text, "source": "llm", "llm_status": "ok"})
+    else:
+        # No LLM: we can't reason over free text, but we can hand back the facts
+        # so the box is never a dead end.
+        out.update({"answer": "", "source": "facts", "llm_status": err})
+    return jsonify(out)
 
 @app.route("/api/sessions")
 def api_sessions():

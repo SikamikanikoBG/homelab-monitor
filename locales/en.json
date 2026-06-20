@@ -595,5 +595,17 @@
   "diag.lbl.proc": "Host readable (WMI)",
   "hostbar.manage": "Manage hosts",
   "hostbar.add": "+ Add host",
-  "hosts.prefilled": "Prefilled — replace \"user\" with the SSH user, then Add host."
+  "hosts.prefilled": "Prefilled — replace \"user\" with the SSH user, then Add host.",
+  "copilot.title": "🧠 Lab Copilot",
+  "copilot.refresh": "↻ Refresh",
+  "copilot.card_desc": "A plain-English read of your lab right now, written by a local LLM running on this host — no cloud. It summarises the live GPU, biggest model, disk-fill ETA, projected cost and any anomaly from the data the monitor already collects.",
+  "copilot.loading": "Thinking…",
+  "copilot.thinking": "Thinking…",
+  "copilot.ask_ph": "Ask about your lab… e.g. is anything overheating?",
+  "copilot.ask_btn": "Ask",
+  "copilot.st_disabled": "Local LLM is turned off (COPILOT_ENABLED=false).",
+  "copilot.st_no_model": "Model “{m}” is not pulled on this host — run: ollama pull {m}",
+  "copilot.st_unreachable": "Local LLM not reachable — start ollama on this host to enable live summaries.",
+  "copilot.st_bad": "The local LLM returned no text; showing the raw facts instead.",
+  "copilot.st_generic": "Local LLM unavailable — showing the raw metrics instead."
 }

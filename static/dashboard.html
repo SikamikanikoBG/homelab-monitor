@@ -844,6 +844,23 @@ h2 .hic{ opacity:.9 }
       <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
     </div>
   </div>
+  <div class="card" id="copilotcard">
+    <h2 style="display:flex;align-items:center;gap:8px">
+      <span data-i18n="copilot.title">🧠 Lab Copilot</span>
+      <span class="muted" id="copilot-model" style="font-size:11px;font-weight:400;text-transform:none;font-family:var(--mono)"></span>
+      <button class="osvar" type="button" id="copilot-refresh" style="margin-left:auto" data-i18n="copilot.refresh">↻ Refresh</button>
+    </h2>
+    <div class="fleet-meta" data-i18n="copilot.card_desc">A plain-English read of your lab right now, written by a local LLM running on this host — no cloud. It summarises the live GPU, biggest model, disk-fill ETA, projected cost and any anomaly from the data the monitor already collects.</div>
+    <div id="copilot-digest" style="margin-top:11px;line-height:1.55"></div>
+    <div id="copilot-ask" style="margin-top:13px" hidden>
+      <div class="row" style="gap:7px;align-items:stretch">
+        <input class="hosts-input" id="copilot-q" type="text" style="flex:1"
+               data-i18n-attr="placeholder:copilot.ask_ph" placeholder="Ask about your lab… e.g. is anything overheating?">
+        <button class="btn" type="button" id="copilot-ask-btn" data-i18n="copilot.ask_btn">Ask</button>
+      </div>
+      <div id="copilot-answer" style="margin-top:10px;line-height:1.55"></div>
+    </div>
+  </div>
   <div class="card" id="mcpcard">
     <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
     <div class="fleet-meta" data-i18n-html="mcp.card_desc">A read-only <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run. <span id="mcpstatus"></span></div>
@@ -1863,7 +1880,7 @@ function showTab(id){
     if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
     else renderLocalOnlyNotice(id);
   }
-  if(id==='overview'){ renderFleet(); renderAiBand(); }
+  if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); }
   if(id==='gpu')      loadForecast();   // refresh the Anomalies card on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -3901,6 +3918,68 @@ function renderAnomalies(a){
       +`<div class="d">${esc(detail)}</div></div></div>`;
   }).join('');
 }
+// ── Lab Copilot (E1): local-LLM digest + ask-box, all read-only ───────────────
+let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false;
+function _copilotStatusNote(s){
+  // Map the backend's llm_status into a clear, honest one-liner.
+  const m = {
+    disabled:   I18N.t('copilot.st_disabled','Local LLM is turned off (COPILOT_ENABLED=false).'),
+    no_model:   I18N.tf('copilot.st_no_model','Model “{m}” is not pulled on this host — run: ollama pull {m}',{m:(COPILOT&&COPILOT.model)||'?'}),
+    unreachable:I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.'),
+    bad_response:I18N.t('copilot.st_bad','The local LLM returned no text; showing the raw facts instead.'),
+  };
+  return m[s] || I18N.t('copilot.st_generic','Local LLM unavailable — showing the raw metrics instead.');
+}
+function _copilotChip(j){
+  // small status chip next to the title: green when LLM answered, muted otherwise
+  const el=document.getElementById('copilot-model'); if(!el) return;
+  if(j && j.llm_status==='ok'){ el.textContent='● '+(j.model||''); el.style.color='var(--ok)'; }
+  else{ el.textContent=(j&&j.model)?('○ '+j.model):''; el.style.color='var(--mut)'; }
+}
+function renderCopilot(){
+  const card=document.getElementById('copilotcard'); if(!card) return;
+  const j=COPILOT||{}; const body=document.getElementById('copilot-digest');
+  const ask=document.getElementById('copilot-ask');
+  _copilotChip(j);
+  if(!body) return;
+  const digest = esc(j.digest||'');
+  if(j.source==='llm'){
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:14px">'+digest+'</div></div></div>';
+  }else{
+    // Graceful state: clear note + the deterministic facts so it's never empty.
+    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
+    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+      +'<div class="t">'+esc(_copilotStatusNote(j.llm_status))+'</div>'
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
+      +'</div></div>';
+  }
+  // The ask-box only makes sense when the LLM can actually reason over free text.
+  if(ask) ask.hidden = !(j.llm_status==='ok');
+}
+async function loadCopilot(force){
+  if(CURRENT_HOST!=='local'){ const c=document.getElementById('copilotcard'); if(c) c.hidden=true; return; }
+  const c=document.getElementById('copilotcard'); if(c) c.hidden=false;
+  if(!force && Date.now()-COPILOT_AT < 120000 && COPILOT){ renderCopilot(); return; }
+  const body=document.getElementById('copilot-digest');
+  if(body && !COPILOT) body.innerHTML='<div class="muted" style="padding:4px 0">'+I18N.t('copilot.loading','Thinking…')+'</div>';
+  try{ COPILOT=await(await fetch('/api/copilot/digest')).json(); COPILOT_AT=Date.now(); }
+  catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
+  renderCopilot();
+}
+async function copilotAsk(){
+  const inp=document.getElementById('copilot-q'), out=document.getElementById('copilot-answer');
+  if(!inp||!out||COPILOT_BUSY) return;
+  const q=(inp.value||'').trim(); if(!q) return;
+  COPILOT_BUSY=true; out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  let j; try{ j=await(await fetch('/api/copilot/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})).json(); }
+  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; COPILOT_BUSY=false; return; }
+  if(j.source==='llm' && j.answer){
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div><div class="d" style="font-size:14px">'+esc(j.answer)+'</div></div></div>';
+  }else{
+    out.innerHTML='<div class="muted">'+esc(_copilotStatusNote(j.llm_status))+'</div>';
+  }
+  COPILOT_BUSY=false;
+}
 function renderDisksTab(){
   loadForecast();
   const root=document.getElementById('disksbody'); if(!root) return;
@@ -4791,6 +4870,15 @@ document.getElementById('mcpcopy').onclick = async () => {
   b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
   setTimeout(()=>{b.textContent=t;}, 1800);
 };
+// Lab Copilot wiring (refresh digest, ask-box submit on click or Enter).
+(function(){
+  const rb=document.getElementById('copilot-refresh');
+  if(rb) rb.onclick=()=>loadCopilot(true);
+  const ab=document.getElementById('copilot-ask-btn');
+  if(ab) ab.onclick=copilotAsk;
+  const q=document.getElementById('copilot-q');
+  if(q) q.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); copilotAsk(); } });
+})();
 document.getElementById('key_showraw').onclick = () => {
   const el = document.getElementById('pubkey'), b = document.getElementById('key_showraw');
   const show = el.style.display==='none';

@@ -620,5 +620,17 @@
   "diag.lbl.proc": "主机可读 (WMI)",
   "hostbar.manage": "管理主机",
   "hostbar.add": "+ 添加主机",
-  "hosts.prefilled": "已预填 — 将 \"user\" 替换为 SSH 用户名，然后点击“添加主机”。"
+  "hosts.prefilled": "已预填 — 将 \"user\" 替换为 SSH 用户名，然后点击“添加主机”。",
+  "copilot.title": "🧠 实验室副驾",
+  "copilot.refresh": "↻ 刷新",
+  "copilot.card_desc": "由运行在本机的本地大模型撰写的实验室即时状态简报——无需云端。它汇总实时 GPU、占用最大的模型、磁盘写满预计时间、预计费用以及任何异常，全部来自监控已采集的数据。",
+  "copilot.loading": "思考中…",
+  "copilot.thinking": "思考中…",
+  "copilot.ask_ph": "询问你的实验室……例如：有没有过热的设备？",
+  "copilot.ask_btn": "提问",
+  "copilot.st_disabled": "本地大模型已关闭（COPILOT_ENABLED=false）。",
+  "copilot.st_no_model": "本机未拉取模型“{m}”——请运行：ollama pull {m}",
+  "copilot.st_unreachable": "无法连接本地大模型——请在本机启动 ollama 以启用实时摘要。",
+  "copilot.st_bad": "本地大模型未返回文本；改为显示原始数据。",
+  "copilot.st_generic": "本地大模型不可用——改为显示原始指标。"
 }
