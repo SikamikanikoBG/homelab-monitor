@@ -3705,7 +3705,7 @@ SETTING_DEFAULTS = {
     "mlflow_uri":          "",         # MLflow tracking server base (blank = off)
     "mlflow_token":        "",         # optional bearer for a secured MLflow
 }
-SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
+SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
 def get_settings():
     """Return the full settings dict (defaults + persisted overrides)."""
@@ -4022,7 +4022,7 @@ def _validate_rule(body):
         if series not in valid:
             return None, f"Unknown anomaly series. Use 'any' or one of: {', '.join(sorted(valid - {'any'}))}."
     elif ctype in ("disk_eta", "vram_eta"):
-        try: float(params.get("days") if ctype == "disk_eta" else params.get("days"))
+        try: float(params.get("days"))
         except (TypeError, ValueError):
             return None, "A numeric 'days' threshold is required."
     elif ctype == "cost_budget":
@@ -4052,13 +4052,16 @@ def update_rule(rid, body):
         exists = DB.execute("SELECT 1 FROM alert_rules WHERE id=?", (rid,)).fetchone()
     if not exists:
         return False, "not found"
+    if not body:
+        return False, "empty update"
     # Allow a quick enable/disable or snooze without full revalidation.
-    if set(body.keys()) <= {"enabled"}:
+    # Require the key be present so an empty body can't silently disable a rule.
+    if "enabled" in body and set(body.keys()) <= {"enabled"}:
         with LOCK:
             DB.execute("UPDATE alert_rules SET enabled=? WHERE id=?", (1 if body.get("enabled") else 0, rid))
             DB.commit()
         return True, None
-    if set(body.keys()) <= {"snooze_min"}:
+    if "snooze_min" in body and set(body.keys()) <= {"snooze_min"}:
         try: mins = int(body.get("snooze_min", 0))
         except (TypeError, ValueError): return False, "snooze_min must be a number"
         until = int(time.time()) + mins * 60 if mins > 0 else None

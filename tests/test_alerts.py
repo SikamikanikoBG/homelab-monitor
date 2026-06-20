@@ -65,6 +65,25 @@ class TestRuleCrud(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "not found")
 
+    def test_empty_patch_is_noop_not_disable(self):
+        # An empty PATCH body must NOT silently disable a rule.
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly",
+                                  "params": {"series": "any"}, "enabled": True})
+        self.assertTrue(app.list_rules()[0]["enabled"])
+        ok, err = app.update_rule(rid, {})
+        self.assertFalse(ok)
+        self.assertEqual(err, "empty update")
+        # Still enabled — nothing was touched.
+        self.assertTrue(app.list_rules()[0]["enabled"])
+
+    def test_empty_patch_endpoint_400(self):
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly",
+                                  "params": {"series": "any"}, "enabled": True})
+        c = app.app.test_client()
+        r = c.patch(f"/api/alerts/rules/{rid}", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(app.list_rules()[0]["enabled"])
+
 
 SIG_ANOMALY = {"anomalies": {"items": [
     {"key": "gpu_power", "unit": "W", "value": 320.0, "baseline": 200.0,

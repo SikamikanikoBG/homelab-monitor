@@ -26,6 +26,58 @@ class TestTelegramSettings(unittest.TestCase):
         self.assertIn("telegram_token", app.SETTING_SECRETS)
 
 
+class TestWebhookSecret(unittest.TestCase):
+    """Generic webhook URL embeds secrets (Slack/n8n/HA) — must be redacted
+    like the Discord webhook, with a *_set boolean and CLEAR/keep round-trip."""
+
+    def setUp(self):
+        # Start from a known-clean stored state.
+        app.save_settings({"webhook_url": "", "discord_webhook_url": ""})
+
+    def tearDown(self):
+        app.save_settings({"webhook_url": ""})
+
+    def test_webhook_url_is_a_secret(self):
+        self.assertIn("webhook_url", app.SETTING_SECRETS)
+
+    def test_public_settings_masks_webhook_url(self):
+        with patch.object(app, "get_settings", return_value={
+            **app.SETTING_DEFAULTS,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/SECRET",
+        }):
+            pub = app._public_settings()
+        self.assertNotIn("webhook_url", pub)
+        self.assertTrue(pub["webhook_url_set"])
+
+    def test_api_settings_does_not_leak_raw_url(self):
+        c = app.app.test_client()
+        url = "https://hooks.slack.com/services/T000/B000/SECRETVALUE"
+        c.post("/api/settings", json={"webhook_url": url})
+        j = c.get("/api/settings").get_json()
+        s = j["settings"]
+        self.assertTrue(s["webhook_url_set"])
+        self.assertNotIn("webhook_url", s)
+        self.assertNotIn("SECRETVALUE", c.get("/api/settings").get_data(as_text=True))
+        # …but it is actually stored for dispatch (assembly path intact).
+        self.assertEqual(app.get_settings().get("webhook_url"), url)
+
+    def test_other_saves_do_not_wipe_stored_webhook(self):
+        c = app.app.test_client()
+        url = "https://example.test/hook"
+        c.post("/api/settings", json={"webhook_url": url})
+        # A save that omits webhook_url (the keep case) must leave it intact.
+        c.post("/api/settings", json={"alert_min_level": "critical"})
+        self.assertEqual(app.get_settings().get("webhook_url"), url)
+
+    def test_clear_sentinel_clears_webhook(self):
+        c = app.app.test_client()
+        c.post("/api/settings", json={"webhook_url": "https://example.test/hook"})
+        self.assertTrue(app.get_settings().get("webhook_url"))
+        # The UI translates the CLEAR sentinel into an empty string.
+        c.post("/api/settings", json={"webhook_url": ""})
+        self.assertEqual(app.get_settings().get("webhook_url"), "")
+
+
 class TestTelegramNotifier(unittest.TestCase):
     @patch("app._post_json")
     def test_post_to_telegram_uses_markdown(self, mock_post):

@@ -1159,6 +1159,7 @@ h2 .hic{ opacity:.9 }
           <input type="text" id="al_webhook" placeholder="https://example.com/hook" autocomplete="off" spellcheck="false"
                  style="flex:1">
         </div>
+        <div class="cap" id="al_webhook_state" style="margin-top:4px"></div>
         <div class="cap" data-i18n-html="alerts.webhook_cap">Optional. We POST a small JSON envelope <code>{source,level,title,detail,ts}</code> — wire it into Home Assistant, n8n, a script, or Slack-incoming.</div>
       </div>
 
@@ -3162,7 +3163,6 @@ async function loadAlerts(){
   document.getElementById('al_ntfy_topic').value  = s.ntfy_topic||'';
   document.getElementById('al_ntfy_server').value = s.ntfy_server||'';
   document.getElementById('al_telegram_chat_id').value = s.telegram_chat_id||'';
-  document.getElementById('al_webhook').value     = s.webhook_url||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
   document.getElementById('al_kwh').value         = s.kwh_price||'';
@@ -3190,6 +3190,15 @@ async function loadAlerts(){
   document.getElementById('al_telegram_state').textContent = s.telegram_token_set
     ? 'A bot token is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.'
     : 'No bot token saved yet.';
+  // Generic webhook URL is a secret too (embeds Slack/n8n/HA tokens) —
+  // same mask + *_set + CLEAR pattern as the Discord webhook.
+  const winp=document.getElementById('al_webhook');
+  if(!ALERTS_LOADED){ winp.value=''; winp.placeholder = s.webhook_url_set
+    ? '•••••• webhook saved — type to replace, clear to remove' : 'https://example.com/hook'; }
+  const wstate=document.getElementById('al_webhook_state');
+  if(wstate) wstate.textContent = s.webhook_url_set
+    ? 'A webhook is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.'
+    : 'No webhook saved yet.';
   ALERTS_LOADED=true;
 }
 
@@ -3229,7 +3238,6 @@ async function saveAlerts(){
     ntfy_topic:       document.getElementById('al_ntfy_topic').value.trim(),
     ntfy_server:      document.getElementById('al_ntfy_server').value.trim(),
     telegram_chat_id: document.getElementById('al_telegram_chat_id').value.trim(),
-    webhook_url:      document.getElementById('al_webhook').value.trim(),
     alert_min_level:  document.getElementById('al_minlevel').value,
     disk_alert_pct:   String(parseInt(document.getElementById('al_disk').value||'90',10)||90),
     kwh_price:        document.getElementById('al_kwh').value.trim(),
@@ -3254,10 +3262,14 @@ async function saveAlerts(){
   const mtv = (document.getElementById('al_mlflow_token')||{}).value;
   if(mtv === 'CLEAR'){ body.mlflow_token=''; }
   else if(mtv && mtv.trim()){ body.mlflow_token = mtv.trim(); }
+  const wv = document.getElementById('al_webhook').value;
+  if(wv === 'CLEAR'){ body.webhook_url=''; }
+  else if(wv && wv.trim()){ body.webhook_url = wv.trim(); }
   let j; try{ j=await(await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not save settings: '+e); return; }
   document.getElementById('al_discord').value='';
   document.getElementById('al_telegram_token').value='';
+  document.getElementById('al_webhook').value='';
   const mtok=document.getElementById('al_mlflow_token'); if(mtok) mtok.value='';
   await loadAlerts();
   showAlertStatus('ok',I18N.t('toast.settings_saved','Settings saved.'));
