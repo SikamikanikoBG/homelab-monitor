@@ -1036,6 +1036,7 @@ h2 .hic{ opacity:.9 }
   <div class="card">
     <div class="subtabs" id="set-subtabs">
       <button type="button" class="subtab on" data-sp="alerts" data-i18n="set.tab_alerts">🔔 Alerts</button>
+      <button type="button" class="subtab"    data-sp="rules" data-i18n="set.tab_rules">📐 Rules</button>
       <button type="button" class="subtab"    data-sp="costs" data-i18n="set.tab_costs">💰 Costs</button>
       <button type="button" class="subtab"    data-sp="integrations" data-i18n="set.tab_integrations">🧪 Integrations</button>
     </div>
@@ -1093,6 +1094,15 @@ h2 .hic{ opacity:.9 }
         <div class="cap" data-i18n-html="alerts.telegram_cap">Required with a bot token. Message your bot once, then read <code>chat.id</code> from <code>getUpdates</code>.</div>
       </div>
 
+      <div>
+        <div class="flabel" data-i18n="set.webhook_url">Generic webhook URL</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="al_webhook" placeholder="https://example.com/hook" autocomplete="off" spellcheck="false"
+                 style="flex:1">
+        </div>
+        <div class="cap" data-i18n-html="alerts.webhook_cap">Optional. We POST a small JSON envelope <code>{source,level,title,detail,ts}</code> — wire it into Home Assistant, n8n, a script, or Slack-incoming.</div>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
         <div>
           <div class="flabel" data-i18n="set.min_severity">Minimum severity</div>
@@ -1116,6 +1126,77 @@ h2 .hic{ opacity:.9 }
         GPU VRAM pressure (free &lt; <code>PRESSURE_FREE_MB</code>), GPU OOM events, and disks crossing the threshold above.</p>
     </div>
     </div><!-- /set-pane-alerts -->
+
+    <!-- ── Rules sub-page (opt-in alerting engine) ── -->
+    <div id="set-pane-rules" hidden>
+      <p class="cap" style="margin:2px 0 12px" data-i18n-html="rules.intro">
+        Smarter alerts on top of the channels above. A rule watches a signal the dashboard already computes
+        and fires through your channel when it crosses a line. Every rule is <b>OFF until you enable it</b>, with a
+        per-rule cooldown so it never spams. Read-only — this only sends data out, it never changes the host.</p>
+
+      <div id="rulesnochan" class="ins warning" style="display:none" data-i18n="rules.no_channel">
+        No channel configured yet — add a Discord/ntfy/Telegram/webhook channel on the 🔔 Alerts page first.</div>
+
+      <div class="card-sub" style="font-weight:600;margin-bottom:8px" data-i18n="rules.add_title">➕ Add a rule</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:880px;align-items:end">
+        <div>
+          <div class="flabel" data-i18n="rules.f_name">Name</div>
+          <input type="text" id="r_name" class="field" placeholder="e.g. VRAM running out">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="rules.f_type">When</div>
+          <select id="r_type" class="field">
+            <option value="anomaly" data-i18n="rules.t_anomaly">Anomaly active</option>
+            <option value="disk_eta" data-i18n="rules.t_disk">Disk fills within…</option>
+            <option value="vram_eta" data-i18n="rules.t_vram">VRAM fills within…</option>
+            <option value="cost_budget" data-i18n="rules.t_cost">Projected cost over…</option>
+          </select>
+        </div>
+        <div id="r_p_series_wrap">
+          <div class="flabel" data-i18n="rules.f_series">Series</div>
+          <select id="r_p_series" class="field"></select>
+        </div>
+        <div id="r_p_days_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_days">Days threshold</div>
+          <input type="number" id="r_p_days" class="field" min="0" step="0.5" value="3">
+        </div>
+        <div id="r_p_budget_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_budget">Budget</div>
+          <input type="number" id="r_p_budget" class="field" min="0" step="1" value="50">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="rules.f_channel">Channel</div>
+          <select id="r_channel" class="field"></select>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="rules.f_level">Severity</div>
+          <select id="r_level" class="field">
+            <option value="info" data-i18n="opt.sev_info">info</option>
+            <option value="warning" selected data-i18n="opt.sev_warning">warning</option>
+            <option value="critical" data-i18n="opt.sev_critical">critical</option>
+          </select>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="rules.f_cooldown">Cooldown (min)</div>
+          <input type="number" id="r_cooldown" class="field" min="0" step="5" value="60">
+        </div>
+        <div>
+          <button class="rb on" id="r_add" data-i18n="rules.add_btn">Add rule</button>
+        </div>
+      </div>
+
+      <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.list_title">Your rules</div>
+      <div id="rules_list"></div>
+
+      <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.test_title">Send a test notification</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="r_test_channel" class="field" style="max-width:200px"></select>
+        <button class="rb" id="r_test_btn" data-i18n="rules.test_btn">Send test</button>
+      </div>
+
+      <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.history_title">Alert history</div>
+      <div id="rules_history"></div>
+    </div><!-- /set-pane-rules -->
 
     <!-- ── Costs sub-page ── -->
     <div id="set-pane-costs" hidden>
@@ -2800,6 +2881,7 @@ async function loadAlerts(){
   document.getElementById('al_ntfy_topic').value  = s.ntfy_topic||'';
   document.getElementById('al_ntfy_server').value = s.ntfy_server||'';
   document.getElementById('al_telegram_chat_id').value = s.telegram_chat_id||'';
+  document.getElementById('al_webhook').value     = s.webhook_url||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
   document.getElementById('al_kwh').value         = s.kwh_price||'';
@@ -2866,6 +2948,7 @@ async function saveAlerts(){
     ntfy_topic:       document.getElementById('al_ntfy_topic').value.trim(),
     ntfy_server:      document.getElementById('al_ntfy_server').value.trim(),
     telegram_chat_id: document.getElementById('al_telegram_chat_id').value.trim(),
+    webhook_url:      document.getElementById('al_webhook').value.trim(),
     alert_min_level:  document.getElementById('al_minlevel').value,
     disk_alert_pct:   String(parseInt(document.getElementById('al_disk').value||'90',10)||90),
     kwh_price:        document.getElementById('al_kwh').value.trim(),
@@ -2909,6 +2992,125 @@ async function testAlerts(){
     showAlertStatus('critical', fails || j.reason || 'Test failed — check Discord webhook / ntfy topic / Telegram bot.');
   }
 }
+
+// ── Alerting rule engine (settings → Rules sub-page) ──────────────────────────
+const RULE_TYPE_LABEL = {anomaly:'rules.t_anomaly', disk_eta:'rules.t_disk',
+                         vram_eta:'rules.t_vram', cost_budget:'rules.t_cost'};
+const SERIES_LABEL = {any:'any series', gpu_util:'GPU util', gpu_vram:'GPU VRAM',
+                      gpu_power:'GPU power', gpu_temp:'GPU temp', power_draw:'total power'};
+function ruleParamsVisibility(){
+  const t=document.getElementById('r_type').value;
+  document.getElementById('r_p_series_wrap').hidden = t!=='anomaly';
+  document.getElementById('r_p_days_wrap').hidden   = !(t==='disk_eta'||t==='vram_eta');
+  document.getElementById('r_p_budget_wrap').hidden = t!=='cost_budget';
+}
+function ruleSummary(r){
+  const p=r.params||{};
+  if(r.ctype==='anomaly')     return I18N.t('rules.sum_anomaly','Anomaly on ')+(SERIES_LABEL[p.series]||p.series||'any');
+  if(r.ctype==='disk_eta')    return I18N.t('rules.sum_disk','Disk fills within ')+p.days+'d';
+  if(r.ctype==='vram_eta')    return I18N.t('rules.sum_vram','VRAM fills within ')+p.days+'d';
+  if(r.ctype==='cost_budget') return I18N.t('rules.sum_cost','Projected cost over ')+p.budget;
+  return r.ctype;
+}
+async function loadRules(){
+  let j; try{ j=await(await fetch('/api/alerts/rules')).json(); }catch(e){ return; }
+  const chans=j.channels||[];
+  document.getElementById('rulesnochan').style.display = chans.length?'none':'';
+  // channel selects (rule channel + test channel)
+  const opts = ['<option value="all">'+I18N.t('rules.all_channels','all configured')+'</option>']
+    .concat(chans.map(c=>`<option value="${c}">${c}</option>`)).join('');
+  const rc=document.getElementById('r_channel'); rc.innerHTML=opts;
+  const tc=document.getElementById('r_test_channel'); tc.innerHTML=opts;
+  // anomaly series select
+  const ser=document.getElementById('r_p_series');
+  ser.innerHTML=(j.series||['any']).map(s=>`<option value="${s}">${SERIES_LABEL[s]||s}</option>`).join('');
+  ruleParamsVisibility();
+  // rules list
+  const box=document.getElementById('rules_list');
+  if(!(j.rules||[]).length){ box.innerHTML='<p class="cap">'+I18N.t('rules.none','No rules yet — add one above.')+'</p>'; }
+  else{
+    box.innerHTML = j.rules.map(r=>{
+      const fired = r.last_fired_at ? new Date(r.last_fired_at*1000).toLocaleString() : I18N.t('rules.never','never');
+      const snz = (r.snoozed_until && r.snoozed_until*1000>Date.now())
+        ? ` · <span class="badge warn">${I18N.t('rules.snoozed','snoozed')}</span>` : '';
+      return `<div class="ins ${r.enabled?'info':''}" style="display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap">
+        <div>
+          <b>${esc(r.name)}</b> — ${esc(ruleSummary(r))}
+          <span class="cap">· ${esc(r.channel)} · ${esc(r.level)} · ${I18N.t('rules.cooldown','cooldown')} ${r.cooldown_min}m${snz}</span>
+          <div class="cap">${I18N.t('rules.last_fired','last fired')}: ${esc(fired)}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label class="cap" style="display:flex;align-items:center;gap:5px">
+            <input type="checkbox" data-rtoggle="${r.id}" ${r.enabled?'checked':''}> ${I18N.t('rules.enabled','enabled')}</label>
+          <button class="rb" data-rsnooze="${r.id}">${I18N.t('rules.snooze','Snooze 1h')}</button>
+          <button class="rb" data-rdel="${r.id}">${I18N.t('btn.delete','Delete')}</button>
+        </div></div>`;
+    }).join('');
+    box.querySelectorAll('[data-rtoggle]').forEach(el=>el.onchange=async()=>{
+      await fetch('/api/alerts/rules/'+el.dataset.rtoggle,{method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({enabled:el.checked})}); loadRules();
+    });
+    box.querySelectorAll('[data-rsnooze]').forEach(el=>el.onclick=async()=>{
+      await fetch('/api/alerts/rules/'+el.dataset.rsnooze,{method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({snooze_min:60})}); loadRules();
+    });
+    box.querySelectorAll('[data-rdel]').forEach(el=>el.onclick=async()=>{
+      await fetch('/api/alerts/rules/'+el.dataset.rdel,{method:'DELETE'}); loadRules();
+    });
+  }
+  loadAlertHistory();
+}
+async function addRule(){
+  const t=document.getElementById('r_type').value;
+  let params={};
+  if(t==='anomaly')      params={series:document.getElementById('r_p_series').value};
+  else if(t==='disk_eta'||t==='vram_eta') params={days:parseFloat(document.getElementById('r_p_days').value||'3')};
+  else if(t==='cost_budget') params={budget:parseFloat(document.getElementById('r_p_budget').value||'50')};
+  const body={
+    name: document.getElementById('r_name').value.trim(),
+    ctype: t, params,
+    channel: document.getElementById('r_channel').value,
+    level: document.getElementById('r_level').value,
+    cooldown_min: parseInt(document.getElementById('r_cooldown').value||'60',10),
+    enabled: true,
+  };
+  let j; try{ j=await(await fetch('/api/alerts/rules',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not add rule: '+e); return; }
+  if(j.ok){ document.getElementById('r_name').value=''; showAlertStatus('ok',I18N.t('rules.added','Rule added.')); loadRules(); }
+  else showAlertStatus('critical', j.error||'Could not add rule.');
+}
+async function testRuleChannel(){
+  const ch=document.getElementById('r_test_channel').value;
+  showAlertStatus('info',I18N.t('toast.sending_test','Sending test alert…'));
+  let j; try{ j=await(await fetch('/api/alerts/channels/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({channel:ch})})).json(); }catch(e){ showAlertStatus('critical','Test failed: '+e); return; }
+  if(j.ok) showAlertStatus('ok','Test sent: '+(j.results||[]).map(r=>r.channel).join(', ')+'.');
+  else{ const f=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
+        showAlertStatus('critical', f || j.reason || 'Test failed.'); }
+  loadAlertHistory();
+}
+async function loadAlertHistory(){
+  let j; try{ j=await(await fetch('/api/alerts/history?limit=100')).json(); }catch(e){ return; }
+  const box=document.getElementById('rules_history');
+  if(!(j.history||[]).length){ box.innerHTML='<p class="cap">'+I18N.t('rules.no_history','Nothing fired yet.')+'</p>'; return; }
+  box.innerHTML = '<table style="width:100%"><thead><tr>'
+    +`<th>${I18N.t('rules.h_when','When')}</th><th>${I18N.t('rules.h_rule','Rule')}</th>`
+    +`<th>${I18N.t('rules.h_channel','Channel')}</th><th>${I18N.t('rules.h_status','Status')}</th><th></th></tr></thead><tbody>`
+    + j.history.map(h=>{
+        const cls = h.status==='sent'?'ok':'crit';
+        const ack = h.acked ? `<span class="badge">${I18N.t('rules.acked','acked')}</span>`
+          : `<button class="rb" data-ack="${h.id}">${I18N.t('rules.ack','Ack')}</button>`;
+        return `<tr${h.acked?' style="opacity:.55"':''}><td class="cap">${new Date(h.ts*1000).toLocaleString()}</td>`
+          +`<td>${esc(h.rule_name||'')}<div class="cap">${esc(h.title||'')}</div></td>`
+          +`<td>${esc(h.channel||'')}</td><td><span class="badge ${cls}">${esc(h.status||'')}</span></td><td>${ack}</td></tr>`;
+      }).join('') + '</tbody></table>';
+  box.querySelectorAll('[data-ack]').forEach(el=>el.onclick=async()=>{
+    await fetch('/api/alerts/history/'+el.dataset.ack+'/ack',{method:'POST'}); loadAlertHistory();
+  });
+}
+document.getElementById('r_type').onchange = ruleParamsVisibility;
+document.getElementById('r_add').onclick = addRule;
+document.getElementById('r_test_btn').onclick = testRuleChannel;
 
 // ── Backup (settings) tab ─────────────────────────────────────────────────────
 function showBackupStatus(level,text){
@@ -4867,6 +5069,7 @@ function setSettingsPane(name){
   document.querySelectorAll('#set-subtabs .subtab').forEach(b=>b.classList.toggle('on', b.dataset.sp===name));
   document.querySelectorAll('[id^="set-pane-"]').forEach(p=>p.hidden = p.id !== 'set-pane-'+name);
   if(name==='integrations') loadIntegrations();
+  if(name==='rules') loadRules();
 }
 document.querySelectorAll('#set-subtabs .subtab').forEach(b=>b.onclick=()=>setSettingsPane(b.dataset.sp));
 
