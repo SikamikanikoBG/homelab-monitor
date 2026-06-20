@@ -56,3 +56,13 @@ services:
       - /:/rootfs:ro                                    # read-only host fs for disk usage
       - ./data-next-ai:/data                            # separate history DB — never touches prod or next
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+    # GPU access — same nvidia reservation the prod/next instances use so the
+    # arena sees the RTX 3090 (util, per-model VRAM, power). Without this the
+    # container has no nvidia-smi and GPU panels go blank.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
