@@ -143,5 +143,76 @@ class TestEndpointsGraceful(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
+class TestExplainPromptAndFacts(unittest.TestCase):
+    def _point(self, **kw):
+        p = {"key": "gpu_power", "value": 280, "baseline": 90, "z": 4.2,
+             "unit": "W", "direction": "spike", "magnitude": 190}
+        p.update(kw)
+        return p
+
+    def test_explain_context_clamps_future_ts(self):
+        now = int(time.time())
+        ctx = app._explain_context(self._point(ts=now + 99999), now)
+        self.assertLessEqual(ctx["ts"], now)
+
+    def test_explain_context_handles_bad_ts(self):
+        # garbage ts must not raise; falls back to now
+        ctx = app._explain_context(self._point(ts="not-a-number"))
+        self.assertIsInstance(ctx["ts"], int)
+
+    def test_explain_facts_describe_the_spike(self):
+        facts = app._explain_facts(app._explain_context(self._point()))
+        joined = "\n".join(facts)
+        self.assertIn("GPU power draw", joined)
+        self.assertIn("spike", joined)
+        self.assertIn("280", joined)   # value
+        self.assertIn("90", joined)    # baseline
+
+    def test_explain_facts_never_empty(self):
+        facts = app._explain_facts(app._explain_context({"key": "", "value": None}))
+        self.assertTrue(facts)
+        self.assertIsInstance(facts[0], str)
+
+    def test_explain_prompt_contains_facts_and_anchor(self):
+        facts = ["At 2026-01-01 12:00, GPU power draw showed a spike."]
+        p = app._explain_prompt(facts)
+        self.assertIn(facts[0], p)
+        self.assertIn("LIKELY CAUSE:", p)
+        self.assertIn("ONLY", p.upper())
+
+
+class TestExplainEndpointGraceful(unittest.TestCase):
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = False   # force no-LLM path deterministically
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+
+    def test_explain_degrades_to_facts(self):
+        r = self.c.post("/api/copilot/explain", json={
+            "key": "gpu_temp", "value": 95, "baseline": 60, "z": 5.0,
+            "unit": "°C", "direction": "spike"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")
+        self.assertEqual(j["llm_status"], "disabled")
+        self.assertTrue(j["explanation"])
+        self.assertIsInstance(j["facts"], list)
+        self.assertIn("model", j)
+
+    def test_explain_handles_bad_payload(self):
+        r = self.c.post("/api/copilot/explain", data="not json",
+                        content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["source"], "facts")
+
+    def test_explain_empty_payload_still_200(self):
+        r = self.c.post("/api/copilot/explain", json={})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["facts"])
+
+
 if __name__ == "__main__":
     unittest.main()

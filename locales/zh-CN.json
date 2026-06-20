@@ -111,6 +111,8 @@
   "anom.spike": "骤升",
   "anom.dip": "骤降",
   "anom.detail": "当前 {v}{u}，基线约 {b}{u}（{z}σ）",
+  "anom.why": "为什么？",
+  "explain.st_generic": "本地 LLM 不可用 — 改为显示监控在该时刻附近观察到的数据。",
   "anom.series.gpu_util": "GPU 利用率",
   "anom.series.gpu_vram": "GPU 显存占用",
   "anom.series.gpu_power": "GPU 功耗",

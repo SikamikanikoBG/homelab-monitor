@@ -3939,7 +3939,7 @@ function renderAnomalies(a){
       +I18N.tf('anom.none_d','All {n} monitored series are within their normal range.',{n:a.checked||0})+'</div></div></div>';
     return;
   }
-  body.innerHTML=items.map(it=>{
+  body.innerHTML=items.map((it,i)=>{
     const dirTxt = it.direction==='spike'
       ? I18N.t('anom.spike','spike') : I18N.t('anom.dip','dip');
     const arrow = it.direction==='spike' ? '▲' : '▼';
@@ -3947,10 +3947,55 @@ function renderAnomalies(a){
     const badgeCls = Math.abs(it.z)>=4 ? 'crit' : 'warn';
     const detail = I18N.tf('anom.detail','{v}{u} now vs ~{b}{u} baseline ({z}σ)',
       {v:it.value,u:it.unit,b:it.baseline,z:(it.z>0?'+':'')+it.z});
-    return `<div class="ins ${sev}" style="margin:2px 0"><div class="ic">${arrow}</div><div>`
-      +`<div class="t">${esc(_anomLabel(it.key))} <span class="badge ${badgeCls}">${dirTxt}</span></div>`
-      +`<div class="d">${esc(detail)}</div></div></div>`;
+    const why = I18N.t('anom.why','Why?');
+    return `<div class="ins ${sev}" style="margin:2px 0"><div class="ic">${arrow}</div><div style="flex:1">`
+      +`<div class="t">${esc(_anomLabel(it.key))} <span class="badge ${badgeCls}">${dirTxt}</span>`
+      +` <button class="osvar" type="button" data-anom-why="${i}" style="margin-left:6px;font-size:11px">🧠 ${esc(why)}</button></div>`
+      +`<div class="d">${esc(detail)}</div>`
+      +`<div class="anom-explain" id="anom-explain-${i}" hidden style="margin-top:8px"></div></div></div>`;
   }).join('');
+  // wire the per-anomaly "Why?" buttons → /api/copilot/explain
+  body.querySelectorAll('[data-anom-why]').forEach(btn=>{
+    btn.onclick=()=>explainAnomaly(items[+btn.getAttribute('data-anom-why')], +btn.getAttribute('data-anom-why'), btn);
+  });
+}
+let ANOM_EXPLAIN_BUSY={};
+async function explainAnomaly(it, i, btn){
+  if(!it) return;
+  const out=document.getElementById('anom-explain-'+i); if(!out) return;
+  if(ANOM_EXPLAIN_BUSY[i]) return;
+  // toggle closed if already shown
+  if(!out.hidden && out.dataset.done==='1'){ out.hidden=true; out.dataset.done=''; return; }
+  ANOM_EXPLAIN_BUSY[i]=true;
+  out.hidden=false; out.dataset.done='';
+  out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  const payload={key:it.key, ts:it.ts||null, value:it.value, baseline:it.baseline,
+                 z:it.z, unit:it.unit, direction:it.direction, magnitude:it.magnitude};
+  let j;
+  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; ANOM_EXPLAIN_BUSY[i]=false; return; }
+  if(j.source==='llm' && j.explanation){
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
+  }else{
+    // graceful: status note + the deterministic facts so it's never a dead end
+    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
+    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
+      +'</div></div>';
+  }
+  out.dataset.done='1';
+  ANOM_EXPLAIN_BUSY[i]=false;
+}
+function _explainStatusNote(s, model){
+  const m={
+    disabled:   I18N.t('copilot.st_disabled','Local LLM is turned off (COPILOT_ENABLED=false).'),
+    no_model:   I18N.tf('copilot.st_no_model','Model “{m}” is not pulled on this host — run: ollama pull {m}',{m:model||'?'}),
+    unreachable:I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.'),
+    bad_response:I18N.t('copilot.st_bad','The local LLM returned no text; showing the raw facts instead.'),
+  };
+  return m[s] || I18N.t('explain.st_generic','Local LLM unavailable — showing what the monitor saw around that moment instead.');
 }
 // ── Lab Copilot (E1): local-LLM digest + ask-box, all read-only ───────────────
 let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false;

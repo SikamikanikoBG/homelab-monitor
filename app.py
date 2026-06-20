@@ -5193,6 +5193,196 @@ def api_copilot_ask():
         out.update({"answer": "", "source": "facts", "llm_status": err})
     return jsonify(out)
 
+
+# ── Copilot: "Explain this spike" ─────────────────────────────────────────────
+# Given an anomaly/point (series key + when), assemble a tight, deterministic
+# context — the series' own before/after movement plus what was running on the
+# GPU at that moment (models / top processes / power-attributed entities) — and
+# ask the local LLM for a 1–2 sentence plain-English likely cause. Read-only,
+# bounded, always 200 with a graceful state when the LLM is unavailable.
+
+# Map an anomaly series key to its underlying samples column / SQL expression.
+_EXPLAIN_COLS = {k: (col, unit) for (k, col, unit, _md) in _ANOMALY_SERIES}
+
+
+def _explain_window(cur, key, now, ts):
+    """Series-local before/after movement around `ts`: the value at the point,
+    the mean of the ~10 min before it and the ~5 min after, so the LLM can see
+    whether the series jumped and stayed or just blipped. Returns a dict or {}.
+    Never raises."""
+    spec = _EXPLAIN_COLS.get(key)
+    if not spec:
+        return {}
+    col, unit = spec
+    try:
+        before = cur.execute(
+            f"SELECT AVG({col}) FROM samples WHERE ts>=? AND ts<? AND {col} IS NOT NULL",
+            (ts - 600, ts)).fetchone()[0]
+        after = cur.execute(
+            f"SELECT AVG({col}) FROM samples WHERE ts>? AND ts<=? AND {col} IS NOT NULL",
+            (ts, ts + 300)).fetchone()[0]
+        at = cur.execute(
+            f"SELECT {col} FROM samples WHERE {col} IS NOT NULL ORDER BY ABS(ts-?) LIMIT 1",
+            (ts,)).fetchone()
+    except Exception:
+        return {}
+    out = {"unit": unit}
+    if at is not None:
+        out["at"] = round(at[0], 1)
+    if before is not None:
+        out["before_10m"] = round(before, 1)
+    if after is not None:
+        out["after_5m"] = round(after, 1)
+    return out
+
+
+def _explain_running(cur, ts):
+    """What was on the GPU around `ts`: biggest resident models, top processes by
+    RAM, and the heaviest power-attributed entities — each picked from the
+    sample row(s) nearest the anomaly time. Returns a dict of short lists. Never
+    raises (any missing table/data is just an empty list)."""
+    lo, hi = ts - 60, ts + 60
+    models, procs, power = [], [], []
+    try:
+        for svc, model, vram in cur.execute(
+                "SELECT service, model, MAX(vram) v FROM models "
+                "WHERE ts>=? AND ts<=? AND vram IS NOT NULL "
+                "GROUP BY service, model ORDER BY v DESC LIMIT 3", (lo, hi)):
+            models.append({"service": svc, "model": model, "vram_mb": round(vram or 0)})
+    except Exception:
+        pass
+    try:
+        for svc, mem in cur.execute(
+                "SELECT service, MAX(mem) m FROM proc WHERE ts>=? AND ts<=? "
+                "GROUP BY service ORDER BY m DESC LIMIT 3", (lo, hi)):
+            procs.append({"service": svc, "mem_mb": round(mem or 0)})
+    except Exception:
+        pass
+    try:
+        for kind, name, watts in cur.execute(
+                "SELECT kind, name, MAX(watts) w FROM power_proc WHERE ts>=? AND ts<=? "
+                "GROUP BY kind, name ORDER BY w DESC LIMIT 3", (lo, hi)):
+            power.append({"kind": kind, "name": name, "watts": round(watts or 0, 1)})
+    except Exception:
+        pass
+    return {"models": models, "procs": procs, "power": power}
+
+
+def _explain_context(point, now=None):
+    """Assemble the full deterministic context for an 'explain this spike' call
+    from a (sanitised) anomaly/point payload. Pure reads; never raises."""
+    now = now or int(time.time())
+    key = str(point.get("key") or point.get("series") or "").strip()
+    try:
+        ts = int(point.get("ts") or point.get("timestamp") or now)
+    except (TypeError, ValueError):
+        ts = now
+    # clamp ts to a sane window: not in the future, not absurdly old
+    ts = max(min(ts, now), now - 30 * 24 * 3600)
+    ctx = {"now": now, "ts": ts, "key": key,
+           "label": _EXPLAIN_COLS.get(key, (None, None))[0] or key,
+           "unit": point.get("unit") or (_EXPLAIN_COLS.get(key, (None, ""))[1]),
+           "direction": point.get("direction"),
+           "value": point.get("value"), "baseline": point.get("baseline"),
+           "z": point.get("z"), "magnitude": point.get("magnitude")}
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            ctx["window"] = _explain_window(cur, key, now, ts)
+            ctx["running"] = _explain_running(cur, ts)
+    except Exception as e:
+        print("copilot explain ctx error:", e, flush=True)
+        ctx.setdefault("window", {})
+        ctx.setdefault("running", {})
+    return ctx
+
+
+# Human-readable series names for the deterministic explain facts (kept in sync
+# with the UI's anom.series.* i18n keys; this is the LLM-grounding / fallback).
+_EXPLAIN_LABELS = {
+    "gpu_util": "GPU utilisation", "gpu_vram": "GPU VRAM used",
+    "gpu_power": "GPU power draw", "gpu_temp": "GPU temperature",
+    "power_draw": "total system power draw",
+}
+
+
+def _explain_facts(c):
+    """Terse, deterministic English describing the spike and its surroundings.
+    Doubles as the LLM grounding and the no-LLM fallback summary."""
+    lines = []
+    key = c.get("key") or ""
+    name = _EXPLAIN_LABELS.get(key, key or "a monitored series")
+    unit = c.get("unit") or ""
+    direction = c.get("direction") or "change"
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.get("ts") or 0))
+    val, base, z = c.get("value"), c.get("baseline"), c.get("z")
+    head = "At {when}, {name} showed a {dir}".format(when=when, name=name, dir=direction)
+    if val is not None and base is not None:
+        head += ": {v}{u} versus a ~{b}{u} baseline".format(v=val, u=unit, b=base)
+    if z is not None:
+        head += " ({z}σ)".format(z=("+%s" % z) if (isinstance(z, (int, float)) and z > 0) else z)
+    lines.append(head + ".")
+    w = c.get("window") or {}
+    if w.get("before_10m") is not None and w.get("at") is not None:
+        tail = " It then settled to {a}{u} over the next 5 min.".format(
+            a=w["after_5m"], u=w.get("unit") or unit) if w.get("after_5m") is not None else ""
+        lines.append("The 10 min before it averaged {b}{u}; at the point it read {a}{u}.{t}".format(
+            b=w["before_10m"], u=w.get("unit") or unit, a=w["at"], t=tail))
+    r = c.get("running") or {}
+    if r.get("models"):
+        m = r["models"][0]
+        lines.append("Largest model on the GPU then: {mo} ({mb} MB, served by {s}).".format(
+            mo=m.get("model") or "?", mb=m.get("vram_mb") or 0, s=m.get("service") or "?"))
+    if r.get("procs"):
+        top = ", ".join("{s} ({m} MB)".format(s=p.get("service"), m=p.get("mem_mb"))
+                        for p in r["procs"][:2])
+        lines.append("Top processes by memory then: " + top + ".")
+    if r.get("power"):
+        p = r["power"][0]
+        lines.append("Heaviest power-attributed entity then: {n} (~{w} W).".format(
+            n=p.get("name"), w=p.get("watts")))
+    if len(lines) == 1:
+        lines.append("No surrounding samples or running-process detail is available for that moment.")
+    return lines
+
+
+def _explain_prompt(facts):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "A metric just deviated from its normal range. Using ONLY the facts below "
+        "(live readings from the lab around that moment — do not invent anything), "
+        "explain the most likely cause in 1-2 short sentences of plain English. "
+        "No markdown, no bullet points. If the facts don't point to a clear cause, "
+        "say it's unclear and name what would help.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n\nLIKELY CAUSE:")
+
+
+@app.route("/api/copilot/explain", methods=["POST"])
+def api_copilot_explain():
+    """Explain a single anomaly/point in plain English via the local LLM, grounded
+    on the series' own movement and what was running at that moment. Always 200;
+    graceful `llm_status` (and the deterministic facts) when the LLM is off."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    now = int(time.time())
+    ctx = _explain_context(payload, now)
+    facts = _explain_facts(ctx)
+    out = {"now": now, "model": COPILOT_MODEL, "key": ctx.get("key"),
+           "facts": facts, "context": ctx, "enabled": COPILOT_ENABLED}
+    text, err = _ollama_generate(_explain_prompt(facts))
+    if text is not None:
+        out.update({"explanation": text, "source": "llm", "llm_status": "ok"})
+    else:
+        # No LLM: hand back the deterministic facts as the explanation so the
+        # "Why?" action is never a dead end.
+        out.update({"explanation": " ".join(facts), "source": "facts", "llm_status": err})
+    return jsonify(out)
+
+
 @app.route("/api/sessions")
 def api_sessions():
     """GPU activity sessions over the range — contiguous GPU-busy periods rebuilt

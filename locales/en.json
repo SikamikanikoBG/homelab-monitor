@@ -86,6 +86,8 @@
   "anom.spike": "spike",
   "anom.dip": "dip",
   "anom.detail": "{v}{u} now vs ~{b}{u} baseline ({z}σ)",
+  "anom.why": "Why?",
+  "explain.st_generic": "Local LLM unavailable — showing what the monitor saw around that moment instead.",
   "anom.series.gpu_util": "GPU utilization",
   "anom.series.gpu_vram": "GPU VRAM used",
   "anom.series.gpu_power": "GPU power",
