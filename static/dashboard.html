@@ -98,6 +98,44 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .ins.critical{border-left:3px solid var(--crit)}.ins.warning{border-left:3px solid var(--warn)}
 .ins.ok{border-left:3px solid var(--ok)}.ins.info{border-left:3px solid var(--info)}
 
+/* ── Anomaly ribbon (z-score intensity strip aligned under a time-series chart) ── */
+.ribbon-wrap{margin-top:10px}
+.ribbon-head{display:flex;align-items:center;gap:8px;margin:0 0 5px;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.ribbon-head .rl{display:inline-flex;align-items:center;gap:5px;font-weight:600}
+.ribbon-head .rspace{flex:1}
+.ribbon-legend{display:inline-flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-weight:400}
+.ribbon-legend .lg{display:inline-flex;align-items:center;gap:4px}
+.ribbon-legend .sw{width:11px;height:8px;border-radius:2px;display:inline-block}
+.ribbon-legend .sw.q{background:var(--free)}.ribbon-legend .sw.w{background:var(--warn)}.ribbon-legend .sw.c{background:var(--crit)}
+.ribbon{position:relative;width:100%;height:16px;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--inset);cursor:default}
+.ribbon.clk{cursor:pointer}
+.ribbon canvas{display:block;width:100%;height:100%}
+.ribbon-empty{font-size:12px;color:var(--mut);padding:1px 2px}
+.ribbon-tip{position:fixed;z-index:70;pointer-events:none;background:var(--card);border:1px solid var(--bd);border-radius:8px;
+  padding:7px 10px;font-size:12px;line-height:1.5;box-shadow:0 6px 22px rgba(0,0,0,.35);max-width:240px;opacity:0;transition:opacity .1s}
+.ribbon-tip[data-show="1"]{opacity:1}
+.ribbon-tip .tt{font-weight:600;font-size:12px}.ribbon-tip .td{color:var(--mut)}
+.ribbon-tip .tz{font-variant-numeric:tabular-nums}
+.ribbon-cur{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--tx);opacity:.55;pointer-events:none;transform:translateX(-1px)}
+
+/* ── Card cohesion: a shared flex header so every newer card lines up the same way ── */
+.card-h{display:flex;align-items:center;gap:9px;margin:0 0 13px}
+.card-h h2{margin:0;flex:0 1 auto}
+.card-h .ch-space{flex:1}
+.card-h .ch-meta{font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--mut);font-family:var(--mono)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;
+  border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;line-height:1.4}
+.chip.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.chip.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* skeleton loading shimmer for card bodies that fetch async (copilot/forecast) */
+.skel{background:linear-gradient(90deg,var(--free) 25%,var(--hover) 37%,var(--free) 63%);
+  background-size:400% 100%;border-radius:6px;animation:skel 1.3s ease infinite}
+.skel-line{height:11px;margin:8px 0}.skel-line.w70{width:70%}.skel-line.w90{width:90%}.skel-line.w40{width:40%}
+@keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media(prefers-reduced-motion:reduce){.skel{animation:none}}
+
 /* Toast notifications */
 #toast-container{
   position:fixed;
@@ -845,11 +883,12 @@ h2 .hic{ opacity:.9 }
     </div>
   </div>
   <div class="card" id="copilotcard">
-    <h2 style="display:flex;align-items:center;gap:8px">
-      <span data-i18n="copilot.title">🧠 Lab Copilot</span>
-      <span class="muted" id="copilot-model" style="font-size:11px;font-weight:400;text-transform:none;font-family:var(--mono)"></span>
-      <button class="osvar" type="button" id="copilot-refresh" style="margin-left:auto" data-i18n="copilot.refresh">↻ Refresh</button>
-    </h2>
+    <div class="card-h">
+      <h2 data-i18n="copilot.title">🧠 Lab Copilot</h2>
+      <span class="chip" id="copilot-model" hidden><span class="dot"></span><span id="copilot-model-txt"></span></span>
+      <span class="ch-space"></span>
+      <button class="osvar" type="button" id="copilot-refresh" data-i18n="copilot.refresh">↻ Refresh</button>
+    </div>
     <div class="fleet-meta" data-i18n="copilot.card_desc">A plain-English read of your lab right now, written by a local LLM running on this host — no cloud. It summarises the live GPU, biggest model, disk-fill ETA, projected cost and any anomaly from the data the monitor already collects.</div>
     <div id="copilot-digest" style="margin-top:11px;line-height:1.55"></div>
     <div id="copilot-ask" style="margin-top:13px" hidden>
@@ -894,7 +933,11 @@ h2 .hic{ opacity:.9 }
 <section data-tab="gpu" hidden>
   <div id="gpu-throttle" class="ins crit" style="display:none;margin-bottom:14px"></div>
   <div class="card" id="anom-card" hidden>
-    <h2 data-i18n="anom.title">🚨 Anomalies</h2>
+    <div class="card-h">
+      <h2 data-i18n="anom.title">🚨 Anomalies</h2>
+      <span class="chip" id="anom-chip" hidden></span>
+      <span class="ch-space"></span>
+    </div>
     <div id="anom-body"></div>
     <p class="cap" data-i18n-html="anom.cap">Latest GPU &amp; power readings scored against their own recent baseline (rolling mean ± stddev). A flag means the value is far enough from normal to be worth a look — flat or idle series never raise one.</p>
   </div>
@@ -922,7 +965,23 @@ h2 .hic{ opacity:.9 }
   <div class="card"><h2 data-i18n="gpu.vram_title">📊 VRAM by service over time</h2>
     <div class="chartbox"><canvas id="vram"></canvas></div>
     <p class="cap" data-i18n-html="gpu.vram_cap">Stacked = VRAM each service holds. Dashed = capacity. <span style="color:var(--crit)">Red bands</span> = VRAM pressure; <span style="color:var(--crit)">▼</span> markers = out-of-memory events.</p></div>
-  <div class="card"><h2 data-i18n="gpu.util_title">⚡ GPU utilization, power &amp; temperature</h2><div class="chartbox short"><canvas id="gpu2"></canvas></div></div>
+  <div class="card"><h2 data-i18n="gpu.util_title">⚡ GPU utilization, power &amp; temperature</h2><div class="chartbox short"><canvas id="gpu2"></canvas></div>
+    <div class="ribbon-wrap" id="gpu-ribbon-wrap" hidden>
+      <div class="ribbon-head">
+        <span class="rl">🚨 <span data-i18n="ribbon.title">Anomaly intensity</span></span>
+        <span class="rspace"></span>
+        <span class="ribbon-legend">
+          <span class="lg"><span class="sw q"></span><span data-i18n="ribbon.quiet">quiet</span></span>
+          <span class="lg"><span class="sw w"></span><span data-i18n="ribbon.elevated">elevated</span></span>
+          <span class="lg"><span class="sw c"></span><span data-i18n="ribbon.fired">fired</span></span>
+        </span>
+      </div>
+      <div class="ribbon clk" id="gpu-ribbon" tabindex="0" role="img"
+           data-i18n-attr="aria-label:ribbon.aria"
+           aria-label="Anomaly intensity over the selected range. Hover or click a hot spot to see what was unusual."><canvas></canvas></div>
+      <p class="cap" data-i18n="ribbon.cap">Each cell is one sample window, shaded by how far GPU util / VRAM / power / temperature sat from their own recent baseline. Click a hot cell to ask the local LLM what was running then.</p>
+    </div>
+  </div>
 </section>
 
 <!-- ───────── Costs ───────── -->
@@ -1448,7 +1507,23 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
     <div id="ramtree" class="treemap"></div>
     <p class="cap" id="ramtree_cap"></p>
   </div>
-  <div class="card"><h2 data-i18n="host.cpuram_title">🖥️ CPU, RAM &amp; load</h2><div class="chartbox short"><canvas id="host"></canvas></div></div>
+  <div class="card"><h2 data-i18n="host.cpuram_title">🖥️ CPU, RAM &amp; load</h2><div class="chartbox short"><canvas id="host"></canvas></div>
+    <div class="ribbon-wrap" id="host-ribbon-wrap" hidden>
+      <div class="ribbon-head">
+        <span class="rl">🚨 <span data-i18n="ribbon.title">Anomaly intensity</span></span>
+        <span class="rspace"></span>
+        <span class="ribbon-legend">
+          <span class="lg"><span class="sw q"></span><span data-i18n="ribbon.quiet">quiet</span></span>
+          <span class="lg"><span class="sw w"></span><span data-i18n="ribbon.elevated">elevated</span></span>
+          <span class="lg"><span class="sw c"></span><span data-i18n="ribbon.fired">fired</span></span>
+        </span>
+      </div>
+      <div class="ribbon" id="host-ribbon" tabindex="0" role="img"
+           data-i18n-attr="aria-label:ribbon.aria"
+           aria-label="Anomaly intensity over the selected range. Hover or click a hot spot to see what was unusual."><canvas></canvas></div>
+      <p class="cap" data-i18n="ribbon.cap_host">Each cell is one sample window, shaded by how far CPU, RAM and load sat from their own recent baseline.</p>
+    </div>
+  </div>
 </section>
 
 <!-- ───────── Disks (WizTree-style usage treemaps) ───────── -->
@@ -2794,6 +2869,16 @@ function buildCharts(){
       {label:'Power W',data:D.total.power,borderColor:'#ff922b',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y1'},
       {label:'Temp °C',data:D.total.temp,borderColor:'#f783ac',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}]},
       options:dualOpts(labels),plugins:[areaBg]});
+    renderRibbon('gpu-ribbon', {
+      ts:D.labels||[],
+      series:[
+        {key:'gpu_util',  unit:'%',  min_dev:10,  data:D.total.util},
+        {key:'gpu_vram',  unit:'MB', min_dev:256, data:(D.total.mem||[])},
+        {key:'gpu_power', unit:'W',  min_dev:20,  data:D.total.power},
+        {key:'gpu_temp',  unit:'°C', min_dev:5,   data:D.total.temp},
+      ],
+      explainable:true,
+    });
   }
   if(TAB==='host'){
     const ramPctArr=D.total.ram_used.map((u,i)=>D.total.ram_total[i]?Math.round(u/D.total.ram_total[i]*100):0);
@@ -2802,6 +2887,202 @@ function buildCharts(){
       {label:'RAM %',data:ramPctArr,borderColor:'#a371f7',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y'},
       {label:'Load',data:D.total.load1,borderColor:'#e3b341',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}]},
       options:dualOpts(labels,100),plugins:[areaBg]});
+    renderRibbon('host-ribbon', {
+      ts:D.labels||[],
+      series:[
+        {key:'cpu',  unit:'%', min_dev:8, data:D.total.cpu},
+        {key:'ram',  unit:'%', min_dev:5, data:ramPctArr},
+        {key:'load', unit:'',  min_dev:0.5, data:D.total.load1},
+      ],
+      explainable:false,
+    });
+  }
+}
+
+// ── Anomaly ribbon ────────────────────────────────────────────────────────────
+// A thin per-bucket intensity strip aligned to a time-series chart's x-axis.
+// For each bucket we compute a trailing rolling z-score per series (same shape as
+// the backend _zscore_anomalies: mean + population stddev over the prior window,
+// gated by a per-series min absolute deviation so flat/idle never lights up), then
+// take the most-extreme series at that bucket as the cell's intensity + label.
+// Pure canvas, no deps. Hover → tooltip; click a fired cell → "Explain this spike".
+const RIBBON_WINDOW = 30;     // trailing buckets used as the rolling baseline
+const RIBBON_MINPTS = 8;      // need at least this many prior points to score
+const RIBBON_Z = 3.0;         // |z| at/above this counts as "fired"
+let RIBBON_STATE = {};        // id -> {cells, ts, explainable, w, h}
+
+function _ribbonScore(s){
+  // returns array aligned to s.data: {z, value, baseline, sd} or null per bucket
+  const d=s.data||[], out=new Array(d.length).fill(null);
+  for(let i=0;i<d.length;i++){
+    const v=d[i]; if(v==null||isNaN(v)) continue;
+    const from=Math.max(0,i-RIBBON_WINDOW);
+    const base=[]; for(let j=from;j<i;j++){ const b=d[j]; if(b!=null&&!isNaN(b)) base.push(b); }
+    if(base.length<RIBBON_MINPTS) continue;
+    const n=base.length, mean=base.reduce((a,b)=>a+b,0)/n;
+    let varr=0; for(const b of base) varr+=(b-mean)*(b-mean); varr/=n;
+    const sd=Math.sqrt(varr), dev=v-mean;
+    if(Math.abs(dev) < (s.min_dev||0)) { out[i]={z:0,value:v,baseline:mean,sd}; continue; }
+    if(sd<=0) { out[i]={z:0,value:v,baseline:mean,sd:0}; continue; }
+    out[i]={z:dev/sd, value:v, baseline:mean, sd};
+  }
+  return out;
+}
+function renderRibbon(id, cfg){
+  const box=document.getElementById(id); if(!box) return;
+  const wrap=document.getElementById(id+'-wrap'); // not used; container is parent .ribbon-wrap
+  const parent=box.closest('.ribbon-wrap'); if(parent) parent.hidden=false;
+  const ts=cfg.ts||[]; const N=ts.length;
+  const canvas=box.querySelector('canvas'); if(!canvas) return;
+  if(!N){ if(parent) parent.hidden=true; return; }
+  // score each series, then per bucket keep the most-extreme (by |z|)
+  const scored=cfg.series.filter(s=>s.data&&s.data.length===N).map(s=>({s, sc:_ribbonScore(s)}));
+  const cells=new Array(N).fill(null);
+  let anyScore=false;
+  for(let i=0;i<N;i++){
+    let best=null, bestKey=null, bestUnit='';
+    for(const {s,sc} of scored){
+      const c=sc[i]; if(!c) continue; anyScore=true;
+      if(best==null || Math.abs(c.z)>Math.abs(best.z)){ best=c; bestKey=s.key; bestUnit=s.unit; }
+    }
+    if(best!=null) cells[i]={...best, key:bestKey, unit:bestUnit, ts:ts[i]};
+  }
+  RIBBON_STATE[id]={cells, ts, explainable:!!cfg.explainable};
+  if(!anyScore){
+    // not enough history to score yet — show a quiet collecting strip + note
+    box.classList.remove('clk');
+    drawRibbonCanvas(canvas, cells);
+    return;
+  }
+  box.classList.toggle('clk', !!cfg.explainable);
+  drawRibbonCanvas(canvas, cells);
+  wireRibbon(id);
+}
+function _ribbonColor(z){
+  const az=Math.abs(z||0);
+  if(az < RIBBON_Z){
+    // quiet → subtle; fade from inset toward a faint tint as it warms (0..3σ)
+    const t=Math.min(1, az/RIBBON_Z);
+    return {fill:cv('--free'), alpha:0.45+0.25*t};
+  }
+  if(az < 4) return {fill:cv('--warn'), alpha:Math.min(1,0.55+(az-3)*0.4)};
+  return {fill:cv('--crit'), alpha:Math.min(1,0.7+(az-4)*0.15)};
+}
+function drawRibbonCanvas(canvas, cells){
+  const box=canvas.parentElement, dpr=window.devicePixelRatio||1;
+  const w=box.clientWidth||300, h=box.clientHeight||16;
+  canvas.width=Math.max(1,Math.round(w*dpr)); canvas.height=Math.max(1,Math.round(h*dpr));
+  const ctx=canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle=cv('--inset'); ctx.fillRect(0,0,w,h);
+  const N=cells.length; if(!N) return;
+  const cw=w/N;
+  for(let i=0;i<N;i++){
+    const c=cells[i]; const x=i*cw;
+    if(c==null){ ctx.fillStyle=cv('--free'); ctx.globalAlpha=0.3; ctx.fillRect(x,0,Math.ceil(cw)+0.5,h); ctx.globalAlpha=1; continue; }
+    const col=_ribbonColor(c.z);
+    ctx.globalAlpha=col.alpha; ctx.fillStyle=col.fill;
+    ctx.fillRect(x,0,Math.ceil(cw)+0.5,h);
+    ctx.globalAlpha=1;
+  }
+}
+let _ribbonTip=null;
+function _ensureRibbonTip(){
+  if(_ribbonTip) return _ribbonTip;
+  _ribbonTip=document.createElement('div'); _ribbonTip.className='ribbon-tip';
+  document.body.appendChild(_ribbonTip); return _ribbonTip;
+}
+function wireRibbon(id){
+  const box=document.getElementById(id); if(!box || box.dataset.wired==='1') {} // re-wire each build is fine
+  const st=RIBBON_STATE[id]; if(!st) return;
+  const tip=_ensureRibbonTip();
+  let cur=null;
+  function idxFromEvent(e){
+    const r=box.getBoundingClientRect();
+    const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+    return Math.max(0, Math.min(st.cells.length-1, Math.floor(x/r.width*st.cells.length)));
+  }
+  function showTip(e){
+    const i=idxFromEvent(e); cur=i;
+    box.querySelectorAll('.ribbon-cur').forEach(n=>n.remove());
+    const mk=document.createElement('div'); mk.className='ribbon-cur';
+    mk.style.left=((i+0.5)/st.cells.length*100)+'%'; box.appendChild(mk);
+    const c=st.cells[i];
+    const when=fmtLabels([st.ts[i]])[0]||'';
+    if(!c){ tip.innerHTML='<div class="td">'+esc(when)+' · '+I18N.t('ribbon.collecting','collecting baseline…')+'</div>'; }
+    else{
+      const az=Math.abs(c.z);
+      const state = az<RIBBON_Z ? I18N.t('ribbon.quiet','quiet')
+                  : az<4 ? I18N.t('ribbon.elevated','elevated') : I18N.t('ribbon.fired','fired');
+      const lbl=I18N.t('anom.series.'+c.key, c.key);
+      const val=(Math.round(c.value*10)/10);
+      const baseR=(Math.round(c.baseline*10)/10);
+      tip.innerHTML='<div class="tt">'+esc(when)+' · '+esc(state)+'</div>'
+        +'<div class="td">'+esc(lbl)+': <span class="tz">'+val+c.unit+'</span> '
+        +I18N.t('ribbon.vs','vs')+' ~'+baseR+c.unit
+        +' (<span class="tz">'+(c.z>0?'+':'')+(Math.round(c.z*10)/10)+'σ</span>)</div>'
+        +(st.explainable && az>=RIBBON_Z ? '<div class="td">🧠 '+I18N.t('ribbon.click_explain','click to explain')+'</div>' : '');
+    }
+    tip.setAttribute('data-show','1');
+    const tw=tip.offsetWidth, th=tip.offsetHeight;
+    let lx=(e.touches?e.touches[0].clientX:e.clientX)-tw/2;
+    lx=Math.max(8, Math.min(window.innerWidth-tw-8, lx));
+    let ly=r2(box).top - th - 9; if(ly<8) ly=r2(box).bottom+9;
+    tip.style.left=lx+'px'; tip.style.top=ly+'px';
+  }
+  function r2(el){ return el.getBoundingClientRect(); }
+  function hide(){ tip.setAttribute('data-show','0'); box.querySelectorAll('.ribbon-cur').forEach(n=>n.remove()); cur=null; }
+  box.onmousemove=showTip; box.onmouseleave=hide;
+  box.ontouchstart=e=>{showTip(e);}; box.ontouchmove=e=>{showTip(e); e.preventDefault();};
+  box.onclick=e=>{
+    if(!st.explainable) return;
+    const i=idxFromEvent(e); const c=st.cells[i];
+    if(!c || Math.abs(c.z)<RIBBON_Z) return;
+    explainRibbonCell(c);
+  };
+  box.onkeydown=e=>{
+    if(e.key==='Enter'||e.key===' '){ const i=cur!=null?cur:st.cells.length-1; const c=st.cells[i];
+      if(st.explainable && c && Math.abs(c.z)>=RIBBON_Z){ e.preventDefault(); explainRibbonCell(c); } }
+  };
+  box.dataset.wired='1';
+}
+// Click a fired ribbon cell → reuse the existing "Explain this spike" flow.
+// We surface the result in the Anomalies card body so the answer lands in a
+// consistent place (and scroll it into view).
+async function explainRibbonCell(c){
+  const card=document.getElementById('anom-card'), body=document.getElementById('anom-body');
+  if(card) card.hidden=false;
+  const lbl=I18N.t('anom.series.'+c.key, c.key);
+  const slot='ribbon-explain';
+  if(body){
+    const dirTxt = c.z>0 ? I18N.t('anom.spike','spike') : I18N.t('anom.dip','dip');
+    const badgeCls = Math.abs(c.z)>=4 ? 'crit' : 'warn';
+    const when=fmtLabels([c.ts])[0]||'';
+    body.insertAdjacentHTML('afterbegin',
+      '<div class="ins '+(Math.abs(c.z)>=4?'critical':'warning')+'" id="'+slot+'" style="margin:2px 0 9px">'
+      +'<div class="ic">'+(c.z>0?'▲':'▼')+'</div><div style="flex:1">'
+      +'<div class="t">'+esc(lbl)+' <span class="badge '+badgeCls+'">'+dirTxt+'</span> '
+      +'<span class="muted" style="font-size:12px;font-weight:400">@ '+esc(when)+'</span></div>'
+      +'<div class="anom-explain" style="margin-top:8px"><div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div></div>'
+      +'</div></div>');
+    const el=document.getElementById(slot); if(el) el.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  const out=document.querySelector('#'+slot+' .anom-explain');
+  const payload={key:c.key, ts:c.ts||null, value:Math.round(c.value*10)/10,
+                 baseline:Math.round(c.baseline*10)/10, z:Math.round(c.z*10)/10,
+                 unit:c.unit, direction:(c.z>0?'spike':'dip'), magnitude:Math.round(Math.abs(c.value-c.baseline)*10)/10};
+  let j;
+  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ if(out) out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
+  if(!out) return;
+  if(j.source==='llm' && j.explanation){
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
+  }else{
+    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
+    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')+'</div></div>';
   }
 }
 // Read a theme token at draw time so charts re-colour with the theme.
@@ -4125,22 +4406,32 @@ function renderVramForecast(v){
 function _anomLabel(key){
   return I18N.t('anom.series.'+key, key);
 }
+function _anomChip(state, n){
+  const el=document.getElementById('anom-chip'); if(!el) return;
+  el.classList.remove('ok','warn','crit');
+  if(state==='collecting'){ el.hidden=false; el.textContent=I18N.t('ribbon.collecting','collecting baseline…'); return; }
+  if(state==='fired'){ el.hidden=false; el.classList.add(n&&n.crit?'crit':'warn');
+    el.innerHTML='<span class="dot"></span>'+I18N.tf('anom.chip_fired','{n} firing',{n:(n&&n.total)||0}); return; }
+  el.hidden=false; el.classList.add('ok'); el.innerHTML='<span class="dot"></span>'+I18N.t('anom.chip_quiet','all quiet');
+}
 function renderAnomalies(a){
   const card=document.getElementById('anom-card'), body=document.getElementById('anom-body');
   if(!card||!body) return;
   const items=(a.items||[]);
   if(a.status==='collecting'){
-    card.hidden=false;
+    card.hidden=false; _anomChip('collecting');
     body.innerHTML='<div class="muted" style="padding:6px 0">'+I18N.t('anom.collecting','Not enough history yet — collecting baseline…')+'</div>';
     return;
   }
   card.hidden=false;
   if(!items.length){
+    _anomChip('quiet');
     body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">✅</div><div><div class="t">'
       +I18N.t('anom.none_title','Nothing unusual')+'</div><div class="d">'
       +I18N.tf('anom.none_d','All {n} monitored series are within their normal range.',{n:a.checked||0})+'</div></div></div>';
     return;
   }
+  _anomChip('fired', {total:items.length, crit:items.some(it=>Math.abs(it.z)>=4)});
   body.innerHTML=items.map((it,i)=>{
     const dirTxt = it.direction==='spike'
       ? I18N.t('anom.spike','spike') : I18N.t('anom.dip','dip');
@@ -4212,10 +4503,13 @@ function _copilotStatusNote(s){
   return m[s] || I18N.t('copilot.st_generic','Local LLM unavailable — showing the raw metrics instead.');
 }
 function _copilotChip(j){
-  // small status chip next to the title: green when LLM answered, muted otherwise
-  const el=document.getElementById('copilot-model'); if(!el) return;
-  if(j && j.llm_status==='ok'){ el.textContent='● '+(j.model||''); el.style.color='var(--ok)'; }
-  else{ el.textContent=(j&&j.model)?('○ '+j.model):''; el.style.color='var(--mut)'; }
+  // status chip next to the title: green dot when the LLM answered, muted otherwise
+  const el=document.getElementById('copilot-model'), txt=document.getElementById('copilot-model-txt');
+  if(!el||!txt) return;
+  const model=(j&&j.model)||'';
+  if(!model){ el.hidden=true; return; }
+  el.hidden=false; txt.textContent=model;
+  el.classList.toggle('ok', !!(j && j.llm_status==='ok'));
 }
 function renderCopilot(){
   const card=document.getElementById('copilotcard'); if(!card) return;
@@ -4242,7 +4536,9 @@ async function loadCopilot(force){
   const c=document.getElementById('copilotcard'); if(c) c.hidden=false;
   if(!force && Date.now()-COPILOT_AT < 120000 && COPILOT){ renderCopilot(); return; }
   const body=document.getElementById('copilot-digest');
-  if(body && !COPILOT) body.innerHTML='<div class="muted" style="padding:4px 0">'+I18N.t('copilot.loading','Thinking…')+'</div>';
+  if(body && !COPILOT) body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1">'
+    +'<div class="t" style="font-weight:400;color:var(--mut);font-size:13px">'+I18N.t('copilot.loading','Thinking…')+'</div>'
+    +'<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div></div></div>';
   try{ COPILOT=await(await fetch('/api/copilot/digest')).json(); COPILOT_AT=Date.now(); }
   catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
   renderCopilot();
@@ -5194,6 +5490,9 @@ setInterval(()=>{
 let _tmRz; window.addEventListener('resize',()=>{ clearTimeout(_tmRz); _tmRz=setTimeout(()=>{
   if(TAB==='host') renderRamTree();
   if(TAB==='disks' && typeof renderDisksTab==='function') renderDisksTab();
+  // ribbons are canvas — redraw to the new width so they stay crisp & aligned
+  Object.keys(RIBBON_STATE).forEach(id=>{ const box=document.getElementById(id);
+    const cv2=box&&box.querySelector('canvas'); if(cv2 && box.offsetParent!==null) drawRibbonCanvas(cv2, RIBBON_STATE[id].cells); });
 },250); });
 // One-shot GitHub star count — lazy, non-blocking, and the link still works offline.
 function fmtStars(n){ return n>=1000 ? (n/1000).toFixed(n>=10000?0:1).replace(/\.0$/,'')+'k' : ''+n; }
