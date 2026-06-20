@@ -145,6 +145,16 @@ CREATE INDEX IF NOT EXISTS idx_runs_started   ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runmetrics_rid ON run_metrics(run_id, key, ts);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_runs_ext ON runs(source, ext_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_event ON events(ts, service, kind);
+CREATE TABLE IF NOT EXISTS alert_rules(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+  ctype TEXT NOT NULL, params TEXT NOT NULL DEFAULT '{}', channel TEXT NOT NULL DEFAULT 'all',
+  level TEXT NOT NULL DEFAULT 'warning', cooldown_min INTEGER NOT NULL DEFAULT 60,
+  created_at INTEGER NOT NULL, last_fired_at INTEGER, last_state TEXT,
+  snoozed_until INTEGER);
+CREATE TABLE IF NOT EXISTS alert_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, rule_id TEXT, rule_name TEXT,
+  level TEXT, channel TEXT, status TEXT, title TEXT, detail TEXT, acked INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_alerthist_ts ON alert_history(ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -3678,6 +3688,7 @@ SETTING_DEFAULTS = {
     "ntfy_server":         "https://ntfy.sh",
     "telegram_token":      "",
     "telegram_chat_id":    "",
+    "webhook_url":         "",         # generic outbound webhook (POST JSON) for the rule engine
     "alert_min_level":     "warning",  # "warning" or "critical"
     "disk_alert_pct":      "90",       # disk usage % that trips an alert
     "kwh_price":           "",         # electricity price per kWh (day/peak in dual mode); empty hides the cost card (#25)
@@ -3714,7 +3725,7 @@ def get_settings():
 # LAN, so validating the scheme/host on save keeps someone who can reach the
 # dashboard from pointing these at a non-HTTP scheme or an empty host — a small
 # SSRF-surface tightening, not a change to the trusted-LAN model.
-_URL_SETTING_KEYS = {"discord_webhook_url", "ntfy_server"}
+_URL_SETTING_KEYS = {"discord_webhook_url", "ntfy_server", "webhook_url"}
 
 def _validate_url_settings(updates):
     """Return an error string if any URL-valued setting is malformed, else None.
@@ -3794,20 +3805,55 @@ def _post_to_telegram(token, chat_id, level, title, body):
             f"_HomeLab Monitor · {level}_")
     return _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
 
-def dispatch_alert(s, level, title, detail):
-    """Send to whichever channels are configured. Returns list of (channel, ok, err)."""
+def send_webhook(url, level, title, detail):
+    """Generic outbound webhook: POST a flat JSON envelope. The receiver decides
+    what to do with it (HA automation, n8n, a script, Slack-incoming, etc.)."""
+    payload = {"source": "homelab-monitor", "level": level, "title": title,
+               "detail": detail, "ts": int(time.time())}
+    return _post_json(url, payload)
+
+# Which channels a given settings dict has wired up — drives the "channel"
+# selector in the rule engine. "all" means "every configured channel".
+def _configured_channels(s):
     out = []
-    if s.get("discord_webhook_url"):
-        try: send_discord(s["discord_webhook_url"], level, title, detail); out.append(("discord", True, None))
-        except Exception as e: out.append(("discord", False, str(e)))
-    if s.get("ntfy_topic"):
-        try: send_ntfy(s.get("ntfy_server") or "https://ntfy.sh",
-                       s["ntfy_topic"], level, title, detail); out.append(("ntfy", True, None))
-        except Exception as e: out.append(("ntfy", False, str(e)))
-    if s.get("telegram_token") and s.get("telegram_chat_id"):
-        try: _post_to_telegram(s["telegram_token"], s["telegram_chat_id"],
-                               level, title, detail); out.append(("telegram", True, None))
-        except Exception as e: out.append(("telegram", False, str(e)))
+    if s.get("discord_webhook_url"): out.append("discord")
+    if s.get("ntfy_topic"):          out.append("ntfy")
+    if s.get("telegram_token") and s.get("telegram_chat_id"): out.append("telegram")
+    if s.get("webhook_url"):         out.append("webhook")
+    return out
+
+def _send_one_channel(s, ch, level, title, detail):
+    """Send to a single named channel. Returns (ok, err). Raises nothing."""
+    try:
+        if ch == "discord":
+            if not s.get("discord_webhook_url"): return (False, "not configured")
+            send_discord(s["discord_webhook_url"], level, title, detail)
+        elif ch == "ntfy":
+            if not s.get("ntfy_topic"): return (False, "not configured")
+            send_ntfy(s.get("ntfy_server") or "https://ntfy.sh", s["ntfy_topic"], level, title, detail)
+        elif ch == "telegram":
+            if not (s.get("telegram_token") and s.get("telegram_chat_id")): return (False, "not configured")
+            _post_to_telegram(s["telegram_token"], s["telegram_chat_id"], level, title, detail)
+        elif ch == "webhook":
+            if not s.get("webhook_url"): return (False, "not configured")
+            send_webhook(s["webhook_url"], level, title, detail)
+        else:
+            return (False, f"unknown channel {ch}")
+        return (True, None)
+    except Exception as e:
+        return (False, str(e))
+
+def dispatch_alert(s, level, title, detail, channel="all"):
+    """Send to the requested channel(s). channel='all' fans out to every configured
+    channel; otherwise just the one named. Returns list of (channel, ok, err).
+    A channel that isn't configured is silently skipped under 'all'."""
+    if channel and channel != "all":
+        ok, err = _send_one_channel(s, channel, level, title, detail)
+        return [(channel, ok, err)]
+    out = []
+    for ch in _configured_channels(s):
+        ok, err = _send_one_channel(s, ch, level, title, detail)
+        out.append((ch, ok, err))
     return out
 
 def _emit(s, key, level, title, detail):
@@ -3913,6 +3959,269 @@ def notify_scan():
                 if not ok: print(f"notifier {ch} error:", err, flush=True)
     except Exception as e:
         print("notify_scan oom error:", e, flush=True)
+
+# ── Opt-in alerting rule engine ───────────────────────────────────────────────
+# User-defined rules stored in SQLite (alert_rules). Each rule is a *trigger over a
+# signal the app already computes* — an anomaly being active on a series, a disk or
+# VRAM fill-ETA dropping below N days, or the projected month cost exceeding a
+# budget. The engine is wholly inert until a user (a) enables a rule and (b) has a
+# channel configured: zero rules => zero work. Evaluation reuses the forecast/
+# anomaly outputs already gathered each notifier pass, so it adds no heavy compute.
+#
+# Edge-triggered with a per-rule cooldown: a rule fires at most once per
+# cooldown_min window while its condition stays true (last_fired_at), and only
+# re-arms cleanly once the condition clears (last_state). Snooze suppresses a rule
+# until snoozed_until. Every fire (and every test) appends to alert_history (capped
+# at the last ~200 rows). This only sends data OUT — it never touches the host.
+_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget"}
+_ALERT_HISTORY_CAP = 200
+
+def _rule_row_to_dict(r):
+    cols = ("id", "name", "enabled", "ctype", "params", "channel", "level",
+            "cooldown_min", "created_at", "last_fired_at", "last_state", "snoozed_until")
+    d = dict(zip(cols, r))
+    d["enabled"] = bool(d["enabled"])
+    try: d["params"] = json.loads(d["params"] or "{}")
+    except (TypeError, ValueError): d["params"] = {}
+    return d
+
+def list_rules():
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,name,enabled,ctype,params,channel,level,cooldown_min,created_at,"
+            "last_fired_at,last_state,snoozed_until FROM alert_rules ORDER BY created_at").fetchall()
+    return [_rule_row_to_dict(r) for r in rows]
+
+def _validate_rule(body):
+    """Return (clean_dict, None) or (None, error_string)."""
+    name = (body.get("name") or "").strip()
+    if not name:
+        return None, "A rule name is required."
+    ctype = (body.get("ctype") or "").strip()
+    if ctype not in _RULE_TYPES:
+        return None, f"Unknown condition type. Use one of: {', '.join(sorted(_RULE_TYPES))}."
+    channel = (body.get("channel") or "all").strip()
+    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+        return None, "Unknown channel."
+    level = (body.get("level") or "warning").strip()
+    if level not in LEVELS:
+        return None, "Level must be info, warning, or critical."
+    try:
+        cooldown = int(body.get("cooldown_min", 60))
+    except (TypeError, ValueError):
+        return None, "Cooldown must be a whole number of minutes."
+    if cooldown < 0:
+        return None, "Cooldown cannot be negative."
+    params = body.get("params") or {}
+    if not isinstance(params, dict):
+        return None, "params must be an object."
+    # Per-type param validation (numbers stored as given; coerced at eval time).
+    if ctype == "anomaly":
+        series = (params.get("series") or "any")
+        valid = {"any"} | {k for k, *_ in _ANOMALY_SERIES}
+        if series not in valid:
+            return None, f"Unknown anomaly series. Use 'any' or one of: {', '.join(sorted(valid - {'any'}))}."
+    elif ctype in ("disk_eta", "vram_eta"):
+        try: float(params.get("days") if ctype == "disk_eta" else params.get("days"))
+        except (TypeError, ValueError):
+            return None, "A numeric 'days' threshold is required."
+    elif ctype == "cost_budget":
+        try: float(params.get("budget"))
+        except (TypeError, ValueError):
+            return None, "A numeric 'budget' is required."
+    return {"name": name, "ctype": ctype, "channel": channel, "level": level,
+            "cooldown_min": cooldown, "params": params,
+            "enabled": 1 if body.get("enabled") else 0}, None
+
+def create_rule(body):
+    clean, err = _validate_rule(body)
+    if err:
+        return None, err
+    rid = uuid.uuid4().hex
+    with LOCK:
+        DB.execute(
+            "INSERT INTO alert_rules(id,name,enabled,ctype,params,channel,level,cooldown_min,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (rid, clean["name"], clean["enabled"], clean["ctype"], json.dumps(clean["params"]),
+             clean["channel"], clean["level"], clean["cooldown_min"], int(time.time())))
+        DB.commit()
+    return rid, None
+
+def update_rule(rid, body):
+    with LOCK:
+        exists = DB.execute("SELECT 1 FROM alert_rules WHERE id=?", (rid,)).fetchone()
+    if not exists:
+        return False, "not found"
+    # Allow a quick enable/disable or snooze without full revalidation.
+    if set(body.keys()) <= {"enabled"}:
+        with LOCK:
+            DB.execute("UPDATE alert_rules SET enabled=? WHERE id=?", (1 if body.get("enabled") else 0, rid))
+            DB.commit()
+        return True, None
+    if set(body.keys()) <= {"snooze_min"}:
+        try: mins = int(body.get("snooze_min", 0))
+        except (TypeError, ValueError): return False, "snooze_min must be a number"
+        until = int(time.time()) + mins * 60 if mins > 0 else None
+        with LOCK:
+            DB.execute("UPDATE alert_rules SET snoozed_until=? WHERE id=?", (until, rid))
+            DB.commit()
+        return True, None
+    clean, err = _validate_rule(body)
+    if err:
+        return False, err
+    with LOCK:
+        DB.execute(
+            "UPDATE alert_rules SET name=?,enabled=?,ctype=?,params=?,channel=?,level=?,cooldown_min=? WHERE id=?",
+            (clean["name"], clean["enabled"], clean["ctype"], json.dumps(clean["params"]),
+             clean["channel"], clean["level"], clean["cooldown_min"], rid))
+        DB.commit()
+    return True, None
+
+def delete_rule(rid):
+    with LOCK:
+        cur = DB.execute("DELETE FROM alert_rules WHERE id=?", (rid,))
+        DB.commit()
+        return cur.rowcount > 0
+
+def record_alert(rule_id, rule_name, level, channel, status, title, detail):
+    """Append to alert_history and trim to the last _ALERT_HISTORY_CAP rows."""
+    with LOCK:
+        DB.execute(
+            "INSERT INTO alert_history(ts,rule_id,rule_name,level,channel,status,title,detail)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (int(time.time()), rule_id, rule_name, level, channel, status, title, (detail or "")[:500]))
+        DB.execute(
+            "DELETE FROM alert_history WHERE id NOT IN "
+            "(SELECT id FROM alert_history ORDER BY id DESC LIMIT ?)", (_ALERT_HISTORY_CAP,))
+        DB.commit()
+
+def list_alert_history(limit=100):
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,ts,rule_id,rule_name,level,channel,status,title,detail,acked "
+            "FROM alert_history ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    cols = ("id", "ts", "rule_id", "rule_name", "level", "channel", "status", "title", "detail", "acked")
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        d["acked"] = bool(d["acked"])
+        out.append(d)
+    return out
+
+def ack_alert(hid):
+    with LOCK:
+        cur = DB.execute("UPDATE alert_history SET acked=1 WHERE id=?", (int(hid),))
+        DB.commit()
+        return cur.rowcount > 0
+
+def _eval_rule(rule, signals):
+    """Evaluate one rule against the precomputed signal bundle. Returns
+    (fired_bool, title, detail). Pure; no I/O, no recompute."""
+    p = rule["params"]
+    ct = rule["ctype"]
+    if ct == "anomaly":
+        want = p.get("series") or "any"
+        items = (signals.get("anomalies") or {}).get("items") or []
+        hits = [a for a in items if want == "any" or a.get("key") == want]
+        if hits:
+            a = hits[0]
+            return True, f"Anomaly on {a['key']}", (
+                f"{a['key']} {a['direction']} to {a['value']}{a['unit']} "
+                f"(baseline {a['baseline']}{a['unit']}, z={a['z']}).")
+        return False, None, None
+    if ct == "disk_eta":
+        thr = float(p.get("days"))
+        worst = None
+        for d in (signals.get("disk") or []):
+            eta = d.get("eta_days")
+            if eta is not None and eta <= thr and (worst is None or eta < worst[0]):
+                worst = (eta, d)
+        if worst:
+            eta, d = worst
+            return True, f"Disk {d['mount']} fills in ~{eta}d", (
+                f"{d['mount']} at {d.get('pct')}% and filling "
+                f"~{d.get('gb_per_day')} GB/day — projected full in ~{eta} days "
+                f"(threshold {thr}d).")
+        return False, None, None
+    if ct == "vram_eta":
+        thr = float(p.get("days"))
+        v = signals.get("vram") or {}
+        eta_min = v.get("eta_min")
+        if eta_min is not None and v.get("status") == "filling":
+            eta_days = eta_min / 1440.0
+            if eta_days <= thr:
+                return True, f"GPU VRAM fills in ~{round(eta_days,2)}d", (
+                    f"VRAM at {v.get('pct')}% rising ~{v.get('mb_per_min')} MB/min — "
+                    f"projected full in ~{round(eta_days,2)} days (threshold {thr}d).")
+        return False, None, None
+    if ct == "cost_budget":
+        budget = float(p.get("budget"))
+        cm = signals.get("cost_month") or {}
+        if not cm.get("enabled"):
+            return False, None, None
+        proj = cm.get("projected_month")
+        if proj is not None and proj > budget:
+            cur = cm.get("currency", "")
+            return True, f"Projected cost {cur}{proj} over budget", (
+                f"Projected month energy cost {cur}{proj} exceeds budget "
+                f"{cur}{budget} (month-to-date {cur}{cm.get('month_to_date')}).")
+        return False, None, None
+    return False, None, None
+
+def evaluate_rules(signals=None):
+    """Evaluate every enabled rule and fire those whose condition is true and whose
+    cooldown has elapsed. `signals` may be supplied (so the notifier pass shares the
+    forecast it already computed); otherwise it's computed here. Returns the number
+    of rules that fired (for tests / logging). Never raises out."""
+    rules = [r for r in list_rules() if r["enabled"]]
+    if not rules:
+        return 0
+    s = get_settings()
+    if not _configured_channels(s):
+        return 0
+    now = int(time.time())
+    if signals is None:
+        try:
+            ctx = _cost_ctx()
+            with LOCK:
+                cur = DB.cursor()
+                signals = {"disk": _disk_forecasts(cur, now),
+                           "cost_month": _cost_projection(cur, ctx, now),
+                           "anomalies": _zscore_anomalies(cur, now),
+                           "vram": _vram_forecast(cur, now)}
+        except Exception as e:
+            print("evaluate_rules signal error:", e, flush=True)
+            return 0
+    fired = 0
+    for rule in rules:
+        try:
+            active, title, detail = _eval_rule(rule, signals)
+        except Exception as e:
+            print(f"rule {rule['id']} eval error:", e, flush=True)
+            continue
+        new_state = "active" if active else "clear"
+        snoozed = rule.get("snoozed_until") and rule["snoozed_until"] > now
+        cooldown_s = rule["cooldown_min"] * 60
+        cooled = (not rule.get("last_fired_at")) or (now - rule["last_fired_at"] >= cooldown_s)
+        should_fire = active and not snoozed and cooled
+        if should_fire:
+            level = rule["level"]
+            full_title = f"{rule['name']}: {title}"
+            for ch, ok, err in dispatch_alert(s, level, full_title, detail, channel=rule["channel"]):
+                status = "sent" if ok else "error"
+                record_alert(rule["id"], rule["name"], level, ch, status, full_title, detail if ok else (err or ""))
+                if not ok:
+                    print(f"rule {rule['id']} channel {ch} error:", err, flush=True)
+            with LOCK:
+                DB.execute("UPDATE alert_rules SET last_fired_at=?, last_state=? WHERE id=?",
+                           (now, new_state, rule["id"]))
+                DB.commit()
+            fired += 1
+        elif new_state != rule.get("last_state"):
+            with LOCK:
+                DB.execute("UPDATE alert_rules SET last_state=? WHERE id=?", (new_state, rule["id"]))
+                DB.commit()
+    return fired
 
 # ── Sampling ────────────────────────────────────────────────────────────────
 def smi(args):
@@ -4314,6 +4623,20 @@ def collector():
             if now - last_notify > 20:
                 try: notify_scan()
                 except Exception as e: print("notify_scan error:", e, flush=True)
+                # User-defined rule engine (opt-in; inert with zero enabled rules).
+                # Shares the forecast/anomaly compute so it's cheap.
+                try:
+                    if any(r["enabled"] for r in list_rules()):
+                        nowi = int(now)
+                        ctx = _cost_ctx()
+                        with LOCK:
+                            cur = DB.cursor()
+                            sig = {"disk": _disk_forecasts(cur, nowi),
+                                   "cost_month": _cost_projection(cur, ctx, nowi),
+                                   "anomalies": _zscore_anomalies(cur, nowi),
+                                   "vram": _vram_forecast(cur, nowi)}
+                        evaluate_rules(sig)
+                except Exception as e: print("evaluate_rules error:", e, flush=True)
                 last_notify = now
         except Exception as e:
             print("collector error:", e, flush=True)
@@ -6621,6 +6944,64 @@ def api_notify_test():
                              "If you see this, alerts are wired up correctly.")
     return jsonify({"ok": all(ok for _, ok, _ in results),
                     "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results]})
+
+@app.route("/api/alerts/channels/test", methods=["POST"])
+def api_alerts_channel_test():
+    """Send a one-shot test notification to a single named channel (or 'all').
+    Validates against the currently-saved channel config; records the attempt in
+    alert history. Only sends data out — never touches the host."""
+    body = request.get_json(silent=True) or {}
+    channel = (body.get("channel") or "all").strip()
+    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+        return jsonify({"ok": False, "error": "Unknown channel."}), 400
+    s = get_settings()
+    if channel == "all" and not _configured_channels(s):
+        return jsonify({"ok": False, "results": [],
+                        "reason": "No channel configured."}), 400
+    results = dispatch_alert(s, "info",
+                             "✅ HomeLab Monitor — test notification",
+                             "If you see this, this channel is wired up correctly.",
+                             channel=channel)
+    for ch, ok, err in results:
+        record_alert(None, "channel test", "info", ch, "sent" if ok else "error",
+                     "Test notification", None if ok else (err or ""))
+    return jsonify({"ok": all(ok for _, ok, _ in results),
+                    "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results]})
+
+@app.route("/api/alerts/rules", methods=["GET", "POST"])
+def api_alert_rules():
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        rid, err = create_rule(body)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "id": rid}), 201
+    return jsonify({"rules": list_rules(), "channels": _configured_channels(get_settings()),
+                    "types": sorted(_RULE_TYPES),
+                    "series": ["any"] + [k for k, *_ in _ANOMALY_SERIES]})
+
+@app.route("/api/alerts/rules/<rid>", methods=["PATCH", "DELETE"])
+def api_alert_rule_one(rid):
+    if request.method == "DELETE":
+        ok = delete_rule(rid)
+        return jsonify({"ok": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    ok, err = update_rule(rid, body)
+    if not ok:
+        code = 404 if err == "not found" else 400
+        return jsonify({"ok": False, "error": err}), code
+    return jsonify({"ok": True})
+
+@app.route("/api/alerts/history")
+def api_alert_history():
+    try: limit = min(200, max(1, int(request.args.get("limit", 100))))
+    except (TypeError, ValueError): limit = 100
+    return jsonify({"history": list_alert_history(limit)})
+
+@app.route("/api/alerts/history/<int:hid>/ack", methods=["POST"])
+def api_alert_ack(hid):
+    ok = ack_alert(hid)
+    return jsonify({"ok": ok}), (200 if ok else 404)
 
 @app.route("/api/update/app", methods=["POST"])
 def api_update_app():
