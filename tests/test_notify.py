@@ -137,5 +137,40 @@ class TestTelegramNotifier(unittest.TestCase):
         self.assertIn("network down", tg[0][2])
 
 
+class TestOutboundUserAgent(unittest.TestCase):
+    """Discord behind Cloudflare 403s requests with no User-Agent; every
+    outbound notification helper must carry one (matches the human's fix)."""
+
+    def _capture(self, fn):
+        captured = {}
+
+        class _Resp:
+            status = 200
+            def read(self): return b"{}"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["req"] = req
+            return _Resp()
+
+        with patch("app.urllib.request.urlopen", side_effect=fake_urlopen):
+            fn()
+        return captured["req"]
+
+    def test_post_json_sets_user_agent(self):
+        req = self._capture(lambda: app._post_json("https://example.test/h", {"a": 1}))
+        self.assertEqual(req.get_header("User-agent"), app._NOTIFY_UA)
+        self.assertIn(app.VERSION, app._NOTIFY_UA)
+
+    def test_post_text_sets_user_agent_even_with_custom_headers(self):
+        # ntfy passes its own header dict (no UA) — the helper must inject one.
+        req = self._capture(lambda: app._post_text(
+            "https://ntfy.sh/topic", "body",
+            {"Content-Type": "text/plain; charset=utf-8", "Title": "x"}))
+        self.assertEqual(req.get_header("User-agent"), app._NOTIFY_UA)
+        self.assertEqual(req.get_header("Title"), "x")  # caller headers preserved
+
+
 if __name__ == "__main__":
     unittest.main()

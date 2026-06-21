@@ -3796,15 +3796,21 @@ _COLORS = {"info": 0x58A6FF, "warning": 0xD29922, "critical": 0xF85149}
 _NTFY_P = {"info": 3, "warning": 4, "critical": 5}
 _NTFY_T = {"info": "information_source", "warning": "warning", "critical": "rotating_light"}
 
+# Some endpoints (Discord behind Cloudflare) 403 a request with no User-Agent.
+# Always carry one on outbound notifications; callers may override via their headers.
+_NOTIFY_UA = f"homelab-monitor/{VERSION}"
+
 def _post_json(url, payload, timeout=5):
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": _NOTIFY_UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
 def _post_text(url, text, headers=None, timeout=5):
-    req = urllib.request.Request(url, data=text.encode("utf-8"),
-                                 headers=headers or {"Content-Type": "text/plain"})
+    hdr = dict(headers or {"Content-Type": "text/plain"})
+    hdr.setdefault("User-Agent", _NOTIFY_UA)
+    req = urllib.request.Request(url, data=text.encode("utf-8"), headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
