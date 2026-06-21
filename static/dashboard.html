@@ -10,11 +10,11 @@
 :root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
 --crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
 --canvas:#0a0e14;--inset:#0d1117;--hover:#161b22;--sel:#1c232e;--sb:#0b0f15;
---okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918}
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--heat-lo:#1f6feb;--heat-mid:#d29922;--heat-hi:#f85149}
 [data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
 --crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
 --canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
---okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--heat-lo:#54aeff;--heat-mid:#bf8700;--heat-hi:#cf222e}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1140px;margin:0 auto;padding:22px 18px 70px}
 header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -410,6 +410,27 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .topproc-bar>span{display:block;height:100%;border-radius:6px}
 .topproc-val{flex:none;font-variant-numeric:tabular-nums;font-weight:600;min-width:52px;text-align:right}
 .topproc-empty{color:var(--mut);font-size:13px;padding:6px 2px}
+/* visually-hidden (a11y): present for screen readers, off-screen for sighted users */
+.vh{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+/* ── Busy-hours cost/energy heatmap (7×24) ── */
+.heat-callouts{display:flex;flex-wrap:wrap;gap:9px;margin:0 0 13px}
+.heat-callout{flex:1 1 220px;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;background:var(--inset)}
+.heat-callout .l{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);display:flex;align-items:center;gap:6px}
+.heat-callout .v{font-size:15px;font-weight:600;margin-top:3px;color:var(--tx)}
+.heat-callout .s{font-size:12px;color:var(--mut);margin-top:1px}
+.heat-callout.busy{border-color:var(--crit)}.heat-callout.busy .l{color:var(--crit)}
+.heat-callout.quiet{border-color:var(--ok)}.heat-callout.quiet .l{color:var(--ok)}
+.heat-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.heat-grid{border-collapse:separate;border-spacing:2px;font-size:11px;width:100%;min-width:560px}
+.heat-grid th{color:var(--mut);font-weight:500;text-transform:none;letter-spacing:0;font-size:10px;padding:0;text-align:center}
+.heat-grid th.hr{font-variant-numeric:tabular-nums}
+.heat-grid td.day{color:var(--mut);font-weight:600;text-align:right;padding-right:6px;white-space:nowrap;font-size:11px}
+.heat-grid td.cell{width:20px;height:18px;border-radius:3px;background:var(--free);transition:transform .08s ease;cursor:default}
+.heat-grid td.cell.f{cursor:default}
+.heat-grid td.cell:hover{outline:2px solid var(--tx);outline-offset:-1px}
+@media(prefers-reduced-motion:no-preference){.heat-grid td.cell:hover{transform:scale(1.18)}}
+.heat-legend{display:flex;align-items:center;gap:8px;margin-top:11px;font-size:11px;color:var(--mut)}
+.heat-legend .bar{flex:0 0 160px;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--heat-lo),var(--heat-mid),var(--heat-hi))}
 /* Container logs side drawer (issue #28) */
 .ctrow{cursor:pointer}
 .ctrow:hover td{background:rgba(127,127,127,.07)}
@@ -1284,6 +1305,26 @@ h2 .hic{ opacity:.9 }
     <h2 data-i18n="forecast.cost_title">🔮 This month's cost (projected)</h2>
     <div class="grid" id="costfc-kpis"></div>
     <p class="cap" id="costfc-cap" data-i18n="forecast.cost_cap">Month-to-date energy cost extrapolated to a full month at the current daily rate. The estimate firms up as the month progresses.</p>
+  </div>
+  <div class="card" id="heatmap-card" hidden>
+    <div class="card-h">
+      <h2 data-i18n="heat.title">🗓️ Busy hours — when your lab burns power</h2>
+      <span class="ch-space"></span>
+      <span class="chip" id="heat-mode-chip" hidden></span>
+    </div>
+    <div id="heat-collecting" class="topproc-empty" hidden data-i18n="heat.collecting">Collecting data — the busy-hours map fills in as history accumulates (about a day of samples).</div>
+    <div id="heat-body" hidden>
+      <div class="heat-callouts" id="heat-callouts"></div>
+      <div class="heat-wrap">
+        <table class="heat-grid" id="heat-table" aria-describedby="heat-cap">
+          <caption class="vh" id="heat-cap" data-i18n="heat.a11y_caption">Average power draw by day of week and hour of day. Higher is busier and more expensive.</caption>
+          <thead><tr id="heat-head"></tr></thead>
+          <tbody id="heat-rows"></tbody>
+        </table>
+      </div>
+      <div class="heat-legend" id="heat-legend"></div>
+      <p class="cap" id="heat-cap-foot" data-i18n="heat.cap">Each cell is the average total draw (GPU + CPU + DRAM) for that local day-of-week and hour, over the chosen window. Colour scales by cost-rate when a tariff is set, otherwise by power. Sparse cells are dimmed — hover for the exact figures.</p>
+    </div>
   </div>
   <div class="card" id="costs-breakdown-card" hidden>
     <h2 data-i18n="costs.breakdown_title">🧾 Breakdown by process / container / model</h2>
@@ -2644,6 +2685,7 @@ async function renderCosts(force){
   const dis=document.getElementById('costs-disabled'), body=document.getElementById('costs-body');
   const bcard=document.getElementById('costs-breakdown-card');
   const fcc=document.getElementById('costfc-card');
+  renderHeatmap();   // power-only heatmap renders even with no tariff set
   if(!j.enabled){
     dis.hidden=false; body.hidden=true; bcard.hidden=true; document.getElementById('costs-drill').hidden=true;
     if(fcc) fcc.hidden=true;
@@ -2706,6 +2748,81 @@ async function drillEntity(name,kind){
         y1:{position:'right',min:0,grid:{display:false},ticks:{color:cv('--mut'),callback:v=>cur+(+v).toFixed(2)}}},
       plugins:{legend:{labels:{color:cv('--tx'),boxWidth:12}}}}});
   document.getElementById('costs-drill').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+// ── Busy-hours heatmap: 7×24 day-of-week × hour grid coloured by cost-rate ─────
+// Reads /api/cost/heatmap (own window, default 30d). Colour scales by €/h when a
+// tariff is set, else by avg W. Always a <table> so screen readers/no-CSS get the
+// numbers; sparse cells are dimmed by their sample count, never faked.
+let HEAT_AT=0;
+function heatColor(t){            // t in [0,1] -> blend lo→mid→hi (CSS tokens)
+  const hex=v=>{const x=getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+    return [parseInt(x.slice(1,3),16),parseInt(x.slice(3,5),16),parseInt(x.slice(5,7),16)];};
+  const lo=hex('--heat-lo'), mid=hex('--heat-mid'), hi=hex('--heat-hi');
+  const lerp=(a,b,f)=>Math.round(a+(b-a)*f);
+  let c1,c2,f; if(t<0.5){c1=lo;c2=mid;f=t/0.5;} else {c1=mid;c2=hi;f=(t-0.5)/0.5;}
+  return `rgb(${lerp(c1[0],c2[0],f)},${lerp(c1[1],c2[1],f)},${lerp(c1[2],c2[2],f)})`;
+}
+async function renderHeatmap(force){
+  const card=document.getElementById('heatmap-card'); if(!card) return;
+  if(CURRENT_HOST!=='local'){ card.hidden=true; return; }
+  if(!force && Date.now()-HEAT_AT<20000 && card.dataset.loaded) return;
+  HEAT_AT=Date.now();
+  let j; try{ j=await(await fetch('/api/cost/heatmap?days=30')).json(); }catch(e){ card.hidden=true; return; }
+  if(!j||!j.ok){ card.hidden=true; return; }
+  card.hidden=false; card.dataset.loaded='1';
+  const collecting=document.getElementById('heat-collecting'), body=document.getElementById('heat-body');
+  const chip=document.getElementById('heat-mode-chip');
+  const byCost=!!j.enabled, cur=j.currency||'$';
+  if(chip){ chip.hidden=false;
+    chip.textContent = byCost ? I18N.t('heat.by_cost','scaled by €/h') : I18N.t('heat.by_power','scaled by power');
+    chip.classList.toggle('ok',byCost); }
+  if(!j.ready){ collecting.hidden=false; body.hidden=true; return; }
+  collecting.hidden=true; body.hidden=false;
+  const days=(I18N.t('heat.days','Mon|Tue|Wed|Thu|Fri|Sat|Sun')).split('|');
+  const W=v=>v+' W', money=v=>cur+(+v).toFixed(v<1?3:2);
+  const grid = byCost ? j.cost_h : j.avg_w;
+  const maxV = byCost ? (j.max_cost_h||1) : (j.max_w||1);
+  // header: hour ticks (show every 3h to stay legible; aria-label keeps full info)
+  const head=document.getElementById('heat-head');
+  head.innerHTML='<th scope="col"><span class="vh">'+I18N.t('heat.day_col','Day')+'</span></th>'+
+    Array.from({length:24},(_,h)=>`<th scope="col" class="hr">${h%3===0?String(h).padStart(2,'0'):''}</th>`).join('');
+  const rows=document.getElementById('heat-rows');
+  rows.innerHTML=j.avg_w.map((row,d)=>{
+    const cells=row.map((aw,h)=>{
+      const n=j.samples[d][h];
+      if(aw==null||!n) return `<td class="cell" aria-label="${esc(days[d])} ${String(h).padStart(2,'0')}:00 — ${I18N.t('heat.no_data','no data')}"></td>`;
+      const ch=j.cost_h[d][h], v=byCost?ch:aw;
+      const t=Math.max(0,Math.min(1,(v||0)/maxV));
+      // dim cells with thin coverage so sparse data reads as less certain
+      const op=Math.min(1,0.35+0.65*Math.min(1,n/Math.max(1,j.total_ticks/Math.max(1,j.populated_cells)/2)));
+      const tip=`${days[d]} ${String(h).padStart(2,'0')}:00 · ${W(aw)}${byCost?' · '+money(ch)+'/h':''} · ${I18N.tf('heat.n_samples','{n} samples',{n})}`;
+      return `<td class="cell f" title="${esc(tip)}" aria-label="${esc(tip)}" style="background:${heatColor(t)};opacity:${op.toFixed(2)}"></td>`;
+    }).join('');
+    return `<tr><td class="day" scope="row">${esc(days[d])}</td>${cells}</tr>`;
+  }).join('');
+  // legend
+  const leg=document.getElementById('heat-legend');
+  leg.innerHTML=`<span>${byCost?I18N.t('heat.cheap','cheaper'):I18N.t('heat.quiet_l','quieter')}</span>`+
+    `<span class="bar"></span><span>${byCost?I18N.tf('heat.up_to','up to {v}/h',{v:money(maxV)}):I18N.tf('heat.up_to_w','up to {v} W',{v:Math.round(maxV)})}</span>`;
+  // callouts: busiest vs quietest
+  const co=document.getElementById('heat-callouts'); co.innerHTML='';
+  const fmtSlot=s=>`${days[s.day]} ${String(s.hour).padStart(2,'0')}:00`;
+  if(j.busiest){
+    const b=j.busiest;
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout busy"><div class="l">🔺 ${I18N.t('heat.busiest','Most expensive slot')}</div>`+
+      `<div class="v">${esc(fmtSlot(b))}</div><div class="s">${W(b.avg_w)}${byCost?' ≈ '+money(b.cost_h)+'/h':''}</div></div>`);
+  }
+  if(j.quietest){
+    const q=j.quietest;
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout quiet"><div class="l">🔻 ${I18N.t('heat.quietest','Quietest slot')}</div>`+
+      `<div class="v">${esc(fmtSlot(q))}</div><div class="s">${W(q.avg_w)}${byCost?' ≈ '+money(q.cost_h)+'/h':''}</div></div>`);
+  }
+  if(j.bands && byCost){
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout"><div class="l">⚖️ ${I18N.t('heat.bands','Busy vs quiet bands')}</div>`+
+      `<div class="v">${money(j.bands.busy.avg_cost_h)}/h ${I18N.t('heat.vs','vs')} ${money(j.bands.quiet.avg_cost_h)}/h</div>`+
+      `<div class="s">${I18N.tf('heat.bands_sub','busiest quarter vs quietest quarter of hours',{})}</div></div>`);
+  }
 }
 
 // ── AI Models: expandable rows + per-model VRAM timeline ──────────────────────
