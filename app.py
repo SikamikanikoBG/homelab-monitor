@@ -6619,7 +6619,11 @@ def build_public_status():
         tiles.append(tile)
 
     # Headline counts — anonymized aggregates only (no names, no identities).
-    n_services = sum(1 for _ in (systemd.get("services") or [])) if systemd.get("available") else 0
+    # Use the same `summary.running` basis the services tile reports as `up`, so the
+    # KPI strip ("N monitored") and the per-subsystem tile agree. The `services`
+    # list is a curated subset (admin/port-bearing units), which would undercount
+    # the headline vs. the tile and read as nonsensical (e.g. "92 up of 11").
+    n_services = int((systemd.get("summary") or {}).get("running", 0)) if systemd.get("available") else 0
     n_containers = int((docker.get("summary") or {}).get("total", 0)) if docker.get("available") else 0
     n_problems = (int((docker.get("summary") or {}).get("problems", 0)) if docker.get("available") else 0) \
                  + (int((systemd.get("summary") or {}).get("failed", 0)) if systemd.get("available") else 0)
