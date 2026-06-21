@@ -136,6 +136,57 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .skel-line{height:11px;margin:8px 0}.skel-line.w70{width:70%}.skel-line.w90{width:90%}.skel-line.w40{width:40%}
 @keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
 @media(prefers-reduced-motion:reduce){.skel{animation:none}}
+/* ── Incidents ─────────────────────────────────────────────────────────────
+   A correlated incident reads as ONE event: a left severity rail, a header
+   row (severity + state + relative time + active/total), and member chips. */
+.inc-list{display:flex;flex-direction:column;gap:11px;margin-top:4px}
+.inc{position:relative;border:1px solid var(--bd);border-radius:10px;background:var(--inset);
+  padding:13px 15px 13px 18px;overflow:hidden;transition:border-color .15s ease,box-shadow .15s ease}
+.inc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--mut)}
+.inc.sev-warning::before{background:var(--warn)}
+.inc.sev-critical::before{background:var(--crit)}
+/* open incidents are prominent; cleared are calm/muted */
+.inc.open.sev-warning{border-color:#d2992255;background:var(--warnbg)}
+.inc.open.sev-critical{border-color:#f8514955;background:var(--critbg)}
+.inc.open.sev-critical{animation:inc-pulse 2.4s ease-in-out infinite}
+@keyframes inc-pulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 3px var(--critbg)}}
+@media(prefers-reduced-motion:reduce){.inc.open.sev-critical{animation:none}}
+.inc.cleared{opacity:.72}
+.inc.cleared::before{opacity:.5}
+.inc-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.inc-state{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.inc.open .inc-state{color:var(--crit)}
+.inc.open.sev-warning .inc-state{color:var(--warn)}
+.inc.cleared .inc-state{color:var(--mut)}
+.inc-time{font-size:12px;color:var(--mut);font-family:var(--mono)}
+.inc-count{margin-left:auto;font-size:11px;color:var(--mut);font-family:var(--mono);white-space:nowrap}
+.inc-count b{color:var(--tx)}
+.inc-members{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+.inc-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--bd);background:var(--card);color:var(--tx);max-width:100%;cursor:pointer;
+  transition:border-color .12s ease,background .12s ease}
+.inc-chip:hover{border-color:var(--info)}
+.inc-chip:focus-visible{outline:2px solid var(--info);outline-offset:1px}
+.inc-chip.faded{opacity:.5}
+.inc-chip .arr{font-weight:700;flex:none}
+.inc-chip .arr.spike{color:var(--crit)}
+.inc-chip .arr.dip{color:var(--info)}
+.inc-chip .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.inc-chip .sig{font-family:var(--mono);font-size:10.5px;color:var(--mut);flex:none}
+.inc-chip .resolved{font-size:10px;color:var(--mut);flex:none}
+.inc-explain{margin-top:9px}
+/* header summary badge — calm when quiet, lit when an incident is open */
+.inc-badge{display:none;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 9px;
+  border-radius:999px;border:1px solid var(--bd);background:var(--inset);color:var(--mut);
+  cursor:pointer;white-space:nowrap;line-height:1.4}
+.inc-badge.show{display:inline-flex}
+.inc-badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.inc-badge.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.inc-badge.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.inc-badge.crit .dot{animation:inc-blink 1.4s steps(1) infinite}
+@keyframes inc-blink{50%{opacity:.3}}
+@media(prefers-reduced-motion:reduce){.inc-badge.crit .dot{animation:none}}
+.inc-badge:hover{filter:brightness(1.08)}
 
 /* Toast notifications */
 #toast-container{
@@ -821,7 +872,7 @@ h2 .hic{ opacity:.9 }
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
 <button type="button" class="upd osupd" id="osupdbadge" title="One or more machines have OS/kernel updates pending — click for details">⬆ <span id="osupdtext">updates</span></button>
-<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
+<span class="live"><button type="button" id="incbadge" class="inc-badge" hidden><span class="dot"></span><span id="incbadge-txt"></span></button><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
 
 <div class="topnav">
@@ -941,6 +992,15 @@ h2 .hic{ opacity:.9 }
     </div>
     <div id="anom-body"></div>
     <p class="cap" data-i18n-html="anom.cap">Latest GPU &amp; power readings scored against their own recent baseline (rolling mean ± stddev). A flag means the value is far enough from normal to be worth a look — flat or idle series never raise one.</p>
+  </div>
+  <div class="card" id="inc-card" hidden>
+    <div class="card-h">
+      <h2 data-i18n="inc.title">🛟 Incidents</h2>
+      <span class="chip" id="inc-chip" hidden></span>
+      <span class="ch-space"></span>
+    </div>
+    <div id="inc-body"></div>
+    <p class="cap" data-i18n="inc.cap">Anomalies that fire together are grouped into one correlated incident with a lifecycle — opening when the cluster trips and clearing once every member has settled back to normal. One incident, many signals.</p>
   </div>
   <div class="card" id="vramfc-card" hidden>
     <h2 data-i18n="vramfc.title">🧠 VRAM headroom &amp; ETA</h2>
@@ -2044,7 +2104,7 @@ function showTab(id){
     else renderLocalOnlyNotice(id);
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); }
-  if(id==='gpu')      loadForecast();   // refresh the Anomalies card on view
+  if(id==='gpu'){ loadForecast(); loadIncidents(); }   // refresh Anomalies + Incidents on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
   if(id==='host')     renderHostTab();
@@ -4400,6 +4460,9 @@ function renderForecast(){
   renderAnomalies(j.anomalies||{});
   // VRAM headroom + ETA card (GPU tab)
   renderVramForecast(j.vram||{});
+  // always-visible header signal, driven by the compact summary that rides
+  // along on every /api/forecast poll (no extra timer)
+  renderIncidentBadge(j.incidents||{open:0,top:null});
 }
 function _vramEtaText(v){
   if(v.status==='full') return I18N.t('forecast.full','full now');
@@ -4514,6 +4577,151 @@ function _explainStatusNote(s, model){
     bad_response:I18N.t('copilot.st_bad','The local LLM returned no text; showing the raw facts instead.'),
   };
   return m[s] || I18N.t('explain.st_generic','Local LLM unavailable — showing what the monitor saw around that moment instead.');
+}
+// ── Incidents: correlated-anomaly events with a lifecycle ─────────────────────
+// One incident = several co-firing anomaly series grouped into a single event.
+// Summary badge rides /api/forecast (no extra timer); the full list is fetched
+// lazily when the GPU tab is opened. All series/text is escaped into the DOM.
+let INCIDENTS=null, INCIDENTS_AT=0;
+function renderIncidentBadge(s){
+  const b=document.getElementById('incbadge'), t=document.getElementById('incbadge-txt');
+  if(!b||!t) return;
+  const open=(s&&s.open)||0;
+  if(!open){ b.hidden=true; b.classList.remove('show','warn','crit'); return; }
+  const crit = !!(s.top && s.top.severity==='critical');
+  b.hidden=false; b.classList.add('show');
+  b.classList.toggle('crit', crit); b.classList.toggle('warn', !crit);
+  t.textContent = open===1 ? I18N.t('inc.badge_one','1 incident open')
+                           : I18N.tf('inc.badge_n','{n} incidents open',{n:open});
+  b.title = I18N.t('inc.badge_title','An incident is open — click to view it.');
+}
+// header badge → jump to the Incidents card on the GPU tab
+document.addEventListener('click',e=>{
+  const b=e.target.closest && e.target.closest('#incbadge'); if(!b) return;
+  if(typeof showTab==='function') showTab('gpu'); else location.hash='#gpu';
+  loadIncidents(true);
+  setTimeout(()=>{ const c=document.getElementById('inc-card');
+    if(c && !c.hidden) c.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth', block:'start'}); }, 120);
+});
+async function loadIncidents(force){
+  if(CURRENT_HOST!=='local') return;   // incidents live on the hub's own DB
+  const card=document.getElementById('inc-card'), body=document.getElementById('inc-body');
+  if(!card||!body) return;
+  if(!force && Date.now()-INCIDENTS_AT < 30000 && INCIDENTS){ renderIncidents(); return; }
+  if(!INCIDENTS){ card.hidden=false;
+    body.innerHTML='<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div>'; }
+  try{ INCIDENTS=await(await fetch('/api/incidents?limit=20')).json(); INCIDENTS_AT=Date.now(); }
+  catch(e){ card.hidden=false;
+    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div><div class="t">'
+      +I18N.t('inc.error','Incidents are temporarily unavailable.')+'</div></div></div>'; return; }
+  renderIncidents();
+}
+function _incChip(state, n, crit){
+  const el=document.getElementById('inc-chip'); if(!el) return;
+  el.classList.remove('ok','warn','crit'); el.hidden=false;
+  if(state==='open'){ el.classList.add(crit?'crit':'warn');
+    el.innerHTML='<span class="dot"></span>'+(n===1?I18N.t('inc.chip_one','1 open'):I18N.tf('inc.chip_n','{n} open',{n})); return; }
+  el.classList.add('ok'); el.innerHTML='<span class="dot"></span>'+I18N.t('inc.chip_quiet','all clear');
+}
+function _incRelOpened(it){
+  // "opened 4m ago" using the existing relTime helper
+  return I18N.tf('inc.opened_ago','opened {t}',{t:relTime(it.opened_at)});
+}
+function _incClearedAfter(it){
+  if(it.cleared_at==null||it.opened_at==null) return I18N.t('inc.cleared','cleared');
+  const dur=Math.max(60, it.cleared_at-it.opened_at);
+  let span;
+  if(dur<3600) span=I18N.tf('inc.dur_m','{n}m',{n:Math.max(1,Math.round(dur/60))});
+  else if(dur<86400) span=I18N.tf('inc.dur_h','{n}h',{n:Math.round(dur/3600)});
+  else span=I18N.tf('inc.dur_d','{n}d',{n:Math.round(dur/86400)});
+  return I18N.tf('inc.cleared_after','cleared after {d}',{d:span});
+}
+function _incMemberChip(m, iid, mi){
+  const spike = m.direction==='spike';
+  const arrow = spike ? '▲' : '▼';
+  const label = (typeof _anomLabel==='function') ? _anomLabel(m.series) : m.series;
+  const z = (m.peak_z>0?'+':'')+(Math.round(m.peak_z*10)/10);
+  const faded = m.active ? '' : ' faded';
+  const resolved = m.active ? '' : `<span class="resolved" title="${esc(I18N.t('inc.member_resolved','This signal has returned to normal.'))}">✓</span>`;
+  const tip = I18N.tf('inc.member_tip','{v}{u} peak vs ~{b}{u} baseline · click to explain',
+    {v:m.peak_value,u:(m.unit||''),b:m.baseline});
+  return `<button type="button" class="inc-chip${faded}" data-inc-member="${iid}:${mi}" title="${esc(tip)}">`
+    +`<span class="arr ${spike?'spike':'dip'}">${arrow}</span>`
+    +`<span class="nm">${esc(label)}</span>`
+    +`<span class="sig">${esc(z)}σ</span>${resolved}</button>`;
+}
+function renderIncidents(){
+  const j=INCIDENTS||{}, card=document.getElementById('inc-card'), body=document.getElementById('inc-body');
+  if(!card||!body) return;
+  card.hidden=false;
+  const items=(j.incidents||[]);
+  const summary=j.summary||{open:0};
+  _incChip(summary.open?'open':'quiet', summary.open||0, !!(summary.top&&summary.top.severity==='critical'));
+  if(!items.length){
+    // calm, intentional quiet state — not an alarm, not "broken"
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🛟</div><div><div class="t">'
+      +I18N.t('inc.none_title','No incidents')+'</div><div class="d">'
+      +I18N.t('inc.none_d','Anomalies that fire together would be grouped here as one event. Nothing correlated has tripped.')
+      +'</div></div></div>';
+    return;
+  }
+  body.innerHTML='<div class="inc-list">'+items.map(it=>{
+    const sev = it.severity==='critical'?'critical':'warning';
+    const open = it.state==='open';
+    const sevTxt = sev==='critical'?I18N.t('inc.sev_critical','Critical'):I18N.t('inc.sev_warning','Warning');
+    const stateTxt = open?I18N.t('inc.state_open','Open'):I18N.t('inc.state_cleared','Cleared');
+    const timeTxt = open?_incRelOpened(it):_incClearedAfter(it);
+    const count = open
+      ? I18N.tf('inc.active_of','{a} of {t} active',{a:it.active_count,t:it.member_count})
+      : I18N.tf('inc.signals_n','{t} signals',{t:it.member_count});
+    const chips=(it.members||[]).map((m,mi)=>_incMemberChip(m,it.id,mi)).join('');
+    return `<div class="inc ${open?'open':'cleared'} sev-${sev}">`
+      +`<div class="inc-head">`
+      +`<span class="badge ${sev==='critical'?'crit':'warn'}">${esc(sevTxt)}</span>`
+      +`<span class="inc-state">${esc(stateTxt)}</span>`
+      +`<span class="inc-time">${esc(timeTxt)}</span>`
+      +`<span class="inc-count">${esc(count)}</span></div>`
+      +`<div class="inc-members">${chips}</div>`
+      +`<div class="inc-explain" id="inc-explain-${esc(it.id)}" hidden></div>`
+      +`</div>`;
+  }).join('')+'</div>';
+  // member chip → reuse the Copilot "Why?" explain on that series (optional/graceful)
+  body.querySelectorAll('[data-inc-member]').forEach(btn=>{
+    btn.onclick=()=>explainIncidentMember(btn.getAttribute('data-inc-member'));
+  });
+}
+let INC_EXPLAIN_BUSY={};
+function _incFindMember(ref){
+  const [iid,mi]=String(ref).split(':');
+  const inc=((INCIDENTS&&INCIDENTS.incidents)||[]).find(x=>String(x.id)===iid);
+  if(!inc) return null;
+  return {inc, m:(inc.members||[])[+mi]};
+}
+async function explainIncidentMember(ref){
+  const found=_incFindMember(ref); if(!found||!found.m) return;
+  const m=found.m, iid=found.inc.id;
+  const out=document.getElementById('inc-explain-'+iid); if(!out) return;
+  if(INC_EXPLAIN_BUSY[iid]) return;
+  if(!out.hidden && out.dataset.for===ref && out.dataset.done==='1'){ out.hidden=true; out.dataset.done=''; out.dataset.for=''; return; }
+  INC_EXPLAIN_BUSY[iid]=true;
+  out.hidden=false; out.dataset.for=ref; out.dataset.done='';
+  out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  const payload={key:m.series, ts:m.last_seen||null, value:m.peak_value, baseline:m.baseline,
+                 z:m.peak_z, unit:m.unit, direction:m.direction, magnitude:Math.abs(m.peak_z)};
+  let j;
+  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; INC_EXPLAIN_BUSY[iid]=false; return; }
+  if(j.source==='llm' && j.explanation){
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
+  }else{
+    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
+    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
+      +'</div></div>';
+  }
+  out.dataset.done='1'; INC_EXPLAIN_BUSY[iid]=false;
 }
 // ── Lab Copilot (E1): local-LLM digest + ask-box, all read-only ───────────────
 let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false;
