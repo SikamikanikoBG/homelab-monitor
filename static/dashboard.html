@@ -887,7 +887,7 @@ h2 .hic{ opacity:.9 }
 .mc-host-top{ display:flex; align-items:center; gap:8px; margin-bottom:7px }
 .mc-sdot{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--mut) }
 .mc-sdot.mc-on{ background:var(--ok) } .mc-sdot.mc-warn{ background:var(--warn) } .mc-sdot.mc-offdot{ background:var(--crit) }
-.mc-host-label{ font-weight:700; font-size:13px }
+.mc-host-label{ font-weight:700; font-size:13px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .mc-host-os{ font-size:10px; color:var(--mut); margin-left:auto; font-family:var(--mono) }
 .mc-host-badge{ font-size:9px; font-weight:700; padding:2px 6px; border-radius:5px; letter-spacing:.02em; border:1px solid transparent }
 .mc-b-upd{ background:transparent; color:var(--info); border-color:var(--info) }
@@ -2227,7 +2227,7 @@ async function loadHealth(){
 
 // ── Renderers (history-backed tabs) ───────────────────────────────────────────
 function renderData(){
-  if(!D) return;
+  if(!D || !D.now) return;   // a degraded/malformed /api/data (no `now`) must not crash the page
   const n=D.now, H=n.host||{}, tot=D.mem_total;
   setVer(D.version);
   document.getElementById('lastup').textContent=I18N.tf('header.updated','updated {t}',{t:new Date().toLocaleTimeString()});
@@ -4100,7 +4100,8 @@ function mcPaintEngine($, g, gx, host){
     big=util; sub=I18N.t('mc.util','Utilisation');
     badgeText = (pstate?'● '+pstate+' · ':'● ') + (thermal ? I18N.t('mc.throttled','THERMAL') : (util<5 ? I18N.t('mc.idle_up','IDLE') : I18N.t('mc.active','ACTIVE')));
     badgeCls = thermal ? 'mc-bad' : (util<5 ? '' : 'mc-busy');
-    name = (g.gpus&&g.gpus[0]&&g.gpus[0].name) || I18N.t('mc.gpu','GPU');
+    const ngpu = (g.gpus&&g.gpus.length)||0;
+    name = (ngpu>1?ngpu+'× ':'') + ((g.gpus&&g.gpus[0]&&g.gpus[0].name) || I18N.t('mc.gpu','GPU'));
     chip = memTot ? (memTot/1024).toFixed(0)+' GB' : '';
     tag = (pstate?pstate+' · ':'') + (thermal ? I18N.t('mc.throttling','thermal throttle') : (util<5 ? I18N.t('mc.idle','idle') : (capped&&util>=50 ? I18N.t('mc.active_capped','active · power cap') : I18N.t('mc.active_lc','active'))));
     $('mc-engine-title').textContent = I18N.t('mc.engine_gpu',"GPU · The Lab's Engine");
@@ -4351,17 +4352,16 @@ function mcPaintFleet($){
     if(hh.gpu) badges.push(`<span class="mc-host-badge mc-b-gpu">GPU</span>`);
     const cpuC=cpu>=80?'var(--crit)':cpu>=50?'var(--warn)':'var(--ok)';
     const ramC=ramPct>=80?'var(--crit)':ramPct>=65?'var(--warn)':'var(--info)';
-    // tiny synthetic sparkline from cpu so each card has the loved motion (no per-host history on /api/fleet)
-    const base=Math.max(2,cpu);
-    const spkData=[base*.6,base*.8,base*.5,base,base*.7,base*.9,base*.6,base*1.1,base*.8,base].map(v=>Math.max(1,v));
-    const spk=mcSparkline(spkData,200,20,h.is_local?'var(--accent)':'var(--info)');
+    const diskPct=Math.max(...(((hh.disks)||[]).map(d=>d.pct||0)),0);
+    const diskC=diskPct>=90?'var(--crit)':diskPct>=75?'var(--warn)':'var(--ok)';
+    // Only real probe data here — no synthetic sparklines. CPU / RAM / disk micro-bars.
     return `<div class="mc-host" data-h="${esc(h.name)}">
       <div class="mc-host-top"><span class="mc-sdot ${sd}"></span><span class="mc-host-label">${label}</span>${badges.join('')}<span class="mc-host-os">${esc(osname)}</span><button class="mc-host-open" title="${I18N.t('mc.open_host','Open host detail')}">↗</button></div>
       <div class="mc-microbars">
         <div class="mc-mb">CPU<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${cpuC}" data-w="${cpu}"></div></div>${cpu}%</div>
         <div class="mc-mb">RAM<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${ramC}" data-w="${ramPct}"></div></div>${ramPct}%</div>
+        ${diskPct?`<div class="mc-mb">DISK<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${diskC}" data-w="${diskPct}"></div></div>${diskPct}%</div>`:''}
       </div>
-      <div class="mc-host-spark">${spk}</div>
       <div class="mc-host-foot">${cores?`<span>${cores} cores</span>`:''}${temp!=null?`<span>${temp}°C</span>`:''}<span class="mc-sp">↑ ${up}</span></div>
     </div>`;
   }).join('');
