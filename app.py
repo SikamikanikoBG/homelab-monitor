@@ -3727,6 +3727,13 @@ SETTING_DEFAULTS = {
     "api_key":             "",         # Bearer/X-API-Key for run ingest; empty => not generated (ingest fail-closed)
     "mlflow_uri":          "",         # MLflow tracking server base (blank = off)
     "mlflow_token":        "",         # optional bearer for a secured MLflow
+    # ── Scheduled Lab Copilot digest (E1) — OFF by default, inert until enabled ─
+    # A plain-English daily summary built by the Copilot and PUSHED through the
+    # existing alert channels. Reuses the channel dispatch + the digest builder.
+    "digest_enabled":      "0",        # "0" / "1" — master switch (off => zero new behaviour)
+    "digest_time":         "08:00",    # local time-of-day "HH:MM" to push the daily digest
+    "digest_channel":      "all",      # which configured channel: all/discord/ntfy/telegram/webhook
+    "digest_last_sent":    "",         # internal: "YYYY-MM-DD" of the last send (edge-trigger guard)
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
@@ -4942,6 +4949,12 @@ def collector():
                         sig["incidents"] = list_incidents()
                         evaluate_rules(sig)
                 except Exception as e: print("evaluate_rules error:", e, flush=True)
+                # Scheduled Lab Copilot digest. Runs OUTSIDE any held lock (it
+                # builds context that acquires LOCK itself); inert unless the user
+                # enabled it AND configured a channel. Edge-triggered to fire
+                # exactly once per day at/after the target local time.
+                try: maybe_send_digest(now)
+                except Exception as e: print("maybe_send_digest error:", e, flush=True)
                 last_notify = now
         except Exception as e:
             print("collector error:", e, flush=True)
@@ -5964,6 +5977,126 @@ def api_copilot_digest():
         out.update({"digest": text, "source": "llm", "llm_status": "ok"})
     else:
         out.update({"digest": " ".join(facts), "source": "facts", "llm_status": err})
+    return jsonify(out)
+
+
+# ── Scheduled digest ──────────────────────────────────────────────────────────
+# The headline fusion of three shipped pillars: the Copilot digest builder +
+# forecasting context + the alerting channel dispatch. A plain-English daily
+# summary, PUSHED on a schedule through the channels the user already configured.
+#
+# Inert by default: zero new behaviour unless the user (a) flips digest_enabled
+# AND (b) has a notification channel configured. A user who does nothing sees
+# nothing. Read-only otherwise — it only sends data OUT, never mutates the host.
+
+DIGEST_TITLE = "Lab Copilot — daily digest"
+
+def build_digest(now=None):
+    """Build the digest message (title, body, llm_status). Reuses the Copilot
+    context/facts builders and the ollama call. When the LLM is unreachable it
+    degrades to the deterministic fact summary — still a useful digest, never
+    empty. Never raises."""
+    now = now or int(time.time())
+    try:
+        ctx = _copilot_context(now)
+        facts = _copilot_facts(ctx)
+    except Exception as e:
+        print("build_digest context error:", e, flush=True)
+        facts = ["The monitor could not assemble metrics for this digest."]
+    text, err = _ollama_generate(_copilot_digest_prompt(facts))
+    if text:
+        return DIGEST_TITLE, text, "ok"
+    # Graceful fallback: the deterministic fact summary. Always non-empty
+    # (facts is guaranteed non-empty by _copilot_facts).
+    return DIGEST_TITLE, "\n".join("• " + f for f in facts), (err or "facts")
+
+
+def send_digest(channel=None, s=None, record=True):
+    """Send one digest through the requested channel using the existing alert
+    dispatch. `channel` defaults to the configured digest_channel. Returns a dict
+    {ok, results, llm_status, reason?}. Never raises, never mutates the host.
+
+    MUST be called OUTSIDE any held LOCK: build_digest()->_copilot_context()
+    acquires LOCK itself (non-reentrant)."""
+    s = s or get_settings()
+    channel = (channel or s.get("digest_channel") or "all").strip()
+    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+        return {"ok": False, "results": [], "reason": "Unknown channel."}
+    if channel == "all":
+        if not _configured_channels(s):
+            return {"ok": False, "results": [], "reason": "No channel configured."}
+    elif channel not in _configured_channels(s):
+        return {"ok": False, "results": [], "reason": "Channel not configured."}
+    title, body, llm_status = build_digest()
+    results = dispatch_alert(s, "info", title, body, channel=channel)
+    if record:
+        for ch, ok, err in results:
+            record_alert(None, "scheduled digest", "info", ch,
+                         "sent" if ok else "error", title,
+                         None if ok else (err or ""))
+    return {"ok": all(ok for _, ok, _ in results),
+            "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results],
+            "llm_status": llm_status}
+
+
+def _digest_due(s, now=None):
+    """True iff the daily digest should fire on this pass: enabled, a channel is
+    configured, the local wall-clock has reached digest_time, and we have not
+    already sent today's digest. Edge-triggered via digest_last_sent (a date), so
+    it fires exactly once per day on the first pass at/after the target time —
+    robust to the loop interval not landing on HH:MM."""
+    if s.get("digest_enabled") != "1":
+        return False
+    ch = (s.get("digest_channel") or "all").strip()
+    if ch == "all":
+        if not _configured_channels(s):
+            return False
+    elif ch not in _configured_channels(s):
+        return False
+    try:
+        hh, mm = (s.get("digest_time") or "08:00").split(":")
+        target_min = int(hh) * 60 + int(mm)
+    except Exception:
+        target_min = 8 * 60
+    lt = time.localtime(now or time.time())
+    today = time.strftime("%Y-%m-%d", lt)
+    if (s.get("digest_last_sent") or "") == today:
+        return False                      # already sent today's digest
+    return (lt.tm_hour * 60 + lt.tm_min) >= target_min
+
+
+def maybe_send_digest(now=None):
+    """Scheduler tick — called once per collector pass, OUTSIDE the LOCK. Sends
+    today's digest exactly once, on the first pass at/after digest_time. Records
+    the send-date BEFORE dispatching so a slow/failing channel can never cause a
+    double-send within the same day. Never raises."""
+    try:
+        s = get_settings()
+        if not _digest_due(s, now):
+            return False
+        today = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
+        # Edge-trigger latch: stamp the date first so concurrent/next passes
+        # see "already sent today" even while this send is in flight.
+        save_settings({"digest_last_sent": today})
+        out = send_digest(s=s)
+        if not out.get("ok"):
+            print("scheduled digest send issue:", out.get("reason") or "channel error", flush=True)
+        return True
+    except Exception as e:
+        print("maybe_send_digest error:", e, flush=True)
+        return False
+
+
+@app.route("/api/copilot/digest/send", methods=["POST"])
+def api_copilot_digest_send():
+    """Manually push a digest now through a channel (the UI 'Send test digest'
+    button). Always a clean 200/400 — never a 500. Does not touch the daily
+    edge-trigger latch, so a manual send never suppresses the scheduled one."""
+    body = request.get_json(silent=True) or {}
+    channel = (body.get("channel") or "").strip() or None
+    out = send_digest(channel=channel)
+    if out.get("reason") and not out.get("results"):
+        return jsonify({"ok": False, "reason": out["reason"]}), 400
     return jsonify(out)
 
 

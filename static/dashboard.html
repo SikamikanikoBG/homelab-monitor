@@ -1065,6 +1065,27 @@ h2 .hic{ opacity:.9 }
       </div>
       <div id="copilot-answer" style="margin-top:10px;line-height:1.55"></div>
     </div>
+    <details id="digest-sched" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:11px">
+      <summary style="cursor:pointer;font-weight:600" data-i18n="digest.title">📬 Scheduled digest</summary>
+      <div class="fleet-meta" style="margin-top:7px" data-i18n="digest.desc">Push this plain-English summary to your alert channels once a day. Off by default — needs a notification channel configured under Alerts.</div>
+      <div class="row" style="gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
+        <label class="row" style="gap:6px;align-items:center">
+          <input type="checkbox" id="digest-enabled">
+          <span data-i18n="digest.enable">Send a daily digest</span>
+        </label>
+        <label class="row" style="gap:6px;align-items:center">
+          <span class="muted" data-i18n="digest.at">at</span>
+          <input class="hosts-input" type="time" id="digest-time" value="08:00" style="width:auto">
+        </label>
+        <label class="row" style="gap:6px;align-items:center">
+          <span class="muted" data-i18n="digest.via">via</span>
+          <select class="hosts-input" id="digest-channel" style="width:auto"></select>
+        </label>
+        <button class="osvar" type="button" id="digest-save" data-i18n="digest.save">Save</button>
+        <button class="osvar" type="button" id="digest-send" data-i18n="digest.send_test">Send test digest now</button>
+        <span id="digest-result" class="muted" style="font-size:13px"></span>
+      </div>
+    </details>
   </div>
   <div class="card" id="mcpcard">
     <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
@@ -5164,6 +5185,64 @@ async function copilotAsk(){
   }
   COPILOT_BUSY=false;
 }
+// ── Scheduled digest config (E1) — reuses /api/settings + the channel list ─────
+let DIGEST_SEND_BUSY=false;
+function _digestChannels(s){
+  // mirror the backend's _configured_channels(); 'all' always offered.
+  const out=[];
+  if(s.discord_webhook_url_set) out.push('discord');
+  if(s.ntfy_topic) out.push('ntfy');
+  if(s.telegram_token_set && s.telegram_chat_id) out.push('telegram');
+  if(s.webhook_url_set) out.push('webhook');
+  return out;
+}
+async function loadDigestConfig(){
+  const wrap=document.getElementById('digest-sched'); if(!wrap) return;
+  let s; try{ s=(await(await fetch('/api/settings')).json()).settings||{}; }catch(e){ return; }
+  const en=document.getElementById('digest-enabled'), tm=document.getElementById('digest-time'),
+        sel=document.getElementById('digest-channel');
+  if(en) en.checked = s.digest_enabled==='1';
+  if(tm) tm.value = s.digest_time || '08:00';
+  if(sel){
+    const chans=_digestChannels(s), cur=s.digest_channel||'all';
+    const opts=['all'].concat(chans);
+    sel.innerHTML=opts.map(c=>'<option value="'+c+'"'+(c===cur?' selected':'')+'>'
+      +(c==='all'?I18N.t('digest.all_channels','All configured channels'):esc(c))+'</option>').join('');
+    if(!chans.length){
+      sel.disabled=true;
+      const note=document.getElementById('digest-result');
+      if(note) note.textContent=I18N.t('digest.no_channel','No channel configured — set one under Alerts first.');
+    } else { sel.disabled=false; }
+  }
+}
+async function saveDigestConfig(){
+  const en=document.getElementById('digest-enabled'), tm=document.getElementById('digest-time'),
+        sel=document.getElementById('digest-channel'), res=document.getElementById('digest-result');
+  const body={ digest_enabled: en&&en.checked?'1':'0',
+               digest_time: (tm&&tm.value)||'08:00',
+               digest_channel: (sel&&sel.value)||'all' };
+  try{
+    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(res){ res.textContent=I18N.t('digest.saved','Saved.'); setTimeout(()=>{ if(res) res.textContent=''; },3000); }
+  }catch(e){ if(res) res.textContent=I18N.t('digest.save_err','Could not save.'); }
+}
+async function sendDigestNow(){
+  if(DIGEST_SEND_BUSY) return;
+  const sel=document.getElementById('digest-channel'), res=document.getElementById('digest-result');
+  DIGEST_SEND_BUSY=true;
+  if(res) res.textContent=I18N.t('digest.sending','Sending…');
+  let j,ok=false; try{
+    const r=await fetch('/api/copilot/digest/send',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel:(sel&&sel.value)||''})});
+    ok=r.ok; j=await r.json();
+  }catch(e){ if(res) res.textContent=I18N.t('digest.send_err','Could not send.'); DIGEST_SEND_BUSY=false; return; }
+  if(res){
+    if(ok && j.ok) res.textContent=I18N.t('digest.sent','Digest sent.');
+    else res.textContent=esc(j.reason||I18N.t('digest.send_err','Could not send.'));
+    setTimeout(()=>{ if(res) res.textContent=''; },5000);
+  }
+  DIGEST_SEND_BUSY=false;
+}
 function renderDisksTab(){
   loadForecast();
   const root=document.getElementById('disksbody'); if(!root) return;
@@ -6063,6 +6142,11 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(ab) ab.onclick=copilotAsk;
   const q=document.getElementById('copilot-q');
   if(q) q.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); copilotAsk(); } });
+  // Scheduled digest config: lazy-load when the panel is first opened.
+  const sched=document.getElementById('digest-sched');
+  if(sched) sched.addEventListener('toggle',()=>{ if(sched.open) loadDigestConfig(); });
+  const dsave=document.getElementById('digest-save'); if(dsave) dsave.onclick=saveDigestConfig;
+  const dsend=document.getElementById('digest-send'); if(dsend) dsend.onclick=sendDigestNow;
 })();
 document.getElementById('key_showraw').onclick = () => {
   const el = document.getElementById('pubkey'), b = document.getElementById('key_showraw');
