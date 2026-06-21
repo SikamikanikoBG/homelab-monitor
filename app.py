@@ -7171,6 +7171,178 @@ def api_container_logs(name):
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
                              "Connection": "keep-alive"})
 
+
+# ── Structured log tail + LLM "Summarize errors" (AI-native log triage) ────────
+# A Dozzle-style structured JSON tail of ONE container's logs, plus a one-click
+# local-LLM summary of recent error/warn lines. The pair powers the "see the
+# logs → ask the AI what's wrong" story in a single container.
+#
+# SECURITY (the reviewer hammers these):
+#   • No command injection. The client-supplied name is RESOLVED against the live
+#     container list (_resolve_container) to a known id BEFORE any use, and docker
+#     is invoked via an ARGUMENT LIST (subprocess.run([...], shell=False)) — never
+#     a shell string. Unknown/injection-y names get a clean 404, no shell-out.
+#   • Read-only: `docker logs` only. No start/stop/exec/host-write surface.
+#   • Local-only: the summarize path sends log text ONLY to the on-box ollama
+#     (reuses _ollama_generate). Nothing is written to disk or logged server-side.
+#   • Bounded: lines capped, bytes capped, short docker/ollama timeouts, no LOCK
+#     held across the subprocess/ollama call.
+
+_LOG_LINES_DEFAULT = 100
+_LOG_LINES_CAP     = 500
+_LOG_DOCKER_TIMEOUT = float(os.environ.get("LOG_DOCKER_TIMEOUT", "8"))  # seconds
+_LOG_SUMMARY_BYTES_CAP = 16000   # max bytes of log text ever sent to the LLM
+_LOG_ERR_RE = re.compile(r"\b(error|err|errno|fatal|fail(?:ed|ure)?|panic|exception|"
+                         r"traceback|critical|crit|warn(?:ing)?|denied|refused|timeout|"
+                         r"timed out|unable|cannot|could not|segfault|oom|killed)\b", re.I)
+
+
+def _resolve_container(name):
+    """Resolve a client-supplied container name/id to a KNOWN container id+name,
+    or (None, None) if it isn't in the live set. This is the injection gate: only
+    values that match a real container are ever handed to subprocess. Uses the
+    cached `containers()` enumeration (already a read-only Docker-socket call)."""
+    if not name or not _CT_NAME_RE.match(name):
+        return None, None
+    try:
+        live = containers()
+    except Exception:
+        return None, None
+    for ct in live:
+        if name == ct["name"] or name == ct["id"] or ct["id"].startswith(name):
+            return ct["id"], ct["name"]
+    return None, None
+
+
+def _parse_log_line(raw):
+    """Split a `docker logs --timestamps` line into {ts?, text}. Docker prefixes
+    each line with an RFC3339Nano timestamp + a space. The text is kept verbatim
+    (untrusted — the UI escapes it); we only peel the leading timestamp."""
+    m = re.match(r"^(\d{4}-\d\d-\d\dT[\d:.]+Z?(?:[+-]\d\d:?\d\d)?)\s(.*)$", raw, re.S)
+    if m:
+        return {"ts": m.group(1), "text": m.group(2)}
+    return {"text": raw}
+
+
+def _docker_logs_tail(cid, lines):
+    """Read the last `lines` log lines of a known container id via the docker CLI,
+    invoked as an ARGUMENT LIST (shell=False) so no client value is ever parsed
+    by a shell. Returns (lines_list, truncated, error_code). error_code is one of
+    None | 'docker_missing' | 'unreachable' | 'timeout'. Never raises.
+
+    `cid` MUST already be a resolved, known container id (see _resolve_container).
+    The `--` guards against any id that could look like a flag (defence in depth;
+    resolved ids are 12-hex). Output is decoded but NEVER logged server-side."""
+    docker = shutil.which("docker")
+    if not docker:
+        return [], False, "docker_missing"
+    args = [docker, "logs", "--tail", str(int(lines)), "--timestamps", "--", cid]
+    try:
+        p = subprocess.run(args, capture_output=True, shell=False,
+                           timeout=_LOG_DOCKER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return [], False, "timeout"
+    except (OSError, ValueError):
+        return [], False, "unreachable"
+    if p.returncode != 0:
+        # No such container / daemon down → treat as unreachable; don't leak stderr.
+        return [], False, "unreachable"
+    # docker logs interleaves stdout+stderr; merge then split. Decode tolerantly —
+    # log lines are untrusted bytes (control chars, partial UTF-8 all possible).
+    out = (p.stdout or b"") + (b"\n" if p.stdout and not p.stdout.endswith(b"\n") else b"")
+    text = out.decode("utf-8", "replace")
+    raw_lines = [ln for ln in text.split("\n")]
+    if raw_lines and raw_lines[-1] == "":
+        raw_lines.pop()
+    truncated = len(raw_lines) > lines
+    if truncated:
+        raw_lines = raw_lines[-lines:]
+    parsed = [_parse_log_line(ln) for ln in raw_lines]
+    return parsed, truncated, None
+
+
+@app.route("/api/logs/<container>")
+def api_logs_tail(container):
+    """Structured JSON tail of ONE container's recent logs. Always 200 with a
+    clean shape, or 404 for an unknown/invalid container — never 500, never a
+    shell-out for an unresolved name. Read-only.
+
+    Response: {ok, container, lines:[{ts?, text}], truncated, error?}"""
+    try:
+        n = int(request.args.get("lines", _LOG_LINES_DEFAULT))
+    except (TypeError, ValueError):
+        n = _LOG_LINES_DEFAULT
+    n = max(1, min(_LOG_LINES_CAP, n))
+    cid, cname = _resolve_container(container)
+    if not cid:
+        return jsonify({"ok": False, "container": container, "lines": [],
+                        "truncated": False, "error": "no_such_container"}), 404
+    lines, truncated, err = _docker_logs_tail(cid, n)
+    return jsonify({"ok": err is None, "container": cname, "lines": lines,
+                    "truncated": truncated, "error": err})
+
+
+def _error_lines(lines):
+    """Filter parsed log lines toward error/warn-looking ones. Falls back to the
+    raw tail when nothing matches the heuristic (so summarize is never starved of
+    context when logs are noisy-but-relevant)."""
+    hits = [l for l in lines if _LOG_ERR_RE.search(l.get("text", ""))]
+    return hits
+
+
+def _log_summary_prompt(cname, snippet):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab. The following are "
+        "recent ERROR and WARNING log lines from the container '" + cname + "'. "
+        "In 2-4 sentences of plain English (no markdown, no bullet points), say "
+        "what is going wrong and the most likely cause. Be concrete; if the lines "
+        "are benign or inconclusive, say so plainly. Do not invent details beyond "
+        "the logs.\n\nLOG LINES:\n" + snippet + "\n\nSUMMARY:")
+
+
+@app.route("/api/logs/<container>/summarize", methods=["POST"])
+def api_logs_summarize(container):
+    """One-click local-LLM triage of a container's recent error/warn logs.
+    Always 200 (or 404 for an unknown container). Graceful-degrades exactly like
+    the copilot: clear `llm_status` ('disabled'/'unreachable'/...) or a
+    'no_errors' state. The log text is sent ONLY to the on-box ollama via
+    _ollama_generate — never to any external service, never written to disk or
+    logged server-side."""
+    cid, cname = _resolve_container(container)
+    if not cid:
+        return jsonify({"ok": False, "container": container, "summary": "",
+                        "source": "none", "llm_status": "no_such_container"}), 404
+    # Pull a generous tail so the error filter has material, then narrow.
+    lines, _trunc, err = _docker_logs_tail(cid, _LOG_LINES_CAP)
+    out = {"ok": True, "container": cname, "model": COPILOT_MODEL,
+           "enabled": COPILOT_ENABLED}
+    if err is not None:
+        out.update({"summary": "", "source": "none", "llm_status": err,
+                    "error_lines": 0})
+        return jsonify(out)
+    errs = _error_lines(lines)
+    out["error_lines"] = len(errs)
+    if not errs:
+        out.update({"summary": "", "source": "none", "llm_status": "no_errors"})
+        return jsonify(out)
+    # Keep the most recent error lines, bounded by bytes sent to the LLM.
+    snippet, used = "", []
+    for l in reversed(errs):
+        piece = (l.get("text") or "").strip()
+        if not piece:
+            continue
+        if len(snippet) + len(piece) + 1 > _LOG_SUMMARY_BYTES_CAP:
+            break
+        used.append(piece)
+    used.reverse()
+    snippet = "\n".join(used)[:_LOG_SUMMARY_BYTES_CAP]
+    text, gerr = _ollama_generate(_log_summary_prompt(cname, snippet))
+    if text is not None:
+        out.update({"summary": text, "source": "llm", "llm_status": "ok"})
+    else:
+        out.update({"summary": "", "source": "none", "llm_status": gerr})
+    return jsonify(out)
+
 @app.route("/api/network")
 def api_network():
     """Host NIC throughput + per-container top talkers over a range (#30). Rates
