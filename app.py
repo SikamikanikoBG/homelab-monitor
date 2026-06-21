@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
+import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -7908,8 +7908,13 @@ def index():
     return app.send_static_file("dashboard.html")
 
 _seed_demo_data()    # no-op unless DEMO_MODE is on and the DB is fresh
-threading.Thread(target=collector, daemon=True).start()
-threading.Thread(target=host_poller, daemon=True).start()
+# Background loops write live samples into the shared DB. Under pytest this races
+# with tests that aggregate the recent window (e.g. the cost heatmap), injecting a
+# phantom "now" cell between a test's wipe and its request. Skip them when the test
+# runner is in control; production (python app.py / gunicorn) never imports pytest.
+if "pytest" not in sys.modules:
+    threading.Thread(target=collector, daemon=True).start()
+    threading.Thread(target=host_poller, daemon=True).start()
 
 if __name__ == "__main__":
     print(
