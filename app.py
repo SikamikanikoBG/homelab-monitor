@@ -49,6 +49,13 @@ PRESSURE_MB  = int(os.environ.get("PRESSURE_FREE_MB", "2048"))
 # the judgment-day demo. OFF by default; idempotent (guarded on a marker + row
 # counts) so it never clobbers real data and a real instance is wholly unaffected.
 DEMO_MODE     = os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+# Public read-only status page (E4) — Uptime-Kuma's shareable "is my lab up?"
+# surface. Served at GET /status (HTML) backed by GET /api/status (JSON). It is
+# strictly read-only and deliberately leaks no topology: only aggregated, public-
+# safe health (overall banner, per-subsystem up/down tiles, anonymized counts,
+# uptime, GPU busy/idle). ON by default — it exposes nothing sensitive — but can be
+# disabled with STATUS_PAGE=0 for operators who want zero unauthenticated surface.
+STATUS_PAGE   = os.environ.get("STATUS_PAGE", "1").strip().lower() not in ("0", "false", "no", "off")
 CHECK_UPDATES = os.environ.get("CHECK_UPDATES", "true").strip().lower() not in ("0", "false", "no", "off")
 # Per-host "a newer OS release exists" check. The probe reads pending *package*
 # updates offline; detecting a whole new distro release needs the network, so the
@@ -6558,6 +6565,116 @@ def build_mcp_status():
 def api_mcp_status():
     return jsonify(build_mcp_status())
 
+# ── Public read-only status page (E4) ────────────────────────────────────────
+# Uptime-Kuma's signature feature: a no-auth, shareable "is my lab up?" page.
+# Privacy is the hard requirement — this surface is unauthenticated, so it must
+# leak NOTHING about topology or operations. We therefore build the payload from
+# scratch (never pass through the rich /api/health/data dicts) and include ONLY
+# aggregated, public-safe signals: an overall banner, per-subsystem up/down
+# tiles, anonymized counts (N services monitored, N up), GPU busy/idle, and a
+# "last updated" timestamp. Explicitly EXCLUDED: hostnames, IPs, MAC/interfaces,
+# disk mountpoints/paths, OS/kernel, container/service names, models, costs,
+# webhook/secret/settings, MCP internals, processes, update channel. If a field
+# might leak, it isn't here.
+_STATUS_RANK = {"crit": 3, "warn": 2, "info": 1, "ok": 0}
+_STATUS_BANNER = {3: "down", 2: "degraded", 1: "operational", 0: "operational"}
+
+def build_public_status():
+    """Aggregate, privacy-safe health snapshot for the public /status page.
+    Read-only; derives from the same cached signals the Overview tab uses but
+    emits only non-sensitive, anonymized fields. Never raises (returns a safe
+    'unknown' shape if a subsystem is still warming up)."""
+    now = int(time.time())
+    gpu_avail = LATEST.get("gpu_avail")
+    snap = {"gpu": {"util": LATEST.get("util") or 0,
+                    "mem_used": LATEST.get("mem_used") or 0,
+                    "mem_total": (LATEST.get("mem_total") or 24576) if gpu_avail else 0,
+                    "temp": LATEST.get("temp") or 0,
+                    "available": bool(gpu_avail)},
+            "host": LATEST.get("host") or {}}
+    docker  = HEALTH["docker"]  or {"available": False, "containers": [],
+                                    "summary": {"total": 0, "running": 0, "problems": 0}}
+    systemd = HEALTH["systemd"] or {"available": False, "services": [], "summary": {}}
+    cards = build_overview(snap, docker, systemd)   # reuses the same status logic
+
+    # Per-subsystem tiles — keep ONLY the safe label + status + a coarse,
+    # anonymized count summary. Drop the human-readable `metric`/`detail` strings
+    # from build_overview (they carry CPU%/disk%/RAM% specifics we don't publish).
+    tiles, worst = [], 0
+    for c in cards:
+        key, st = c.get("key"), c.get("status") or "info"
+        worst = max(worst, _STATUS_RANK.get(st, 0))
+        tile = {"key": key, "status": st}
+        if key == "containers" and docker.get("available"):
+            s = docker["summary"]
+            tile["up"] = int(s.get("running", 0))
+            tile["total"] = int(s.get("total", 0))
+            tile["problems"] = int(s.get("problems", 0))
+        elif key == "services" and systemd.get("available"):
+            s = systemd["summary"]
+            tile["up"] = int(s.get("running", 0))
+            tile["failed"] = int(s.get("failed", 0))
+        elif key == "gpu":
+            tile["busy"] = bool((snap["gpu"]["util"] or 0) >= 5)
+        tiles.append(tile)
+
+    # Headline counts — anonymized aggregates only (no names, no identities).
+    n_services = sum(1 for _ in (systemd.get("services") or [])) if systemd.get("available") else 0
+    n_containers = int((docker.get("summary") or {}).get("total", 0)) if docker.get("available") else 0
+    n_problems = (int((docker.get("summary") or {}).get("problems", 0)) if docker.get("available") else 0) \
+                 + (int((systemd.get("summary") or {}).get("failed", 0)) if systemd.get("available") else 0)
+
+    # Is any anomaly currently firing? (boolean only — no series/values exposed.)
+    anomaly_active = False
+    try:
+        with LOCK:
+            anom = _zscore_anomalies(DB.cursor(), now)
+        anomaly_active = bool(anom.get("items"))
+        if anomaly_active and worst < 2:
+            worst = 2   # an active anomaly degrades the banner
+    except Exception:
+        pass
+
+    gpu = snap["gpu"]
+    gpu_pub = {"available": gpu["available"]}
+    if gpu["available"]:
+        gpu_pub["busy"] = bool((gpu["util"] or 0) >= 5)
+        gpu_pub["util_pct"] = round(gpu["util"] or 0)
+
+    return {
+        "status": _STATUS_BANNER.get(worst, "operational"),
+        "updated": HEALTH["at"] or now,
+        "now": now,
+        "demo": DEMO_MODE,
+        "tiles": tiles,
+        "gpu": gpu_pub,
+        "anomaly_active": anomaly_active,
+        "counts": {"services": n_services, "containers": n_containers,
+                   "monitored": n_services + n_containers, "problems": n_problems},
+    }
+
+@app.route("/api/status")
+def api_status():
+    """Public read-only JSON behind the /status page. Aggregated, non-sensitive."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        return jsonify(build_public_status())
+    except Exception as e:
+        print("status error:", e, flush=True)
+        return jsonify({"status": "operational", "updated": int(time.time()),
+                        "now": int(time.time()), "demo": DEMO_MODE, "tiles": [],
+                        "gpu": {"available": False}, "anomaly_active": False,
+                        "counts": {"services": 0, "containers": 0,
+                                   "monitored": 0, "problems": 0}})
+
+@app.route("/status")
+def status_page():
+    """Unauthenticated, self-contained public status page (HTML)."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    return app.send_static_file("status.html")
+
 @app.route("/api/health")
 def api_health():
     """Current state of the status monitors (Docker + systemd) plus a light GPU/host
@@ -6580,7 +6697,7 @@ def api_health():
     # env flag takes effect on restart without waiting for the update cache.
     update["self_update_enabled"] = ALLOW_SELF_UPDATE
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
-                    "demo": DEMO_MODE,
+                    "demo": DEMO_MODE, "status_page": STATUS_PAGE,
                     "docker": docker, "systemd": systemd, "update": update,
                     "processes": HEALTH["processes"],
                     "os_updates": os_updates_summary(),

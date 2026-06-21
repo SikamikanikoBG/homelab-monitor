@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lab status · HomeLab Monitor</title>
+<meta name="description" content="Public read-only health of the lab.">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="alternate icon" href="/favicon.ico">
+<style>
+/* ── Design tokens — mirrored from dashboard.html so the page is on-brand ── */
+:root{--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code",Menlo,Consolas,monospace}
+:root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
+--canvas:#0a0e14;--inset:#0d1117;--hover:#161b22;--sel:#1c232e;--sb:#0b0f15;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--okbd:#3fb95055;--warnbd:#d2992255;--critbd:#f8514955}
+[data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
+--crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
+--canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--okbd:#1a7f3755;--warnbd:#9a670055;--critbd:#cf222e55}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:
+  radial-gradient(1200px 480px at 50% -10%, color-mix(in srgb,var(--accent) 9%, transparent), transparent 70%),
+  var(--bg);
+  color:var(--tx);font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+.wrap{max-width:880px;margin:0 auto;padding:26px 18px 64px}
+/* header */
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;letter-spacing:.2px}
+.brand img{width:26px;height:26px;display:block}
+.brand .sub{color:var(--mut);font-weight:500}
+.top .spacer{flex:1}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--bd);
+  border-radius:9px;background:var(--card);color:var(--mut);cursor:pointer;transition:border-color .15s,color .15s,transform .12s}
+.iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+.iconbtn:active{transform:scale(.94)}
+.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.linkbtn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border:1px solid var(--bd);border-radius:9px;
+  background:var(--card);color:var(--tx);font-size:13px;font-weight:600;transition:border-color .15s,color .15s}
+.linkbtn:hover{border-color:var(--accent);color:var(--accent)}
+.demo-pill{display:none;align-items:center;gap:6px;height:24px;padding:0 9px;border:1px solid var(--accent);border-radius:999px;
+  background:var(--warnbg);color:var(--accent);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+body.demo .demo-pill{display:inline-flex}
+/* hero banner */
+.hero{margin:26px 0 6px;border:1px solid var(--bd);border-radius:18px;background:var(--card);position:relative;overflow:hidden;
+  padding:30px 28px;display:flex;align-items:center;gap:22px;box-shadow:0 1px 2px #0000000f}
+.hero::before{content:"";position:absolute;inset:0 auto 0 0;width:5px;background:var(--mut)}
+.hero.ok::before{background:var(--ok)}.hero.degraded::before{background:var(--warn)}.hero.down::before{background:var(--crit)}
+.hero .orb{flex:none;width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative}
+.hero .orb .core{width:18px;height:18px;border-radius:50%;background:var(--mut);position:relative;z-index:2}
+.hero.ok .orb .core{background:var(--ok)}.hero.degraded .orb .core{background:var(--warn)}.hero.down .orb .core{background:var(--crit)}
+.hero .orb .ring{position:absolute;inset:0;border-radius:50%;background:currentColor;opacity:.18;animation:pulse 2.4s ease-out infinite}
+.hero.ok .orb{color:var(--ok)}.hero.degraded .orb{color:var(--warn)}.hero.down .orb{color:var(--crit)}
+@keyframes pulse{0%{transform:scale(.4);opacity:.42}80%,100%{transform:scale(1);opacity:0}}
+.hero .htxt{min-width:0}
+.hero h1{margin:0;font-size:23px;font-weight:700;letter-spacing:-.2px}
+.hero .hsub{margin-top:4px;color:var(--mut);font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hero .dot{width:7px;height:7px;border-radius:50%;background:var(--mut);display:inline-block}
+.hero .dot.ok{background:var(--ok)}.hero .dot.warn{background:var(--warn)}.hero .dot.crit{background:var(--crit)}
+/* KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+.kpi{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:15px 16px}
+.kpi .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.kpi .v small{font-size:14px;color:var(--mut);font-weight:600}
+.kpi .l{margin-top:4px;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.kpi.busy .v{color:var(--ok)}.kpi.idle .v{color:var(--mut)}
+.kpi.bad .v{color:var(--crit)}
+/* tiles */
+.sect{margin:24px 0 10px;color:var(--mut);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
+.tile{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:15px 16px;position:relative;overflow:hidden;
+  transition:border-color .15s,transform .12s}
+.tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--mut)}
+.tile.ok::before{background:var(--ok)}.tile.warn::before{background:var(--warn)}.tile.crit::before{background:var(--crit)}.tile.info::before{background:var(--bd)}
+.tile:hover{border-color:var(--mut);transform:translateY(-1px)}
+.tile .th{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.tile .tname{font-weight:700;font-size:14.5px}
+.tile .badge{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;border:1px solid var(--bd);white-space:nowrap}
+.tile .badge.ok{color:var(--ok);border-color:var(--okbd);background:var(--okbg)}
+.tile .badge.warn{color:var(--warn);border-color:var(--warnbd);background:var(--warnbg)}
+.tile .badge.crit{color:var(--crit);border-color:var(--critbd);background:var(--critbg)}
+.tile .badge.info{color:var(--mut)}
+.tile .tdetail{margin-top:9px;color:var(--mut);font-size:13px;font-variant-numeric:tabular-nums}
+.tile .tdetail b{color:var(--tx);font-weight:700}
+/* footer */
+.foot{margin-top:30px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12.5px}
+.foot .spacer{flex:1}
+.foot .auto{display:inline-flex;align-items:center;gap:6px}
+.foot .auto .ld{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.skel{position:relative;overflow:hidden;color:transparent!important;border-radius:8px}
+.skel::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--hover),transparent);
+  background-size:200% 100%;animation:sh 1.3s infinite}
+@keyframes sh{to{background-position:-200% 0}}
+.offline{display:none;margin:18px 0;padding:11px 14px;border:1px solid var(--critbd);background:var(--critbg);color:var(--crit);
+  border-radius:11px;font-size:13.5px;font-weight:600}
+body.offline-state .offline{display:block}
+/* responsive */
+@media(max-width:640px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .hero{padding:24px 20px;gap:16px}
+  .hero .orb{width:54px;height:54px}.hero h1{font-size:20px}
+  .brand .sub{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  .hero .orb .ring,.foot .auto .ld,.skel::after{animation:none!important}
+  .tile,.iconbtn{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <a class="brand" href="/" data-i18n-aria="status.dashboard" aria-label="Open dashboard">
+      <img src="/static/logo.svg" alt="">
+      <span>HomeLab Monitor</span><span class="sub" data-i18n="status.title">Lab status</span>
+    </a>
+    <span class="demo-pill" data-i18n="status.demo" title="Demo data">Demo data</span>
+    <span class="spacer"></span>
+    <a class="linkbtn" href="/" data-i18n="status.dashboard" data-i18n-title="status.dashboard">Open dashboard</a>
+    <button class="iconbtn" id="themeBtn" type="button" data-i18n-aria="status.theme" data-i18n-title="status.theme" aria-label="Toggle theme">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path id="themeIcon" d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+    </button>
+  </div>
+
+  <div class="offline" role="alert" data-i18n="status.offline">Status unavailable — retrying…</div>
+
+  <section class="hero" id="hero" aria-live="polite">
+    <div class="orb"><span class="ring"></span><span class="core"></span></div>
+    <div class="htxt">
+      <h1 id="bannerText" class="skel">All systems operational</h1>
+      <div class="hsub" id="bannerSub"><span class="skel">Last updated just now</span></div>
+    </div>
+  </section>
+
+  <div class="kpis" id="kpis" aria-label="Headline stats"></div>
+
+  <div class="sect" data-i18n="status.title">Lab status</div>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="foot">
+    <span class="auto"><span class="ld"></span><span data-i18n="status.auto">Auto-refreshing</span></span>
+    <span class="spacer"></span>
+    <span><a href="/" data-i18n="status.powered">Powered by HomeLab Monitor</a></span>
+  </div>
+</div>
+
+<script>
+/* ── Minimal self-contained i18n (reuses dashboard's /locales/<code>.json) ── */
+const I18N = {
+  locale:'en', dict:{},
+  t(k,f){ const v=this.dict[k]; return (v!=null&&v!=='')?v:(f!=null?f:k); },
+  tf(k,f,vars){ let s=this.t(k,f); if(vars)for(const n in vars)s=s.split('{'+n+'}').join(vars[n]); return s; },
+  async init(){
+    const code = localStorage.getItem('hl_lang') || 'en';
+    if(code && code!=='en'){
+      try{ this.dict = await (await fetch('/locales/'+code+'.json',{cache:'no-cache'})).json(); this.locale=code; }
+      catch(e){ this.dict={}; }
+    }
+    document.documentElement.lang = this.locale;
+    document.documentElement.dir = (this.dict._meta&&this.dict._meta.dir) || 'ltr';
+    this.hydrate();
+  },
+  hydrate(){
+    document.querySelectorAll('[data-i18n]').forEach(el=>{ el.textContent = this.t(el.getAttribute('data-i18n'), el.textContent); });
+    document.querySelectorAll('[data-i18n-title]').forEach(el=>{ el.title = this.t(el.getAttribute('data-i18n-title')); });
+    document.querySelectorAll('[data-i18n-aria]').forEach(el=>{ el.setAttribute('aria-label', this.t(el.getAttribute('data-i18n-aria'))); });
+  }
+};
+
+/* ── Theme (system / dark / light), shared with the dashboard's hl_theme ── */
+const THEMES=['system','dark','light'];
+function applyTheme(t){
+  if(t==='system'){
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark?'dark':'light');
+  } else document.documentElement.setAttribute('data-theme', t);
+}
+let theme = localStorage.getItem('hl_theme') || 'system';
+applyTheme(theme);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{ if(theme==='system') applyTheme('system'); });
+document.getElementById('themeBtn').addEventListener('click',()=>{
+  theme = THEMES[(THEMES.indexOf(theme)+1)%THEMES.length];
+  localStorage.setItem('hl_theme', theme); applyTheme(theme);
+});
+
+/* ── Helpers ── */
+function ago(sec){
+  if(sec<5) return I18N.t('status.ago.now','just now');
+  if(sec<60) return I18N.tf('status.ago.sec','{n}s ago',{n:sec});
+  if(sec<3600) return I18N.tf('status.ago.min','{n}m ago',{n:Math.floor(sec/60)});
+  return I18N.tf('status.ago.hour','{n}h ago',{n:Math.floor(sec/3600)});
+}
+const TILE_NAME={gpu:'status.tile.gpu',host:'status.tile.host',containers:'status.tile.containers',services:'status.tile.services'};
+const STATE_LBL={ok:'status.state.ok',warn:'status.state.warn',crit:'status.state.crit',info:'status.state.info'};
+
+/* ── Render ── */
+let lastData=null;
+function render(d){
+  lastData=d;
+  document.body.classList.toggle('demo', !!d.demo);
+  document.body.classList.remove('offline-state');
+
+  // hero banner
+  const map={operational:'ok',degraded:'degraded',down:'down'};
+  const cls = map[d.status]||'ok';
+  const hero=document.getElementById('hero');
+  hero.className='hero '+cls;
+  const bt=document.getElementById('bannerText');
+  bt.classList.remove('skel');
+  bt.textContent=I18N.t('status.banner.'+d.status, d.status);
+
+  // sub line: anomaly chip + last-updated
+  const sub=document.getElementById('bannerSub');
+  const aSt = d.anomaly_active?'crit':'ok';
+  const aTx = d.anomaly_active?I18N.t('status.anomaly.active'):I18N.t('status.anomaly.clear');
+  sub.innerHTML='';
+  const a=document.createElement('span'); a.innerHTML='<span class="dot '+aSt+'"></span>'+esc(aTx); sub.appendChild(a);
+  const sep=document.createElement('span'); sep.textContent='·'; sep.style.opacity='.5'; sub.appendChild(sep);
+  const u=document.createElement('span'); u.id='updatedLine';
+  const age=Math.max(0, (d.now||Math.floor(Date.now()/1000)) - (d.updated||0));
+  u.textContent=I18N.tf('status.updated','Last updated {ago}',{ago:ago(age)}); sub.appendChild(u);
+
+  // KPIs
+  const c=d.counts||{}; const kp=document.getElementById('kpis'); kp.innerHTML='';
+  kp.appendChild(kpi(c.monitored||0,'',I18N.t('status.metric.monitored'),''));
+  const up=(c.services||0)+ (c.containers||0) - (c.problems||0);
+  kp.appendChild(kpi(Math.max(0,up),'',I18N.t('status.metric.up'),''));
+  kp.appendChild(kpi(c.problems||0,'',I18N.t('status.metric.problems'),(c.problems||0)>0?'bad':''));
+  const g=d.gpu||{};
+  let gv,gl,gc;
+  if(!g.available){ gv=I18N.t('status.gpu.unavailable','No GPU'); gl=I18N.t('status.metric.gpu'); gc='idle'; }
+  else if(g.busy){ gv=I18N.t('status.gpu.busy','Busy'); gl=I18N.t('status.metric.gpu'); gc='busy'; }
+  else { gv=I18N.t('status.gpu.idle','Idle'); gl=I18N.t('status.metric.gpu'); gc='idle'; }
+  kp.appendChild(kpi(gv,'',gl,gc));
+
+  // tiles
+  const tl=document.getElementById('tiles'); tl.innerHTML='';
+  (d.tiles||[]).forEach(t=>tl.appendChild(tile(t)));
+}
+function kpi(v,suffix,label,cls){
+  const el=document.createElement('div'); el.className='kpi '+(cls||'');
+  el.innerHTML='<div class="v">'+esc(String(v))+(suffix?'<small> '+esc(suffix)+'</small>':'')+'</div><div class="l">'+esc(label)+'</div>';
+  return el;
+}
+function tile(t){
+  const el=document.createElement('div'); el.className='tile '+(t.status||'info');
+  const name=I18N.t(TILE_NAME[t.key]||t.key, t.key);
+  const st=t.status||'info';
+  let detail='';
+  if(t.key==='containers' && t.total!=null) detail=I18N.tf('status.up_of','{up} / {total} up',{up:'<b>'+(t.up||0)+'</b>',total:t.total});
+  else if(t.key==='services' && t.up!=null) detail='<b>'+t.up+'</b> '+I18N.t('status.metric.up','Up').toLowerCase();
+  else if(t.key==='gpu') detail=t.busy?I18N.t('status.gpu.busy'):I18N.t('status.gpu.idle');
+  el.innerHTML='<div class="th"><span class="tname">'+esc(name)+'</span>'+
+    '<span class="badge '+st+'">'+esc(I18N.t(STATE_LBL[st]||'status.state.info'))+'</span></div>'+
+    (detail?'<div class="tdetail">'+detail+'</div>':'');
+  return el;
+}
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ── Fetch + auto-refresh ── */
+let timer=null;
+async function load(){
+  try{
+    const r=await fetch('/api/status',{cache:'no-cache'});
+    if(!r.ok) throw new Error('http '+r.status);
+    render(await r.json());
+  }catch(e){
+    document.body.classList.add('offline-state');
+  }
+}
+/* tick the "last updated" label every second without re-fetching */
+setInterval(()=>{
+  if(!lastData) return;
+  const u=document.getElementById('updatedLine'); if(!u) return;
+  const age=Math.max(0, Math.floor(Date.now()/1000) - (lastData.updated||0));
+  u.textContent=I18N.tf('status.updated','Last updated {ago}',{ago:ago(age)});
+},1000);
+
+(async()=>{
+  await I18N.init();
+  await load();
+  timer=setInterval(load, 20000);
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) load(); });
+})();
+</script>
+</body></html>
