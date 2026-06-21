@@ -274,8 +274,7 @@ function tile(t){
 // State rank (0..3, -1=no data) → cell class + i18n state label.
 const HB_CLS=['ok','warn','warn','crit'];
 const HB_LBL=['status.state.ok','status.state.warn','status.state.warn','status.state.crit'];
-function hbWhen(t){ const a=Math.max(0,Math.floor(Date.now()/1000)-t); if(a<3600) return ago(a);
-  return I18N.tf('status.ago.hour','{n}h ago',{n:Math.floor(a/3600)}); }
+function hbWhen(t){ return ago(Math.max(0,Math.floor(Date.now()/1000)-t)); }
 function heartbeat(h){
   const wrap=document.createElement('div'); wrap.className='hb';
   const cells=h.cells||[]; const total=h.total||0;

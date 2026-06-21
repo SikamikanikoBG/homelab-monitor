@@ -6889,6 +6889,59 @@ document.getElementById('logdrawer-summarize').onclick=summarizeLogs;
 document.getElementById('logdrawer-summary-close').onclick=hideLogSummary;
 document.addEventListener('keydown', e=>{ if(e.key==='Escape' && !document.getElementById('logdrawer').hidden) closeLogDrawer(); });
 
+// ── "What's broken?" quick-triage ─────────────────────────────────────────────
+// Orchestration only — no new fetch/render logic. Picks the worst container from
+// the live state the dashboard already holds (HH.docker.containers; fields name,
+// state, status crit|warn|ok|info, label), opens its log drawer (openLogDrawer)
+// and auto-fires the existing summarize path (summarizeLogs). All-healthy is a
+// graceful toast, never a random drawer. Container name flows through esc().
+//
+// Worst = highest "badness": down/exited-unexpectedly > unhealthy/restarting >
+// crit > warn. We score off the same fields the Containers table renders, so the
+// pick always matches what a human would point at. Tiebreak: alphabetical name
+// (the same stable order the backend already sorts containers by).
+function _worstContainer(){
+  const cs=(HH && HH.docker && HH.docker.containers) || [];
+  // Badness score: bigger is worse. status is the coarse band (crit/warn); the
+  // human label refines it (dead/exited/unhealthy are the truly-broken ones).
+  const score=c=>{
+    const st=(c.status||'').toLowerCase(), lbl=(c.label||'').toLowerCase(), state=(c.state||'').toLowerCase();
+    if(st==='crit'){
+      if(state==='dead' || lbl==='dead') return 100;          // down hard
+      if(state==='exited' || lbl.startsWith('exited')) return 95; // exited non-zero
+      if(lbl==='unhealthy') return 90;                         // running but failing health
+      return 85;                                               // any other crit
+    }
+    if(st==='warn'){
+      if(state==='restarting' || lbl==='restarting') return 50; // crash-looping
+      if(lbl==='starting') return 40;
+      return 35;                                               // paused / other warn
+    }
+    return 0;                                                  // ok / info (stopped on purpose) = healthy
+  };
+  let best=null, bestScore=0;
+  cs.forEach(c=>{ const s=score(c); if(s>bestScore){ bestScore=s; best=c; } });
+  return best;   // null when nothing is broken
+}
+// One keystroke: resolve worst container → open its drawer → auto-summarize.
+function triageWorstContainer(){
+  if(CURRENT_HOST!=='local'){
+    // Container state + log drawer are local-only; steer there gracefully.
+    toast('info', I18N.t('cmdk.triage_local_only','Container triage is available on the local host — switch to Local to triage.'));
+    return;
+  }
+  const worst=_worstContainer();
+  if(!worst){
+    toast('ok', I18N.t('cmdk.triage_all_healthy','All containers healthy — nothing to triage.'));
+    return;
+  }
+  openLogDrawer(worst.name);   // existing drawer opener (focus + aria-live live in it)
+  // Fire the existing summarize path. rAF lets the drawer paint first; summarizeLogs
+  // reads logs server-side independent of the live stream, and degrades on its own
+  // if the local LLM is unreachable.
+  requestAnimationFrame(()=>{ try{ summarizeLogs(); }catch(e){} });
+}
+
 // ── Command palette (⌘K / Ctrl-K) ────────────────────────────────────────────
 // Linear/Raycast-style fast-nav. Pure frontend: every command wires to a function
 // that already exists in this file. Fuzzy ranking (prefix > word-start > subsequence),
@@ -6926,6 +6979,20 @@ function _cmdkBuild(){
   list.push({ id:'act:digest', group:G_ACT, icon:'🧠',
     label:I18N.t('cmdk.digest','Refresh Copilot digest'), keywords:'ai summary regenerate llm',
     run:()=>{ showTab('overview'); if(typeof loadCopilot==='function') loadCopilot(true); } });
+  // "What's broken?" — triage the worst container: open its log drawer + auto-fire
+  // the local-LLM "Summarize errors". Sublabel previews the pick (name · state) when
+  // known, or "All healthy" when nothing's wrong — read straight from live state.
+  {
+    const w=(typeof _worstContainer==='function')?_worstContainer():null;
+    const sub = (CURRENT_HOST!=='local') ? ''
+      : (w ? I18N.tf('cmdk.triage_sub','{name} · {state}',{name:w.name, state:(w.label||w.state||'')})
+           : I18N.t('cmdk.triage_sub_ok','All healthy'));
+    list.push({ id:'act:triage', group:G_ACT, icon:'🚑',
+      label:I18N.t('cmdk.triage',"What's broken? — triage worst container"),
+      sub,
+      keywords:'broken triage worst container down unhealthy crash error logs summarize ai fix problem incident',
+      run:()=>{ if(typeof triageWorstContainer==='function') triageWorstContainer(); } });
+  }
   list.push({ id:'act:incidents', group:G_ACT, icon:'🛟',
     label:I18N.t('cmdk.incidents','Open Incidents'), keywords:'anomaly events alerts problems',
     run:()=>{ showTab('gpu'); if(typeof loadIncidents==='function') loadIncidents(true);
