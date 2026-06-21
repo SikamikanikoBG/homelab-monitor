@@ -1,0 +1,46 @@
+# Throwaway TEST deployment of the Mission-Control Overview redesign
+# (branch feat/overview-mission-control), built FROM SOURCE on the hub (ardi)
+# as a THIRD instance alongside prod (:9800) and next (:9801), on its own
+# ports + data dir so nothing collides:
+#
+#   prod : :9800 · MCP :9810 · ./data        (docker-compose.yml, published image)
+#   next : :9801 · MCP :9811 · ./data-next   (deploy/docker-compose.next.yml, :next image)
+#   mc   : :9805 · MCP :9815 · ./data-mc      (THIS file, built from the branch)
+#
+# Bring it up on ardi (from the synced repo root):
+#   docker compose -f deploy/docker-compose.mc.yml up -d --build
+# Then open http://ardi:9805 .  Tear down:  docker compose -f deploy/docker-compose.mc.yml down
+#
+# Deliberately NO watchtower enable label — this is a manual test box, not auto-updated.
+
+services:
+  homelab-monitor-mc:
+    build:
+      context: ..            # repo root (this file lives in deploy/)
+      dockerfile: Dockerfile
+    image: homelab-monitor:mc
+    container_name: homelab-monitor-mc
+    restart: unless-stopped
+    # Same host-privileged shape as prod/next so behaviour is identical.
+    network_mode: host
+    pid: host
+    cgroup: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor=unconfined
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      PORT: "9805"               # test dashboard  -> http://ardi:9805
+      MCP_PORT: "9815"           # test MCP server -> http://ardi:9815/mcp
+      SAMPLE_INTERVAL: "10"
+      RETENTION_DAYS: "180"
+      PRESSURE_FREE_MB: "2048"
+      HOST_ROOT: "/rootfs"
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/rootfs:ro
+      - ../data-mc:/data                                 # separate history DB — never touches prod/next
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
