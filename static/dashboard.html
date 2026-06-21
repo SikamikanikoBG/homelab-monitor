@@ -136,6 +136,73 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .skel-line{height:11px;margin:8px 0}.skel-line.w70{width:70%}.skel-line.w90{width:90%}.skel-line.w40{width:40%}
 @keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
 @media(prefers-reduced-motion:reduce){.skel{animation:none}}
+
+/* ── Overview hero ─────────────────────────────────────────────────────────
+   The confident at-a-glance band at the top of Overview. One semantic state
+   (operational/degraded/down) drives the orb + accent, reusing --ok/--warn/
+   --crit so it matches the public /status banner, chips, incidents & anomalies. */
+.hero{--hue:var(--ok);--huebg:var(--okbg);position:relative;overflow:hidden;
+  padding:0;border:1px solid var(--bd);border-radius:14px;background:var(--card);margin:16px 0}
+.hero.degraded{--hue:var(--warn);--huebg:var(--warnbg)}
+.hero.down{--hue:var(--crit);--huebg:var(--critbg)}
+.hero-top{display:flex;align-items:center;gap:16px;padding:18px 20px;
+  background:radial-gradient(120% 140% at 0% 0%,var(--huebg),transparent 60%)}
+.hero-orb{position:relative;flex:none;width:46px;height:46px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center}
+.hero-orb .core{width:18px;height:18px;border-radius:50%;background:var(--hue);
+  box-shadow:0 0 0 5px color-mix(in srgb,var(--hue) 22%,transparent)}
+.hero-orb::after{content:'';position:absolute;inset:0;border-radius:50%;border:2px solid var(--hue);
+  opacity:.5;animation:hero-ping 2.6s ease-out infinite}
+.hero.down .hero-orb::after{animation-duration:1.6s}
+@keyframes hero-ping{0%{transform:scale(.7);opacity:.55}70%,100%{transform:scale(1.25);opacity:0}}
+@media(prefers-reduced-motion:reduce){.hero-orb::after{animation:none;opacity:.4}}
+.hero-headline{min-width:0;flex:1}
+.hero-headline h2{font-size:19px;font-weight:700;letter-spacing:-.01em;text-transform:none;
+  color:var(--tx);margin:0 0 3px}
+.hero-headline .hsub{color:var(--mut);font-size:13px;line-height:1.45}
+.hero-status-chip{flex:none;align-self:flex-start}
+.hero-status-chip.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.hero-status-chip.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.hero-status-chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+/* KPI strip — tabular, calm, evenly divided */
+.hero-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  border-top:1px solid var(--bd)}
+.hero-kpi{padding:13px 18px;border-left:1px solid var(--bd);min-width:0}
+.hero-kpi:first-child{border-left:0}
+.hero-kpi .v{font-size:21px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums;
+  display:flex;align-items:baseline;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hero-kpi .v .u{font-size:12px;font-weight:600;color:var(--mut)}
+.hero-kpi .v.ok{color:var(--ok)}.hero-kpi .v.warn{color:var(--warn)}.hero-kpi .v.crit{color:var(--crit)}
+.hero-kpi .l{color:var(--mut);font-size:11.5px;margin-top:3px;text-transform:uppercase;letter-spacing:.03em}
+.hero-kpi .s{color:var(--mut);font-size:11.5px;margin-top:2px;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* footer row: incident chip / all-clear + optional teaser */
+.hero-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:12px 18px;border-top:1px solid var(--bd);background:var(--inset)}
+.hero-foot .teaser{color:var(--mut);font-size:13px;min-width:0;flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-inc{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+  padding:5px 12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);
+  color:var(--mut);cursor:default;line-height:1.3;transition:border-color .14s ease,background .14s ease,transform .14s ease}
+.hero-inc .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
+.hero-inc.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--bd))}
+.hero-inc.live{cursor:pointer}
+.hero-inc.live.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.hero-inc.live.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.hero-inc.live:hover{transform:translateY(-1px);filter:brightness(1.05)}
+.hero-inc.live:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+.hero-inc.live.crit .dot{animation:hero-blink 1.4s steps(2,start) infinite}
+@keyframes hero-blink{50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.hero-inc.live.crit .dot{animation:none}}
+.hero-skel{padding:18px 20px}
+@media(max-width:640px){
+  .hero-top{padding:15px 16px;gap:12px}
+  .hero-orb{width:38px;height:38px}
+  .hero-headline h2{font-size:17px}
+  .hero-kpi{padding:11px 14px}
+  .hero-kpi:nth-child(odd){border-left:0}
+  .hero-foot{padding:11px 14px}
+}
 /* ── Incidents ─────────────────────────────────────────────────────────────
    A correlated incident reads as ONE event: a left severity rail, a header
    row (severity + state + relative time + active/total), and member chips. */
@@ -1035,8 +1102,28 @@ h2 .hic{ opacity:.9 }
 
 <!-- ───────── Overview = All hosts (fleet table) ───────── -->
 <section data-tab="overview">
+  <!-- Premium Overview hero: one-glance lab state, KPI strip, live incident chip.
+       Status signal mirrors the public /status banner (operational/degraded/down). -->
+  <section class="hero" id="hero" aria-label="Lab status overview" hidden>
+    <div class="hero-top">
+      <div class="hero-orb" id="hero-orb" aria-hidden="true"><span class="core"></span></div>
+      <div class="hero-headline">
+        <h2 id="hero-title">—</h2>
+        <div class="hsub" id="hero-sub"></div>
+      </div>
+      <span class="chip hero-status-chip" id="hero-chip" role="status"></span>
+    </div>
+    <div class="hero-kpis" id="hero-kpis"></div>
+    <div class="hero-foot" id="hero-foot">
+      <button type="button" class="hero-inc" id="hero-inc"><span class="dot"></span><span id="hero-inc-txt"></span></button>
+      <span class="teaser" id="hero-teaser"></span>
+    </div>
+  </section>
   <div class="card" id="ai-band" hidden>
-    <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
+    <div class="card-h">
+      <h2 data-i18n="aiband.title">🧠 AI workload</h2>
+      <span class="ch-meta" id="ai-band-sub"></span>
+    </div>
     <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
     <div class="grid" id="ai-band-kpis"></div>
     <p class="cap" id="ai-band-cap"></p>
@@ -2271,7 +2358,7 @@ function showTab(id){
     if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
     else renderLocalOnlyNotice(id);
   }
-  if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); }
+  if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadHero(); }
   if(id==='gpu'){ loadForecast(); loadIncidents(); }   // refresh Anomalies + Incidents on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -2365,6 +2452,7 @@ function renderData(){
   // AI models — expandable rows + per-model VRAM timeline (see renderModels)
   renderModels();
   renderAiBand();   // overview hero refreshes when new /api/data lands (guarded to that tab)
+  renderHero();     // hero KPI strip reuses fresh /api/data (cost/GPU) — guarded to overview
 
   // Host KPIs + disks — only when local is the active host. Otherwise
   // renderHostTab() owns these panels with the remote's polled data.
@@ -2726,6 +2814,7 @@ function renderHealth(){
   setVer(HH.version);
   renderTopProcs();   // mini-htop card refreshes on every health poll (issue #32)
   renderAiBand();     // overview AI band uses fresh GPU/throttle data from /api/health
+  renderHero();       // hero status/KPIs refresh on every health poll (guarded to overview)
   if(TAB==='experiments') renderExperiments(false);   // throttled live refresh of training cards
   if(TAB==='costs') renderCosts(false);               // throttled live refresh of the costs page
 
@@ -4206,6 +4295,137 @@ function paintAiBand(g,x,loaded,serving){
     : I18N.t('aiband.cap_nogpu','No GPU detected on the hub — showing model servers only.');
 }
 
+// ── Overview hero ─────────────────────────────────────────────────────────────
+// One confident at-a-glance band. The overall state mirrors the public /status
+// banner (operational/degraded/down) so the cockpit and the shareable status page
+// always agree. KPIs and the incident chip are surfaced from data the page already
+// holds — /api/status (counts + signal), /api/health (live GPU), /api/forecast
+// (cost projection + disk-fill ETA + incidents.open). No new backend behaviour.
+let HERO_STATUS=null, HERO_STATUS_AT=0;
+async function loadHero(force){
+  // hero is local-hub only (its forecast/incident signals live on the hub's DB)
+  if(CURRENT_HOST!=='local'){ const h=document.getElementById('hero'); if(h) h.hidden=true; return; }
+  loadForecast();   // refresh cost/disk/incident summary (own 60s cache; cheap)
+  if(force || !HERO_STATUS || Date.now()-HERO_STATUS_AT > 20000){
+    try{ HERO_STATUS=await(await fetch('/api/status',{cache:'no-cache'})).json(); HERO_STATUS_AT=Date.now(); }
+    catch(e){ /* keep last known; renderHero degrades gracefully */ }
+  }
+  renderHero();
+}
+function _heroKpi(v, unit, label, sub, tone){
+  return `<div class="hero-kpi"><div class="v${tone?' '+tone:''}">${esc(v)}`
+    +(unit?`<span class="u">${esc(unit)}</span>`:'')+`</div>`
+    +`<div class="l">${esc(label)}</div>`
+    +(sub?`<div class="s">${esc(sub)}</div>`:'')+`</div>`;
+}
+function renderHero(){
+  const hero=document.getElementById('hero'); if(!hero) return;
+  if(TAB!=='overview') return;
+  if(CURRENT_HOST!=='local'){ hero.hidden=true; return; }
+  hero.hidden=false;
+  const s=HERO_STATUS||{}, fc=FORECAST||{};
+  const state=s.status||'operational';                 // operational | degraded | down
+  hero.classList.remove('degraded','down');
+  if(state==='degraded') hero.classList.add('degraded');
+  else if(state==='down') hero.classList.add('down');
+
+  // headline + status chip (shared semantic palette)
+  const titleEl=document.getElementById('hero-title');
+  const subEl=document.getElementById('hero-sub');
+  const chip=document.getElementById('hero-chip');
+  const headline={operational:I18N.t('hero.op_title','All systems operational'),
+                  degraded:I18N.t('hero.deg_title','Lab is degraded'),
+                  down:I18N.t('hero.down_title','Lab is down')}[state]||state;
+  const chipLbl={operational:I18N.t('hero.op','Operational'),
+                 degraded:I18N.t('hero.deg','Degraded'),
+                 down:I18N.t('hero.down','Down')}[state]||state;
+  titleEl.textContent=headline;
+  chip.className='chip hero-status-chip '+(state==='down'?'crit':state==='degraded'?'warn':'ok');
+  chip.innerHTML='<span class="dot"></span>'+esc(chipLbl);
+  const c=s.counts||{};
+  const upd = s.updated?I18N.tf('hero.updated','as of {t}',{t:relTime(s.updated)}):'';
+  const probTxt = (c.problems||0)>0
+    ? I18N.tf('hero.problems','{n} need attention',{n:c.problems})
+    : I18N.t('hero.all_healthy','everything healthy');
+  subEl.textContent=I18N.tf('hero.sub','{up} of {mon} monitored services up · {prob}{upd}',
+    {up:Math.max(0,(c.monitored||0)-(c.problems||0)), mon:c.monitored||0, prob:probTxt,
+     upd:upd?' · '+upd:''});
+
+  // KPI strip — only surface tiles we genuinely have data for
+  const g=(HH&&HH.now&&HH.now.gpu)||{};
+  const kpis=[];
+  if(g.available){
+    const util=Math.round(g.util||0);
+    const tone = util>=85?'warn':'';
+    kpis.push(_heroKpi(util,'%',I18N.t('hero.gpu_busy','GPU busy'),
+      util>=5?I18N.t('hero.gpu_active','active'):I18N.t('hero.gpu_idle','idle'),tone));
+    const pw=Math.round(g.power||0);
+    if(pw>0||g.power!=null) kpis.push(_heroKpi(pw,'W',I18N.t('hero.power','GPU power draw'),''));
+  }
+  const cm=fc.cost_month||{};
+  if(cm.enabled){
+    const cur=cm.currency||'$';
+    const dp=cm.delta_pct;
+    let sub='';
+    if(dp!=null && cm.last_month!=null) sub=(dp>0?'▲ ':(dp<0?'▼ ':''))+Math.abs(dp)+'% '+I18N.t('hero.vs_last','vs last month');
+    else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:cm.elapsed_days,t:cm.days_in_month});
+    kpis.push(_heroKpi(cur+(+cm.projected_month||0).toFixed(2),'',
+      I18N.t('hero.cost_proj','Projected cost'),sub));
+  }
+  // disk-fill ETA: surface the soonest filling mount (if any)
+  const disks=(fc.disk||[]).filter(d=>d.status==='filling'&&d.eta_days!=null);
+  if(disks.length){
+    disks.sort((a,b)=>a.eta_days-b.eta_days);
+    const d=disks[0], days=d.eta_days;
+    let v,u; if(days<1){v='<1';u=I18N.t('hero.day','day');}
+    else if(days<60){v=Math.round(days);u=I18N.t('hero.days','days');}
+    else {v=Math.round(days/30);u=I18N.t('hero.months','months');}
+    const tone=days<14?'crit':(days<60?'warn':'');
+    kpis.push(_heroKpi('~'+v,u,I18N.t('hero.disk_eta','Disk fills in'),esc(d.mount),tone));
+  } else if((fc.disk||[]).length){
+    kpis.push(_heroKpi('—','',I18N.t('hero.disk_eta','Disk fills in'),I18N.t('forecast.stable','stable')));
+  }
+  document.getElementById('hero-kpis').innerHTML = kpis.join('');
+
+  // active-incident chip — driven by /api/forecast incidents summary
+  const inc=fc.incidents||{open:0,top:null};
+  const open=inc.open||0;
+  const incBtn=document.getElementById('hero-inc');
+  const incTxt=document.getElementById('hero-inc-txt');
+  incBtn.classList.remove('ok','live','warn','crit');
+  if(open>0){
+    const crit=!!(inc.top&&inc.top.severity==='critical');
+    incBtn.classList.add('live', crit?'crit':'warn');
+    incTxt.textContent = open===1?I18N.t('hero.inc_one','1 active incident')
+                                 :I18N.tf('hero.inc_n','{n} active incidents',{n:open});
+    incBtn.setAttribute('aria-label', I18N.t('hero.inc_aria','Open the active incident'));
+  }else{
+    incBtn.classList.add('ok');
+    incTxt.textContent=I18N.t('hero.all_clear','All clear — no active incidents');
+    incBtn.removeAttribute('aria-label');
+  }
+
+  // optional one-line teaser: anomaly state, else the freshest copilot digest line
+  const teaser=document.getElementById('hero-teaser');
+  let tt='';
+  if(s.anomaly_active){ tt=I18N.t('hero.teaser_anom','An anomaly is currently firing — see Anomalies on the GPU tab.'); }
+  else if(typeof COPILOT_DIGEST_FIRST==='string' && COPILOT_DIGEST_FIRST){ tt=COPILOT_DIGEST_FIRST; }
+  teaser.textContent=tt;
+  teaser.hidden=!tt;
+}
+// hero incident chip → jump to the Incidents card on the GPU tab (reuse drawer flow)
+document.addEventListener('click',e=>{
+  const b=e.target.closest && e.target.closest('#hero-inc.live'); if(!b) return;
+  if(typeof showTab==='function') showTab('gpu'); else location.hash='#gpu';
+  loadIncidents(true);
+  setTimeout(()=>{ const c=document.getElementById('inc-card');
+    if(c && !c.hidden) c.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth', block:'start'}); }, 120);
+});
+document.addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ')){ const b=e.target.closest && e.target.closest('#hero-inc.live');
+    if(b){ e.preventDefault(); b.click(); } }
+});
+
 // ── Runs (pushed from notebooks / MLflow) — the primary Experiments view ──────
 // Source → colour dot (srcDot) and status → stroke icon+colour (stIcon) live in the
 // icon section; emoji maps replaced by the SVG status-icon family.
@@ -5119,7 +5339,7 @@ function closeIncidentDrawer(){
   });
 })();
 // ── Lab Copilot (E1): local-LLM digest + ask-box, all read-only ───────────────
-let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false;
+let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false, COPILOT_DIGEST_FIRST='';
 function _copilotStatusNote(s){
   // Map the backend's llm_status into a clear, honest one-liner.
   const m = {
@@ -5146,6 +5366,12 @@ function renderCopilot(){
   _copilotChip(j);
   if(!body) return;
   const digest = esc(j.digest||'');
+  // first sentence of the LLM digest powers the hero's one-line teaser (quiet state)
+  if(j.source==='llm' && j.digest){
+    const first=String(j.digest).split(/(?<=[.!?])\s/)[0].trim();
+    COPILOT_DIGEST_FIRST = first.length>140 ? first.slice(0,137)+'…' : first;
+    if(TAB==='overview' && typeof renderHero==='function') renderHero();
+  }
   if(j.source==='llm'){
     body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:14px">'+digest+'</div></div></div>';
   }else{
