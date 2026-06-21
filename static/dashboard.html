@@ -916,6 +916,40 @@ h2 .hic{ opacity:.9 }
 .mc-diag b{ color:var(--tx); font-weight:600 }
 .mc-diag .mc-dsub{ color:var(--mut); font-size:10px }
 
+/* fleet health bar — fleet-wide rollup that LEADS the cockpit (multi-host first) */
+.mc-fleetbar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; padding:11px 16px; margin-bottom:14px;
+  background:var(--card); border:1px solid var(--bd); border-radius:14px }
+.mc-fb-seg{ display:flex; align-items:center; gap:9px; min-width:0 }
+.mc-fb-seg.mc-fb-div{ border-left:1px solid var(--bd); padding-left:16px }
+.mc-fb-title{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:700 }
+.mc-fb-big{ font-family:var(--mono); font-weight:700; font-size:17px; color:var(--tx) }
+.mc-fb-big .mc-fb-tot{ color:var(--mut); font-size:13px }
+.mc-fb-dot{ width:9px; height:9px; border-radius:50%; background:var(--ok); box-shadow:0 0 8px var(--ok); flex:none }
+.mc-fb-dot.mc-warn{ background:var(--warn); box-shadow:0 0 8px var(--warn) }
+.mc-fb-dot.mc-crit{ background:var(--crit); box-shadow:0 0 8px var(--crit) }
+.mc-fb-chip{ display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; padding:4px 10px; border-radius:20px;
+  border:1px solid var(--bd); color:var(--mut); cursor:pointer; background:var(--inset) }
+.mc-fb-chip:hover{ border-color:var(--mut); color:var(--tx) }
+.mc-fb-chip.mc-crit{ color:var(--crit); border-color:var(--crit); background:var(--critbg) }
+.mc-fb-chip.mc-warn{ color:var(--warn); border-color:var(--warn); background:var(--warnbg) }
+.mc-fb-chip.mc-ok{ color:var(--ok); border-color:var(--ok); background:var(--okbg); cursor:default }
+.mc-fb-spacer{ flex:1 1 auto }
+.mc-fb-roll{ display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--mut); white-space:nowrap }
+.mc-fb-roll b{ color:var(--tx); font-family:var(--mono); font-weight:700; font-size:13px }
+/* scope chip — 'this panel reflects the hub' (honest when a remote host is focused) */
+.mc-scope{ font-size:9px; font-weight:700; letter-spacing:.06em; color:var(--mut); border:1px solid var(--bd);
+  border-radius:5px; padding:1px 6px; text-transform:uppercase }
+/* engine focused-host chip */
+.mc-ehost{ display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--mut); font-family:var(--mono); min-width:0 }
+.mc-erole{ font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; border-radius:5px; padding:1px 6px }
+.mc-erole-hub{ color:var(--accent); border:1px solid var(--accent) }
+.mc-erole-remote{ color:var(--info); border:1px solid var(--info) }
+/* focused host highlight + open-detail button in the rail */
+.mc-host.mc-focus{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
+.mc-host-open{ background:none; border:0; color:var(--mut); cursor:pointer; font-size:12px; padding:0 2px; margin-left:4px; line-height:1; flex:none }
+.mc-host-open:hover{ color:var(--accent) }
+.mc-fleet{ max-height:560px; overflow-y:auto }
+
 /* collapsed full fleet table */
 .mc-details{ margin:16px 0 }
 .mc-details > summary{ cursor:pointer; list-style:none; font-size:13px; font-weight:600; color:var(--mut); padding:10px 14px;
@@ -993,6 +1027,8 @@ h2 .hic{ opacity:.9 }
 
   <!-- Mission Control cockpit (renderMissionControl) -->
   <div id="mc-cockpit">
+    <!-- fleet health bar: fleet-wide rollup, leads the cockpit -->
+    <div class="mc-fleetbar" id="mc-fleetbar"></div>
     <div class="mc-grid">
       <!-- LEFT: fleet rail -->
       <div class="mc-col">
@@ -1010,7 +1046,7 @@ h2 .hic{ opacity:.9 }
             <g class="mc-sweep"><path d="M50 50 L50 2 A48 48 0 0 1 92 30 Z" fill="url(#mc-rg)"/></g>
             <defs><radialGradient id="mc-rg"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>
           </svg>
-          <div class="mc-ph"><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-tag" id="mc-burn-src"></span></div>
+          <div class="mc-ph"><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
           <div class="mc-burn">
             <div class="mc-burn-hero">
               <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
@@ -1029,7 +1065,7 @@ h2 .hic{ opacity:.9 }
         </div>
         <!-- adaptive engine gauge -->
         <div class="mc-panel">
-          <div class="mc-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-tag" id="mc-engine-tag"></span></div>
+          <div class="mc-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span></div>
           <div class="mc-engine">
             <div class="mc-gauge-wrap">
               <svg viewBox="0 0 200 200" width="228" height="228">
@@ -1063,7 +1099,7 @@ h2 .hic{ opacity:.9 }
           <div class="mc-feed" id="mc-feed"></div>
         </div>
         <div class="mc-panel">
-          <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-tag" id="mc-cost-tag"></span></div>
+          <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
           <div class="mc-lead" id="mc-lead"></div>
         </div>
       </div>
@@ -1071,12 +1107,12 @@ h2 .hic{ opacity:.9 }
     <!-- bottom strip: containers / services / diagnostics -->
     <div class="mc-strip">
       <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span>🐳</span> <span data-i18n="mc.containers">Containers</span></div>
+        <div class="mc-scard-h"><span>🐳</span> <span data-i18n="mc.containers">Containers</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
         <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
         <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
       </div>
       <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span>⚙</span> <span data-i18n="mc.services">Services</span></div>
+        <div class="mc-scard-h"><span>⚙</span> <span data-i18n="mc.services">Services</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
         <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
         <div class="mc-failed-note" id="mc-failed-note">
           <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
@@ -1109,6 +1145,8 @@ h2 .hic{ opacity:.9 }
     </div>
     </div>
   </details>
+  <details class="mc-details" id="mc-more">
+    <summary data-i18n="mc.more">AI workload · MCP · setup &amp; requirements</summary>
   <div class="card" id="ai-band" hidden>
     <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
     <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
@@ -1134,6 +1172,7 @@ h2 .hic{ opacity:.9 }
       <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
     </div>
   </div>
+  </details>
 </section>
 
 <!-- ───────── GPU ───────── -->
@@ -3959,6 +3998,7 @@ function paintMissionControl(){
   const measured = machine.measured || [];
   const cur = cost.currency || 'лв';
 
+  mcPaintFleetBar($);
   mcPaintEngine($, g, gx, host);
   mcPaintBurn($, cost, machine, measured, cur, g, host);
   mcPaintLeaderboard($, cost, machine, measured, cur);
@@ -3980,30 +4020,69 @@ function mcGaugeTicks(){
 }
 function mcPaintEngine($, g, gx, host){
   const ticksEl=$('mc-ticks'); if(ticksEl && !ticksEl.childNodes.length) ticksEl.innerHTML=mcGaugeTicks();
+  // ── focus: the engine re-scopes to the selected host. Hub uses live D/HH; a
+  //    remote host uses its FLEET probe vitals (cpu/ram/gpu/load/temp). ──────────
+  const focus=(typeof CURRENT_HOST!=='undefined' && CURRENT_HOST)||'local';
+  const fhosts=(FLEET&&FLEET.hosts)||[];
+  const fh = focus==='local' ? fhosts.find(h=>h.is_local) : fhosts.find(h=>h.name===focus);
+  const isLocal = focus==='local' || (fh&&fh.is_local);
+  let hostLabel, role, offline=false;
+  if(isLocal){
+    g=(HH&&HH.now&&HH.now.gpu)||{}; gx=g.extra||{};
+    host=(D&&D.now&&D.now.host)||(fh&&fh.host)||{};
+    hostLabel=(fh&&fh.label)||host.hostname||I18N.t('mc.hub','Hub'); role='hub';
+  } else if(fh && fh.online && fh.host){
+    host=fh.host;
+    if(host.gpu){ g={available:true, mem_total:host.gpu.mem_total, mem_used:host.gpu.mem_used, util:host.gpu.util, power:host.gpu.power||0, temp:host.gpu.temp, gpus:[{name:(host.hw&&host.hw.gpu_name)||'GPU'}]}; }
+    else g={available:false};
+    gx={}; hostLabel=fh.label||fh.name; role='remote';
+  } else {
+    offline=true; g={available:false}; host={}; gx={}; hostLabel=(fh&&(fh.label||fh.name))||focus; role='remote';
+  }
+  const hostEl=$('mc-engine-host'); if(hostEl) hostEl.textContent=hostLabel;
+  const roleEl=$('mc-engine-role'); if(roleEl){ roleEl.textContent=role; roleEl.className='mc-erole '+(role==='hub'?'mc-erole-hub':'mc-erole-remote'); }
+  if(offline){
+    $('mc-engine-title').textContent=I18N.t('mc.engine_off','Host engine');
+    $('mc-engine-tag').textContent=I18N.t('mc.unreachable','unreachable');
+    $('mc-gauge-big').textContent='—'; $('mc-gauge-pct').textContent=''; $('mc-gauge-sub').textContent=I18N.t('mc.offline','OFFLINE');
+    const sb=$('mc-state-badge'); sb.textContent='● '+I18N.t('mc.offline','OFFLINE'); sb.className='mc-state-badge mc-bad';
+    $('mc-engine-name').textContent=hostLabel; const ch=$('mc-engine-chip'); if(ch) ch.style.display='none';
+    ['mc-m1','mc-m2','mc-m3'].forEach(p=>{ const l=$(p+'l'),v=$(p+'v'),b=$(p+'bar'); if(l)l.textContent=''; if(v)v.textContent='—'; if(b){b.style.transition='none';b.style.width='0';} });
+    const hr=$('mc-headroom'); hr.innerHTML=I18N.t('mc.head_off','<b>Host unreachable</b> — last SSH probe failed.'); hr.className='mc-headroom mc-warnedge';
+    const arc=$('mc-util-arc'), ring=$('mc-ring'); arc.style.transition='none'; arc.style.strokeDashoffset='100'; ring.style.transition='none'; ring.style.strokeDashoffset='100';
+    return;
+  }
   let arcPct, ringPct, big, sub, badgeText, badgeCls, name, chip, m, headroom, headroomBad=false, tag;
   if(g.available){
     const memTot=g.mem_total||0, memUsed=g.mem_used||0, util=Math.round(g.util||0);
     const pstate = gx.pstate || '';
     const plim = gx.power_limit || 0, pw = Math.round(g.power||0), temp=Math.round(g.temp||0);
-    const thr = !!gx.throttled;
+    // Throttle reasons matter: 'Power cap' is normal (idle, or a power-limited card
+    // under load) — NOT an airflow problem. Only THERMAL throttle (or a hot card) is
+    // an actionable alarm; power-cap is shown as a neutral, informational note.
+    const reasons = gx.throttle || [];
+    const thermal = temp>=84 || reasons.some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r));
+    const capped  = reasons.some(r=>/power/i.test(r));
     arcPct=util; ringPct=memTot?Math.round(memUsed/memTot*100):0;
     big=util; sub=I18N.t('mc.util','Utilisation');
-    badgeText = (pstate?'● '+pstate+' · ':'● ') + (thr ? I18N.t('mc.throttled','THROTTLED') : (util<5 ? I18N.t('mc.idle_up','IDLE') : I18N.t('mc.active','ACTIVE')));
-    badgeCls = thr ? 'mc-bad' : (util<5 ? '' : 'mc-busy');
+    badgeText = (pstate?'● '+pstate+' · ':'● ') + (thermal ? I18N.t('mc.throttled','THERMAL') : (util<5 ? I18N.t('mc.idle_up','IDLE') : I18N.t('mc.active','ACTIVE')));
+    badgeCls = thermal ? 'mc-bad' : (util<5 ? '' : 'mc-busy');
     name = (g.gpus&&g.gpus[0]&&g.gpus[0].name) || I18N.t('mc.gpu','GPU');
     chip = memTot ? (memTot/1024).toFixed(0)+' GB' : '';
-    tag = (pstate?pstate+' · ':'') + (thr ? I18N.t('mc.throttling','throttling') : (util<5 ? I18N.t('mc.idle','idle') : I18N.t('mc.active_lc','active')));
+    tag = (pstate?pstate+' · ':'') + (thermal ? I18N.t('mc.throttling','thermal throttle') : (util<5 ? I18N.t('mc.idle','idle') : (capped&&util>=50 ? I18N.t('mc.active_capped','active · power cap') : I18N.t('mc.active_lc','active'))));
     $('mc-engine-title').textContent = I18N.t('mc.engine_gpu',"GPU · The Lab's Engine");
     m=[
       {l:'VRAM <span style="color:var(--info)">●</span>', v:fmtMB(memUsed)+' / '+fmtMB(memTot)+' · '+ringPct+'%', w:ringPct, c:'var(--info)'},
-      {l:I18N.t('mc.power','Power'), v:plim?(pw+' / '+plim+' W'):(pw+' W'), w:plim?(pw/plim*100):0, c:(plim&&pw/plim>0.9)?'var(--crit)':'var(--accent)'},
+      {l:I18N.t('mc.power','Power'), v:plim?(pw+' / '+plim+' W'):(pw+' W'), w:plim?(pw/plim*100):0, c:(plim&&pw/plim>0.95)?'var(--crit)':'var(--accent)'},
       {l:I18N.t('mc.temp','Temp'), v:temp+'°C', w:temp, c:temp>=85?'var(--crit)':temp>=70?'var(--accent)':'var(--info)'}
     ];
     const freeMb = Math.max(0, memTot-memUsed);
-    headroom = thr
-      ? I18N.tf('mc.head_throttle','<b>Throttled</b> — clocks reduced at {t}°C. Check airflow.',{t:temp})
-      : I18N.tf('mc.head_gpu','<b>{free} free</b> — VRAM at {pct}% right now.',{free:fmtMB(freeMb),pct:ringPct});
-    headroomBad = thr || temp>=85;
+    headroom = thermal
+      ? I18N.tf('mc.head_thermal','<b>Thermal throttle</b> at {t}°C — check cooling / airflow.',{t:temp})
+      : (capped && util>=50)
+        ? I18N.tf('mc.head_capped','<b>{free} free</b> — running at its {p} W power cap (normal under load).',{free:fmtMB(freeMb),p:plim||'—'})
+        : I18N.tf('mc.head_gpu','<b>{free} free</b> — VRAM at {pct}% right now.',{free:fmtMB(freeMb),pct:ringPct});
+    headroomBad = thermal;
   } else {
     const cpu=Math.round(host.cpu||0), cores=host.cores||0;
     const ramTot=host.ram_total||0, ramUsed=host.ram_used||0;
@@ -4044,7 +4123,8 @@ function mcPaintEngine($, g, gx, host){
   arc.style.transition='none'; arc.style.strokeDashoffset='100';
   ring.style.transition='none'; ring.style.strokeDashoffset='100';
   // gauge goes red when throttled / hot
-  const red = (g.available && (gx.throttled || (g.temp||0)>=85));
+  // only THERMAL throttle (or a hot card) reddens the gauge — 'Power cap' is normal
+  const red = (g.available && ((g.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))));
   arc.setAttribute('stroke', red ? 'var(--crit)' : 'url(#mc-util-grad)');
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     arc.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)';
@@ -4151,7 +4231,7 @@ function mcDeriveInsights(){
   const upd=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
   if(upd>0) out.push({level:'info',title:I18N.tf('mc.di_upd','{n} package updates pending',{n:upd}),detail:I18N.t('mc.di_upd_d','Across the fleet — a good time to patch.')});
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
-  if(gx.throttled) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU is throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced — check cooling.')});
+  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
   if(!out.length) out.push({level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')});
   return out;
 }
@@ -4167,6 +4247,40 @@ function mcPaintFeed($){
       <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
   }).join('');
   $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
+}
+function mcPaintFleetBar($){
+  const bar=$('mc-fleetbar'); if(!bar) return;
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  const total=hosts.length;
+  const online=hosts.filter(h=>h.is_local||h.online).length;
+  const off=hosts.filter(h=>!h.is_local && !h.online);
+  const diskHosts=hosts.filter(h=>((h.host&&h.host.disks)||[]).some(d=>d.pct>=90));
+  const updates=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
+  let ramU=0, ramT=0; hosts.forEach(h=>{ const hh=h.host||{}; ramU+=hh.ram_used||0; ramT+=hh.ram_total||0; });
+  const dk=(HH&&HH.docker)||{};
+  const cRun=(dk.summary&&dk.summary.running!=null)?dk.summary.running:((dk.containers||[]).filter(c=>c.state==='running').length);
+  const g=(HH&&HH.now&&HH.now.gpu)||{};
+  const nowW=Math.round((g.available?g.power:0)||0);
+  const sev = off.length?'mc-crit':((diskHosts.length||updates)?'mc-warn':'');
+  const chips=[];
+  if(off.length) chips.push(`<span class="mc-fb-chip mc-crit" data-go="offline">⚠ ${off.length} ${I18N.t('mc.offline_lc','offline')}</span>`);
+  if(diskHosts.length) chips.push(`<span class="mc-fb-chip mc-warn" data-go="disk">◐ ${diskHosts.length} ${I18N.t('mc.disk_low','disk low')}</span>`);
+  if(updates) chips.push(`<span class="mc-fb-chip mc-warn" data-go="updates">↑ ${updates} ${I18N.t('mc.updates_lc','updates')}</span>`);
+  if(!chips.length) chips.push(`<span class="mc-fb-chip mc-ok">✓ ${I18N.t('mc.all_healthy_lc','all healthy')}</span>`);
+  bar.innerHTML =
+      `<div class="mc-fb-seg"><span class="mc-fb-dot ${sev}"></span><span class="mc-fb-title">${I18N.t('mc.fleet','Fleet')}</span>`
+    + `<span class="mc-fb-big">${online}<span class="mc-fb-tot">/${total} ${I18N.t('mc.online','online')}</span></span></div>`
+    + `<div class="mc-fb-seg mc-fb-div">${chips.join(' ')}</div>`
+    + `<div class="mc-fb-spacer"></div>`
+    + `<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.fleet_ram','Fleet RAM')} <b>${fmtMBshort(ramU)}</b> / ${fmtMBshort(ramT)}</div>`
+    + (dk.available?`<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.containers','Containers')} <b>${cRun}</b></div>`:'')
+    + (g.available?`<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.now','Now')} <b>${nowW}</b> W</div>`:'');
+  bar.querySelectorAll('[data-go]').forEach(el=>el.onclick=()=>{
+    const go=el.dataset.go;
+    if(go==='offline'){ const o=off[0]; if(o) setHost(o.name); }
+    else if(go==='disk'){ const d=diskHosts[0]; if(d){ setHost(d.name); showTab('host'); } }
+    else if(go==='updates'){ showTab('hosts'); }
+  });
 }
 function mcPaintFleet($){
   const wrap=$('mc-fleet');
@@ -4202,7 +4316,7 @@ function mcPaintFleet($){
     const spkData=[base*.6,base*.8,base*.5,base,base*.7,base*.9,base*.6,base*1.1,base*.8,base].map(v=>Math.max(1,v));
     const spk=mcSparkline(spkData,200,20,h.is_local?'var(--accent)':'var(--info)');
     return `<div class="mc-host" data-h="${esc(h.name)}">
-      <div class="mc-host-top"><span class="mc-sdot ${sd}"></span><span class="mc-host-label">${label}</span>${badges.join('')}<span class="mc-host-os">${esc(osname)}</span></div>
+      <div class="mc-host-top"><span class="mc-sdot ${sd}"></span><span class="mc-host-label">${label}</span>${badges.join('')}<span class="mc-host-os">${esc(osname)}</span><button class="mc-host-open" title="${I18N.t('mc.open_host','Open host detail')}">↗</button></div>
       <div class="mc-microbars">
         <div class="mc-mb">CPU<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${cpuC}" data-w="${cpu}"></div></div>${cpu}%</div>
         <div class="mc-mb">RAM<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${ramC}" data-w="${ramPct}"></div></div>${ramPct}%</div>
@@ -4211,9 +4325,12 @@ function mcPaintFleet($){
       <div class="mc-host-foot">${cores?`<span>${cores} cores</span>`:''}${temp!=null?`<span>${temp}°C</span>`:''}<span class="mc-sp">↑ ${up}</span></div>
     </div>`;
   }).join('');
+  const focus=(typeof CURRENT_HOST!=='undefined' && CURRENT_HOST)||'local';
   wrap.querySelectorAll('.mc-host[data-h]').forEach(el=>{
-    if(el.classList.contains('mc-off')) return;
-    el.onclick=()=>{ setHost(el.dataset.h); showTab('host'); };
+    if(el.dataset.h===focus) el.classList.add('mc-focus');
+    el.onclick=()=>{ setHost(el.dataset.h); };   // focus → cockpit engine re-scopes to this host
+    const ob=el.querySelector('.mc-host-open');
+    if(ob) ob.onclick=(e)=>{ e.stopPropagation(); setHost(el.dataset.h); showTab('host'); };
   });
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     wrap.querySelectorAll('.mc-mb-fill').forEach(b=>{ b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%'; });
