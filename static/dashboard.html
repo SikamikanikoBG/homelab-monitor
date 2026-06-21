@@ -809,6 +809,8 @@ h2 .hic{ opacity:.9 }
 .mc-hero-ph{ display:flex; align-items:center; gap:8px }
 .mc-hero-ph h3{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:700; margin:0 }
 .mc-grid2{ display:grid; grid-template-columns:320px minmax(0,1fr) 360px; gap:16px; align-items:start }
+.mc-chartpanel{ margin-bottom:16px }
+.mc-chartbox{ position:relative; height:208px; padding:4px 16px 16px }
 /* glassmorphic panels — translucent over the bloom, blurred, lit from above, dropped */
 .mc-panel{ position:relative; background:var(--mc-glass); -webkit-backdrop-filter:blur(16px) saturate(1.15); backdrop-filter:blur(16px) saturate(1.15);
   border:1px solid var(--bd); border-radius:18px; box-shadow:inset 0 1px 0 var(--mc-stroke), var(--mc-shadow);
@@ -1136,6 +1138,12 @@ h2 .hic{ opacity:.9 }
           <div class="mc-bstat"><span class="mc-k" data-i18n="mc.30days">30 days</span><div><span class="mc-v" id="mc-c-d30">0.00</span> <span class="mc-u" id="mc-u3"></span></div></div>
         </div>
       </div>
+    </div>
+
+    <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) with legend -->
+    <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
+      <div class="mc-ph"><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
+      <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
     </div>
 
     <!-- secondary row: fleet · insights · cost -->
@@ -4002,6 +4010,7 @@ const MC_AC = {ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', info:'var
 const MC_LVL = {critical:'crit', warning:'warn', warn:'warn', crit:'crit', ok:'ok', info:'info'};
 let MC_COST=null, MC_COST_AT=0, MC_RAF=[];
 let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
+let MC_CHART_SIG='';
 async function refreshMcCost(){
   if(Date.now()-MC_COST_AT < 30000 && MC_COST!==null) return;
   MC_COST_AT=Date.now();
@@ -4050,6 +4059,7 @@ function paintMissionControl(){
 
   mcPaintFleetBar($);
   mcPaintEngine($, g, gx, host);
+  renderMcChart($);
   mcPaintBurn($, cost, machine, measured, cur, g, host);
   mcPaintLeaderboard($, cost, machine, measured, cur);
   mcPaintFeed($);
@@ -4287,6 +4297,42 @@ function mcBuildFleetCPU(){
     ],
     headroom:I18N.tf('mc.head_fcpu','<b>{free} RAM free</b> across {n} hosts.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:ramPct>=90, red:false,
     breakdown:list.map(x=>({label:x.host,sub:x.cores+'c',pct:x.cpu,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.cpu>=80?'var(--crit)':x.cpu>=50?'var(--accent)':'var(--ok)'})) };
+}
+// Adaptive compute-history chart with legend (Chart.js, already vendored).
+// Hub-scoped; GPU util/power/temp when a GPU is present (and not in Fleet-CPU
+// mode), else CPU%/RAM%/load. Rebuilds only when new samples / range / mode land.
+function renderMcChart(){
+  const panel=document.getElementById('mc-chartpanel'); if(!panel) return;
+  const cvs=document.getElementById('mc-chart');
+  const t=(D&&D.total)||null;
+  const haveData = !!(typeof Chart!=='undefined' && cvs && D && D.labels && D.labels.length>1 && t);
+  if(!haveData){ panel.style.display='none'; return; }
+  panel.style.display='';
+  const hasGpu=!!(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.available);
+  const useGpu=(MC_HEROMODE!=='fcpu') && hasGpu && (t.util&&t.util.length);
+  const rng=(typeof R!=='undefined'&&R)||'6h';
+  const sig=(useGpu?'g':'c')+'_'+D.labels.length+'_'+(D.labels[D.labels.length-1]||0)+'_'+rng+'_'+(document.documentElement.getAttribute('data-theme')||'');
+  const titleEl=document.getElementById('mc-chart-title'), tagEl=document.getElementById('mc-chart-tag');
+  if(titleEl) titleEl.textContent = useGpu ? I18N.t('mc.chart_gpu','GPU · util, power & temp') : I18N.t('mc.chart_cpu','CPU, RAM & load');
+  if(tagEl) tagEl.textContent = I18N.tf('mc.last_range','last {r}',{r:rng});
+  if(sig===MC_CHART_SIG) return;   // nothing new → keep the existing chart (and its legend toggles)
+  MC_CHART_SIG=sig;
+  const labels=fmtLabels(D.labels);
+  let datasets;
+  if(useGpu){
+    datasets=[
+      {label:I18N.t('mc.ch_util','GPU util %'),data:t.util,borderColor:'#4dabf7',backgroundColor:'#4dabf733',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
+      {label:I18N.t('mc.ch_power','Power W'),data:t.power,borderColor:'#ff922b',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y1'},
+      {label:I18N.t('mc.ch_temp','Temp °C'),data:t.temp,borderColor:'#f783ac',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
+  } else {
+    const ramPct=(t.ram_used||[]).map((u,i)=>(t.ram_total&&t.ram_total[i])?Math.round(u/t.ram_total[i]*100):0);
+    datasets=[
+      {label:I18N.t('mc.ch_cpu','CPU %'),data:t.cpu,borderColor:'#3fb950',backgroundColor:'#3fb95033',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
+      {label:I18N.t('mc.ch_ram','RAM %'),data:ramPct,borderColor:'#a371f7',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y'},
+      {label:I18N.t('mc.ch_load','Load'),data:t.load1,borderColor:'#e3b341',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
+  }
+  try{ const o=dualOpts(labels,100); o.animation=false; mk('mc-chart',{type:'line',data:{labels,datasets},options:o,plugins:[areaBg]}); }
+  catch(e){ panel.style.display='none'; }
 }
 function mcPaintBurn($, cost, machine, measured, cur, g, host){
   const nowW = machine.now_w || {};
