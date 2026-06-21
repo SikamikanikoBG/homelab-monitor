@@ -983,6 +983,21 @@ h2 .hic{ opacity:.9 }
 .mc-erole{ font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; border-radius:5px; padding:1px 6px }
 .mc-erole-hub{ color:var(--accent); border:1px solid var(--accent) }
 .mc-erole-remote{ color:var(--info); border:1px solid var(--info) }
+.mc-erole-fleet{ color:var(--accent); border:1px solid var(--accent) }
+/* hero compute-mode segmented toggle */
+.mc-modeseg{ display:inline-flex; gap:2px; background:var(--inset); border:1px solid var(--bd); border-radius:9px; padding:2px; margin-left:auto }
+.mc-modeseg button{ font:inherit; font-size:10px; font-weight:600; letter-spacing:.02em; color:var(--mut); background:none; border:0; border-radius:7px; padding:4px 9px; cursor:pointer; white-space:nowrap }
+.mc-modeseg button:hover{ color:var(--tx) }
+.mc-modeseg button.on{ background:var(--card); color:var(--tx); box-shadow:0 1px 4px rgba(0,0,0,.3) }
+/* per-GPU / per-host breakdown list (multi-GPU + fleet-united modes) */
+.mc-bd{ display:flex; flex-direction:column; gap:6px; margin-top:8px; max-height:154px; overflow-y:auto }
+.mc-bd-row{ display:flex; align-items:center; gap:8px; font-size:11px }
+.mc-bd-dot{ width:7px; height:7px; border-radius:50%; flex:none }
+.mc-bd-host{ font-weight:600; color:var(--tx); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:92px; flex:none }
+.mc-bd-sub{ color:var(--mut); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:78px; flex:none }
+.mc-bd-bar{ flex:1; height:5px; border-radius:4px; background:var(--inset); border:1px solid var(--bd); overflow:hidden; min-width:24px }
+.mc-bd-bar>span{ display:block; height:100%; border-radius:4px }
+.mc-bd-right{ font-family:var(--mono); color:var(--mut); font-size:10px; white-space:nowrap; flex:none }
 /* focused host highlight + open-detail button in the rail */
 .mc-host.mc-focus{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
 .mc-host-open{ background:none; border:0; color:var(--mut); cursor:pointer; font-size:12px; padding:0 2px; margin-left:4px; line-height:1; flex:none }
@@ -1081,7 +1096,7 @@ h2 .hic{ opacity:.9 }
       </svg>
       <!-- engine gauge -->
       <div class="mc-hero-engine">
-        <div class="mc-hero-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span></div>
+        <div class="mc-hero-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span><div class="mc-modeseg" id="mc-modeseg"></div></div>
         <div class="mc-gauge-wrap">
           <svg viewBox="0 0 200 200" width="264" height="264">
             <g id="mc-ticks"></g>
@@ -1105,6 +1120,7 @@ h2 .hic{ opacity:.9 }
         <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m2l"></span><span class="mc-mv" id="mc-m2v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m2bar"></div></div></div>
         <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m3l"></span><span class="mc-mv" id="mc-m3v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m3bar"></div></div></div>
         <div class="mc-headroom" id="mc-headroom"></div>
+        <div id="mc-vitals-extra"></div>
       </div>
       <!-- the money -->
       <div class="mc-hero-money">
@@ -3985,6 +4001,7 @@ const MC_AC = {ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', info:'var
 // D.insights use level=critical|warning|ok|info; map to our short keys.
 const MC_LVL = {critical:'crit', warning:'warn', warn:'warn', crit:'crit', ok:'ok', info:'info'};
 let MC_COST=null, MC_COST_AT=0, MC_RAF=[];
+let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
 async function refreshMcCost(){
   if(Date.now()-MC_COST_AT < 30000 && MC_COST!==null) return;
   MC_COST_AT=Date.now();
@@ -4053,8 +4070,14 @@ function mcGaugeTicks(){
 }
 function mcPaintEngine($, g, gx, host){
   const ticksEl=$('mc-ticks'); if(ticksEl && !ticksEl.childNodes.length) ticksEl.innerHTML=mcGaugeTicks();
-  // ── focus: the engine re-scopes to the selected host. Hub uses live D/HH; a
-  //    remote host uses its FLEET probe vitals (cpu/ram/gpu/load/temp). ──────────
+  // ── hero compute mode: This host | Fleet GPU united | Fleet CPU united ──────────
+  const __fleetHasGpu = ((FLEET&&FLEET.hosts)||[]).some(h=>h.host&&h.host.gpu) || !!(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.available);
+  let __mode = (typeof MC_HEROMODE!=='undefined'?MC_HEROMODE:'host'); if(__mode==='fgpu' && !__fleetHasGpu) __mode='host';
+  mcRenderModeSeg($, __mode, __fleetHasGpu);
+  if(__mode==='fgpu'){ mcApplyEngine($, mcBuildFleetGPU()); return; }
+  if(__mode==='fcpu'){ mcApplyEngine($, mcBuildFleetCPU()); return; }
+  // ── focus (host mode): the engine re-scopes to the selected host. Hub uses live D/HH;
+  //    a remote host uses its FLEET probe vitals (cpu/ram/gpu/load/temp). ──────────
   const focus=(typeof CURRENT_HOST!=='undefined' && CURRENT_HOST)||'local';
   const fhosts=(FLEET&&FLEET.hosts)||[];
   const fh = focus==='local' ? fhosts.find(h=>h.is_local) : fhosts.find(h=>h.name===focus);
@@ -4083,6 +4106,7 @@ function mcPaintEngine($, g, gx, host){
     ['mc-m1','mc-m2','mc-m3'].forEach(p=>{ const l=$(p+'l'),v=$(p+'v'),b=$(p+'bar'); if(l)l.textContent=''; if(v)v.textContent='—'; if(b){b.style.transition='none';b.style.width='0';} });
     const hr=$('mc-headroom'); hr.innerHTML=I18N.t('mc.head_off','<b>Host unreachable</b> — last SSH probe failed.'); hr.className='mc-headroom mc-warnedge';
     const arc=$('mc-util-arc'), ring=$('mc-ring'); arc.style.transition='none'; arc.style.strokeDashoffset='100'; ring.style.transition='none'; ring.style.strokeDashoffset='100';
+    const ex0=$('mc-vitals-extra'); if(ex0) ex0.innerHTML='';
     return;
   }
   let arcPct, ringPct, big, sub, badgeText, badgeCls, name, chip, m, headroom, headroomBad=false, tag;
@@ -4167,6 +4191,102 @@ function mcPaintEngine($, g, gx, host){
     ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,ringPct));
     m.forEach((mm,i)=>{ const bar=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); bar.style.transition='width 1.2s cubic-bezier(.2,.8,.2,1)'; bar.style.width=Math.min(100,Math.max(0,mm.w))+'%'; });
   }));
+  // per-GPU breakdown when the focused host is a multi-GPU box
+  const exH=$('mc-vitals-extra');
+  if(exH){
+    const cards=(g.available && g.gpus && g.gpus.length>1 && g.gpus[0].mem_total!=null) ? g.gpus : null;
+    exH.innerHTML = cards ? mcBreakdownHTML(cards.map((c,i)=>({label:'GPU '+i, sub:c.name||'', pct:c.util||0, right:fmtMBshort(c.mem_used||0)+' / '+fmtMBshort(c.mem_total||0), color:(c.util||0)>=80?'var(--crit)':(c.util||0)>=40?'var(--accent)':'var(--ok)'}))) : '';
+  }
+}
+// ── Hero compute-mode helpers (This host / Fleet GPU united / Fleet CPU united) ──
+function mcRenderModeSeg($, mode, fleetHasGpu){
+  const seg=$('mc-modeseg'); if(!seg) return;
+  const items=[['host',I18N.t('mc.mode_host','This host')]];
+  if(fleetHasGpu) items.push(['fgpu',I18N.t('mc.mode_fgpu','Fleet GPU')]);
+  items.push(['fcpu',I18N.t('mc.mode_fcpu','Fleet CPU')]);
+  seg.innerHTML=items.map(([k,l])=>`<button data-mode="${k}" class="${k===mode?'on':''}">${esc(l)}</button>`).join('');
+  seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ MC_HEROMODE=b.dataset.mode; try{localStorage.setItem('hl_mc_hero',MC_HEROMODE);}catch(e){} if(typeof paintMissionControl==='function') paintMissionControl(); });
+}
+function mcBreakdownHTML(rows){
+  if(!rows.length) return '';
+  return '<div class="mc-bd">'+rows.map(r=>`<div class="mc-bd-row"><span class="mc-bd-dot" style="background:${r.color||'var(--mut)'}"></span><span class="mc-bd-host">${esc(r.label)}</span><span class="mc-bd-sub">${esc(r.sub||'')}</span><span class="mc-bd-bar"><span style="width:${Math.min(100,Math.max(0,r.pct||0))}%;background:${r.color||'var(--accent)'}"></span></span><span class="mc-bd-right">${esc(r.right||'')}</span></div>`).join('')+'</div>';
+}
+function mcApplyEngine($, V){
+  $('mc-engine-title').textContent=V.title||'';
+  const he=$('mc-engine-host'); if(he) he.textContent=V.hostLabel||'';
+  const re=$('mc-engine-role'); if(re){ re.textContent=V.role||''; re.className='mc-erole '+(V.roleCls||'mc-erole-hub'); re.style.display=V.role?'':'none'; }
+  $('mc-engine-tag').textContent=V.tag||'';
+  $('mc-gauge-sub').textContent=V.sub||'';
+  $('mc-engine-name').textContent=V.name||'';
+  const ch=$('mc-engine-chip'); ch.textContent=V.chip||''; ch.style.display=V.chip?'':'none';
+  const sb=$('mc-state-badge'); sb.textContent=V.badge||''; sb.className='mc-state-badge'+(V.badgeCls?' '+V.badgeCls:'');
+  $('mc-gauge-pct').textContent=V.bigText?'':'%';
+  if(V.bigText){ $('mc-gauge-big').textContent=V.bigText; } else { mcCountUp($('mc-gauge-big'), V.big, 1000, 0); }
+  const M=V.meters||[];
+  [['mc-m1l','mc-m1v','mc-m1bar'],['mc-m2l','mc-m2v','mc-m2bar'],['mc-m3l','mc-m3v','mc-m3bar']].forEach((ids,i)=>{
+    const mm=M[i]||{l:'',v:'',w:0,c:'var(--mut)'};
+    $(ids[0]).innerHTML=mm.l; $(ids[1]).innerHTML=mm.v; const b=$(ids[2]); b.style.transition='none'; b.style.width='0'; b.style.background=mm.c;
+  });
+  const hr=$('mc-headroom'); hr.innerHTML=V.headroom||''; hr.className='mc-headroom'+(V.headroomBad?' mc-warnedge':'');
+  const arc=$('mc-util-arc'), ring=$('mc-ring');
+  arc.style.transition='none'; arc.style.strokeDashoffset='100'; ring.style.transition='none'; ring.style.strokeDashoffset='100';
+  arc.setAttribute('stroke', V.red?'var(--crit)':'url(#mc-util-grad)');
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    arc.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.arcPct||0));
+    ring.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.ringPct||0));
+    M.forEach((mm,i)=>{ const b=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); b.style.transition='width 1.2s cubic-bezier(.2,.8,.2,1)'; b.style.width=Math.min(100,Math.max(0,mm.w||0))+'%'; });
+  }));
+  const ex=$('mc-vitals-extra'); if(ex) ex.innerHTML=mcBreakdownHTML(V.breakdown||[]);
+}
+function mcBuildFleetGPU(){
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  const local=hosts.find(h=>h.is_local); const hubLabel=(local&&local.label)||I18N.t('mc.hub','Hub');
+  const list=[];
+  const hg=(HH&&HH.now&&HH.now.gpu)||{};
+  if(hg.available){
+    if(hg.gpus&&hg.gpus.length&&hg.gpus[0].mem_total!=null) hg.gpus.forEach(c=>list.push({host:hubLabel,name:c.name||'GPU',util:c.util||0,used:c.mem_used||0,total:c.mem_total||0,temp:c.temp||0,power:c.power||0}));
+    else list.push({host:hubLabel,name:(hg.gpus&&hg.gpus[0]&&hg.gpus[0].name)||'GPU',util:hg.util||0,used:hg.mem_used||0,total:hg.mem_total||0,temp:hg.temp||0,power:hg.power||0});
+  }
+  hosts.forEach(h=>{ if(!h.is_local && h.online && h.host && h.host.gpu){ const x=h.host.gpu; list.push({host:h.label||h.name,name:(h.host.hw&&h.host.hw.gpu_name)||'GPU',util:x.util||0,used:x.mem_used||0,total:x.mem_total||0,temp:x.temp||0,power:0}); } });
+  const n=list.length;
+  const usedT=list.reduce((a,x)=>a+x.used,0), totalT=list.reduce((a,x)=>a+x.total,0);
+  const utilAvg=n?Math.round(list.reduce((a,x)=>a+x.util,0)/n):0;
+  const powerT=Math.round(list.reduce((a,x)=>a+(x.power||0),0));
+  const tmax=list.reduce((a,x)=>Math.max(a,x.temp||0),0);
+  const ringPct=totalT?Math.round(usedT/totalT*100):0;
+  const hostN=new Set(list.map(x=>x.host)).size;
+  return { title:I18N.t('mc.engine_fgpu',"Fleet · GPU united"), hostLabel:n+' '+(n===1?'card':'cards')+' · '+hostN+' '+(hostN===1?'host':'hosts'), role:'fleet', roleCls:'mc-erole-fleet',
+    tag:utilAvg+'% avg · '+powerT+' W', sub:I18N.t('mc.gpu_util_avg','GPU util · avg'),
+    name:n+' GPU'+(n===1?'':'s'), chip:totalT?(totalT/1024).toFixed(0)+' GB':'',
+    big:utilAvg, arcPct:utilAvg, ringPct, badge:'● '+hostN+' '+(hostN===1?'HOST':'HOSTS'), badgeCls:tmax>=84?'mc-bad':(utilAvg>=50?'mc-busy':''),
+    meters:[
+      {l:'VRAM <span style="color:var(--info)">●</span>', v:fmtMB(usedT)+' / '+fmtMB(totalT)+' · '+ringPct+'%', w:ringPct, c:'var(--info)'},
+      {l:I18N.t('mc.power_sum','Power (sum)'), v:powerT+' W', w:Math.min(100,powerT/((n||1)*350)*100), c:'var(--accent)'},
+      {l:I18N.t('mc.hottest','Hottest'), v:tmax+'°C', w:tmax, c:tmax>=85?'var(--crit)':tmax>=70?'var(--accent)':'var(--info)'}
+    ],
+    headroom:I18N.tf('mc.head_fgpu','<b>{free} free</b> across {n} GPU(s) in the fleet.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:tmax>=84, red:tmax>=84,
+    breakdown:list.map(x=>({label:x.host,sub:x.name,pct:x.util,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.util>=80?'var(--crit)':x.util>=40?'var(--accent)':'var(--ok)'})) };
+}
+function mcBuildFleetCPU(){
+  const list=((FLEET&&FLEET.hosts)||[]).filter(h=>h.online&&h.host).map(h=>({host:h.label||h.name,cpu:Math.round(h.host.cpu||0),cores:h.host.cores||0,used:h.host.ram_used||0,total:h.host.ram_total||0,load:h.host.load1||0,temp:Math.round(h.host.ctemp||0)}));
+  const n=list.length;
+  const coresT=list.reduce((a,x)=>a+x.cores,0);
+  const usedT=list.reduce((a,x)=>a+x.used,0), totalT=list.reduce((a,x)=>a+x.total,0);
+  const cpuAvg=n?Math.round(list.reduce((a,x)=>a+x.cpu,0)/n):0;
+  const loadMax=list.reduce((a,x)=>Math.max(a,x.load),0);
+  const tmax=list.reduce((a,x)=>Math.max(a,x.temp||0),0);
+  const ramPct=totalT?Math.round(usedT/totalT*100):0;
+  return { title:I18N.t('mc.engine_fcpu',"Fleet · CPU united"), hostLabel:n+' '+(n===1?'host':'hosts')+' · '+coresT+' cores', role:'fleet', roleCls:'mc-erole-fleet',
+    tag:I18N.tf('mc.load_max','load max {l}',{l:loadMax.toFixed(2)}), sub:I18N.t('mc.cpu_avg','CPU · avg'),
+    name:n+' '+(n===1?'host':'hosts'), chip:coresT+' cores',
+    big:cpuAvg, arcPct:cpuAvg, ringPct:ramPct, badge:'● '+coresT+' CORES', badgeCls:(cpuAvg>=85||ramPct>=90)?'mc-busy':'',
+    meters:[
+      {l:'RAM <span style="color:var(--info)">●</span>', v:fmtMB(usedT)+' / '+fmtMB(totalT)+' · '+ramPct+'%', w:ramPct, c:ramPct>=85?'var(--crit)':ramPct>=70?'var(--accent)':'var(--info)'},
+      {l:I18N.t('mc.cores_sum','Cores'), v:coresT+' · '+n+' '+(n===1?'host':'hosts'), w:Math.min(100,n*12), c:'var(--accent)'},
+      {l:I18N.t('mc.hottest','Hottest'), v:tmax?tmax+'°C':'—', w:tmax, c:tmax>=80?'var(--crit)':tmax>=65?'var(--accent)':'var(--info)'}
+    ],
+    headroom:I18N.tf('mc.head_fcpu','<b>{free} RAM free</b> across {n} hosts.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:ramPct>=90, red:false,
+    breakdown:list.map(x=>({label:x.host,sub:x.cores+'c',pct:x.cpu,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.cpu>=80?'var(--crit)':x.cpu>=50?'var(--accent)':'var(--ok)'})) };
 }
 function mcPaintBurn($, cost, machine, measured, cur, g, host){
   const nowW = machine.now_w || {};
