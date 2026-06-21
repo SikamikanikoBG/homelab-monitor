@@ -4381,7 +4381,7 @@ function renderHero(){
     else if(days<60){v=Math.round(days);u=I18N.t('hero.days','days');}
     else {v=Math.round(days/30);u=I18N.t('hero.months','months');}
     const tone=days<14?'crit':(days<60?'warn':'');
-    kpis.push(_heroKpi('~'+v,u,I18N.t('hero.disk_eta','Disk fills in'),esc(d.mount),tone));
+    kpis.push(_heroKpi('~'+v,u,I18N.t('hero.disk_eta','Disk fills in'),d.mount,tone));
   } else if((fc.disk||[]).length){
     kpis.push(_heroKpi('—','',I18N.t('hero.disk_eta','Disk fills in'),I18N.t('forecast.stable','stable')));
   }
