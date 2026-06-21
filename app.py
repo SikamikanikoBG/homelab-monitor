@@ -7224,15 +7224,59 @@ def _parse_log_line(raw):
     return {"text": raw}
 
 
-def _docker_logs_tail(cid, lines):
-    """Read the last `lines` log lines of a known container id via the docker CLI,
-    invoked as an ARGUMENT LIST (shell=False) so no client value is ever parsed
-    by a shell. Returns (lines_list, truncated, error_code). error_code is one of
-    None | 'docker_missing' | 'unreachable' | 'timeout'. Never raises.
+def _demux_docker_logs(blob):
+    """Decode a non-follow `GET /containers/<id>/logs` body into plain text.
+    Docker multiplexes stdout/stderr with an 8-byte header per frame
+    (stream byte, 3×0, 4-byte big-endian length) UNLESS the container has a TTY,
+    where the body is raw. Detect via the first byte (0/1/2 ⇒ framed). Decoded
+    tolerantly — log bytes are untrusted (control chars / partial UTF-8)."""
+    if not blob:
+        return ""
+    if blob[0] in (0, 1, 2):  # framed multiplexed stream
+        out, i, n = [], 0, len(blob)
+        while i + 8 <= n:
+            size = int.from_bytes(blob[i + 4:i + 8], "big")
+            i += 8
+            out.append(blob[i:i + size].decode("utf-8", "replace"))
+            i += size
+        return "".join(out)
+    return blob.decode("utf-8", "replace")
 
-    `cid` MUST already be a resolved, known container id (see _resolve_container).
-    The `--` guards against any id that could look like a flag (defence in depth;
-    resolved ids are 12-hex). Output is decoded but NEVER logged server-side."""
+
+def _lines_from_text(text, lines):
+    raw = text.split("\n")
+    if raw and raw[-1] == "":
+        raw.pop()
+    truncated = len(raw) > lines
+    if truncated:
+        raw = raw[-lines:]
+    return [_parse_log_line(ln) for ln in raw], truncated
+
+
+def _docker_logs_socket(cid, lines):
+    """Read the tail via the Docker Engine API over its AF_UNIX socket — the same
+    read-only path the rest of the monitor uses (and what the deployed single
+    image actually has; the `docker` CLI is not installed in it). The container
+    id is already resolved/known (see _resolve_container) and is a 12-hex string,
+    so the URL path can't be poisoned. Returns (lines, truncated, error) or
+    raises so the caller can fall back to the CLI."""
+    path = (f"/containers/{cid}/logs?stdout=1&stderr=1&timestamps=1"
+            f"&tail={int(lines)}&follow=0")
+    status, blob = _docker_req("GET", path, timeout=_LOG_DOCKER_TIMEOUT)
+    if status != 200:
+        # 404 = no such container (shouldn't happen post-resolve); else daemon issue.
+        return [], False, "unreachable"
+    parsed, truncated = _lines_from_text(_demux_docker_logs(blob), lines)
+    return parsed, truncated, None
+
+
+def _docker_logs_cli(cid, lines):
+    """Fallback: read via the docker CLI, invoked as an ARGUMENT LIST
+    (subprocess.run([...], shell=False)) so no client value is ever parsed by a
+    shell. The resolved id is placed after `--` so it can never be read as a flag
+    (defence in depth). Returns (lines, truncated, error). Never raises.
+    error ∈ None | 'docker_missing' | 'unreachable' | 'timeout'. Output is decoded
+    but NEVER logged server-side."""
     docker = shutil.which("docker")
     if not docker:
         return [], False, "docker_missing"
@@ -7245,20 +7289,28 @@ def _docker_logs_tail(cid, lines):
     except (OSError, ValueError):
         return [], False, "unreachable"
     if p.returncode != 0:
-        # No such container / daemon down → treat as unreachable; don't leak stderr.
+        # No such container / daemon down → unreachable; never leak stderr.
         return [], False, "unreachable"
-    # docker logs interleaves stdout+stderr; merge then split. Decode tolerantly —
-    # log lines are untrusted bytes (control chars, partial UTF-8 all possible).
-    out = (p.stdout or b"") + (b"\n" if p.stdout and not p.stdout.endswith(b"\n") else b"")
-    text = out.decode("utf-8", "replace")
-    raw_lines = [ln for ln in text.split("\n")]
-    if raw_lines and raw_lines[-1] == "":
-        raw_lines.pop()
-    truncated = len(raw_lines) > lines
-    if truncated:
-        raw_lines = raw_lines[-lines:]
-    parsed = [_parse_log_line(ln) for ln in raw_lines]
+    parsed, truncated = _lines_from_text((p.stdout or b"").decode("utf-8", "replace"), lines)
     return parsed, truncated, None
+
+
+def _docker_logs_tail(cid, lines):
+    """Read the last `lines` log lines of a KNOWN, resolved container id. Tries
+    the read-only Docker socket first (what the deployed image has), then falls
+    back to the docker CLI for hosts that expose it instead. Never raises;
+    returns (lines_list, truncated, error_code).
+
+    Injection-safety is guaranteed upstream: `cid` is only ever a value
+    _resolve_container matched against the live container set; both backends pass
+    it as a structured value (URL path / argv after `--`), never via a shell."""
+    try:
+        lines_out, truncated, err = _docker_logs_socket(cid, lines)
+        if err is None:
+            return lines_out, truncated, None
+    except Exception:
+        pass  # socket missing/denied → try the CLI fallback below
+    return _docker_logs_cli(cid, lines)
 
 
 @app.route("/api/logs/<container>")

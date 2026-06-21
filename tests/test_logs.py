@@ -109,11 +109,12 @@ class TestLogsTailEndpoint(unittest.TestCase):
         self.assertFalse(j["truncated"])
 
     def test_subprocess_invoked_with_arg_list_not_shell(self):
+        # Exercise the CLI fallback directly: it MUST use an argv list, shell=False,
+        # with the resolved id after `--` (never a shell string).
         fake = _fake_run_factory(stdout=b"x\n")
-        with patch("app.containers", return_value=FAKE_CONTAINERS), \
-             patch("app.shutil.which", return_value="/usr/bin/docker"), \
+        with patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=fake):
-            self.c.get("/api/logs/grafana?lines=10")
+            app._docker_logs_cli("abc123def456", 10)
         args, kw = fake.last_args, fake.last_kw
         self.assertIsInstance(args, list)
         self.assertEqual(args[0], "/usr/bin/docker")
@@ -124,8 +125,10 @@ class TestLogsTailEndpoint(unittest.TestCase):
         self.assertIn("timeout", kw)
 
     def test_lines_cap_enforced(self):
+        # Socket fails → CLI fallback; the endpoint must clamp lines to the cap.
         fake = _fake_run_factory(stdout=b"x\n")
         with patch("app.containers", return_value=FAKE_CONTAINERS), \
+             patch("app._docker_req", side_effect=OSError("no socket")), \
              patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=fake):
             self.c.get("/api/logs/grafana?lines=999999")
@@ -147,7 +150,7 @@ class TestLogsTailEndpoint(unittest.TestCase):
         with patch("app.containers", return_value=FAKE_CONTAINERS), \
              patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=fake):
-            lines, truncated, err = app._docker_logs_tail("abc123def456", app._LOG_LINES_CAP)
+            lines, truncated, err = app._docker_logs_cli("abc123def456", app._LOG_LINES_CAP)
         self.assertIsNone(err)
         self.assertTrue(truncated)
         self.assertEqual(len(lines), app._LOG_LINES_CAP)
@@ -166,7 +169,7 @@ class TestLogsTailEndpoint(unittest.TestCase):
         with patch("app.containers", return_value=FAKE_CONTAINERS), \
              patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=_sp.TimeoutExpired("docker", 8)):
-            lines, truncated, err = app._docker_logs_tail("abc123def456", 50)
+            lines, truncated, err = app._docker_logs_cli("abc123def456", 50)
         self.assertEqual(err, "timeout")
         self.assertEqual(lines, [])
 
@@ -175,9 +178,39 @@ class TestLogsTailEndpoint(unittest.TestCase):
         with patch("app.containers", return_value=FAKE_CONTAINERS), \
              patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=fake):
-            lines, truncated, err = app._docker_logs_tail("abc123def456", 50)
+            lines, truncated, err = app._docker_logs_cli("abc123def456", 50)
         self.assertEqual(err, "unreachable")
         self.assertEqual(lines, [])
+
+    def test_socket_path_is_primary_and_demuxes_frames(self):
+        # The deployed image has the Docker socket but NOT the docker CLI; the
+        # socket path must be tried first and demux the 8-byte stream framing.
+        def frame(stream, text):
+            b = text.encode()
+            return bytes([stream, 0, 0, 0]) + len(b).to_bytes(4, "big") + b
+        blob = (frame(1, "2026-01-01T00:00:00Z out line\n")
+                + frame(2, "2026-01-01T00:00:01Z err line\n"))
+        with patch("app.containers", return_value=FAKE_CONTAINERS), \
+             patch("app._docker_req", return_value=(200, blob)) as req, \
+             patch("app.subprocess.run") as run:
+            r = self.c.get("/api/logs/grafana?lines=50")
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertTrue(j["ok"])
+        self.assertEqual([l["text"] for l in j["lines"]], ["out line", "err line"])
+        run.assert_not_called()                          # CLI never needed
+        # the resolved id (not the raw client string) is in the socket URL
+        self.assertIn("abc123def456", req.call_args[0][1])
+
+    def test_socket_failure_falls_back_to_cli(self):
+        fake = _fake_run_factory(stdout=b"2026-01-01T00:00:00Z cli line\n")
+        with patch("app.containers", return_value=FAKE_CONTAINERS), \
+             patch("app._docker_req", side_effect=OSError("no socket")), \
+             patch("app.shutil.which", return_value="/usr/bin/docker"), \
+             patch("app.subprocess.run", side_effect=fake):
+            r = self.c.get("/api/logs/grafana?lines=50")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["lines"][0]["text"], "cli line")
 
     def test_log_text_kept_verbatim_for_ui_escaping(self):
         out = b'2026-01-01T00:00:00Z <script>alert(1)</script> & "tok"\n'
@@ -185,7 +218,7 @@ class TestLogsTailEndpoint(unittest.TestCase):
         with patch("app.containers", return_value=FAKE_CONTAINERS), \
              patch("app.shutil.which", return_value="/usr/bin/docker"), \
              patch("app.subprocess.run", side_effect=fake):
-            lines, _t, err = app._docker_logs_tail("abc123def456", 50)
+            lines, _t, err = app._docker_logs_cli("abc123def456", 50)
         self.assertIsNone(err)
         self.assertEqual(lines[0]["text"], '<script>alert(1)</script> & "tok"')
 
