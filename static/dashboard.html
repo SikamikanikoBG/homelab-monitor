@@ -533,6 +533,51 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .umodal .notes blockquote{border-left:3px solid var(--bd);padding:.2em 0 .2em 10px;color:var(--mut);margin:.5em 0}
 .umodal .notes hr{border:0;border-top:1px solid var(--bd);margin:1em 0}
 .umodal .notes img{max-width:100%}
+/* ── Command palette (⌘K / Ctrl-K) ──────────────────────────────────────────── */
+.cmdk{position:fixed;inset:0;z-index:120;display:none}
+.cmdk.show{display:block}
+.cmdk-scrim{position:absolute;inset:0;background:#0009;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+.cmdk-panel{position:absolute;left:50%;top:13vh;transform:translateX(-50%);width:min(640px,calc(100vw - 28px));
+  background:var(--card);border:1px solid var(--bd);border-radius:14px;
+  box-shadow:0 24px 70px rgba(0,0,0,.55),0 2px 10px rgba(0,0,0,.3);
+  display:flex;flex-direction:column;max-height:72vh;overflow:hidden;animation:cmdk-in .16s cubic-bezier(.2,.7,.3,1)}
+@keyframes cmdk-in{from{opacity:0;transform:translateX(-50%) translateY(-8px) scale(.985)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+.cmdk-search{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--bd)}
+.cmdk-search svg{width:18px;height:18px;flex:none;fill:var(--mut)}
+.cmdk-search input{flex:1;border:0;background:none;color:var(--tx);font:inherit;font-size:16px;outline:none;padding:2px 0}
+.cmdk-search input::placeholder{color:var(--mut)}
+.cmdk-esc{flex:none;border:1px solid var(--bd);border-radius:6px;background:var(--inset);color:var(--mut);font-size:11px;padding:2px 7px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.cmdk-list{overflow-y:auto;padding:6px;flex:1;scroll-padding:8px 0}
+.cmdk-group{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600;padding:9px 12px 5px}
+.cmdk-opt{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;cursor:pointer;color:var(--tx);user-select:none}
+.cmdk-opt .ci{flex:none;width:18px;text-align:center;font-size:15px;color:var(--mut);line-height:1}
+.cmdk-opt .ci svg{width:16px;height:16px;fill:currentColor;vertical-align:middle}
+.cmdk-opt .ct{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmdk-opt .ct mark{background:none;color:var(--accent);font-weight:700}
+.cmdk-opt .cs{flex:none;font-size:11px;color:var(--mut)}
+.cmdk-opt .ck{flex:none;border:1px solid var(--bd);border-radius:5px;background:var(--inset);color:var(--mut);font-size:10.5px;padding:1px 6px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.cmdk-opt[aria-selected="true"]{background:var(--sel)}
+.cmdk-opt[aria-selected="true"] .ci{color:var(--accent)}
+.cmdk-empty{padding:34px 16px;text-align:center;color:var(--mut);font-size:14px}
+.cmdk-foot{display:flex;align-items:center;gap:14px;padding:8px 14px;border-top:1px solid var(--bd);font-size:11px;color:var(--mut);flex-wrap:wrap}
+.cmdk-foot kbd{border:1px solid var(--bd);border-radius:5px;background:var(--inset);padding:1px 6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--tx)}
+.cmdk-foot .fk{display:inline-flex;align-items:center;gap:5px}
+/* Header trigger button (always present — the on-screen affordance, esp. on mobile) */
+.cmdk-trigger{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--bd);border-radius:8px;background:var(--inset);color:var(--mut);
+  font:inherit;font-size:12.5px;padding:5px 9px;cursor:pointer;line-height:1}
+.cmdk-trigger:hover{border-color:var(--mut);color:var(--tx)}
+.cmdk-trigger svg{width:14px;height:14px;fill:currentColor;flex:none}
+.cmdk-trigger .kb{border:1px solid var(--bd);border-radius:5px;background:var(--card);padding:1px 6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px}
+.cmdk-trigger .tlabel{font-weight:500}
+@media(max-width:620px){
+  .cmdk-trigger .tlabel{display:none}
+  .cmdk-panel{top:0;left:0;transform:none;width:100vw;max-width:100vw;max-height:88vh;border-radius:0 0 14px 14px;border-top:0;border-left:0;border-right:0;animation:cmdk-sheet .18s cubic-bezier(.2,.7,.3,1)}
+  @keyframes cmdk-sheet{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:translateY(0)}}
+  .cmdk-foot{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  .cmdk-panel{animation:none}
+}
 /* ── "What's new" modal (one-time, post-upgrade) — builds on .umodal/.notes ── */
 .wn .box{max-width:560px;animation:wnin .18s cubic-bezier(.2,.7,.3,1)}
 @keyframes wnin{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
@@ -2135,6 +2180,17 @@ function mountShell(){
   const ctr = document.getElementById('controls'); if(ctr) tb.appendChild(ctr);
   const upd = document.getElementById('updbadge'); if(upd) tb.appendChild(upd);
   const osupd = document.getElementById('osupdbadge'); if(osupd) tb.appendChild(osupd);
+  // Command palette trigger — the on-screen affordance (essential on mobile, where there's no ⌘K).
+  const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+  const cmdkBtn = document.createElement('button');
+  cmdkBtn.type='button'; cmdkBtn.id='cmdkBtn'; cmdkBtn.className='cmdk-trigger';
+  cmdkBtn.setAttribute('data-i18n-attr','aria-label:cmdk.open_aria');
+  cmdkBtn.setAttribute('aria-label', I18N.t('cmdk.open_aria','Open command palette'));
+  cmdkBtn.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 7a4.5 4.5 0 1 0-1.4 3.27l3.32 3.32a.75.75 0 1 0 1.06-1.06l-3.32-3.32A4.48 4.48 0 0 0 11.5 7zm-7.5 0a3 3 0 1 1 6 0 3 3 0 0 1-6 0z"/></svg>'
+    + '<span class="tlabel" data-i18n="cmdk.trigger">Search</span>'
+    + '<span class="kb">'+(isMac?'⌘K':'Ctrl K')+'</span>';
+  cmdkBtn.addEventListener('click', ()=>{ if(typeof openCmdk==='function') openCmdk(); });
+  tb.appendChild(cmdkBtn);
   const live = document.querySelector('header .live'); if(live) tb.appendChild(live);
   const foot = document.getElementById('foot');
   foot.insertAdjacentHTML('beforeend',
@@ -4844,7 +4900,7 @@ async function explainIncidentMember(ref){
 // (opened → each member_joined → cleared) and a per-member breakdown with a
 // per-member "Why?" that reuses the Copilot explain hookup. a11y: focus-trap,
 // ESC + backdrop close, body scroll-lock, focus restored to the trigger on close.
-let INCD_OPEN=null, INCD_TRIGGER=null, INCD_TIMER=null, INCD_CACHE={};
+let INCD_OPEN=null, INCD_TRIGGER=null, INCD_TIMER=null;
 function _incdDur(from, to){
   if(from==null||to==null) return '';
   const d=Math.max(60, to-from);
@@ -4894,7 +4950,6 @@ async function _incdLoad(showErr){
   }
   const inc=(j&&j.incident)||null;
   if(!inc){ if(showErr) _incdError(I18N.t('incd.err','Incident detail is temporarily unavailable.')); return; }
-  INCD_CACHE[iid]=inc;
   _incdRender(inc);
 }
 function _incdHeader(inc){
@@ -6125,7 +6180,250 @@ document.getElementById('logdrawer-scrim').onclick=closeLogDrawer;
 document.getElementById('logdrawer-copy').onclick=copyLogs;
 document.getElementById('logdrawer-follow').onchange=e=>{ if(LOG_NAME) startLogStream(LOG_NAME, e.target.checked); };
 document.addEventListener('keydown', e=>{ if(e.key==='Escape' && !document.getElementById('logdrawer').hidden) closeLogDrawer(); });
+
+// ── Command palette (⌘K / Ctrl-K) ────────────────────────────────────────────
+// Linear/Raycast-style fast-nav. Pure frontend: every command wires to a function
+// that already exists in this file. Fuzzy ranking (prefix > word-start > subsequence),
+// full keyboard + a11y (listbox/aria-activedescendant), focus-trap & restore,
+// body scroll-lock, i18n labels, and XSS-safe dynamic labels via esc().
+const CMDK = { open:false, trigger:null, items:[], filtered:[], sel:0 };
+
+// Build the static command set fresh each open (labels follow the live locale, and
+// the theme/language toggles read current state). Returns an ordered, grouped list.
+function _cmdkBuild(){
+  const G_NAV   = I18N.t('cmdk.grp_nav','Navigate');
+  const G_ACT   = I18N.t('cmdk.grp_actions','Actions');
+  const G_THEME = I18N.t('cmdk.grp_theme','Theme');
+  const G_LINK  = I18N.t('cmdk.grp_links','Open');
+  const G_INC   = I18N.t('cmdk.grp_incidents','Incidents');
+  const NAV_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9zM6 3H3.5a.5.5 0 0 0-.5.5V13h3V3z"/></svg>';
+  const list = [];
+  // Navigation — one entry per real tab (uses the same nav.<id> keys the sidebar uses).
+  TABS.forEach(t=>{
+    list.push({ id:'nav:'+t.id, group:G_NAV, icon:NAV_SVG,
+      label:I18N.tf('cmdk.go_to','Go to {name}',{name:I18N.t('nav.'+t.id, t.label)}),
+      keywords:'navigate tab '+t.id+' '+t.label, run:()=>showTab(t.id) });
+  });
+  // Actions — only functions that already exist.
+  list.push({ id:'act:refresh', group:G_ACT, icon:'↻',
+    label:I18N.t('cmdk.refresh','Refresh data'), keywords:'reload update fetch live',
+    run:()=>{ loadData(); loadHealth(); loadFleet(); } });
+  list.push({ id:'act:copilot', group:G_ACT, icon:'🧠',
+    label:I18N.t('cmdk.copilot','Ask the Lab Copilot'), keywords:'ai llm question ask chat assistant',
+    run:()=>{ showTab('overview'); requestAnimationFrame(()=>{
+      const q=document.getElementById('copilot-q');
+      const card=document.getElementById('copilotcard');
+      if(card) card.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth',block:'start'});
+      if(q && q.offsetParent!==null){ try{ q.focus(); }catch(e){} } }); } });
+  list.push({ id:'act:digest', group:G_ACT, icon:'🧠',
+    label:I18N.t('cmdk.digest','Refresh Copilot digest'), keywords:'ai summary regenerate llm',
+    run:()=>{ showTab('overview'); if(typeof loadCopilot==='function') loadCopilot(true); } });
+  list.push({ id:'act:incidents', group:G_ACT, icon:'🛟',
+    label:I18N.t('cmdk.incidents','Open Incidents'), keywords:'anomaly events alerts problems',
+    run:()=>{ showTab('gpu'); if(typeof loadIncidents==='function') loadIncidents(true);
+      requestAnimationFrame(()=>{ const c=document.getElementById('inc-card');
+        if(c && !c.hidden) c.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth',block:'start'}); }); } });
+  // Language toggle — only when more than one locale is actually available.
+  if(I18N.available.length > 1){
+    const other = I18N.available.find(a=>a.code!==I18N.locale);
+    if(other) list.push({ id:'act:lang', group:G_ACT, icon:'🌐',
+      label:I18N.tf('cmdk.lang','Switch language to {name}',{name:other.nativeName}),
+      keywords:'language locale i18n translate '+other.code+' '+other.name,
+      run:async()=>{ await I18N.set(other.code); if(typeof buildNav==='function') buildNav(); if(typeof buildLangSwitch==='function') buildLangSwitch(); } });
+  }
+  // Theme — reuse the exact theme switcher logic (themePref + applyTheme).
+  [['dark','cmdk.theme_dark','Dark','☾'],['light','cmdk.theme_light','Light','☀'],['system','cmdk.theme_system','System','◐']]
+    .forEach(([th,key,fb,ic])=>{
+      list.push({ id:'theme:'+th, group:G_THEME, icon:ic,
+        label:I18N.tf('cmdk.theme','Theme: {name}',{name:I18N.t(key,fb)}),
+        keywords:'theme appearance color '+th+' '+fb,
+        run:()=>{ themePref=th; localStorage.setItem('hl_theme',themePref); applyTheme(); } });
+    });
+  // Deep links / external (real routes).
+  list.push({ id:'link:status', group:G_LINK, icon:'🌐',
+    label:I18N.t('cmdk.status','Public status page'), keywords:'status uptime public share /status',
+    run:()=>window.open('/status','_blank','noopener') });
+  list.push({ id:'link:metrics', group:G_LINK, icon:'📈',
+    label:I18N.t('cmdk.metrics','Prometheus metrics'), keywords:'metrics prometheus /metrics scrape',
+    run:()=>window.open('/metrics','_blank','noopener') });
+  // Open/recent incidents → jump straight into the detail drawer (only if loaded).
+  const incs=(typeof INCIDENTS!=='undefined' && INCIDENTS && INCIDENTS.incidents)||[];
+  incs.slice(0,6).forEach(it=>{
+    const names=(it.members||[]).map(m=>(typeof _anomLabel==='function')?_anomLabel(m.series):m.series).filter(Boolean);
+    const title=names.length?names.join(', '):I18N.t('cmdk.inc_generic','Incident');
+    const open=it.state==='open';
+    list.push({ id:'inc:'+it.id, group:G_INC, icon:open?'🔴':'⚪',
+      label:I18N.tf('cmdk.inc','Incident: {title}',{title}),
+      sub: open?I18N.t('inc.state_open','Open'):I18N.t('inc.state_cleared','Cleared'),
+      keywords:'incident anomaly '+names.join(' ')+' '+(open?'open':'cleared'),
+      run:()=>{ if(typeof openIncidentDrawer==='function') openIncidentDrawer(it.id, CMDK.trigger); } });
+  });
+  return list;
+}
+
+// Subsequence/substring fuzzy match with ranking + match-span highlighting.
+// Returns {score, marks:[[start,end],...]} or null. Higher score = better.
+function _cmdkScore(label, keywords, q){
+  if(!q) return {score:0, marks:[]};
+  const L=label.toLowerCase(), Q=q.toLowerCase();
+  // 1) substring in the visible label (best — highlightable)
+  const idx=L.indexOf(Q);
+  if(idx>=0){
+    const atStart = idx===0;
+    const atWord = idx>0 && /[\s:·]/.test(L[idx-1]);
+    const base = atStart?1000 : atWord?800 : 600;
+    return {score: base - idx, marks:[[idx, idx+Q.length]]};
+  }
+  // 2) substring in keywords (matched, but not in the visible label)
+  if((keywords||'').toLowerCase().indexOf(Q)>=0) return {score:400, marks:[]};
+  // 3) subsequence (fuzzy) over the label
+  let li=0, qi=0, first=-1, last=-1, gaps=0;
+  while(li<L.length && qi<Q.length){
+    if(L[li]===Q[qi]){ if(first<0) first=li; last=li; qi++; }
+    else if(first>=0) gaps++;
+    li++;
+  }
+  if(qi===Q.length){
+    // tighter spans rank higher; reward early first-hit
+    return {score: 300 - gaps - first*0.3, marks:[]};
+  }
+  // 4) subsequence over keywords (last resort)
+  let ki=0, kq=0, K=(keywords||'').toLowerCase();
+  while(ki<K.length && kq<Q.length){ if(K[ki]===Q[kq]) kq++; ki++; }
+  if(kq===Q.length) return {score:120, marks:[]};
+  return null;
+}
+function _cmdkHighlight(label, marks){
+  if(!marks||!marks.length) return esc(label);
+  let out='', cur=0;
+  marks.forEach(([s,e])=>{ out+=esc(label.slice(cur,s))+'<mark>'+esc(label.slice(s,e))+'</mark>'; cur=e; });
+  out+=esc(label.slice(cur));
+  return out;
+}
+function _cmdkFilter(q){
+  const items=CMDK.items;
+  if(!q.trim()){
+    CMDK.filtered = items.map(it=>({it, marks:[]}));
+    return;
+  }
+  const scored=[];
+  items.forEach(it=>{
+    const r=_cmdkScore(it.label, it.keywords, q.trim());
+    if(r) scored.push({it, score:r.score, marks:r.marks});
+  });
+  scored.sort((a,b)=>b.score-a.score);
+  CMDK.filtered = scored;
+}
+function _cmdkRender(){
+  const list=document.getElementById('cmdk-list'); if(!list) return;
+  if(!CMDK.filtered.length){
+    list.innerHTML='<div class="cmdk-empty">'+esc(I18N.t('cmdk.empty','No commands match'))+'</div>';
+    return;
+  }
+  let html='', lastGroup=null;
+  CMDK.filtered.forEach((row,i)=>{
+    const it=row.it;
+    if(it.group!==lastGroup){ html+='<div class="cmdk-group" role="presentation">'+esc(it.group)+'</div>'; lastGroup=it.group; }
+    const sel=i===CMDK.sel;
+    const isSvg=/^</.test(it.icon);
+    const sub=it.sub?'<span class="cs">'+esc(it.sub)+'</span>':'';
+    html+='<div class="cmdk-opt" role="option" id="cmdk-opt-'+i+'" data-i="'+i+'" aria-selected="'+(sel?'true':'false')+'">'
+      +'<span class="ci" aria-hidden="true">'+(isSvg?it.icon:esc(it.icon))+'</span>'
+      +'<span class="ct">'+_cmdkHighlight(it.label, row.marks)+'</span>'+sub+'</div>';
+  });
+  list.innerHTML=html;
+  list.querySelectorAll('.cmdk-opt').forEach(el=>{
+    el.addEventListener('mousemove', ()=>{ const i=+el.dataset.i; if(i!==CMDK.sel){ CMDK.sel=i; _cmdkSync(); } });
+    el.addEventListener('click', ()=>{ CMDK.sel=+el.dataset.i; _cmdkRun(); });
+  });
+  _cmdkSync();
+}
+function _cmdkSync(){
+  const list=document.getElementById('cmdk-list'), input=document.getElementById('cmdk-input');
+  if(!list) return;
+  list.querySelectorAll('.cmdk-opt').forEach(el=>{
+    const on=+el.dataset.i===CMDK.sel; el.setAttribute('aria-selected', on?'true':'false');
+    if(on){ if(input) input.setAttribute('aria-activedescendant', el.id);
+      el.scrollIntoView({block:'nearest'}); }
+  });
+}
+function _cmdkMove(delta){
+  const n=CMDK.filtered.length; if(!n) return;
+  CMDK.sel=((CMDK.sel+delta)%n+n)%n;   // wrap
+  _cmdkSync();
+}
+function _cmdkRun(){
+  const row=CMDK.filtered[CMDK.sel]; if(!row) return;
+  closeCmdk();
+  try{ row.it.run(); }catch(e){ /* never let a command crash the palette */ }
+}
+function openCmdk(){
+  if(CMDK.open) return;
+  CMDK.open=true; CMDK.trigger=document.activeElement;
+  CMDK.items=_cmdkBuild(); CMDK.sel=0;
+  const wrap=document.getElementById('cmdk'), input=document.getElementById('cmdk-input');
+  wrap.hidden=false; wrap.classList.add('show');
+  document.documentElement.style.overflow='hidden';   // body scroll-lock
+  input.value=''; _cmdkFilter(''); _cmdkRender();
+  requestAnimationFrame(()=>{ try{ input.focus(); }catch(e){} });
+}
+function closeCmdk(){
+  if(!CMDK.open) return;
+  CMDK.open=false;
+  const wrap=document.getElementById('cmdk');
+  wrap.classList.remove('show'); wrap.hidden=true;
+  document.documentElement.style.overflow='';
+  const t=CMDK.trigger; CMDK.trigger=null;
+  if(t && typeof t.focus==='function'){ try{ t.focus(); }catch(e){} }   // restore focus
+}
+function toggleCmdk(){ CMDK.open?closeCmdk():openCmdk(); }
+(function(){
+  const wrap=document.getElementById('cmdk'), input=document.getElementById('cmdk-input'),
+        scrim=document.getElementById('cmdk-scrim');
+  if(!wrap||!input) return;
+  scrim.addEventListener('click', closeCmdk);
+  input.addEventListener('input', ()=>{ _cmdkFilter(input.value); CMDK.sel=0; _cmdkRender(); });
+  // Global opener: ⌘K (mac) / Ctrl-K. Works even while typing in another field.
+  document.addEventListener('keydown', e=>{
+    if((e.metaKey||e.ctrlKey) && !e.altKey && (e.key==='k'||e.key==='K')){
+      e.preventDefault(); toggleCmdk(); return;
+    }
+  });
+  // Palette-local keys (capture so they win over background handlers while open).
+  input.addEventListener('keydown', e=>{
+    switch(e.key){
+      case 'ArrowDown': e.preventDefault(); _cmdkMove(1); break;
+      case 'ArrowUp':   e.preventDefault(); _cmdkMove(-1); break;
+      case 'Home':      e.preventDefault(); CMDK.sel=0; _cmdkSync(); break;
+      case 'End':       e.preventDefault(); CMDK.sel=Math.max(0,CMDK.filtered.length-1); _cmdkSync(); break;
+      case 'Enter':     e.preventDefault(); _cmdkRun(); break;
+      case 'Escape':    e.preventDefault(); closeCmdk(); break;
+      case 'Tab':       e.preventDefault(); _cmdkMove(e.shiftKey?-1:1); break;   // focus-trap: keep selection moving, focus stays in input
+    }
+  });
+})();
 </script>
+
+<!-- ───────── Command palette (⌘K / Ctrl-K) ───────── -->
+<div class="cmdk" id="cmdk" hidden>
+  <div class="cmdk-scrim" id="cmdk-scrim"></div>
+  <div class="cmdk-panel" role="dialog" aria-modal="true" data-i18n-attr="aria-label:cmdk.dialog_aria" aria-label="Command palette">
+    <div class="cmdk-search">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 7a4.5 4.5 0 1 0-1.4 3.27l3.32 3.32a.75.75 0 1 0 1.06-1.06l-3.32-3.32A4.48 4.48 0 0 0 11.5 7zm-7.5 0a3 3 0 1 1 6 0 3 3 0 0 1-6 0z"/></svg>
+      <input id="cmdk-input" type="text" role="combobox" aria-expanded="true" aria-controls="cmdk-list"
+             aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false"
+             data-i18n-attr="placeholder:cmdk.placeholder;aria-label:cmdk.placeholder"
+             placeholder="Type a command or search…">
+      <span class="cmdk-esc">Esc</span>
+    </div>
+    <div class="cmdk-list" id="cmdk-list" role="listbox" data-i18n-attr="aria-label:cmdk.results_aria" aria-label="Results"></div>
+    <div class="cmdk-foot">
+      <span class="fk"><kbd>↑</kbd><kbd>↓</kbd> <span data-i18n="cmdk.hint_nav">navigate</span></span>
+      <span class="fk"><kbd>↵</kbd> <span data-i18n="cmdk.hint_run">run</span></span>
+      <span class="fk"><kbd>Esc</kbd> <span data-i18n="cmdk.hint_close">close</span></span>
+    </div>
+  </div>
+</div>
 
 <div id="toast-container"
      role="status"
