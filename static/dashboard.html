@@ -2181,6 +2181,7 @@ const TABS = [
   {id:'backup',     label:'Backup',     charts:false, settings:true, zone:'settings'},
 ];
 let R = localStorage.getItem('hl_range') || '6h';
+if(!['1h','6h','24h','7d','30d','all'].includes(R)) R='6h';  // garbage/stale token → safe default, never a blank/unfocusable control
 let TAB = (location.hash.slice(1)) || localStorage.getItem('hl_tab') || 'overview';
 if(!TABS.some(t=>t.id===TAB)) TAB='overview';
 // Settings drawer: the monitoring tab to return to when leaving Settings, plus
