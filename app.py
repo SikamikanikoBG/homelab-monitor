@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS incident_members(
   active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(incident_id, series));
 CREATE INDEX IF NOT EXISTS idx_incidents_state ON incidents(state, opened_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_opened ON incidents(opened_at);
+CREATE TABLE IF NOT EXISTS llm_samples(ts INTEGER NOT NULL, model TEXT, tps REAL,
+  ttft_ms REAL, prompt_tps REAL, eval_count INTEGER);
+CREATE INDEX IF NOT EXISTS idx_llm_ts ON llm_samples(ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -6084,6 +6087,10 @@ def _copilot_ask_prompt(facts, question):
 # separately, outside any held lock.
 _LLM_LOCK = threading.Lock()
 _LLM_LAST = None  # {model, tps, ttft_ms, prompt_tps, eval_count, prompt_eval_count, ts}
+# Throughput history is sparse by nature (one row per REAL copilot generation),
+# so a small ring is plenty for a sparkline + Prometheus latest. Keep the most
+# recent rows AND drop anything older than the global RETENTION window.
+_LLM_SAMPLE_CAP = 500
 
 
 def _llm_metrics_from_response(data, model=None):
@@ -6117,9 +6124,34 @@ def _llm_metrics_from_response(data, model=None):
     }
 
 
+def _persist_llm_sample(m):
+    """Append one real throughput measurement to llm_samples and trim the ring.
+    Writes under the global LOCK (the DB-write discipline every other table
+    follows) — and is called OUTSIDE _LLM_LOCK so the two locks never nest.
+    Never raises; a DB error here must never break the copilot path."""
+    try:
+        with LOCK:
+            DB.execute(
+                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count) "
+                "VALUES(?,?,?,?,?,?)",
+                (m["ts"], m.get("model"), m.get("tps"), m.get("ttft_ms"),
+                 m.get("prompt_tps"), m.get("eval_count")))
+            # Retention: drop rows past the global window, then cap to the ring
+            # size so a chatty copilot can't grow the table without bound.
+            DB.execute("DELETE FROM llm_samples WHERE ts < ?", (m["ts"] - RETENTION,))
+            DB.execute(
+                "DELETE FROM llm_samples WHERE ts < "
+                "(SELECT MIN(ts) FROM (SELECT ts FROM llm_samples ORDER BY ts DESC LIMIT ?))",
+                (_LLM_SAMPLE_CAP,))
+            DB.commit()
+    except Exception:
+        pass
+
+
 def _capture_llm_metrics(data):
     """Side-channel: stash the latest throughput measurement if the response has
-    usable timing. Never raises; never touches the copilot's text path."""
+    usable timing, and persist it for the tok/s trend. Never raises; never
+    touches the copilot's text path."""
     try:
         m = _llm_metrics_from_response(data, COPILOT_MODEL)
         if m is None:
@@ -6127,8 +6159,31 @@ def _capture_llm_metrics(data):
         global _LLM_LAST
         with _LLM_LOCK:
             _LLM_LAST = m
+        # Persist OUTSIDE _LLM_LOCK (DB write takes the global LOCK; never nest).
+        _persist_llm_sample(m)
     except Exception:
         pass
+
+
+def _llm_history(limit=60):
+    """Recent real throughput measurements, newest-last for charting. Reads
+    llm_samples under LOCK. Returns a list of {ts, tps, ttft_ms, prompt_tps}.
+    Never raises — an empty list on any error / when no generation has run yet."""
+    try:
+        n = max(1, min(int(limit), _LLM_SAMPLE_CAP))
+    except (TypeError, ValueError):
+        n = 60
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts, tps, ttft_ms, prompt_tps FROM llm_samples "
+                "ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
+    except Exception:
+        return []
+    out = [{"ts": r[0], "tps": r[1], "ttft_ms": r[2], "prompt_tps": r[3]}
+           for r in rows]
+    out.reverse()  # oldest → newest for a left-to-right sparkline
+    return out
 
 
 def _llm_resident_models():
@@ -6254,12 +6309,19 @@ def api_llm():
         last = dict(_LLM_LAST) if _LLM_LAST else None
     if last is not None:
         last["age_sec"] = max(0, int(time.time()) - last.pop("ts"))
+    try:
+        limit = max(1, min(int(request.args.get("history", 60)), _LLM_SAMPLE_CAP))
+    except (TypeError, ValueError):
+        limit = 60
     return jsonify({
         "enabled": COPILOT_ENABLED,
         "ollama_reachable": reachable,
         "model": COPILOT_MODEL,
         "last": last,
         "resident": resident,
+        # Sparse tok/s trend — one point per real copilot generation. Empty list
+        # (honest) until a generation has run; never 500.
+        "history": _llm_history(limit),
     })
 
 
@@ -7555,6 +7617,29 @@ def _extra_metrics_text():
                             "direction": (it["direction"] if it else "none")}, 1 if it else 0))
         _prom_metric(out, "homelab_anomaly_active", "gauge",
                      "Anomaly flag per series (1=flagged now, 0=normal)", flag_s)
+    except Exception:
+        pass
+
+    # LLM engine: latest REAL throughput measurement (AI Lab Cockpit). Only
+    # emitted once a copilot generation has actually run — we never publish a
+    # fake 0 that would look like a stalled engine. Labelled by model so multiple
+    # models read distinctly. Resident-model count is always-safe (0 = none).
+    try:
+        with _LLM_LOCK:
+            last = dict(_LLM_LAST) if _LLM_LAST else None
+        if last:
+            lbl = {"model": last.get("model") or COPILOT_MODEL}
+            _prom_metric(out, "homelab_llm_tokens_per_second", "gauge",
+                         "LLM generation throughput, latest measurement (tokens/s)",
+                         [(lbl, last.get("tps"))])
+            _prom_metric(out, "homelab_llm_ttft_ms", "gauge",
+                         "LLM time-to-first-token, latest measurement (ms)",
+                         [(lbl, last.get("ttft_ms"))])
+        resident, reachable = _llm_resident_models()
+        if reachable:
+            _prom_metric(out, "homelab_llm_resident_models", "gauge",
+                         "Models currently loaded in ollama (count)",
+                         [(None, len(resident))])
     except Exception:
         pass
 

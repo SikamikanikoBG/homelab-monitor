@@ -159,6 +159,148 @@ class TestEndpoint(unittest.TestCase):
         self.assertNotIn("secret", body)
         self.assertNotIn("127.0.0.1:1", body)
 
+    def test_history_field_present_and_empty_when_no_samples(self):
+        app.COPILOT_ENABLED = True
+        app.COPILOT_OLLAMA_URL = "http://127.0.0.1:1"
+        with app.LOCK:
+            app.DB.execute("DELETE FROM llm_samples")
+            app.DB.commit()
+        j = self.c.get("/api/llm").get_json()
+        self.assertIn("history", j)
+        self.assertEqual(j["history"], [])
+
+
+def _clear_llm_samples():
+    with app.LOCK:
+        app.DB.execute("DELETE FROM llm_samples")
+        app.DB.commit()
+
+
+class TestPersistence(unittest.TestCase):
+    def setUp(self):
+        self._saved = app._LLM_LAST
+        _clear_llm_samples()
+
+    def tearDown(self):
+        app._LLM_LAST = self._saved
+        _clear_llm_samples()
+
+    def _count(self):
+        with app.LOCK:
+            return app.DB.execute("SELECT COUNT(*) FROM llm_samples").fetchone()[0]
+
+    def test_capture_inserts_a_row(self):
+        app._capture_llm_metrics(SAMPLE_GEN)
+        self.assertEqual(self._count(), 1)
+        hist = app._llm_history()
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0]["tps"], 60.0)
+        self.assertEqual(hist[0]["ttft_ms"], 1400.0)
+
+    def test_untimed_response_inserts_nothing(self):
+        app._capture_llm_metrics({"response": "hi"})  # no timing → no row
+        self.assertEqual(self._count(), 0)
+
+    def test_retention_caps_rows(self):
+        # Push well past the ring cap; rows should be trimmed to the cap.
+        cap = app._LLM_SAMPLE_CAP
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.executemany(
+                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count) "
+                "VALUES(?,?,?,?,?,?)",
+                [(now - (cap + 50 - i), "m", float(i), 100.0, None, i)
+                 for i in range(cap + 50)])
+            app.DB.commit()
+        # A fresh capture triggers the trim.
+        app._capture_llm_metrics(SAMPLE_GEN)
+        self.assertLessEqual(self._count(), cap)
+
+    def test_retention_drops_old_rows(self):
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count) "
+                "VALUES(?,?,?,?,?,?)",
+                (now - app.RETENTION - 86400, "old", 1.0, 1.0, None, 1))
+            app.DB.commit()
+        app._capture_llm_metrics(SAMPLE_GEN)  # triggers retention DELETE
+        with app.LOCK:
+            old = app.DB.execute(
+                "SELECT COUNT(*) FROM llm_samples WHERE ts < ?",
+                (now - app.RETENTION,)).fetchone()[0]
+        self.assertEqual(old, 0)
+
+    def test_history_oldest_first(self):
+        now = int(time.time())
+        with app.LOCK:
+            for i, t in enumerate((now - 30, now - 20, now - 10)):
+                app.DB.execute(
+                    "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count) "
+                    "VALUES(?,?,?,?,?,?)", (t, "m", float(i), 50.0, None, i))
+            app.DB.commit()
+        hist = app._llm_history()
+        ts = [h["ts"] for h in hist]
+        self.assertEqual(ts, sorted(ts))  # oldest → newest
+
+    def test_persist_db_error_does_not_propagate(self):
+        # A broken DB write must never break the copilot path: capture still
+        # updates _LLM_LAST and never raises.
+        app._LLM_LAST = None
+        real = app.DB
+        try:
+            class _Boom:
+                def execute(self, *a, **k):
+                    raise RuntimeError("db down")
+            app.DB = _Boom()
+            app._capture_llm_metrics(SAMPLE_GEN)   # must not raise
+        finally:
+            app.DB = real
+        self.assertIsNotNone(app._LLM_LAST)
+        self.assertEqual(app._LLM_LAST["tps"], 60.0)
+
+
+class TestPromExport(unittest.TestCase):
+    def setUp(self):
+        self.c = app.app.test_client()
+        self._last = app._LLM_LAST
+        self._url = app.COPILOT_OLLAMA_URL
+        self._en = app.COPILOT_ENABLED
+
+    def tearDown(self):
+        app._LLM_LAST = self._last
+        app.COPILOT_OLLAMA_URL = self._url
+        app.COPILOT_ENABLED = self._en
+
+    def test_gauges_emitted_when_measurement_exists(self):
+        app._LLM_LAST = dict(app._llm_metrics_from_response(SAMPLE_GEN, "gemma3:1b"))
+        body = self.c.get("/metrics").get_data(as_text=True)
+        self.assertIn("homelab_llm_tokens_per_second", body)
+        self.assertIn("homelab_llm_ttft_ms", body)
+        self.assertIn('model="gemma3:1b"', body)
+        # latest tok/s value appears on the gauge line
+        line = [l for l in body.splitlines()
+                if l.startswith("homelab_llm_tokens_per_second{")][0]
+        self.assertIn("60.0", line)
+
+    def test_no_tps_gauge_when_no_measurement(self):
+        app._LLM_LAST = None
+        # unreachable ollama → resident gauge also absent (not a fake 0)
+        app.COPILOT_ENABLED = True
+        app.COPILOT_OLLAMA_URL = "http://127.0.0.1:1"
+        body = self.c.get("/metrics").get_data(as_text=True)
+        self.assertNotIn("homelab_llm_tokens_per_second", body)
+        self.assertNotIn("homelab_llm_ttft_ms", body)
+
+    def test_metrics_still_parses_with_llm_gauges(self):
+        from test_metrics import parse_exposition
+        app._LLM_LAST = dict(app._llm_metrics_from_response(SAMPLE_GEN, "gemma3:1b"))
+        helps, types, _ = parse_exposition(
+            self.c.get("/metrics").get_data(as_text=True))
+        self.assertEqual(len(helps), len(set(helps)))
+        self.assertEqual(len(types), len(set(types)))
+        self.assertIn("homelab_llm_tokens_per_second", types)
+
 
 if __name__ == "__main__":
     unittest.main()
