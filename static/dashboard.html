@@ -614,12 +614,30 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
 @media(max-width:860px){
   .app{grid-template-columns:1fr}
   .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid var(--bd)}
-  .sbrand{border-bottom:0;border-right:1px solid var(--bd)}
-  .navlist{display:flex;flex-wrap:wrap;flex:1 1 100%;order:3;padding:6px;gap:2px}
+  .sbrand{border-bottom:0;border-right:1px solid var(--bd);padding:10px 13px}
+  /* nav becomes a single swipeable row, not a wrapped wall */
+  .navlist{display:flex;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1 1 100%;order:3;padding:5px 8px;gap:3px;scrollbar-width:thin}
   .navgroup{display:none}
-  .nrow{width:auto}.nrow .tdot{margin-left:6px}
-  .foot{flex-direction:row;border-top:0;margin-left:auto;align-items:center;padding:6px 10px}
+  .nrow{width:auto;flex:none;white-space:nowrap}.nrow .tdot{margin-left:6px}
+  /* declutter the mobile bar: the GitHub/social engagement box + lang are desktop-sidebar only */
+  .side .ghbox,.side .ghlinks,.side .social,.side .star-cta{display:none}
+  .foot{flex-direction:row;border-top:0;margin-left:auto;align-items:center;padding:6px 10px;gap:8px}
+  .foot .langswitch{display:none}
   .content{max-width:none}
+}
+/* ──────────── cockpit on small screens ──────────── */
+@media(max-width:760px){
+  #mc-cockpit{padding-top:0}
+  .content{padding:12px}
+  .mc-fleetbar{padding:11px 13px;gap:9px 12px}
+  .mc-gauge-wrap{width:200px;height:200px}
+  .mc-gauge-wrap svg{width:200px;height:200px}
+  .mc-gauge-wrap::before{width:158px;height:158px}
+  .mc-gauge-big{font-size:40px}.mc-gauge-big .mc-pct{font-size:17px}
+  .mc-burn-num{font-size:44px}
+  .mc-hero{padding:18px 16px 20px;gap:8px 0}
+  .mc-board{gap:12px}
+  .mc-modeseg{margin-left:0}
 }
 /* ──────────── phone polish (≤680px) ──────────── */
 @media(max-width:680px){
@@ -783,6 +801,11 @@ h2 .hic{ margin-right:8px } .card-sub .hic{ margin-right:6px; width:1em; height:
    Quiet the secondary voice, unify the pill/badge shape, and align the sub-tab
    icons — calmer rhythm without touching the data density users came for. */
 .subtab .hic{ margin-right:5px; width:.95em; height:.95em; opacity:.9 }
+/* tap a panel header to drill into its detail tab */
+.mc-ph[data-goto],.mc-hero-ph[data-goto],.mc-scard-h[data-goto]{ cursor:pointer }
+.mc-ph[data-goto]:hover h3,.mc-hero-ph[data-goto]:hover h3,.mc-scard-h[data-goto]:hover{ color:var(--accent) }
+.mc-goto-arrow{ color:var(--mut); font-weight:700; margin-left:5px; opacity:.5; transition:color .12s, opacity .12s }
+[data-goto]:hover .mc-goto-arrow{ color:var(--accent); opacity:1 }
 .mc-hic{ display:inline-flex; align-items:center; color:var(--mut); margin-right:1px; flex:none }
 .mc-hic .sic,.mc-hic svg{ width:15px; height:15px; opacity:.85; stroke-width:2 }
 .mc-scard-h .mc-hic{ margin-right:6px }
@@ -830,10 +853,10 @@ h2 .hic{ opacity:.9 }
 .mc-boardbar{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
 .mc-custbtn,.mc-resetbtn{ font:inherit; font-size:11px; font-weight:600; color:var(--mut); background:var(--card); border:1px solid var(--bd); border-radius:9px; padding:5px 11px; cursor:pointer }
 .mc-custbtn:hover,.mc-resetbtn:hover{ color:var(--tx); border-color:var(--mut) }
-.mc-custbtn{ color:var(--accent); border-color:color-mix(in srgb, var(--accent) 42%, var(--bd)) }
-.mc-custbtn:hover{ background:var(--warnbg); border-color:var(--accent) }
-.mc-custbtn.on{ color:var(--accent); border-color:var(--accent); background:var(--warnbg) }
-.mc-discover{ font-size:11px; color:var(--mut) }
+.mc-custbtn{ color:var(--accent); border-color:var(--accent); background:var(--warnbg) }
+.mc-custbtn:hover{ filter:brightness(1.08) }
+.mc-custbtn.on{ color:#1a1100; background:linear-gradient(180deg,#e6b948,#d29922); border-color:var(--accent) }
+.mc-discover{ font-size:11.5px; color:var(--txt2,var(--mut)) }
 body.mc-customizing .mc-discover{ display:none }
 @media(max-width:760px){ .mc-discover{ display:none } }
 .mc-boardhint{ font-size:11px; color:var(--mut) }
@@ -1151,7 +1174,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
       </svg>
       <!-- engine gauge -->
       <div class="mc-hero-engine">
-        <div class="mc-hero-ph"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span><div class="mc-modeseg" id="mc-modeseg"></div></div>
+        <div class="mc-hero-ph" id="mc-engine-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-goto-arrow">›</span><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span><div class="mc-modeseg" id="mc-modeseg"></div></div>
         <div class="mc-gauge-wrap">
           <svg viewBox="0 0 200 200" width="264" height="264">
             <g id="mc-ticks"></g>
@@ -1180,7 +1203,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
       </div>
       <!-- the money -->
       <div class="mc-hero-money">
-        <div class="mc-hero-ph"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
+        <div class="mc-hero-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
         <div class="mc-burn-hero">
           <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
           <div class="mc-burn-fig"><span class="mc-burn-num" id="mc-burn-num">0.000</span><span class="mc-burn-unit" id="mc-burn-unit"></span></div>
@@ -1196,7 +1219,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 
     <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) with legend -->
     <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
-      <div class="mc-ph"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
+      <div class="mc-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-goto-arrow">›</span><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
       <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
     </div>
 
@@ -1227,14 +1250,14 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
       <div class="mc-widget" data-w="cost">
         <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
         <div class="mc-panel">
-          <div class="mc-ph"><span class="mc-hic" id="mc-ic-cost"></span><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
+          <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-cost"></span><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
           <div class="mc-lead" id="mc-lead"></div>
         </div>
       </div>
       <div class="mc-widget" data-w="containers">
         <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
         <div class="mc-panel mc-scard">
-          <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+          <div class="mc-scard-h" data-goto="containers"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
           <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
           <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
         </div>
@@ -1242,7 +1265,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
       <div class="mc-widget" data-w="services">
         <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
         <div class="mc-panel mc-scard">
-          <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+          <div class="mc-scard-h" data-goto="services"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
           <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
           <div class="mc-failed-note" id="mc-failed-note">
             <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
@@ -4254,6 +4277,7 @@ function mcPaintEngine($, g, gx, host){
     headroomBad = ramPct>=90;
   }
   mcSetIc('mc-ic-engine', g.available?'🎮':'🖥');
+  { const ph=$('mc-engine-ph'); if(ph) ph.setAttribute('data-goto', g.available?'gpu':'host'); }
   mcSetGaugeLegend(arcLabel, big, ringLabel, ringPct);
   $('mc-engine-tag').textContent=tag;
   $('mc-gauge-sub').textContent=sub;
@@ -4320,6 +4344,7 @@ function mcBreakdownHTML(rows){
 }
 function mcApplyEngine($, V){
   mcSetIc('mc-ic-engine', V.icon||'🎮');
+  { const ph=document.getElementById('mc-engine-ph'); if(ph) ph.setAttribute('data-goto', V.icon==='🖥'?'host':'gpu'); }
   mcSetGaugeLegend(V.arcLabel||null, V.big, V.ringLabel, V.ringPct);
   $('mc-engine-title').textContent=V.title||'';
   const he=$('mc-engine-host'); if(he) he.textContent=V.hostLabel||'';
@@ -4519,8 +4544,19 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
     lead.querySelectorAll('.mc-lbar-fill').forEach(b=>{ b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%'; });
   }));
 }
+function mcAttentionCount(){
+  // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  let n=hosts.filter(h=>!h.is_local && !h.online).length;
+  n+=hosts.filter(h=>((h.host&&h.host.disks)||[]).some(d=>d.pct>=90)).length;
+  if(hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0)>0) n++;
+  const dk=(HH&&HH.docker)||{}; if((dk.containers||[]).some(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'))) n++;
+  const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
+  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) n++;
+  return n;
+}
 function mcDeriveInsights(skipAllGood){
-  // Fleet-wide signals turned into actionable insights (sysadmin/devops triage).
+  // The detailed alert feed (the fleet bar only shows a rollup count, never this detail).
   const out=[];
   const hosts=(FLEET&&FLEET.hosts)||[];
   const off=hosts.filter(h=>!h.is_local && !h.online);
@@ -4578,6 +4614,14 @@ function mcApplyBoard(){
 function mcInitBoard(){
   const board=document.getElementById('mc-board'); if(!board || board.__mcInit) return; board.__mcInit=true;
   mcApplyBoard();
+  // tap a panel header → its detail tab (ignored while customizing or on interactive children)
+  const ck=document.getElementById('mc-cockpit');
+  if(ck) ck.addEventListener('click', e=>{
+    if(document.body.classList.contains('mc-customizing')) return;
+    if(e.target.closest('button,a,select,input,.mc-modeseg,.mc-host,.mc-fb-chip,.mc-hchip,.mc-whide,.mc-wgrip')) return;
+    const h=e.target.closest('[data-goto]'); if(!h) return;
+    const t=h.getAttribute('data-goto'); if(t && typeof showTab==='function') showTab(t);
+  });
   let dragEl=null;
   board.querySelectorAll('.mc-widget').forEach(el=>{
     el.setAttribute('draggable','false');
@@ -4590,6 +4634,7 @@ function mcInitBoard(){
   });
   const btn=document.getElementById('mc-custbtn'), hint=document.getElementById('mc-boardhint'), reset=document.getElementById('mc-resetbtn');
   if(btn) btn.onclick=()=>{ const on=document.body.classList.toggle('mc-customizing'); btn.classList.toggle('on',on); if(hint) hint.hidden=!on; if(reset) reset.hidden=!on;
+    btn.textContent = on ? I18N.t('mc.done','✓ Done') : I18N.t('mc.customize','⠿ Customize layout');
     board.querySelectorAll('.mc-widget').forEach(el=>el.setAttribute('draggable', on?'true':'false')); };
   if(reset) reset.onclick=()=>{ mcSaveBoard({}); MC_W_DEFAULT.forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); }); board.querySelectorAll('.mc-widget').forEach(el=>el.hidden=false); mcRenderHiddenTray(); };
 }
@@ -4607,24 +4652,19 @@ function mcPaintFleetBar($){
   const g=(HH&&HH.now&&HH.now.gpu)||{};
   const nowW=Math.round((g.available?g.power:0)||0);
   const sev = off.length?'mc-crit':((diskHosts.length||updates)?'mc-warn':'');
-  const chips=[];
-  if(off.length) chips.push(`<span class="mc-fb-chip mc-crit" data-go="offline">⚠ ${off.length} ${I18N.t('mc.offline_lc','offline')}</span>`);
-  if(diskHosts.length) chips.push(`<span class="mc-fb-chip mc-warn" data-go="disk">◐ ${diskHosts.length} ${I18N.t('mc.disk_low','disk low')}</span>`);
-  if(updates) chips.push(`<span class="mc-fb-chip mc-warn" data-go="updates">↑ ${updates} ${I18N.t('mc.updates_lc','updates')}</span>`);
-  if(!chips.length) chips.push(`<span class="mc-fb-chip mc-ok">✓ ${I18N.t('mc.all_healthy_lc','all healthy')}</span>`);
+  // single rollup — the detail lives in the Insight Feed, so nothing is duplicated
+  const att=(typeof mcAttentionCount==='function')?mcAttentionCount():0;
+  const chips=[ att>0
+    ? `<span class="mc-fb-chip ${off.length?'mc-crit':'mc-warn'}" data-go="attention">⚠ ${att} ${I18N.t('mc.need_attn','need attention')}</span>`
+    : `<span class="mc-fb-chip mc-ok">✓ ${I18N.t('mc.all_healthy_lc','all healthy')}</span>` ];
   bar.innerHTML =
       `<div class="mc-fb-seg"><span class="mc-fb-dot ${sev}"></span><span class="mc-fb-title">${I18N.t('mc.fleet','Fleet')}</span>`
     + `<span class="mc-fb-big">${online}<span class="mc-fb-tot">/${total} ${I18N.t('mc.online','online')}</span></span></div>`
     + `<div class="mc-fb-seg mc-fb-div">${chips.join(' ')}</div>`
     + `<div class="mc-fb-spacer"></div>`
-    + `<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.fleet_ram','Fleet RAM')} <b>${fmtMBshort(ramU)}</b> / ${fmtMBshort(ramT)}</div>`
-    + (dk.available?`<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.containers','Containers')} <b>${cRun}</b></div>`:'')
-    + (g.available?`<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.now','Now')} <b>${nowW}</b> W</div>`:'');
-  bar.querySelectorAll('[data-go]').forEach(el=>el.onclick=()=>{
-    const go=el.dataset.go;
-    if(go==='offline'){ const o=off[0]; if(o) setHost(o.name); }
-    else if(go==='disk'){ const d=diskHosts[0]; if(d){ setHost(d.name); showTab('host'); } }
-    else if(go==='updates'){ showTab('hosts'); }
+    + `<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.fleet_ram','Fleet RAM')} <b>${fmtMBshort(ramU)}</b> / ${fmtMBshort(ramT)}</div>`;
+  bar.querySelectorAll('[data-go="attention"]').forEach(el=>el.onclick=()=>{
+    const w=document.querySelector('.mc-widget[data-w="insights"]'); if(w) w.scrollIntoView({behavior:'smooth',block:'center'});
   });
 }
 function mcPaintFleet($){
