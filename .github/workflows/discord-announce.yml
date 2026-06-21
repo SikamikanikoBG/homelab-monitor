@@ -11,10 +11,18 @@ name: Announce release on Discord
 # Re-post a specific tag by hand via the "Run workflow" button (workflow_dispatch).
 #
 #   secrets.DISCORD_ANNOUNCE_WEBHOOK   Discord webhook URL for #announcements
+#
+# ── DISABLED 2026-06-21 ───────────────────────────────────────────────────────
+# A community-run GitHub→Discord bot (repo webhook) already posts every repo
+# event — releases, PRs, issues, stars — into the channel, so this workflow's
+# release announcement would be a DUPLICATE. The auto-trigger is commented out
+# below; the file is kept (not deleted) and can still be run by hand via
+# workflow_dispatch, or fully re-enabled by uncommenting the `release:` trigger
+# if the external bot ever goes away.
 
 on:
-  release:
-    types: [published]
+  # release:                 # ← disabled: external GitHub→Discord bot covers this
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:
