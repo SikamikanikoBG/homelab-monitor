@@ -5,6 +5,19 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.17.3](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.3) — 2026-06-21 · _patch_
+_Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
+
+**Changed**
+- **Overview rebuilt as a 3-column mission-control cockpit.** The fleet rail (every host at a glance), the engine + cost column, and the live insight feed + cost leaderboard sit side by side, with a containers / services / diagnostics strip beneath — a clear glance → scan → drill hierarchy instead of the old stacked layout.
+- **The engine shows three gauges — GPU · CPU · RAM — for the focused host**, with a **This host / Whole fleet** toggle that aggregates the whole homelab (average util, summed VRAM / cores / RAM). Each ring turns amber → red as it saturates.
+- **Calmer, more deliberate styling** across the Overview: solid panels with soft depth, neutral ink for figures, semantic colour reserved for state, restrained motion.
+
+**Fixed**
+- **Accessibility** — every tab now passes a WCAG 2.1 AA contrast scan in both themes (muted captions, warn/ok text on tinted surfaces, in-text link distinction, keyboard-focusable scroll regions, full reduced-motion coverage).
+- **Mobile** — fixed a horizontal-overflow bug (the chart canvas could pin the page wider than the viewport); the dashboard is now fully responsive down to 320px, and the GitHub / Discord / social cluster is shown again on small screens.
+- Removed the duplicated detailed-fleet table from the Overview (the fleet rail is the canonical view).
+
 ## [0.17.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.2) — 2026-06-21 · _patch_
 _Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
 

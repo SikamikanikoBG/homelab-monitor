@@ -28,7 +28,7 @@ Open `http://<your-host>:9800` and you're done. Full options (from source, GPU t
 
 ## What you get
 
-![The Overview — your whole fleet at a glance, with an AI-workload band up top](docs/screenshots/overview.png)
+![The Overview — a mission-control cockpit: every host in the fleet at a glance, GPU/CPU/RAM gauges for any box (or the whole homelab), live power-to-money costs and an insight feed](docs/screenshots/overview.png)
 
 One page, every box, the questions you actually have. The classics are all here — and 0.16 builds a whole **AI cockpit** on top of them.
 

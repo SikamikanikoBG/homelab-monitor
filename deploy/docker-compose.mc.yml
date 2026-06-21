@@ -21,6 +21,11 @@ services:
     image: homelab-monitor:mc
     container_name: homelab-monitor-mc
     restart: unless-stopped
+    # ardi's default docker runtime is `runc`, so request the nvidia runtime
+    # explicitly to inject nvidia-smi (prod/next were created when nvidia was the
+    # default runtime; a fresh container must ask for it). Inert on GPU-less hosts
+    # only if the runtime exists — keep this file hub-specific.
+    runtime: nvidia
     # Same host-privileged shape as prod/next so behaviour is identical.
     network_mode: host
     pid: host

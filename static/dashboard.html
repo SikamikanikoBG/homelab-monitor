@@ -612,15 +612,21 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
 .dense .nrow{padding:6px 10px}.dense .card{padding:11px 12px}
 /* responsive: sidebar folds to a top bar */
 @media(max-width:860px){
-  .app{grid-template-columns:1fr}
+  .app{grid-template-columns:minmax(0,1fr)}  /* minmax(0,…) so no child can pin the column wider than the viewport */
   .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid var(--bd)}
   .sbrand{border-bottom:0;border-right:1px solid var(--bd);padding:10px 13px}
   /* nav becomes a single swipeable row, not a wrapped wall */
   .navlist{display:flex;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1 1 100%;order:3;padding:5px 8px;gap:3px;scrollbar-width:thin}
   .navgroup{display:none}
   .nrow{width:auto;flex:none;white-space:nowrap}.nrow .tdot{margin-left:6px}
-  /* declutter the mobile bar: the GitHub/social engagement box + lang are desktop-sidebar only */
-  .side .ghbox,.side .ghlinks,.side .social,.side .star-cta{display:none}
+  /* engagement cluster: keep it on mobile, but as a compact horizontal row that
+     sits under the nav (the verbose star-CTA blurb is the only thing dropped). */
+  .side .star-cta{display:none}
+  .side .ghbox{flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;order:4;flex:1 1 100%;padding:8px 10px;border-bottom:0;border-top:1px solid var(--bd)}
+  .side .ghstar{flex:0 0 auto;padding:6px 10px}
+  .side .ghlinks{flex:0 0 auto;gap:6px}
+  .side .social{display:flex;flex:1 1 auto;gap:6px;margin-top:0;min-width:150px}
+  .side .social .soc{flex:1 1 auto}
   .foot{flex-direction:row;border-top:0;margin-left:auto;align-items:center;padding:6px 10px;gap:8px}
   .foot .langswitch{display:none}
   .content{max-width:none}
@@ -1104,6 +1110,266 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
   .mc-host:hover{ transform:none }
   #mc-cockpit [style*="animation:mc-draw"]{ animation:none !important; stroke-dashoffset:0 !important }
 }
+
+/* ═══════════ production-hardening pass — a11y / theming / motion ═══════════
+   Evidence-driven fixes from an axe-core WCAG 2.1 AA scan across every tab in
+   both themes. Additive layer (source-order + specificity win); nothing above
+   is removed. Each rule cites the violation it closes. */
+
+/* 1 ─ Muted captions + inline markers cleared AA. The de-noise pass put
+   opacity:.9 on .cap, which dimmed --mut captions to ~4.28:1 on light surfaces
+   AND dimmed the red VRAM-pressure markers to 4.38:1 in dark — both under the
+   4.5 floor. --mut already reads as secondary; drop the opacity and both pass. */
+.cap{ opacity:1 }
+
+/* 2 ─ On-tint semantic "ink". Bright --warn (#9a6700 in light) fails 4.5:1 as
+   TEXT on its own pale tint — badges (3.99), the OS-update badge (4.34), pkg
+   chips, exposure tags. A dedicated darker ink for warn TEXT clears AA while
+   borders / dots / bars keep the lighter --warn. Dark keeps the bright value.
+   (.upd.osupd.hassec stays red: higher specificity wins over this rule.) */
+:root,[data-theme="dark"]{ --warn-ink:var(--warn) }
+[data-theme="light"]{ --warn-ink:#7a5300 }
+.badge.warn,.uchip.pkg,.exptag.pub,.mc-pill-warn,.upd.osupd{ color:var(--warn-ink) }
+
+/* 3 ─ Links inside running text must be distinguishable without colour
+   (WCAG 1.4.1 / link-in-text-block). The post-star CTA link measured 1.1–1.2:1
+   against its surrounding prose — colour was the only channel. Underline links
+   that sit in a text block; nav / button / tile links are exempt by scope. */
+.star-cta a,.cap a,.scope-notice a,.muted a,.diagbanner a,.sharepriv a{
+  text-decoration:underline; text-underline-offset:2px; text-decoration-thickness:1px }
+
+/* 4 ─ Motion: the de-noise pass disabled most loops under reduced-motion but
+   missed the hero gauge halo and the header live-dot. Honour it fully. */
+@media(prefers-reduced-motion:reduce){
+  .mc-gauge-wrap::before{ animation:none !important }
+  .pulse{ animation:none !important }
+}
+
+/* 5 ─ OK "ink" for badges on tinted surfaces. --ok (#1a7f37) on the okbg tint
+   composited over a panel reads 4.28:1 (e.g. the OK badge on a host row) — under
+   the floor. Darker ink for OK TEXT clears it; dots/borders keep bright --ok. */
+:root,[data-theme="dark"]{ --ok-ink:var(--ok) }
+[data-theme="light"]{ --ok-ink:#126a29 }
+.badge.ok,.mc-pill-ok{ color:var(--ok-ink) }
+
+/* 6 ─ Filled-amber chips with dark ink. The gradient filled controls (Star,
+   update badge, customize, Got-it) use a bright #e6b948→#d29922 amber that clears
+   4.5:1 with #1a1100 ink. Two flat fills missed it — the OS-chooser active chip
+   and the numbered step bubble use flat --accent, which is dark (#9a6700) in
+   light and drops dark ink to 3.83:1. Give them the same bright amber. */
+.osvar.on,.hstep-no{ background:linear-gradient(180deg,#e6b948,#d29922); border-color:var(--accent) }
+
+/* ═══════════ professional calm pass — de-cockpit the Overview ═══════════
+   The Overview's "Mission Control" treatment (glassmorphism, ambient bloom,
+   neon text-shadow glows, a radar-sweep + pulsing halo, oversized glowing
+   numbers) read as an AI-generated sci-fi cockpit — out of step with the rest
+   of the app, which is already a calm, flat, GitHub/Portainer-grade tool.
+   This layer makes the Overview match that bar: solid surfaces, crisp 1px
+   borders, neutral ink for figures, semantic colour reserved for state, motion
+   only where it conveys something. Data, layout and features are untouched.
+
+   ── 1. Neutralise the glow / glass / bloom tokens (cascades through every
+        mc-* element at once). Surfaces become solid; glows become nothing. */
+:root,[data-theme="dark"]{
+  --mc-glass:var(--card); --mc-glass2:var(--inset);
+  --mc-bloom:transparent; --mc-bloom2:transparent;
+  --mc-glow:transparent; --mc-glowsoft:transparent;
+  --mc-stroke:transparent; --mc-shadow:none }
+[data-theme="light"]{
+  --mc-glass:var(--card); --mc-glass2:var(--inset);
+  --mc-bloom:transparent; --mc-bloom2:transparent;
+  --mc-glow:transparent; --mc-glowsoft:transparent;
+  --mc-stroke:transparent; --mc-shadow:none }
+
+/* ── 2. Drop the (now pointless) backdrop blur — solid bg makes it wasted GPU. */
+.mc-panel,.mc-fleetbar{ -webkit-backdrop-filter:none; backdrop-filter:none }
+
+/* ── 3. One radius system shared with the rest of the app (.card = 7px). The
+        cockpit was on 13–18px; bring it in line so nothing looks like a
+        different product bolted on. */
+.mc-panel,.mc-hero,.mc-fleetbar,.mc-chartpanel{ border-radius:10px }
+.mc-host,.mc-ins,.mc-bstat,.mc-headroom,.mc-diag{ border-radius:8px }
+body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
+
+/* ── 4. Remove the decorative chrome outright (not just dim it). */
+#mc-cockpit::before{ display:none }          /* ambient amber bloom behind the hero */
+.mc-radar-deco{ display:none }               /* spinning radar-sweep SVG */
+.mc-gauge-wrap::before{ display:none }        /* pulsing glow halo behind the gauge */
+.mc-hero::after{ display:none }              /* top accent gradient hairline */
+.main{ background:var(--bg) }                /* kill the app-wide radial bloom layer */
+
+/* ── 5. Kill the neon: text-shadow glows, arc drop-shadows, badge/dot halos. */
+.mc-gauge-big,.mc-burn-num,.mc-big2 .mc-n{ text-shadow:none }
+#mc-util-arc,#mc-ring{ filter:none }
+.mc-state-badge,.mc-fb-dot,.mc-fb-dot.mc-warn,.mc-fb-dot.mc-crit{ box-shadow:none }
+.mc-meter-fill{ box-shadow:none; filter:none }
+.mc-lbar-fill{ box-shadow:none }
+.mc-host.mc-focus{ box-shadow:inset 0 0 0 1px var(--accent) }
+
+/* ── 6. Calmer type: smaller figures, weight 700 not 800, and neutral ink for
+        the numbers (colour belongs to state, not to every digit). Matches the
+        rest of the app, where KPI values are --tx mono, not accent. */
+.mc-gauge-big{ font-size:46px; font-weight:700 }
+.mc-big2 .mc-n{ font-size:28px; font-weight:700 }
+.mc-burn-num{ font-size:34px; font-weight:700; color:var(--tx); letter-spacing:-.5px }
+.mc-burn-unit{ font-size:15px }
+
+/* ── 7. Tame the tracked-uppercase eyebrows (.11–.16em → .04em). Uppercase
+        section labels are fine; the wide sci-fi tracking was the tell. */
+.mc-ph h3,.mc-hero-ph h3,.mc-scard-h,.mc-burn-lbl,.mc-fb-title,.mc-bstat .mc-k,
+.mc-gauge-sub,.mc-state-badge,.mc-showing,.mc-fb-roll{ letter-spacing:.04em }
+
+/* ── 8. Retire the decorative side-stripes (the skill's standing ban). Status
+        already lives in the dot / icon / text — the coloured left border is
+        pure decoration. Full hairline borders read calmer and more deliberate. */
+.mc-host{ border-left:1px solid var(--bd) }
+.mc-ins{ border-left:1px solid var(--bd) }
+.mc-headroom,.mc-headroom.mc-warnedge{ border-left:1px solid var(--bd) }
+
+/* ── 9. Mobile: keep figures from ballooning past the desktop sizes (an old
+        mobile rule pushed the burn number to 44px — now larger than desktop). */
+@media(max-width:760px){
+  .mc-burn-num{ font-size:30px }
+  .mc-gauge-big{ font-size:40px }
+  .mc-hero{ padding:18px 16px }
+}
+
+/* ── 10. Rebalance the hero so the middle (GPU vitals) column isn't starved.
+        The 264px gauge + 340px money column squeezed the vitals to ~110px,
+        wrapping "NVIDIA GeForce RTX 3090" to three lines and cramping the
+        meters. Trim the gauge + money columns and the gap to give vitals room;
+        let the GPU name wrap to two balanced lines instead of three ragged. */
+.mc-hero{ grid-template-columns:auto minmax(280px,1fr) 300px; gap:14px 26px }
+.mc-gauge-wrap{ width:236px; height:236px }
+.mc-gauge-wrap svg{ width:236px; height:236px }
+.mc-engine-name{ font-size:14px; line-height:1.3; text-wrap:balance }
+.mc-hero-money{ padding-left:26px }
+.mc-meter{ gap:6px }
+@media(max-width:1180px){
+  .mc-hero{ grid-template-columns:1fr }
+  .mc-gauge-wrap,.mc-gauge-wrap svg{ width:224px; height:224px }
+}
+
+/* ── 11. Two contrast fixes the calm-pass scan surfaced on the Overview:
+   (a) Offline host cards dimmed the WHOLE card with opacity:.55, which dragged
+       the red "offline" message to 2.47:1 (opacity dims children regardless of
+       their own colour). Convey offline with a muted label + recessed surface
+       instead, and keep the status message at full, legible strength.
+   (b) The "Customize layout" button is warn-on-tint — route it through the
+       existing --warn-ink token so it clears AA in light like the other chips. */
+.mc-host.mc-off{ opacity:1; background:var(--inset); border-color:var(--bd) }
+.mc-host.mc-off .mc-host-label,.mc-host.mc-off .mc-host-os{ color:var(--mut) }
+.mc-custbtn{ color:var(--warn-ink) }
+
+/* ═══════════ information-architecture redesign — fleet-first Overview ═══════════
+   The Overview answers ONE question first: "is my lab OK?" That's a fleet
+   question, so the fleet leads as the hero (every host as a health tile in a
+   responsive grid). The single-host GPU/CPU gauge — formerly the giant hero —
+   is demoted to a featured-host card below it. The fleet no longer also lives in
+   the customizable board (it was shown three times; now once, where it matters).
+   Render JS is untouched: it still fills #mc-fleet / #mc-fleet-tag by id. */
+
+/* ── Fleet hero: host tiles tile across the full width (2–4 cols), no inner scroll. */
+.mc-fleethero{ margin-bottom:16px }
+.mc-fleethero .mc-fleet{
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(264px,1fr));
+  gap:12px; padding:4px 16px 16px; max-height:none; overflow:visible }
+.mc-fleethero .mc-host{ border-left:1px solid var(--bd) }
+.mc-fleethero .mc-host:hover{ transform:translateY(-2px) }   /* lift, not slide, in a grid */
+
+/* ── Engine demoted: it's one host's compute, not the headline. Smaller gauge,
+      calmer band, clearly a section below the fleet rather than the showpiece. */
+.mc-hero{ grid-template-columns:auto minmax(260px,1fr) 300px; gap:14px 26px; padding:18px 24px 20px }
+.mc-hero .mc-gauge-wrap,.mc-hero .mc-gauge-wrap svg{ width:210px; height:210px }
+.mc-hero .mc-gauge-big{ font-size:40px }
+.mc-hero-ph h3{ font-size:11px }
+
+/* ── Board: 5 even widgets (insights, cost, containers, services, diagnostics)
+      in a calm grid. The three short stat cards line up as their own row. */
+.mc-board{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:start }
+
+@media(max-width:1180px){
+  .mc-fleethero .mc-fleet{ grid-template-columns:repeat(auto-fill,minmax(240px,1fr)) }
+}
+@media(max-width:760px){
+  .mc-fleethero .mc-fleet{ grid-template-columns:1fr; padding:4px 12px 12px }
+  .mc-hero .mc-gauge-wrap,.mc-hero .mc-gauge-wrap svg{ width:196px; height:196px }
+}
+
+/* ── Fleet-tile polish: a consistent presence so the grid reads as deliberate,
+      and offline tiles centre their status instead of floating top-heavy. */
+.mc-fleethero .mc-host{ min-height:104px }
+.mc-fleethero .mc-host.mc-off{ display:flex; flex-direction:column; justify-content:center; gap:6px }
+.mc-fleethero .mc-host.mc-off .mc-host-top{ margin-bottom:0 }
+/* keep the host name legible even when a status badge shares the row */
+.mc-host-top{ flex-wrap:wrap }
+.mc-host-label{ flex:1 1 auto }
+.mc-host-os{ flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+
+/* ═══════════ concept-a cockpit — the 3-column mission control, approved design ═══════════
+   The shipped overview drifted from `design/wow-concepts/concept-a-mission-control.html`
+   into a hero+board layout, and my passes over-flattened it. This restores concept-a:
+   a fleet-rail | engine+burn+history | feed+cost 3-column command centre with its
+   *restrained* polish — soft panel depth, ONE amber-glow figure (burn rate), small
+   semantic status-dot glows, a tidy gauge. No halos / radar sweep / stacked neon
+   (that was the AI tell), and every a11y fix from the hardening pass stays intact. */
+
+/* The 3-column cockpit + bottom strip (concept-a's own grid). */
+.mc-grid{ grid-template-columns:264px minmax(0,1fr) 332px; gap:14px; align-items:start }
+.mc-strip{ grid-template-columns:1fr 1fr 1.4fr; gap:14px; margin-top:14px }
+
+/* Panels: subtle top-lit gradient + a soft drop shadow = depth without glassmorphism. */
+:root,[data-theme="dark"]{ --ca-shadow:0 10px 30px -14px rgba(0,0,0,.6); --ca-amber:#e3b341; --ca-burnglow:rgba(210,153,34,.22) }
+[data-theme="light"]{ --ca-shadow:0 10px 26px -16px rgba(40,50,70,.16); --ca-amber:#9a6700; --ca-burnglow:rgba(210,153,34,.16) }
+.mc-panel,.mc-fleetbar{ background:linear-gradient(180deg,var(--card),var(--inset)); box-shadow:var(--ca-shadow); border-radius:14px; min-width:0 }
+/* The Chart.js canvas keeps its last pixel width and, in flow, pins the column's
+   min-content (and the whole page) wide on mobile. Take it out of flow so it can
+   never drive layout width; Chart.js (responsive) just fills the box. */
+.mc-chartbox{ overflow:hidden }
+.mc-chartbox canvas{ position:absolute!important; inset:0; width:100%!important; height:100%!important }
+
+/* One hero figure carries the amber + a soft glow: the burn rate (large text → AA via 3:1). */
+.mc-burn-num{ color:var(--ca-amber); font-size:46px; text-shadow:0 0 22px var(--ca-burnglow); letter-spacing:-1px }
+.mc-burn-unit{ font-size:17px }
+
+/* Engine = three gauges (GPU · CPU · RAM) for the focused host. */
+.mc-engine.mc-tri{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:16px 16px 18px; align-items:start }
+.mc-tg{ display:flex; flex-direction:column; align-items:center; gap:7px; min-width:0 }
+.mc-tg-ring{ position:relative; width:100%; max-width:148px; aspect-ratio:1 }
+.mc-tg-ring svg{ width:100%; height:100%; display:block; overflow:visible }
+.mc-tg-track{ stroke:var(--bd) }
+.mc-tg-arc{ transition:stroke-dashoffset 1.1s cubic-bezier(.2,.8,.2,1), stroke .35s }
+.mc-tg-center{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center }
+.mc-tg-num{ font-family:var(--mono); font-size:30px; font-weight:700; color:var(--tx); line-height:1; font-variant-numeric:tabular-nums }
+.mc-tg-pct{ font-family:var(--mono); font-size:13px; color:var(--mut); align-self:flex-start; margin-top:7px; margin-left:1px }
+.mc-tg-label{ font-size:11px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--tx) }
+.mc-tg-sub{ font-size:10px; color:var(--mut); font-family:var(--mono); text-align:center; line-height:1.35; min-height:14px }
+/* Engine header: title left, "showing host" + tag ride right, wrap when tight. */
+.mc-engine-ph{ flex-wrap:wrap; gap:6px 8px }
+.mc-engine-ph .mc-ehost{ font-size:11px; color:var(--mut); display:inline-flex; align-items:center; gap:5px; flex-wrap:wrap; min-width:0 }
+@media(max-width:420px){ .mc-tg-num{ font-size:25px } .mc-engine.mc-tri{ gap:6px; padding:14px 10px } }
+
+/* Small, semantic status-dot glows (concept-a) — never neon. */
+.mc-sdot.mc-on{ box-shadow:0 0 8px rgba(63,185,80,.55) }
+.mc-fb-dot{ box-shadow:0 0 7px rgba(63,185,80,.5) }
+.mc-fb-dot.mc-warn{ box-shadow:0 0 7px rgba(210,153,34,.5) }
+.mc-fb-dot.mc-crit{ box-shadow:0 0 7px rgba(248,81,73,.5) }
+.mc-dd.mc-ok{ box-shadow:0 0 7px rgba(63,185,80,.45) }
+
+/* Fleet rail: concept-a host tiles carry their status-coloured left edge again. */
+.mc-host{ border-left:3px solid var(--accent) }
+.mc-host:hover{ transform:translateX(2px) }
+
+/* concept-a's only ambient light: a whisper of amber in the top-right corner. */
+#mc-cockpit{ position:relative }
+#mc-cockpit::before{ content:''; display:block; position:absolute; inset:-40px 0 auto auto; width:min(60%,560px); height:330px;
+  background:radial-gradient(600px 300px at 100% 0%, rgba(210,153,34,.09), transparent 70%); pointer-events:none; z-index:0 }
+#mc-cockpit > *{ position:relative; z-index:1 }
+
+/* Collapse the cockpit to one column below 1180. Use minmax(0,1fr) (not 1fr =
+   minmax(auto,1fr)) so a wide child — chiefly the chart canvas — can't pin the
+   track and push the whole page wider than the viewport. */
+@media(max-width:1180px){ .mc-grid{ grid-template-columns:minmax(0,1fr) } .mc-strip{ grid-template-columns:minmax(0,1fr) } }
 </style></head><body><div class="app"><aside class="side" id="sidebar"></aside><main class="main"><div class="topbar" id="topbar"></div><div class="content">
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
@@ -1160,148 +1426,125 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
   <!-- Mission Control cockpit leads (live data); the full fleet table moves into
        a collapsed <details> below it; AI band, MCP and Setup keep their cards. -->
 
-  <!-- Mission Control cockpit (renderMissionControl) -->
+  <!-- Mission Control cockpit (renderMissionControl) — concept-a 3-column command
+       center: FLEET rail · BURN+ENGINE+HISTORY · INSIGHT FEED + COST. Every element
+       is filled by id by paintMissionControl(); structure is static. -->
   <div id="mc-cockpit">
-    <!-- fleet health bar: fleet-wide rollup, leads the cockpit -->
+    <!-- fleet-wide rollup bar leads the cockpit (full width) -->
     <div class="mc-fleetbar" id="mc-fleetbar"></div>
-    <!-- HERO band — the engine gauge + vitals + the money, one cinematic showpiece over the bloom -->
-    <div class="mc-hero mc-panel">
-      <svg class="mc-radar-deco" viewBox="0 0 100 100" aria-hidden="true">
-        <circle cx="50" cy="50" r="48" fill="none" stroke="var(--accent)" stroke-opacity=".14"/>
-        <circle cx="50" cy="50" r="30" fill="none" stroke="var(--accent)" stroke-opacity=".10"/>
-        <g class="mc-sweep"><path d="M50 50 L50 2 A48 48 0 0 1 92 30 Z" fill="url(#mc-rg)"/></g>
-        <defs><radialGradient id="mc-rg"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>
-      </svg>
-      <!-- engine gauge -->
-      <div class="mc-hero-engine">
-        <div class="mc-hero-ph" id="mc-engine-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-goto-arrow">›</span><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span><div class="mc-modeseg" id="mc-modeseg"></div></div>
-        <div class="mc-gauge-wrap">
-          <svg viewBox="0 0 200 200" width="264" height="264">
-            <g id="mc-ticks"></g>
-            <path d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--bd)" stroke-width="13" stroke-linecap="round"/>
-            <path id="mc-util-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="url(#mc-util-grad)" stroke-width="13" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
-            <circle cx="100" cy="100" r="62" fill="none" stroke="var(--bd)" stroke-width="6"/>
-            <circle id="mc-ring" cx="100" cy="100" r="62" fill="none" stroke="var(--info)" stroke-width="6" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 100 100)"/>
-            <defs><linearGradient id="mc-util-grad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="var(--ok)"/><stop offset="60%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--crit)"/></linearGradient></defs>
-          </svg>
-          <div class="mc-gauge-center">
-            <div class="mc-gauge-big"><span id="mc-gauge-big">0</span><span class="mc-pct" id="mc-gauge-pct">%</span></div>
-            <div class="mc-gauge-sub" id="mc-gauge-sub"></div>
-            <div class="mc-state-badge" id="mc-state-badge"></div>
-          </div>
-        </div>
-        <div class="mc-gauge-legend" id="mc-gauge-legend"></div>
-      </div>
-      <!-- vitals (engine meters) -->
-      <div class="mc-engine-meta mc-hero-vitals">
-        <div class="mc-engine-name"><span id="mc-engine-name"></span><span class="mc-chip" id="mc-engine-chip"></span></div>
-        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m1l"></span><span class="mc-mv" id="mc-m1v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m1bar"></div></div></div>
-        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m2l"></span><span class="mc-mv" id="mc-m2v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m2bar"></div></div></div>
-        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m3l"></span><span class="mc-mv" id="mc-m3v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m3bar"></div></div></div>
-        <div class="mc-headroom" id="mc-headroom"></div>
-        <div id="mc-vitals-extra"></div>
-      </div>
-      <!-- the money -->
-      <div class="mc-hero-money">
-        <div class="mc-hero-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
-        <div class="mc-burn-hero">
-          <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
-          <div class="mc-burn-fig"><span class="mc-burn-num" id="mc-burn-num">0.000</span><span class="mc-burn-unit" id="mc-burn-unit"></span></div>
-          <span class="mc-burn-proj" id="mc-burn-proj"></span>
-        </div>
-        <div class="mc-burn-stats">
-          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.today">Today</span><div><span class="mc-v" id="mc-c-today">0.00</span> <span class="mc-u" id="mc-u1"></span></div></div>
-          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.7days">7 days</span><div><span class="mc-v" id="mc-c-d7">0.00</span> <span class="mc-u" id="mc-u2"></span></div></div>
-          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.30days">30 days</span><div><span class="mc-v" id="mc-c-d30">0.00</span> <span class="mc-u" id="mc-u3"></span></div></div>
-        </div>
-      </div>
-    </div>
 
-    <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) with legend -->
-    <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
-      <div class="mc-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-goto-arrow">›</span><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
-      <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
-    </div>
-
-    <!-- customizable widget board: drag to reorder, × to hide, persisted per browser -->
-    <div class="mc-boardbar" id="mc-boardbar">
-      <button class="mc-custbtn" id="mc-custbtn" type="button" data-i18n="mc.customize">⠿ Customize layout</button>
-      <span class="mc-discover" id="mc-discover" data-i18n="mc.discover">— drag &amp; drop the panels below to make this overview yours</span>
-      <span class="mc-boardhint" id="mc-boardhint" hidden data-i18n="mc.board_hint">Drag panels to reorder · × to hide · they save automatically</span>
-      <span style="flex:1"></span>
-      <span class="mc-hiddentray" id="mc-hiddentray"></span>
-      <button class="mc-resetbtn" id="mc-resetbtn" type="button" hidden data-i18n="mc.reset_layout">Reset layout</button>
-    </div>
-    <div class="mc-board" id="mc-board">
-      <div class="mc-widget" data-w="fleet">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+    <div class="mc-grid">
+      <!-- ───── LEFT: fleet rail — every host at a glance ───── -->
+      <div class="mc-col">
         <div class="mc-panel">
-          <div class="mc-ph"><span class="mc-hic" id="mc-ic-fleet"></span><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag">—</span></div>
+          <div class="mc-ph"><span class="mc-hic" id="mc-ic-fleet"></span><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag" style="margin-left:auto">—</span></div>
           <div class="mc-fleet" id="mc-fleet"></div>
         </div>
       </div>
-      <div class="mc-widget" data-w="insights">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+
+      <!-- ───── CENTER: burn rate · engine gauge · compute history ───── -->
+      <div class="mc-col">
+        <!-- burn rate (the money) -->
         <div class="mc-panel">
-          <div class="mc-ph"><span class="mc-hic" id="mc-ic-feed"></span><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag"></span></div>
-          <div class="mc-feed" id="mc-feed"></div>
+          <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
+          <div class="mc-burn">
+            <div class="mc-burn-hero">
+              <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
+              <div class="mc-burn-fig"><span class="mc-burn-num" id="mc-burn-num">0.000</span><span class="mc-burn-unit" id="mc-burn-unit"></span></div>
+              <span class="mc-burn-proj" id="mc-burn-proj"></span>
+            </div>
+            <div class="mc-burn-stats">
+              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.today">Today</span><div><span class="mc-v" id="mc-c-today">0.00</span> <span class="mc-u" id="mc-u1"></span></div></div>
+              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.7days">7 days</span><div><span class="mc-v" id="mc-c-d7">0.00</span> <span class="mc-u" id="mc-u2"></span></div></div>
+              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.30days">30 days</span><div><span class="mc-v" id="mc-c-d30">0.00</span> <span class="mc-u" id="mc-u3"></span></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- engine: three gauges — GPU · CPU · RAM for the focused host -->
+        <div class="mc-panel">
+          <div class="mc-ph mc-engine-ph" id="mc-engine-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-goto-arrow">›</span><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span> <span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span></span><div class="mc-modeseg mc-triseg" id="mc-triseg" style="margin-left:auto"><button data-m="host" type="button" data-i18n="mc.mode_host">This host</button><button data-m="fleet" type="button" data-i18n="mc.mode_fleet">Whole fleet</button></div></div>
+          <div class="mc-engine mc-tri">
+            <div class="mc-tg">
+              <div class="mc-tg-ring">
+                <svg viewBox="0 0 200 200" aria-hidden="true">
+                  <path class="mc-tg-track" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke-width="14" stroke-linecap="round"/>
+                  <path id="mc-arc-gpu" class="mc-tg-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--accent)" stroke-width="14" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+                </svg>
+                <div class="mc-tg-center"><span class="mc-tg-num" id="mc-g-gpu">0</span><span class="mc-tg-pct" id="mc-pct-gpu">%</span></div>
+              </div>
+              <div class="mc-tg-label" data-i18n="mc.gpu">GPU</div>
+              <div class="mc-tg-sub" id="mc-sub-gpu">—</div>
+            </div>
+            <div class="mc-tg">
+              <div class="mc-tg-ring">
+                <svg viewBox="0 0 200 200" aria-hidden="true">
+                  <path class="mc-tg-track" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke-width="14" stroke-linecap="round"/>
+                  <path id="mc-arc-cpu" class="mc-tg-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--info)" stroke-width="14" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+                </svg>
+                <div class="mc-tg-center"><span class="mc-tg-num" id="mc-g-cpu">0</span><span class="mc-tg-pct">%</span></div>
+              </div>
+              <div class="mc-tg-label" data-i18n="mc.l_cpu">CPU</div>
+              <div class="mc-tg-sub" id="mc-sub-cpu">—</div>
+            </div>
+            <div class="mc-tg">
+              <div class="mc-tg-ring">
+                <svg viewBox="0 0 200 200" aria-hidden="true">
+                  <path class="mc-tg-track" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke-width="14" stroke-linecap="round"/>
+                  <path id="mc-arc-ram" class="mc-tg-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--ok)" stroke-width="14" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+                </svg>
+                <div class="mc-tg-center"><span class="mc-tg-num" id="mc-g-ram">0</span><span class="mc-tg-pct">%</span></div>
+              </div>
+              <div class="mc-tg-label" data-i18n="mc.l_ram">RAM</div>
+              <div class="mc-tg-sub" id="mc-sub-ram">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) -->
+        <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
+          <div class="mc-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-goto-arrow">›</span><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
+          <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
         </div>
       </div>
-      <div class="mc-widget" data-w="cost">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+
+      <!-- ───── RIGHT: insight feed · cost leaderboard ───── -->
+      <div class="mc-col">
+        <div class="mc-panel">
+          <div class="mc-ph"><span class="mc-hic" id="mc-ic-feed"></span><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag" style="margin-left:auto"></span></div>
+          <div class="mc-feed" id="mc-feed"></div>
+        </div>
         <div class="mc-panel">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-cost"></span><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
           <div class="mc-lead" id="mc-lead"></div>
         </div>
       </div>
-      <div class="mc-widget" data-w="containers">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
-        <div class="mc-panel mc-scard">
-          <div class="mc-scard-h" data-goto="containers"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-          <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
-          <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
+    </div>
+
+    <!-- ───── BOTTOM STRIP: containers · services · diagnostics ───── -->
+    <div class="mc-strip">
+      <div class="mc-panel mc-scard">
+        <div class="mc-scard-h" data-goto="containers"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+        <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
+        <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
+      </div>
+      <div class="mc-panel mc-scard">
+        <div class="mc-scard-h" data-goto="services"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+        <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
+        <div class="mc-failed-note" id="mc-failed-note">
+          <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
+          <div class="mc-tip" id="mc-fail-tip"></div>
         </div>
       </div>
-      <div class="mc-widget" data-w="services">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
-        <div class="mc-panel mc-scard">
-          <div class="mc-scard-h" data-goto="services"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-          <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
-          <div class="mc-failed-note" id="mc-failed-note">
-            <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
-            <div class="mc-tip" id="mc-fail-tip"></div>
-          </div>
-        </div>
-      </div>
-      <div class="mc-widget" data-w="diagnostics">
-        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
-        <div class="mc-panel mc-scard">
-          <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-diag"></span><span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
-          <div class="mc-diag-grid" id="mc-diag"></div>
-        </div>
+      <div class="mc-panel mc-scard">
+        <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-diag"></span><span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
+        <div class="mc-diag-grid" id="mc-diag"></div>
       </div>
     </div>
   </div>
 
-  <!-- Full fleet table preserved one click away (renderFleet still populates it) -->
-  <details class="mc-details" id="mc-fleet-details">
-    <summary data-i18n="mc.detailed_fleet">Detailed fleet table</summary>
-    <div class="card">
-    <h2 data-i18n="fleet.title">🖥 All hosts</h2>
-    <div class="fleet-meta" id="fleet_meta">Every registered host at a glance. Click a row to focus that host in the other tabs.</div>
-    <div style="overflow-x:auto">
-      <table class="fleet-tbl" id="fleet_tbl">
-        <thead>
-          <tr>
-            <th data-i18n="col.host">Host</th><th data-i18n="col.status">Status</th><th data-i18n="col.os_arch">OS / Arch</th><th data-i18n="col.updates">Updates</th><th data-i18n="col.cpu">CPU</th><th data-i18n="col.ram">RAM</th><th data-i18n="col.gpu">GPU</th>
-            <th data-i18n="col.load1m">Load 1m</th><th data-i18n="col.uptime">Uptime</th><th data-i18n="col.temp">Temp</th><th data-i18n="col.disks">Disks</th>
-          </tr>
-        </thead>
-        <tbody><tr><td colspan="11" class="muted" style="padding:14px" data-i18n="fleet.loading">Loading fleet…</td></tr></tbody>
-      </table>
-    </div>
-    </div>
-  </details>
+  <!-- The fleet rail (left column) is the canonical fleet view — the old detailed
+       table was a duplicate and has been removed. -->
   <details class="mc-details" id="mc-more">
     <summary data-i18n="mc.more">AI workload · MCP · setup &amp; requirements</summary>
   <div class="card" id="ai-band" hidden>
@@ -4025,6 +4268,7 @@ function renderFleet(){
   if(!FLEET) return;
   const meta = document.getElementById('fleet_meta');
   const tbody = document.querySelector('#fleet_tbl tbody');
+  if(!meta || !tbody) return;   // detailed fleet table removed from Overview (the fleet rail replaces it)
   const rows = FLEET.hosts || [];
   meta.innerHTML = I18N.tf('fleet.meta', `${rows.length} host${rows.length===1?'':'s'} · polling every ${FLEET.interval||10}s · click a row to focus that host in the other tabs.`, {n:rows.length, i:(FLEET.interval||10)});
   tbody.innerHTML = rows.map(r => {
@@ -4110,6 +4354,8 @@ const MC_AC = {ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', info:'var
 const MC_LVL = {critical:'crit', warning:'warn', warn:'warn', crit:'crit', ok:'ok', info:'info'};
 let MC_COST=null, MC_COST_AT=0, MC_RAF=[];
 let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
+// Three-gauge engine scope: 'host' (the focused box) or 'fleet' (whole homelab aggregate).
+let MC_TRIMODE=(function(){ try{ return localStorage.getItem('hl_mc_trimode')||'host'; }catch(e){ return 'host'; } })();
 let MC_CHART_SIG='';
 async function refreshMcCost(){
   if(Date.now()-MC_COST_AT < 30000 && MC_COST!==null) return;
@@ -4143,6 +4389,7 @@ function renderMissionControl(){
   if(!document.getElementById('mc-cockpit')) return;
   mcInitBoard();                            // one-time: wire drag-board + apply saved layout
   mcInitCockpitIcons();                     // one-time: swap cockpit icons to the app's SVG family
+  mcInitTriToggle();                        // one-time: wire the engine This-host / Whole-fleet toggle
   MC_RAF.push(true);                        // cancel any in-flight count-ups
   refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
   paintMissionControl();
@@ -4160,7 +4407,7 @@ function paintMissionControl(){
   const cur = cost.currency || 'лв';
 
   mcPaintFleetBar($);
-  mcPaintEngine($, g, gx, host);
+  mcPaintTri($);
   renderMcChart($);
   mcPaintBurn($, cost, machine, measured, cur, g, host);
   mcPaintLeaderboard($, cost, machine, measured, cur);
@@ -4179,6 +4426,115 @@ function mcGaugeTicks(){
     t+=`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--mut)" stroke-width="${i%5===0?1.6:.8}" opacity="${i%5===0?.55:.3}"/>`;
   }
   return t;
+}
+// ── Three-gauge engine: GPU · CPU · RAM for the focused host. Replaces the single
+//    adaptive gauge — answers "what's this machine doing" across all three resources.
+function mcSetTriArc(id, pct, color){
+  const el=document.getElementById(id); if(!el) return;
+  const p=Math.max(0,Math.min(100,Math.round(pct||0)));
+  if(color) el.style.stroke=color;
+  if(typeof MC_RM!=='undefined' && MC_RM){ el.style.transition='none'; el.style.strokeDashoffset=String(100-p); return; }
+  el.style.transition='none'; el.style.strokeDashoffset='100';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    el.style.transition='stroke-dashoffset 1.1s cubic-bezier(.2,.8,.2,1), stroke .35s';
+    el.style.strokeDashoffset=String(100-p);
+  }));
+}
+function mcTriColor(pct, base){ return pct>=90 ? 'var(--crit)' : pct>=78 ? 'var(--warn)' : base; }
+function mcInitTriToggle(){
+  const seg=document.getElementById('mc-triseg'); if(!seg || seg.__init) return; seg.__init=true;
+  seg.querySelectorAll('button').forEach(b=>b.onclick=(e)=>{
+    e.stopPropagation(); MC_TRIMODE=b.dataset.m;
+    try{ localStorage.setItem('hl_mc_trimode',MC_TRIMODE); }catch(_){}
+    if(typeof paintMissionControl==='function') paintMissionControl();
+  });
+}
+// Whole-homelab aggregate: avg GPU/CPU util across hosts, summed VRAM/RAM.
+function mcPaintTriFleet($){
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  const online=hosts.filter(h=>h.is_local||h.online);
+  $('mc-engine-title').textContent=I18N.t('mc.engine',"The Lab's Engine");
+  const hostEl=$('mc-engine-host'); if(hostEl) hostEl.textContent=I18N.tf('mc.whole_fleet','Whole fleet · {n} hosts',{n:online.length});
+  const roleEl=$('mc-engine-role'); if(roleEl){ roleEl.textContent=I18N.t('mc.role_fleet','fleet'); roleEl.className='mc-erole mc-erole-fleet'; }
+  mcSetIc('mc-ic-engine','🖥');
+  // per-host vitals — local prefers live HH/D, remotes use their probe
+  const rows=online.map(h=> h.is_local
+    ? { host:(D&&D.now&&D.now.host)||h.host||{}, gpu:(HH&&HH.now&&HH.now.gpu)||{available:false} }
+    : { host:h.host||{}, gpu:(h.host&&h.host.gpu)?Object.assign({available:true},h.host.gpu):{available:false} });
+  // GPU — average util per card, summed VRAM
+  let gUsed=0,gTot=0,gUtilSum=0,gN=0;
+  rows.forEach(r=>{ const g=r.gpu; if(g&&g.available){
+    if(g.gpus&&g.gpus.length&&g.gpus[0].mem_total!=null){ g.gpus.forEach(c=>{ gUsed+=c.mem_used||0; gTot+=c.mem_total||0; gUtilSum+=c.util||0; gN++; }); }
+    else { gUsed+=g.mem_used||0; gTot+=g.mem_total||0; gUtilSum+=g.util||0; gN++; }
+  }});
+  const gUtil=gN?Math.round(gUtilSum/gN):0, pg=$('mc-pct-gpu');
+  if(gN){ if(pg)pg.style.visibility='visible'; mcCountUp($('mc-g-gpu'),gUtil,900,0); mcSetTriArc('mc-arc-gpu',gUtil,mcTriColor(gUtil,'var(--accent)')); $('mc-sub-gpu').textContent=fmtMB(gUsed)+' / '+fmtMB(gTot)+' · '+gN+' GPU'+(gN===1?'':'s'); }
+  else { $('mc-g-gpu').textContent='—'; if(pg)pg.style.visibility='hidden'; mcSetTriArc('mc-arc-gpu',0,'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU'); }
+  // CPU — average util, summed cores
+  let cpuSum=0,cpuN=0,coresT=0;
+  rows.forEach(r=>{ const h=r.host||{}; cpuSum+=Math.round(h.cpu||0); cpuN++; coresT+=h.cores||0; });
+  const cpuAvg=cpuN?Math.round(cpuSum/cpuN):0;
+  mcCountUp($('mc-g-cpu'),cpuAvg,900,0); mcSetTriArc('mc-arc-cpu',cpuAvg,mcTriColor(cpuAvg,'var(--info)'));
+  $('mc-sub-cpu').textContent=online.length+' '+(online.length===1?'host':'hosts')+(coresT?' · '+coresT+' cores':'');
+  // RAM — summed used / total
+  let rUsed=0,rTot=0; rows.forEach(r=>{ const h=r.host||{}; rUsed+=h.ram_used||0; rTot+=h.ram_total||0; });
+  const rp=rTot?Math.round(rUsed/rTot*100):0;
+  mcCountUp($('mc-g-ram'),rp,900,0); mcSetTriArc('mc-arc-ram',rp,mcTriColor(rp,'var(--ok)'));
+  $('mc-sub-ram').textContent=rTot?fmtMB(rUsed)+' / '+fmtMB(rTot):'—';
+}
+function mcPaintTri($){
+  const seg=$('mc-triseg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on', b.dataset.m===MC_TRIMODE));
+  if(MC_TRIMODE==='fleet'){ mcPaintTriFleet($); return; }
+  // focused host: hub (local) uses live D/HH; a remote host uses its FLEET probe vitals
+  const focus=(typeof CURRENT_HOST!=='undefined' && CURRENT_HOST)||'local';
+  const fhosts=(FLEET&&FLEET.hosts)||[];
+  const fh = focus==='local' ? fhosts.find(h=>h.is_local) : fhosts.find(h=>h.name===focus);
+  const isLocal = focus==='local' || (fh&&fh.is_local);
+  let host, gpu, hostLabel, role, offline=false;
+  if(isLocal){
+    host=(D&&D.now&&D.now.host)||(fh&&fh.host)||{};
+    gpu=(HH&&HH.now&&HH.now.gpu)||{available:false};
+    hostLabel=(fh&&fh.label)||host.hostname||I18N.t('mc.hub','Hub'); role='hub';
+  } else if(fh && fh.online && fh.host){
+    host=fh.host; gpu=host.gpu?Object.assign({available:true},host.gpu):{available:false};
+    hostLabel=fh.label||fh.name; role='remote';
+  } else {
+    offline=true; host={}; gpu={available:false}; hostLabel=(fh&&(fh.label||fh.name))||focus; role='remote';
+  }
+  const titleEl=$('mc-engine-title'); if(titleEl) titleEl.textContent=I18N.t('mc.engine',"The Lab's Engine");
+  const hostEl=$('mc-engine-host'); if(hostEl) hostEl.textContent=hostLabel;
+  const roleEl=$('mc-engine-role'); if(roleEl){ roleEl.textContent=role; roleEl.className='mc-erole '+(role==='hub'?'mc-erole-hub':'mc-erole-remote'); }
+  mcSetIc('mc-ic-engine', gpu.available?'🎮':'🖥');
+  const tagEl=$('mc-engine-tag');
+  if(offline){
+    ['gpu','cpu','ram'].forEach(k=>{ const n=$('mc-g-'+k); if(n)n.textContent='—'; const s=$('mc-sub-'+k); if(s)s.textContent=I18N.t('mc.offline','OFFLINE'); mcSetTriArc('mc-arc-'+k,0,'var(--bd)'); });
+    const pg=$('mc-pct-gpu'); if(pg) pg.style.visibility='hidden';
+    if(tagEl) tagEl.textContent=I18N.t('mc.unreachable','unreachable');
+    return;
+  }
+  // GPU
+  const pg=$('mc-pct-gpu');
+  if(gpu && gpu.available){
+    const util=Math.round(gpu.util||0), mt=gpu.mem_total||0, mu=gpu.mem_used||0, tp=Math.round(gpu.temp||0);
+    if(pg) pg.style.visibility='visible';
+    mcCountUp($('mc-g-gpu'), util, 900, 0);
+    mcSetTriArc('mc-arc-gpu', util, mcTriColor(util,'var(--accent)'));
+    $('mc-sub-gpu').textContent = (mt?(fmtMB(mu)+' / '+fmtMB(mt)):'GPU') + (tp?(' · '+tp+'°C'):'');
+  } else {
+    $('mc-g-gpu').textContent='—'; if(pg) pg.style.visibility='hidden';
+    mcSetTriArc('mc-arc-gpu', 0, 'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU');
+  }
+  // CPU
+  const cpu=Math.round(host.cpu||0), cores=host.cores||0, load1=host.load1||0;
+  mcCountUp($('mc-g-cpu'), cpu, 900, 0);
+  mcSetTriArc('mc-arc-cpu', cpu, mcTriColor(cpu,'var(--info)'));
+  $('mc-sub-cpu').textContent = (cores?cores+(cores===1?' core':' cores'):'') + (cores&&load1?' · ':'') + (load1?I18N.t('mc.load_lc','load')+' '+load1.toFixed(2):'');
+  // RAM
+  const rt=host.ram_total||0, ru=host.ram_used||0, rp=rt?Math.round(ru/rt*100):0;
+  mcCountUp($('mc-g-ram'), rp, 900, 0);
+  mcSetTriArc('mc-arc-ram', rp, mcTriColor(rp,'var(--ok)'));
+  $('mc-sub-ram').textContent = rt?(fmtMB(ru)+' / '+fmtMB(rt)):'—';
+  if(tagEl) tagEl.textContent = (gpu&&gpu.available)?'GPU · CPU · RAM':'CPU · RAM';
 }
 function mcPaintEngine($, g, gx, host){
   const ticksEl=$('mc-ticks'); if(ticksEl && !ticksEl.childNodes.length) ticksEl.innerHTML=mcGaugeTicks();
@@ -4592,8 +4948,8 @@ function mcPaintFeed($){
 }
 // ── Customizable widget board: drag-reorder + hide/show + reset, persisted ──────
 const MC_BOARD_KEY='hl_mc_layout';
-const MC_W_NAMES={fleet:'Fleet',insights:'Insights',cost:'Cost',containers:'Containers',services:'Services',diagnostics:'Diagnostics'};
-const MC_W_DEFAULT=['fleet','insights','cost','containers','services','diagnostics'];
+const MC_W_NAMES={insights:'Insights',cost:'Cost',containers:'Containers',services:'Services',diagnostics:'Diagnostics'};
+const MC_W_DEFAULT=['insights','cost','containers','services','diagnostics'];  // fleet promoted to the hero
 function mcBoardState(){ try{ return JSON.parse(localStorage.getItem(MC_BOARD_KEY))||{}; }catch(e){ return {}; } }
 function mcSaveBoard(st){ try{ localStorage.setItem(MC_BOARD_KEY, JSON.stringify(st)); }catch(e){} }
 function mcCurrentOrder(){ return Array.from(document.querySelectorAll('#mc-board .mc-widget')).map(el=>el.dataset.w); }
@@ -4664,7 +5020,7 @@ function mcPaintFleetBar($){
     + `<div class="mc-fb-spacer"></div>`
     + `<div class="mc-fb-seg mc-fb-div mc-fb-roll">${I18N.t('mc.fleet_ram','Fleet RAM')} <b>${fmtMBshort(ramU)}</b> / ${fmtMBshort(ramT)}</div>`;
   bar.querySelectorAll('[data-go="attention"]').forEach(el=>el.onclick=()=>{
-    const w=document.querySelector('.mc-widget[data-w="insights"]'); if(w) w.scrollIntoView({behavior:'smooth',block:'center'});
+    const w=document.getElementById('mc-feed'); if(w) w.scrollIntoView({behavior:'smooth',block:'center'});
   });
 }
 function mcPaintFleet($){
@@ -5178,7 +5534,7 @@ async function renderNetwork(){
      <table class="ntbl"><thead><tr><th>${I18N.t('col.interface','Interface')}</th><th>${I18N.t('col.address','Address')}</th><th>${I18N.t('col.mac','MAC')}</th><th>${I18N.t('col.state','State')}</th><th>${I18N.t('col.speed','Speed')}</th><th>${I18N.t('col.mtu','MTU')}</th><th>${I18N.t('col.rx_tx','RX / TX')}</th></tr></thead><tbody>${ifrows}</tbody></table>
      <div class="subhd">${I18N.t('net.sub_dns','DNS')}</div><div style="font-family:var(--mono);font-size:13px;padding:2px 0">${dns}${search}</div>
      <div class="subhd">${I18N.t('net.sub_listen','Listening sockets')} <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">${I18N.tf('net.total_public','· {n} total, public first',{n:(net.listen||[]).length})}</span></div>
-     <div style="max-height:340px;overflow:auto;border:1px solid var(--bd);border-radius:9px;margin-top:6px">
+     <div tabindex="0" role="region" aria-label="${I18N.t('net.sub_listen','Listening sockets')}" style="max-height:340px;overflow:auto;border:1px solid var(--bd);border-radius:9px;margin-top:6px">
        <table class="ntbl" style="margin-top:0"><thead><tr><th>${I18N.t('col.proto','Proto')}</th><th>${I18N.t('col.bind','Bind')}</th><th>${I18N.t('col.port','Port')}</th><th>${I18N.t('col.process','Process')}</th><th>${I18N.t('col.exposure','Exposure')}</th></tr></thead><tbody>${lrows}</tbody></table>
      </div>`;
 }
