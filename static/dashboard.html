@@ -831,31 +831,8 @@ h2 .hic{ opacity:.9 }
 
 <!-- ───────── Overview = All hosts (fleet table) ───────── -->
 <section data-tab="overview">
-  <div class="card" id="ai-band" hidden>
-    <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
-    <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
-    <div class="grid" id="ai-band-kpis"></div>
-    <p class="cap" id="ai-band-cap"></p>
-  </div>
-  <div class="card" id="diagcard" hidden>
-    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
-    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
-    <div style="overflow-x:auto">
-      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
-    </div>
-  </div>
-  <div class="card" id="mcpcard">
-    <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
-    <div class="fleet-meta" data-i18n-html="mcp.card_desc">A read-only <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run. <span id="mcpstatus"></span></div>
-    <div id="mcpconn" style="margin-top:10px" hidden>
-      <div class="muted" data-i18n="mcp.connect_hint">Connect with the Claude CLI (then ask it about your fleet):</div>
-      <pre class="cmd" id="mcpcmd">claude mcp add --transport http homelab …</pre>
-      <div class="row">
-        <button class="btn" type="button" id="mcpcopy" data-i18n="btn.copy_command">📋 Copy command</button>
-        <a class="btn" id="mcpdocs" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener" data-i18n="mcp.docs">MCP docs →</a>
-      </div>
-    </div>
-  </div>
+  <!-- Order (rev): data table first, then the AI/GPU band, then MCP, then Setup
+       last — the day-to-day fleet view leads; one-time setup sinks to the bottom. -->
   <div class="card">
     <h2 data-i18n="fleet.title">🖥 All hosts</h2>
     <div class="fleet-meta" id="fleet_meta">Every registered host at a glance. Click a row to focus that host in the other tabs.</div>
@@ -869,6 +846,31 @@ h2 .hic{ opacity:.9 }
         </thead>
         <tbody><tr><td colspan="11" class="muted" style="padding:14px" data-i18n="fleet.loading">Loading fleet…</td></tr></tbody>
       </table>
+    </div>
+  </div>
+  <div class="card" id="ai-band" hidden>
+    <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
+    <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
+    <div class="grid" id="ai-band-kpis"></div>
+    <p class="cap" id="ai-band-cap"></p>
+  </div>
+  <div class="card" id="mcpcard">
+    <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
+    <div class="fleet-meta" data-i18n-html="mcp.card_desc">A read-only <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run. <span id="mcpstatus"></span></div>
+    <div id="mcpconn" style="margin-top:10px" hidden>
+      <div class="muted" data-i18n="mcp.connect_hint">Connect with the Claude CLI (then ask it about your fleet):</div>
+      <pre class="cmd" id="mcpcmd">claude mcp add --transport http homelab …</pre>
+      <div class="row">
+        <button class="btn" type="button" id="mcpcopy" data-i18n="btn.copy_command">📋 Copy command</button>
+        <a class="btn" id="mcpdocs" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener" data-i18n="mcp.docs">MCP docs →</a>
+      </div>
+    </div>
+  </div>
+  <div class="card" id="diagcard" hidden>
+    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
+    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
+    <div style="overflow-x:auto">
+      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
     </div>
   </div>
 </section>
