@@ -3743,15 +3743,22 @@ _COLORS = {"info": 0x58A6FF, "warning": 0xD29922, "critical": 0xF85149}
 _NTFY_P = {"info": 3, "warning": 4, "critical": 5}
 _NTFY_T = {"info": "information_source", "warning": "warning", "critical": "rotating_light"}
 
+# Discord's API sits behind Cloudflare, which rejects the default
+# "Python-urllib/x.y" agent with 403 (error code 1010). A real User-Agent is
+# also mandated by Discord's API rules, so every outbound POST carries one.
+NOTIFY_USER_AGENT = f"homelab-monitor/{VERSION} (+https://github.com/SikamikanikoBG/homelab-monitor)"
+
 def _post_json(url, payload, timeout=5):
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": NOTIFY_USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
 def _post_text(url, text, headers=None, timeout=5):
-    req = urllib.request.Request(url, data=text.encode("utf-8"),
-                                 headers=headers or {"Content-Type": "text/plain"})
+    hdr = dict(headers or {"Content-Type": "text/plain"})
+    hdr.setdefault("User-Agent", NOTIFY_USER_AGENT)
+    req = urllib.request.Request(url, data=text.encode("utf-8"), headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 

@@ -85,5 +85,46 @@ class TestTelegramNotifier(unittest.TestCase):
         self.assertIn("network down", tg[0][2])
 
 
+class TestOutboundUserAgent(unittest.TestCase):
+    """Discord sits behind Cloudflare, which 403s the default Python-urllib
+    agent (error 1010). Every outbound notifier POST must carry a real
+    User-Agent header. Regression guard for the webhook-test 403."""
+
+    def _capture(self, fn):
+        captured = {}
+
+        class _Resp:
+            status = 204
+            def read(self): return b""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def _fake_urlopen(req, timeout=None):
+            captured["req"] = req
+            return _Resp()
+
+        with patch("urllib.request.urlopen", _fake_urlopen):
+            fn()
+        return captured["req"]
+
+    def test_post_json_sets_user_agent(self):
+        req = self._capture(lambda: app._post_json("https://discord.com/api/webhooks/1/x", {"a": 1}))
+        self.assertEqual(req.get_header("User-agent"), app.NOTIFY_USER_AGENT)
+
+    def test_post_text_sets_user_agent(self):
+        req = self._capture(lambda: app._post_text("https://ntfy.sh/topic", "hi"))
+        self.assertEqual(req.get_header("User-agent"), app.NOTIFY_USER_AGENT)
+
+    def test_post_text_preserves_caller_headers_and_adds_ua(self):
+        req = self._capture(lambda: app._post_text(
+            "https://ntfy.sh/topic", "hi", headers={"Title": "T", "Priority": "5"}))
+        self.assertEqual(req.get_header("Title"), "T")
+        self.assertEqual(req.get_header("User-agent"), app.NOTIFY_USER_AGENT)
+
+    def test_user_agent_is_non_default(self):
+        self.assertIn("homelab-monitor", app.NOTIFY_USER_AGENT)
+        self.assertNotIn("Python-urllib", app.NOTIFY_USER_AGENT)
+
+
 if __name__ == "__main__":
     unittest.main()
