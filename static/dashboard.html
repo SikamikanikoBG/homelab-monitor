@@ -10,11 +10,15 @@
 :root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
 --crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
 --canvas:#0a0e14;--inset:#0d1117;--hover:#161b22;--sel:#1c232e;--sb:#0b0f15;
---okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918}
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;
+--mc-bloom:rgba(210,153,34,.28);--mc-bloom2:rgba(88,166,255,.15);--mc-glass:rgba(20,26,34,.62);--mc-glass2:rgba(13,17,23,.5);
+--mc-stroke:rgba(255,255,255,.09);--mc-shadow:0 18px 44px -22px rgba(0,0,0,.9);--mc-glow:rgba(227,179,65,.55);--mc-glowsoft:rgba(227,179,65,.22);--mc-grid:rgba(255,255,255,.022)}
 [data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
 --crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
 --canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
---okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;
+--mc-bloom:rgba(210,153,34,.16);--mc-bloom2:rgba(9,105,218,.08);--mc-glass:rgba(255,255,255,.74);--mc-glass2:rgba(246,248,250,.7);
+--mc-stroke:rgba(255,255,255,.9);--mc-shadow:0 16px 38px -22px rgba(40,50,70,.34);--mc-glow:rgba(154,103,0,.32);--mc-glowsoft:rgba(154,103,0,.14);--mc-grid:rgba(0,0,0,.028)}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1140px;margin:0 auto;padding:22px 18px 70px}
 header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -783,29 +787,52 @@ h2 .hic{ opacity:.9 }
    Driven by live data (D/HH/FLEET + /api/costs). Uses only the app's CSS
    custom properties so dark/light/system theming keeps working. All classes
    are mc- prefixed to avoid collisions with the rest of the dashboard. */
-#mc-cockpit{ margin:0 0 16px }
-.mc-grid{ display:grid; grid-template-columns:250px minmax(0,1fr) 322px; gap:14px; align-items:start }
-.mc-col{ display:flex; flex-direction:column; gap:14px; min-width:0 }
-.mc-panel{ background:var(--card); border:1px solid var(--bd); border-radius:14px }
-.mc-ph{ display:flex; align-items:center; justify-content:space-between; padding:11px 14px 8px }
-.mc-ph h3{ font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); font-weight:700; margin:0 }
+/* ambient command-center lighting: amber bloom + cool counter-glow behind the hero */
+#mc-cockpit{ position:relative; margin:0 0 18px; padding-top:2px }
+#mc-cockpit::before{ content:''; position:absolute; inset:-50px -50px auto -50px; height:600px; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(1100px 440px at 50% 30px, var(--mc-bloom), transparent 64%),
+    radial-gradient(640px 300px at 92% 150px, var(--mc-bloom2), transparent 70%);
+  filter:saturate(1.06); }
+#mc-cockpit > *{ position:relative; z-index:1 }
+.mc-grid{ display:grid; grid-template-columns:264px minmax(0,1fr) 332px; gap:16px; align-items:start }
+.mc-col{ display:flex; flex-direction:column; gap:16px; min-width:0 }
+/* HERO band — one dominant showpiece: gauge | vitals | money */
+.mc-hero{ position:relative; display:grid; grid-template-columns:auto minmax(0,1fr) 340px; gap:12px 32px; align-items:center;
+  padding:22px 28px 26px; margin-bottom:16px; overflow:hidden }
+.mc-hero::after{ content:''; position:absolute; top:0; left:0; right:0; height:2px; pointer-events:none;
+  background:linear-gradient(90deg, transparent, var(--accent), transparent); opacity:.55 }
+.mc-hero-engine{ display:flex; flex-direction:column; align-items:center; gap:14px; min-width:0 }
+.mc-hero-vitals{ padding:6px 0; gap:13px }
+.mc-hero-money{ display:flex; flex-direction:column; gap:16px; justify-content:center; align-self:stretch;
+  border-left:1px solid var(--bd); padding-left:32px }
+.mc-hero-ph{ display:flex; align-items:center; gap:8px }
+.mc-hero-ph h3{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:700; margin:0 }
+.mc-grid2{ display:grid; grid-template-columns:320px minmax(0,1fr) 360px; gap:16px; align-items:start }
+/* glassmorphic panels — translucent over the bloom, blurred, lit from above, dropped */
+.mc-panel{ position:relative; background:var(--mc-glass); -webkit-backdrop-filter:blur(16px) saturate(1.15); backdrop-filter:blur(16px) saturate(1.15);
+  border:1px solid var(--bd); border-radius:18px; box-shadow:inset 0 1px 0 var(--mc-stroke), var(--mc-shadow);
+  transition:transform .2s cubic-bezier(.2,.8,.2,1), box-shadow .2s }
+.mc-ph{ display:flex; align-items:center; gap:8px; justify-content:space-between; padding:13px 16px 7px }
+.mc-ph h3{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:700; margin:0 }
 .mc-ph .mc-tag{ font-size:10px; color:var(--mut); font-family:var(--mono) }
 
 /* radar header decoration (ported sweep animation) */
-.mc-radar-deco{ position:absolute; right:-20px; top:-46px; width:150px; height:150px; opacity:.4; pointer-events:none }
+.mc-radar-deco{ position:absolute; right:-18px; top:-44px; width:160px; height:160px; opacity:.55; pointer-events:none }
 .mc-sweep{ transform-origin:50px 50px }
 @keyframes mc-spin{ to{ transform:rotate(360deg) } }
 @keyframes mc-draw{ to{ stroke-dashoffset:0 } }
 .mc-sweep{ animation:mc-spin 4s linear infinite }
 
 /* burn / power meter */
-.mc-burn{ display:grid; grid-template-columns:auto 1fr; gap:20px; align-items:center; padding:14px 18px }
-.mc-burn-hero{ display:flex; flex-direction:column; gap:2px; min-width:160px }
-.mc-burn-lbl{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut) }
-.mc-burn-fig{ display:flex; align-items:baseline; gap:8px }
-.mc-burn-num{ font-family:var(--mono); font-size:46px; font-weight:700; line-height:1; color:var(--accent); letter-spacing:-1px }
-.mc-burn-num.mc-muted{ color:var(--mut) }
-.mc-burn-unit{ font-family:var(--mono); font-size:16px; color:var(--mut) }
+.mc-burn{ display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:center; padding:16px 20px }
+.mc-burn-hero{ display:flex; flex-direction:column; gap:3px; min-width:172px }
+.mc-burn-lbl{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--mut) }
+.mc-burn-fig{ display:flex; align-items:baseline; gap:9px }
+.mc-burn-num{ font-family:var(--mono); font-size:58px; font-weight:800; line-height:.95; color:var(--accent); letter-spacing:-2px;
+  text-shadow:0 0 32px var(--mc-glow), 0 0 4px var(--mc-glowsoft) }
+.mc-burn-num.mc-muted{ color:var(--mut); text-shadow:none }
+.mc-burn-unit{ font-family:var(--mono); font-size:17px; color:var(--mut) }
 .mc-burn-proj{ font-size:11px; color:var(--mut); margin-top:6px }
 .mc-burn-proj b{ color:var(--accent); font-family:var(--mono) }
 .mc-est-chip{ font-size:9px; font-weight:700; letter-spacing:.05em; color:var(--info); border:1px solid var(--info);
@@ -817,14 +844,22 @@ h2 .hic{ opacity:.9 }
 .mc-bstat .mc-u{ font-size:11px; color:var(--mut); font-family:var(--mono) }
 
 /* adaptive engine gauge (GPU or System — same instrument) */
-.mc-engine{ display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:center; padding:8px 16px 16px }
-.mc-gauge-wrap{ position:relative; width:228px; height:228px; flex:0 0 auto }
-.mc-gauge-center{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center }
-.mc-gauge-big{ font-family:var(--mono); font-size:44px; font-weight:700; line-height:1; color:var(--tx) }
-.mc-gauge-big .mc-pct{ font-size:21px; color:var(--mut) }
+.mc-engine{ display:grid; grid-template-columns:auto 1fr; gap:26px; align-items:center; padding:10px 18px 20px }
+.mc-gauge-wrap{ position:relative; width:264px; height:264px; flex:0 0 auto; display:grid; place-items:center }
+/* pulsing glow halo behind the gauge — makes the centerpiece feel alive */
+.mc-gauge-wrap::before{ content:''; position:absolute; width:200px; height:200px; border-radius:50%; z-index:0;
+  background:radial-gradient(circle, var(--mc-glowsoft), transparent 68%); animation:mc-halo 3.6s ease-in-out infinite }
+@keyframes mc-halo{ 0%,100%{ transform:scale(.92); opacity:.7 } 50%{ transform:scale(1.06); opacity:1 } }
+.mc-gauge-wrap svg{ position:relative; z-index:1 }
+.mc-gauge-center{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; z-index:2 }
+.mc-gauge-big{ font-family:var(--mono); font-size:52px; font-weight:800; line-height:1; color:var(--tx); letter-spacing:-1px; text-shadow:0 0 24px var(--mc-glowsoft) }
+.mc-gauge-big .mc-pct{ font-size:24px; color:var(--mut); font-weight:600 }
+#mc-util-arc{ filter:drop-shadow(0 0 5px var(--mc-glow)) }
+#mc-ring{ filter:drop-shadow(0 0 4px color-mix(in srgb, var(--info) 50%, transparent)) }
 .mc-gauge-sub{ font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--mut); margin-top:4px }
-.mc-state-badge{ margin-top:9px; font-size:10px; font-weight:700; letter-spacing:.08em; padding:3px 11px; border-radius:20px;
-  background:var(--okbg); color:var(--ok); border:1px solid var(--ok) }
+.mc-state-badge{ margin-top:10px; font-size:10px; font-weight:700; letter-spacing:.09em; padding:4px 13px; border-radius:20px;
+  background:var(--okbg); color:var(--ok); border:1px solid var(--ok); box-shadow:0 0 16px -4px var(--ok) }
+.mc-state-badge.mc-bad{ box-shadow:0 0 16px -4px var(--crit) } .mc-state-badge.mc-busy{ box-shadow:0 0 16px -4px var(--warn) }
 .mc-state-badge.mc-bad{ background:var(--critbg); color:var(--crit); border-color:var(--crit) }
 .mc-state-badge.mc-busy{ background:var(--warnbg); color:var(--warn); border-color:var(--warn) }
 .mc-engine-meta{ display:flex; flex-direction:column; gap:11px; min-width:0 }
@@ -835,8 +870,9 @@ h2 .hic{ opacity:.9 }
 .mc-meter-top{ display:flex; justify-content:space-between; align-items:baseline; font-size:11px }
 .mc-meter-top .mc-ml{ color:var(--mut); letter-spacing:.02em }
 .mc-meter-top .mc-mv{ font-family:var(--mono); color:var(--tx); font-weight:600 }
-.mc-meter-track{ height:7px; border-radius:5px; background:var(--inset); border:1px solid var(--bd); overflow:hidden }
-.mc-meter-fill{ height:100%; border-radius:5px; width:0; transition:width 1.2s cubic-bezier(.2,.8,.2,1) }
+.mc-meter-track{ height:8px; border-radius:6px; background:var(--inset); border:1px solid var(--bd); overflow:hidden }
+.mc-meter-fill{ height:100%; border-radius:6px; width:0; transition:width 1.2s cubic-bezier(.2,.8,.2,1);
+  box-shadow:0 0 9px -3px var(--mc-glowsoft); filter:saturate(1.2) }
 .mc-headroom{ font-size:11px; color:var(--mut); background:var(--inset); border:1px solid var(--bd); border-left:3px solid var(--ok);
   border-radius:8px; padding:8px 11px }
 .mc-headroom.mc-warnedge{ border-left-color:var(--crit) }
@@ -844,9 +880,9 @@ h2 .hic{ opacity:.9 }
 
 /* fleet rail */
 .mc-fleet{ display:flex; flex-direction:column; gap:9px; padding:4px 11px 12px }
-.mc-host{ border:1px solid var(--bd); border-radius:11px; padding:10px 11px; background:var(--inset); position:relative;
-  overflow:hidden; transition:transform .18s, border-color .18s; border-left:3px solid var(--accent); cursor:pointer }
-.mc-host:hover{ transform:translateX(2px); border-color:var(--mut) }
+.mc-host{ border:1px solid var(--bd); border-radius:13px; padding:11px 12px; background:var(--mc-glass2); position:relative;
+  overflow:hidden; transition:transform .18s cubic-bezier(.2,.8,.2,1), border-color .18s, box-shadow .18s; border-left:3px solid var(--accent); cursor:pointer }
+.mc-host:hover{ transform:translateX(3px); border-color:var(--mut); box-shadow:var(--mc-shadow) }
 .mc-host.mc-off{ opacity:.55; cursor:default }
 .mc-host-top{ display:flex; align-items:center; gap:8px; margin-bottom:7px }
 .mc-sdot{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--mut) }
@@ -883,8 +919,10 @@ h2 .hic{ opacity:.9 }
 .mc-lrow-name .mc-kk{ font-size:9px; color:var(--mut); border:1px solid var(--bd); border-radius:4px; padding:1px 5px;
   text-transform:uppercase; letter-spacing:.05em; flex:none }
 .mc-lrow-cost{ font-family:var(--mono); color:var(--accent); font-weight:700; flex:none }
-.mc-lbar-track{ height:9px; border-radius:5px; background:var(--inset); border:1px solid var(--bd); overflow:hidden }
-.mc-lbar-fill{ height:100%; border-radius:5px; width:0; background:var(--accent); transition:width 1.3s cubic-bezier(.2,.8,.2,1) }
+.mc-lbar-track{ height:9px; border-radius:6px; background:var(--inset); border:1px solid var(--bd); overflow:hidden }
+.mc-lbar-fill{ height:100%; border-radius:6px; width:0; transition:width 1.3s cubic-bezier(.2,.8,.2,1);
+  background:linear-gradient(90deg, color-mix(in srgb, var(--accent) 78%, var(--info)), var(--accent));
+  box-shadow:0 0 12px -2px var(--mc-glow) }
 .mc-lrow-meta{ display:flex; justify-content:space-between; font-size:10px; color:var(--mut); font-family:var(--mono) }
 
 /* bottom strip */
@@ -893,7 +931,7 @@ h2 .hic{ opacity:.9 }
 .mc-scard-h{ display:flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.11em; text-transform:uppercase;
   color:var(--mut); font-weight:700; margin-bottom:10px }
 .mc-big2{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap }
-.mc-big2 .mc-n{ font-family:var(--mono); font-size:32px; font-weight:700 }
+.mc-big2 .mc-n{ font-family:var(--mono); font-size:38px; font-weight:800; letter-spacing:-1px; text-shadow:0 0 18px var(--mc-glowsoft) }
 .mc-big2 .mc-of{ font-family:var(--mono); font-size:15px; color:var(--mut) }
 .mc-pill{ font-size:10px; font-weight:700; padding:3px 9px; border-radius:20px; letter-spacing:.03em; border:1px solid transparent }
 .mc-pill-ok{ background:var(--okbg); color:var(--ok); border-color:var(--ok) }
@@ -917,8 +955,9 @@ h2 .hic{ opacity:.9 }
 .mc-diag .mc-dsub{ color:var(--mut); font-size:10px }
 
 /* fleet health bar — fleet-wide rollup that LEADS the cockpit (multi-host first) */
-.mc-fleetbar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; padding:11px 16px; margin-bottom:14px;
-  background:var(--card); border:1px solid var(--bd); border-radius:14px }
+.mc-fleetbar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; padding:13px 18px; margin-bottom:16px;
+  background:var(--mc-glass); -webkit-backdrop-filter:blur(16px) saturate(1.15); backdrop-filter:blur(16px) saturate(1.15);
+  border:1px solid var(--bd); border-radius:16px; box-shadow:inset 0 1px 0 var(--mc-stroke), var(--mc-shadow) }
 .mc-fb-seg{ display:flex; align-items:center; gap:9px; min-width:0 }
 .mc-fb-seg.mc-fb-div{ border-left:1px solid var(--bd); padding-left:16px }
 .mc-fb-title{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:700 }
@@ -961,7 +1000,10 @@ h2 .hic{ opacity:.9 }
 .mc-details[open] > summary{ border-bottom-left-radius:0; border-bottom-right-radius:0 }
 .mc-details .card{ margin-top:0; border-top-left-radius:0; border-top-right-radius:0 }
 
-@media (max-width:1180px){ .mc-grid{ grid-template-columns:1fr } .mc-strip{ grid-template-columns:1fr } }
+@media (max-width:1180px){ .mc-grid{ grid-template-columns:1fr } .mc-grid2{ grid-template-columns:1fr } .mc-strip{ grid-template-columns:1fr }
+  .mc-hero{ grid-template-columns:1fr; justify-items:center; text-align:center }
+  .mc-hero-vitals{ width:100%; max-width:440px; text-align:left }
+  .mc-hero-money{ width:100%; max-width:440px; border-left:0; padding-left:0; border-top:1px solid var(--bd); padding-top:16px; text-align:left } }
 @media (max-width:680px){ .mc-burn{ grid-template-columns:1fr } .mc-engine{ grid-template-columns:1fr; justify-items:center } }
 @media (prefers-reduced-motion:reduce){
   .mc-sweep{ animation:none !important }
@@ -1029,79 +1071,70 @@ h2 .hic{ opacity:.9 }
   <div id="mc-cockpit">
     <!-- fleet health bar: fleet-wide rollup, leads the cockpit -->
     <div class="mc-fleetbar" id="mc-fleetbar"></div>
-    <div class="mc-grid">
-      <!-- LEFT: fleet rail -->
-      <div class="mc-col">
-        <div class="mc-panel">
-          <div class="mc-ph"><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag">—</span></div>
-          <div class="mc-fleet" id="mc-fleet"></div>
-        </div>
-      </div>
-      <!-- CENTER: burn + adaptive engine -->
-      <div class="mc-col">
-        <div class="mc-panel" style="position:relative;overflow:hidden">
-          <svg class="mc-radar-deco" viewBox="0 0 100 100" aria-hidden="true">
-            <circle cx="50" cy="50" r="48" fill="none" stroke="var(--accent)" stroke-opacity=".14"/>
-            <circle cx="50" cy="50" r="30" fill="none" stroke="var(--accent)" stroke-opacity=".10"/>
-            <g class="mc-sweep"><path d="M50 50 L50 2 A48 48 0 0 1 92 30 Z" fill="url(#mc-rg)"/></g>
-            <defs><radialGradient id="mc-rg"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>
+    <!-- HERO band — the engine gauge + vitals + the money, one cinematic showpiece over the bloom -->
+    <div class="mc-hero mc-panel">
+      <svg class="mc-radar-deco" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="48" fill="none" stroke="var(--accent)" stroke-opacity=".14"/>
+        <circle cx="50" cy="50" r="30" fill="none" stroke="var(--accent)" stroke-opacity=".10"/>
+        <g class="mc-sweep"><path d="M50 50 L50 2 A48 48 0 0 1 92 30 Z" fill="url(#mc-rg)"/></g>
+        <defs><radialGradient id="mc-rg"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>
+      </svg>
+      <!-- engine gauge -->
+      <div class="mc-hero-engine">
+        <div class="mc-hero-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span></div>
+        <div class="mc-gauge-wrap">
+          <svg viewBox="0 0 200 200" width="264" height="264">
+            <g id="mc-ticks"></g>
+            <path d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--bd)" stroke-width="13" stroke-linecap="round"/>
+            <path id="mc-util-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="url(#mc-util-grad)" stroke-width="13" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+            <circle cx="100" cy="100" r="62" fill="none" stroke="var(--bd)" stroke-width="6"/>
+            <circle id="mc-ring" cx="100" cy="100" r="62" fill="none" stroke="var(--info)" stroke-width="6" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 100 100)"/>
+            <defs><linearGradient id="mc-util-grad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="var(--ok)"/><stop offset="60%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--crit)"/></linearGradient></defs>
           </svg>
-          <div class="mc-ph"><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
-          <div class="mc-burn">
-            <div class="mc-burn-hero">
-              <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
-              <div class="mc-burn-fig">
-                <span class="mc-burn-num" id="mc-burn-num">0.000</span>
-                <span class="mc-burn-unit" id="mc-burn-unit"></span>
-              </div>
-              <span class="mc-burn-proj" id="mc-burn-proj"></span>
-            </div>
-            <div class="mc-burn-stats">
-              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.today">Today</span><div><span class="mc-v" id="mc-c-today">0.00</span> <span class="mc-u" id="mc-u1"></span></div></div>
-              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.7days">7 days</span><div><span class="mc-v" id="mc-c-d7">0.00</span> <span class="mc-u" id="mc-u2"></span></div></div>
-              <div class="mc-bstat"><span class="mc-k" data-i18n="mc.30days">30 days</span><div><span class="mc-v" id="mc-c-d30">0.00</span> <span class="mc-u" id="mc-u3"></span></div></div>
-            </div>
-          </div>
-        </div>
-        <!-- adaptive engine gauge -->
-        <div class="mc-panel">
-          <div class="mc-ph"><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-ehost"><span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span> · <span class="mc-tag" id="mc-engine-tag"></span></span></div>
-          <div class="mc-engine">
-            <div class="mc-gauge-wrap">
-              <svg viewBox="0 0 200 200" width="228" height="228">
-                <g id="mc-ticks"></g>
-                <path d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="var(--bd)" stroke-width="13" stroke-linecap="round"/>
-                <path id="mc-util-arc" d="M40 160 A 80 80 0 1 1 160 160" fill="none" stroke="url(#mc-util-grad)" stroke-width="13" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
-                <circle cx="100" cy="100" r="62" fill="none" stroke="var(--bd)" stroke-width="6"/>
-                <circle id="mc-ring" cx="100" cy="100" r="62" fill="none" stroke="var(--info)" stroke-width="6" stroke-linecap="round" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 100 100)"/>
-                <defs><linearGradient id="mc-util-grad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="var(--ok)"/><stop offset="60%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--crit)"/></linearGradient></defs>
-              </svg>
-              <div class="mc-gauge-center">
-                <div class="mc-gauge-big"><span id="mc-gauge-big">0</span><span class="mc-pct" id="mc-gauge-pct">%</span></div>
-                <div class="mc-gauge-sub" id="mc-gauge-sub"></div>
-                <div class="mc-state-badge" id="mc-state-badge"></div>
-              </div>
-            </div>
-            <div class="mc-engine-meta">
-              <div class="mc-engine-name"><span id="mc-engine-name"></span><span class="mc-chip" id="mc-engine-chip"></span></div>
-              <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m1l"></span><span class="mc-mv" id="mc-m1v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m1bar"></div></div></div>
-              <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m2l"></span><span class="mc-mv" id="mc-m2v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m2bar"></div></div></div>
-              <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m3l"></span><span class="mc-mv" id="mc-m3v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m3bar"></div></div></div>
-              <div class="mc-headroom" id="mc-headroom"></div>
-            </div>
+          <div class="mc-gauge-center">
+            <div class="mc-gauge-big"><span id="mc-gauge-big">0</span><span class="mc-pct" id="mc-gauge-pct">%</span></div>
+            <div class="mc-gauge-sub" id="mc-gauge-sub"></div>
+            <div class="mc-state-badge" id="mc-state-badge"></div>
           </div>
         </div>
       </div>
-      <!-- RIGHT: insights + cost/consumers -->
-      <div class="mc-col">
-        <div class="mc-panel">
-          <div class="mc-ph"><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag"></span></div>
-          <div class="mc-feed" id="mc-feed"></div>
+      <!-- vitals (engine meters) -->
+      <div class="mc-engine-meta mc-hero-vitals">
+        <div class="mc-engine-name"><span id="mc-engine-name"></span><span class="mc-chip" id="mc-engine-chip"></span></div>
+        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m1l"></span><span class="mc-mv" id="mc-m1v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m1bar"></div></div></div>
+        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m2l"></span><span class="mc-mv" id="mc-m2v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m2bar"></div></div></div>
+        <div class="mc-meter"><div class="mc-meter-top"><span class="mc-ml" id="mc-m3l"></span><span class="mc-mv" id="mc-m3v">—</span></div><div class="mc-meter-track"><div class="mc-meter-fill" id="mc-m3bar"></div></div></div>
+        <div class="mc-headroom" id="mc-headroom"></div>
+      </div>
+      <!-- the money -->
+      <div class="mc-hero-money">
+        <div class="mc-hero-ph"><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
+        <div class="mc-burn-hero">
+          <span class="mc-burn-lbl" id="mc-burn-lbl"></span>
+          <div class="mc-burn-fig"><span class="mc-burn-num" id="mc-burn-num">0.000</span><span class="mc-burn-unit" id="mc-burn-unit"></span></div>
+          <span class="mc-burn-proj" id="mc-burn-proj"></span>
         </div>
-        <div class="mc-panel">
-          <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
-          <div class="mc-lead" id="mc-lead"></div>
+        <div class="mc-burn-stats">
+          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.today">Today</span><div><span class="mc-v" id="mc-c-today">0.00</span> <span class="mc-u" id="mc-u1"></span></div></div>
+          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.7days">7 days</span><div><span class="mc-v" id="mc-c-d7">0.00</span> <span class="mc-u" id="mc-u2"></span></div></div>
+          <div class="mc-bstat"><span class="mc-k" data-i18n="mc.30days">30 days</span><div><span class="mc-v" id="mc-c-d30">0.00</span> <span class="mc-u" id="mc-u3"></span></div></div>
         </div>
+      </div>
+    </div>
+
+    <!-- secondary row: fleet · insights · cost -->
+    <div class="mc-grid2">
+      <div class="mc-panel">
+        <div class="mc-ph"><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag">—</span></div>
+        <div class="mc-fleet" id="mc-fleet"></div>
+      </div>
+      <div class="mc-panel">
+        <div class="mc-ph"><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag"></span></div>
+        <div class="mc-feed" id="mc-feed"></div>
+      </div>
+      <div class="mc-panel">
+        <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
+        <div class="mc-lead" id="mc-lead"></div>
       </div>
     </div>
     <!-- bottom strip: containers / services / diagnostics -->
@@ -4220,27 +4253,34 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
     lead.querySelectorAll('.mc-lbar-fill').forEach(b=>{ b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%'; });
   }));
 }
-function mcDeriveInsights(){
-  // Derive a couple of insights from live signals when D.insights is empty.
+function mcDeriveInsights(skipAllGood){
+  // Fleet-wide signals turned into actionable insights (sysadmin/devops triage).
   const out=[];
   const hosts=(FLEET&&FLEET.hosts)||[];
   const off=hosts.filter(h=>!h.is_local && !h.online);
-  if(off.length) out.push({level:'warning',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
+  if(off.length) out.push({level:'critical',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
   hosts.forEach(h=>{ const d=((h.host&&h.host.disks)||[]).find(d=>d.pct>=90);
     if(d) out.push({level:'warning',title:I18N.tf('mc.di_disk','{h} disk {m} at {p}%',{h:esc(h.label||h.name),m:esc(d.mount),p:d.pct}),detail:I18N.t('mc.di_disk_d','Worth a clean-up before writes start failing.')}); });
-  const upd=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
-  if(upd>0) out.push({level:'info',title:I18N.tf('mc.di_upd','{n} package updates pending',{n:upd}),detail:I18N.t('mc.di_upd_d','Across the fleet — a good time to patch.')});
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
   if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
-  if(!out.length) out.push({level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')});
+  const dk=(HH&&HH.docker)||{}; const probs=(dk.containers||[]).filter(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'));
+  if(probs.length) out.push({level:'warning',title:I18N.tf('mc.di_ctprob','{n} container(s) need attention',{n:probs.length}),detail:probs.slice(0,3).map(p=>esc(p.name)).join(', ')});
+  const upd=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
+  if(upd>0) out.push({level:'info',title:I18N.tf('mc.di_upd','{n} package updates pending',{n:upd}),detail:I18N.t('mc.di_upd_d','Across the fleet — a good time to patch.')});
+  if(!out.length && !skipAllGood) out.push({level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')});
   return out;
 }
 function mcPaintFeed($){
   const feed=$('mc-feed');
-  let ins=(D&&D.insights)||[];
-  if(!ins.length) ins=mcDeriveInsights();
+  // Merge fleet-derived alerts with the server's own insights, dedupe, severity-sort.
+  const order={critical:0,crit:0,warning:1,warn:1,info:2,ok:3};
+  const di=((D&&D.insights)||[]).map(i=>({level:i.level,title:i.title,detail:i.detail}));
+  let ins=[...mcDeriveInsights(true), ...di];
+  const seen=new Set(); ins=ins.filter(i=>{ if(seen.has(i.title)) return false; seen.add(i.title); return true; });
+  ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
+  if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
   const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
-  feed.innerHTML = ins.slice(0,6).map(i=>{
+  feed.innerHTML = ins.slice(0,7).map(i=>{
     const lv=MC_LVL[i.level]||'info';
     return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
       <div class="mc-ins-ic">${icon[lv]||'•'}</div>
