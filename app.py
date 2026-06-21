@@ -168,6 +168,16 @@ CREATE TABLE IF NOT EXISTS alert_history(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, rule_id TEXT, rule_name TEXT,
   level TEXT, channel TEXT, status TEXT, title TEXT, detail TEXT, acked INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_alerthist_ts ON alert_history(ts);
+CREATE TABLE IF NOT EXISTS incidents(
+  id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'open', severity TEXT NOT NULL DEFAULT 'warning',
+  opened_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cleared_at INTEGER,
+  miss INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS incident_members(
+  incident_id TEXT NOT NULL, series TEXT NOT NULL, direction TEXT, peak_z REAL,
+  unit TEXT, peak_value REAL, baseline REAL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(incident_id, series));
+CREATE INDEX IF NOT EXISTS idx_incidents_state ON incidents(state, opened_at);
+CREATE INDEX IF NOT EXISTS idx_incidents_opened ON incidents(opened_at);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -4229,15 +4239,205 @@ def evaluate_rules(signals=None):
                 if not ok:
                     print(f"rule {rule['id']} channel {ch} error:", err, flush=True)
             with LOCK:
+                # last_state='active' is also the "armed for recovery" flag: a rule
+                # that fired and is still firing owes exactly one recovery notice.
                 DB.execute("UPDATE alert_rules SET last_fired_at=?, last_state=? WHERE id=?",
-                           (now, new_state, rule["id"]))
+                           (now, "active", rule["id"]))
                 DB.commit()
             fired += 1
-        elif new_state != rule.get("last_state"):
+        elif not active and rule.get("last_state") == "active":
+            # Recovery edge: the signal that fired has returned to normal. Send one
+            # ✅ "cleared" notice through the same channel, marked as a recovery (not a
+            # new alarm). Edge-triggered: we immediately disarm so it sends only once,
+            # and only because the rule had previously fired (last_state=='active').
+            r_title = f"✅ {rule['name']}: cleared"
+            r_detail = "Condition recovered — the signal returned to normal."
+            for ch, ok, err in dispatch_alert(s, "info", r_title, r_detail, channel=rule["channel"]):
+                status = "recovered" if ok else "error"
+                record_alert(rule["id"], rule["name"], "info", ch, status, r_title, r_detail if ok else (err or ""))
+                if not ok:
+                    print(f"rule {rule['id']} recovery channel {ch} error:", err, flush=True)
             with LOCK:
-                DB.execute("UPDATE alert_rules SET last_state=? WHERE id=?", (new_state, rule["id"]))
+                DB.execute("UPDATE alert_rules SET last_state=? WHERE id=?", ("clear", rule["id"]))
+                DB.commit()
+        elif not active and rule.get("last_state") not in (None, "clear"):
+            # Active condition that never actually fired (e.g. snoozed/uncooled and the
+            # last_state is some non-active marker) returned to normal — just settle the
+            # state to 'clear' without a recovery notice (we only recover real fires).
+            with LOCK:
+                DB.execute("UPDATE alert_rules SET last_state=? WHERE id=?", ("clear", rule["id"]))
                 DB.commit()
     return fired
+
+# ── Incidents (correlated-anomaly lifecycle) ──────────────────────────────────
+# The z-score detector flags *individual* series (GPU util/VRAM/power/temp + total
+# power). In practice a real event — a runaway training job, a thermal throttle, a
+# cooling failure — trips several of those at once. The incidents layer groups
+# co-firing anomalies into ONE lifecycled object instead of N independent flags:
+#
+#   • OPEN     — while ≥1 anomaly is active there is exactly one open incident.
+#                New correlated series joining the window EXTEND that incident
+#                (added as members) rather than spawning a second one.
+#   • severity — derived from the worst member's |z| and count: 'critical' for a
+#                very strong (|z|≥6) or broad (≥3 series) event, else 'warning'.
+#   • CLEAR    — when *all* members have read normal for CLEAR_CONFIRM consecutive
+#                evaluation passes (debounce), so a single sample dipping back to
+#                baseline doesn't flap the incident closed. cleared_at is stamped
+#                and state→'cleared'.
+#
+# Pure-SQLite, evaluated in the sampler loop from the *already-computed* anomaly
+# bundle (no recompute). Wholly additive: it never sends anything and never
+# touches the host — recovery NOTIFICATIONS still flow only through opt-in rules.
+_INCIDENT_RETENTION   = 100   # keep at most this many incidents (open + cleared)
+_INCIDENT_CLEAR_CONFIRM = 3   # consecutive "all normal" passes before clearing
+
+def _incident_severity(members):
+    """Derive a severity from the live (active) members of an incident."""
+    act = [m for m in members if m.get("active")]
+    if not act:
+        act = members
+    peak = max((abs(m.get("peak_z") or 0) for m in act), default=0)
+    if peak >= 6.0 or len(act) >= 3:
+        return "critical"
+    return "warning"
+
+def _trim_incidents():
+    """Drop the oldest CLEARED incidents (and their members) past the retention cap.
+    Open incidents are never trimmed."""
+    rows = DB.execute("SELECT id FROM incidents ORDER BY opened_at DESC").fetchall()
+    if len(rows) <= _INCIDENT_RETENTION:
+        return
+    keep = {r[0] for r in rows[:_INCIDENT_RETENTION]}
+    drop = [r[0] for r in rows[_INCIDENT_RETENTION:]
+            if (DB.execute("SELECT state FROM incidents WHERE id=?", (r[0],)).fetchone() or [""])[0] == "cleared"]
+    for iid in drop:
+        DB.execute("DELETE FROM incident_members WHERE incident_id=?", (iid,))
+        DB.execute("DELETE FROM incidents WHERE id=?", (iid,))
+
+def evaluate_incidents(anomalies, now=None):
+    """Fold the current anomaly bundle into the single open incident (opening one if
+    needed), or advance the clear-debounce. `anomalies` is the dict returned by
+    _zscore_anomalies. Returns the open incident id (or None). Never raises."""
+    now = int(now if now is not None else time.time())
+    items = (anomalies or {}).get("items") or []
+    active = {a["key"]: a for a in items if a.get("key")}
+    try:
+        with LOCK:
+            row = DB.execute(
+                "SELECT id, severity, opened_at, miss FROM incidents WHERE state='open' "
+                "ORDER BY opened_at DESC LIMIT 1").fetchone()
+            iid = row[0] if row else None
+
+            if active:
+                if iid is None:
+                    iid = uuid.uuid4().hex
+                    DB.execute("INSERT INTO incidents(id,state,severity,opened_at,updated_at,miss)"
+                               " VALUES(?,?,?,?,?,0)", (iid, "open", "warning", now, now))
+                # upsert each active series as a member (extend the incident)
+                mrows = DB.execute(
+                    "SELECT series, peak_z FROM incident_members WHERE incident_id=?", (iid,)).fetchall()
+                known = {s: pz for s, pz in mrows}
+                for key, a in active.items():
+                    z = abs(a.get("z") or 0)
+                    if key in known:
+                        peak = max(known[key] or 0, z)
+                        DB.execute(
+                            "UPDATE incident_members SET active=1, last_seen=?, peak_z=?, "
+                            "direction=?, unit=?, peak_value=?, baseline=? "
+                            "WHERE incident_id=? AND series=?",
+                            (now, peak, a.get("direction"), a.get("unit"), a.get("value"),
+                             a.get("baseline"), iid, key))
+                    else:
+                        DB.execute(
+                            "INSERT INTO incident_members(incident_id,series,direction,peak_z,unit,"
+                            "peak_value,baseline,first_seen,last_seen,active) VALUES(?,?,?,?,?,?,?,?,?,1)",
+                            (iid, key, a.get("direction"), z, a.get("unit"), a.get("value"),
+                             a.get("baseline"), now, now))
+                # series no longer firing → mark inactive (kept as history on the incident)
+                for s in known:
+                    if s not in active:
+                        DB.execute("UPDATE incident_members SET active=0 WHERE incident_id=? AND series=?",
+                                   (iid, s))
+                # recompute severity from live members; reset the clear-debounce
+                mem = _incident_members(iid)
+                DB.execute("UPDATE incidents SET severity=?, updated_at=?, miss=0 WHERE id=?",
+                           (_incident_severity(mem), now, iid))
+                DB.commit()
+                return iid
+
+            # No anomalies active this pass.
+            if iid is None:
+                return None
+            miss = (row[3] or 0) + 1
+            if miss >= _INCIDENT_CLEAR_CONFIRM:
+                DB.execute("UPDATE incidents SET state='cleared', cleared_at=?, updated_at=?, miss=? WHERE id=?",
+                           (now, now, miss, iid))
+                DB.execute("UPDATE incident_members SET active=0 WHERE incident_id=?", (iid,))
+                _trim_incidents()
+            else:
+                DB.execute("UPDATE incidents SET miss=?, updated_at=? WHERE id=?", (miss, now, iid))
+            DB.commit()
+            return None if miss >= _INCIDENT_CLEAR_CONFIRM else iid
+    except Exception as e:
+        print("evaluate_incidents error:", e, flush=True)
+        try: DB.rollback()
+        except Exception: pass
+        return None
+
+def _incident_members(iid):
+    """Member rows for one incident (caller holds LOCK or accepts a plain read)."""
+    rows = DB.execute(
+        "SELECT series, direction, peak_z, unit, peak_value, baseline, first_seen, last_seen, active "
+        "FROM incident_members WHERE incident_id=? ORDER BY peak_z DESC", (iid,)).fetchall()
+    cols = ("series", "direction", "peak_z", "unit", "peak_value", "baseline",
+            "first_seen", "last_seen", "active")
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        d["active"] = bool(d["active"])
+        out.append(d)
+    return out
+
+def list_incidents(limit=50):
+    """Recent incidents, open first then most-recent, each with its members. Plain
+    reads; never raises out."""
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT id, state, severity, opened_at, updated_at, cleared_at FROM incidents "
+                "ORDER BY (state='open') DESC, opened_at DESC LIMIT ?", (int(limit),)).fetchall()
+            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at")
+            out = []
+            for r in rows:
+                d = dict(zip(cols, r))
+                d["members"] = _incident_members(d["id"])
+                d["member_count"] = len(d["members"])
+                d["active_count"] = sum(1 for m in d["members"] if m["active"])
+                out.append(d)
+            return out
+    except Exception as e:
+        print("list_incidents error:", e, flush=True)
+        return []
+
+def incidents_summary():
+    """Compact summary for cheap embedding next to `anomalies` on already-polled
+    endpoints: open count + the current top (most-severe, newest) open incident."""
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT id, severity, opened_at, updated_at FROM incidents WHERE state='open' "
+                "ORDER BY (severity='critical') DESC, opened_at DESC", ()).fetchall()
+            if not rows:
+                return {"open": 0, "top": None}
+            iid, sev, opened, updated = rows[0]
+            members = _incident_members(iid)
+            return {"open": len(rows), "top": {
+                "id": iid, "severity": sev, "opened_at": opened, "updated_at": updated,
+                "member_count": len(members), "active_count": sum(1 for m in members if m["active"]),
+                "series": [m["series"] for m in members if m["active"]]}}
+    except Exception as e:
+        print("incidents_summary error:", e, flush=True)
+        return {"open": 0, "top": None}
 
 # ── Sampling ────────────────────────────────────────────────────────────────
 def smi(args):
@@ -4639,18 +4839,26 @@ def collector():
             if now - last_notify > 20:
                 try: notify_scan()
                 except Exception as e: print("notify_scan error:", e, flush=True)
-                # User-defined rule engine (opt-in; inert with zero enabled rules).
-                # Shares the forecast/anomaly compute so it's cheap.
+                # Incidents + user-defined rule engine. Both consume the z-score
+                # anomaly bundle, so compute it once and share it. The incident layer
+                # always runs (it only writes to local SQLite, sends nothing); the
+                # rule engine stays inert unless a rule is enabled. The forecast
+                # signals (disk/cost/vram) are only needed by rules, so they're
+                # computed lazily when at least one rule is enabled.
                 try:
-                    if any(r["enabled"] for r in list_rules()):
-                        nowi = int(now)
-                        ctx = _cost_ctx()
-                        with LOCK:
-                            cur = DB.cursor()
-                            sig = {"disk": _disk_forecasts(cur, nowi),
-                                   "cost_month": _cost_projection(cur, ctx, nowi),
-                                   "anomalies": _zscore_anomalies(cur, nowi),
-                                   "vram": _vram_forecast(cur, nowi)}
+                    nowi = int(now)
+                    has_rules = any(r["enabled"] for r in list_rules())
+                    ctx = _cost_ctx() if has_rules else None
+                    with LOCK:
+                        cur = DB.cursor()
+                        anomalies = _zscore_anomalies(cur, nowi)
+                        sig = {"anomalies": anomalies}
+                        if has_rules:
+                            sig["disk"] = _disk_forecasts(cur, nowi)
+                            sig["cost_month"] = _cost_projection(cur, ctx, nowi)
+                            sig["vram"] = _vram_forecast(cur, nowi)
+                    evaluate_incidents(anomalies, nowi)
+                    if has_rules:
                         evaluate_rules(sig)
                 except Exception as e: print("evaluate_rules error:", e, flush=True)
                 last_notify = now
@@ -5480,7 +5688,20 @@ def api_forecast():
                         "vram": {"status": "collecting"},
                         "error": "forecast_unavailable"})
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
-                    "anomalies": anomalies, "vram": vram})
+                    "anomalies": anomalies, "vram": vram,
+                    "incidents": incidents_summary()})
+
+@app.route("/api/incidents")
+def api_incidents():
+    """Read-only correlated-anomaly incidents — open first, then most-recent — each
+    with its member series (direction, peak σ, value-vs-baseline) + derived severity
+    + open/cleared state + timestamps. Always 200; graceful-degrade, never 500. No
+    topology/secret leakage: members are only the monitored telemetry series keys."""
+    try: limit = min(_INCIDENT_RETENTION, max(1, int(request.args.get("limit", 50))))
+    except (TypeError, ValueError): limit = 50
+    return jsonify({"now": int(time.time()),
+                    "summary": incidents_summary(),
+                    "incidents": list_incidents(limit)})
 
 # ── Lab Copilot (E1): local-LLM insight layer ────────────────────────────────
 # Read-only. Assembles a compact, already-computed snapshot of the lab (live GPU
