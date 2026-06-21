@@ -23,8 +23,8 @@ health on a single page, with every machine registered over SSH in one cockpit.
 </div>
 
 <div class="hl-video">
-  <iframe src="https://www.youtube-nocookie.com/embed/5uf2rG-RzcU?rel=0"
-          title="HomeLab Monitor — dashboard demo"
+  <iframe src="https://www.youtube-nocookie.com/embed/RGUmJlJaOVI?rel=0"
+          title="HomeLab Monitor — 1-minute dashboard tour"
           loading="lazy"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
           allowfullscreen></iframe>
