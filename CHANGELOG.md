@@ -5,6 +5,17 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.17.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.1) — 2026-06-21 · _patch_
+_Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
+
+**Fixed**
+- **Discord notifications no longer fail with 403.** Discord's webhook API sits behind Cloudflare, which rejects the default `Python-urllib` agent (error 1010). Outbound notifier POSTs now send a real `User-Agent`, so the alert-settings **Test** button works.
+- **Fleet "online/offline" no longer flaps.** The overview summary occasionally showed healthy hosts as offline, then online again next refresh. Hosts are now polled **concurrently** (one slow remote can't age the others out) and the online flag uses a generous, timeout-aware staleness window — a single slow or missed poll cycle can't flip a host offline.
+
+**Changed**
+- **Overview tab reordered** — fleet data table first, then the AI/GPU workload band, then MCP, with **Setup & requirements** moved to the bottom.
+- **CI/CD**: the Discord release announcer now skips patch releases, matching the selfh.st gate — both speak only on minor+ versions.
+
 ## [0.17.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.0) — 2026-06-18 · **Ask Your Homelab — over MCP**
 *Costs and experiments are now MCP tools, so Claude (or any AI) can tell you what last night cost. Bonus: it speaks Chinese now, and updates itself.*
 

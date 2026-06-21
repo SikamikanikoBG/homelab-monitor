@@ -1,12 +1,14 @@
 name: Announce release on Discord
 
-# On every published, non-prerelease release, post the changelog as a rich
-# embed to the project Discord #announcements channel via webhook.
+# On a published, NON-prerelease, MINOR-or-greater release, post the changelog
+# as a rich embed to the project Discord #announcements channel via webhook.
 #
-# Unlike the selfh.st announcer (minor+ only, feeding a human-curated weekly),
-# this posts EVERY non-prerelease release: #announcements IS the changelog, and
-# people who join a project's Discord want every release note. If it ever feels
-# noisy, copy the patch-skip gate from selfhst-newsletter.yml into the gate step.
+# Patch releases (vX.Y.Z, Z>0) and prereleases are skipped on purpose: patches
+# ship daily and silently (Docker rebuild only, no announcement) — announcing
+# every one would spam the channel. Bigger versions (vX.Y.0) are the moments
+# worth communicating, and they roll up all the patches since. This mirrors the
+# selfh.st announcer's gate so both channels speak only on minor+ versions.
+# Re-post a specific tag by hand via the "Run workflow" button (workflow_dispatch).
 #
 #   secrets.DISCORD_ANNOUNCE_WEBHOOK   Discord webhook URL for #announcements
 
@@ -46,17 +48,22 @@ jobs:
             core.setOutput('prerelease', String(r.prerelease));
             core.setOutput('body', r.body || '');
 
-      - name: Skip prereleases
+      - name: Gate (skip prereleases and patch releases)
         id: gate
         env:
           PRERELEASE: ${{ steps.rel.outputs.prerelease }}
           TAG: ${{ steps.rel.outputs.tag }}
         run: |
+          ver="${TAG#v}"
+          IFS='.' read -r major minor patch _ <<< "$ver"
           if [ "$PRERELEASE" = "true" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "::notice::$TAG is a prerelease — skipping"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "::notice::$TAG is a prerelease — skipping"; exit 0
           fi
+          if [ "${patch:-0}" != "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "::notice::$TAG is a patch release — skipping (patches ship silently)"; exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::$TAG qualifies — announcing on Discord"
 
       - name: Post to Discord
         if: steps.gate.outputs.skip == 'false'
