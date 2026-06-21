@@ -811,6 +811,27 @@ h2 .hic{ opacity:.9 }
 .mc-grid2{ display:grid; grid-template-columns:320px minmax(0,1fr) 360px; gap:16px; align-items:start }
 .mc-chartpanel{ margin-bottom:16px }
 .mc-chartbox{ position:relative; height:208px; padding:4px 16px 16px }
+/* customizable widget board */
+.mc-boardbar{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
+.mc-custbtn,.mc-resetbtn{ font:inherit; font-size:11px; font-weight:600; color:var(--mut); background:var(--card); border:1px solid var(--bd); border-radius:9px; padding:5px 11px; cursor:pointer }
+.mc-custbtn:hover,.mc-resetbtn:hover{ color:var(--tx); border-color:var(--mut) }
+.mc-custbtn.on{ color:var(--accent); border-color:var(--accent) }
+.mc-boardhint{ font-size:11px; color:var(--mut) }
+.mc-hiddentray{ display:flex; gap:6px; flex-wrap:wrap }
+.mc-hchip{ font-size:10px; font-weight:600; color:var(--mut); background:var(--inset); border:1px dashed var(--bd); border-radius:7px; padding:3px 8px; cursor:pointer }
+.mc-hchip:hover{ color:var(--accent); border-color:var(--accent) }
+.mc-board{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; align-items:start }
+.mc-widget{ position:relative; min-width:0 }
+.mc-widget[hidden]{ display:none }
+.mc-wgrip,.mc-whide{ display:none }
+body.mc-customizing .mc-board .mc-widget{ outline:1px dashed var(--bd); outline-offset:4px; border-radius:18px; cursor:grab }
+body.mc-customizing .mc-board .mc-widget.mc-drag{ opacity:.45 }
+body.mc-customizing .mc-board .mc-widget.mc-over{ outline:2px dashed var(--accent) }
+body.mc-customizing .mc-board .mc-panel{ pointer-events:none }
+body.mc-customizing .mc-wgrip{ display:flex; position:absolute; top:8px; left:8px; z-index:6; width:24px; height:24px; align-items:center; justify-content:center; background:var(--card); border:1px solid var(--bd); border-radius:7px; color:var(--mut); cursor:grab; font-size:12px; pointer-events:auto }
+body.mc-customizing .mc-whide{ display:flex; position:absolute; top:8px; right:8px; z-index:6; width:24px; height:24px; align-items:center; justify-content:center; background:var(--card); border:1px solid var(--bd); border-radius:7px; color:var(--mut); cursor:pointer; font-size:14px; pointer-events:auto }
+body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit) }
+@media(max-width:1180px){ .mc-board{ grid-template-columns:1fr } }
 /* glassmorphic panels — translucent over the bloom, blurred, lit from above, dropped */
 .mc-panel{ position:relative; background:var(--mc-glass); -webkit-backdrop-filter:blur(16px) saturate(1.15); backdrop-filter:blur(16px) saturate(1.15);
   border:1px solid var(--bd); border-radius:18px; box-shadow:inset 0 1px 0 var(--mc-stroke), var(--mc-shadow);
@@ -1146,39 +1167,61 @@ h2 .hic{ opacity:.9 }
       <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
     </div>
 
-    <!-- secondary row: fleet · insights · cost -->
-    <div class="mc-grid2">
-      <div class="mc-panel">
-        <div class="mc-ph"><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag">—</span></div>
-        <div class="mc-fleet" id="mc-fleet"></div>
-      </div>
-      <div class="mc-panel">
-        <div class="mc-ph"><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag"></span></div>
-        <div class="mc-feed" id="mc-feed"></div>
-      </div>
-      <div class="mc-panel">
-        <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
-        <div class="mc-lead" id="mc-lead"></div>
-      </div>
+    <!-- customizable widget board: drag to reorder, × to hide, persisted per browser -->
+    <div class="mc-boardbar" id="mc-boardbar">
+      <button class="mc-custbtn" id="mc-custbtn" type="button" data-i18n="mc.customize">⚙ Customize</button>
+      <span class="mc-boardhint" id="mc-boardhint" hidden data-i18n="mc.board_hint">Drag panels to reorder · × to hide</span>
+      <span style="flex:1"></span>
+      <span class="mc-hiddentray" id="mc-hiddentray"></span>
+      <button class="mc-resetbtn" id="mc-resetbtn" type="button" hidden data-i18n="mc.reset_layout">Reset layout</button>
     </div>
-    <!-- bottom strip: containers / services / diagnostics -->
-    <div class="mc-strip">
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span>🐳</span> <span data-i18n="mc.containers">Containers</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
-        <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
-      </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span>⚙</span> <span data-i18n="mc.services">Services</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
-        <div class="mc-failed-note" id="mc-failed-note">
-          <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
-          <div class="mc-tip" id="mc-fail-tip"></div>
+    <div class="mc-board" id="mc-board">
+      <div class="mc-widget" data-w="fleet">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel">
+          <div class="mc-ph"><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag">—</span></div>
+          <div class="mc-fleet" id="mc-fleet"></div>
         </div>
       </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span>🩺</span> <span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
-        <div class="mc-diag-grid" id="mc-diag"></div>
+      <div class="mc-widget" data-w="insights">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel">
+          <div class="mc-ph"><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag"></span></div>
+          <div class="mc-feed" id="mc-feed"></div>
+        </div>
+      </div>
+      <div class="mc-widget" data-w="cost">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel">
+          <div class="mc-ph"><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
+          <div class="mc-lead" id="mc-lead"></div>
+        </div>
+      </div>
+      <div class="mc-widget" data-w="containers">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel mc-scard">
+          <div class="mc-scard-h"><span>🐳</span> <span data-i18n="mc.containers">Containers</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+          <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
+          <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
+        </div>
+      </div>
+      <div class="mc-widget" data-w="services">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel mc-scard">
+          <div class="mc-scard-h"><span>⚙</span> <span data-i18n="mc.services">Services</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
+          <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
+          <div class="mc-failed-note" id="mc-failed-note">
+            <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
+            <div class="mc-tip" id="mc-fail-tip"></div>
+          </div>
+        </div>
+      </div>
+      <div class="mc-widget" data-w="diagnostics">
+        <div class="mc-wgrip" title="Drag to reorder">⠿</div><button class="mc-whide" type="button" title="Hide">×</button>
+        <div class="mc-panel mc-scard">
+          <div class="mc-scard-h"><span>🩺</span> <span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
+          <div class="mc-diag-grid" id="mc-diag"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -4041,6 +4084,7 @@ function mcSparkline(data, w, h, color){
 function renderMissionControl(){
   if(typeof TAB!=='undefined' && TAB!=='overview') return;
   if(!document.getElementById('mc-cockpit')) return;
+  mcInitBoard();                            // one-time: wire drag-board + apply saved layout
   MC_RAF.push(true);                        // cancel any in-flight count-ups
   refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
   paintMissionControl();
@@ -4454,6 +4498,45 @@ function mcPaintFeed($){
       <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
   }).join('');
   $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
+}
+// ── Customizable widget board: drag-reorder + hide/show + reset, persisted ──────
+const MC_BOARD_KEY='hl_mc_layout';
+const MC_W_NAMES={fleet:'Fleet',insights:'Insights',cost:'Cost',containers:'Containers',services:'Services',diagnostics:'Diagnostics'};
+const MC_W_DEFAULT=['fleet','insights','cost','containers','services','diagnostics'];
+function mcBoardState(){ try{ return JSON.parse(localStorage.getItem(MC_BOARD_KEY))||{}; }catch(e){ return {}; } }
+function mcSaveBoard(st){ try{ localStorage.setItem(MC_BOARD_KEY, JSON.stringify(st)); }catch(e){} }
+function mcCurrentOrder(){ return Array.from(document.querySelectorAll('#mc-board .mc-widget')).map(el=>el.dataset.w); }
+function mcRenderHiddenTray(){
+  const tray=document.getElementById('mc-hiddentray'); if(!tray) return;
+  const hidden=(mcBoardState().hidden)||[];
+  tray.innerHTML=hidden.map(w=>`<span class="mc-hchip" data-w="${w}">+ ${esc(MC_W_NAMES[w]||w)}</span>`).join('');
+  tray.querySelectorAll('.mc-hchip').forEach(c=>c.onclick=()=>{ const st=mcBoardState(); st.hidden=(st.hidden||[]).filter(x=>x!==c.dataset.w); mcSaveBoard(st); mcApplyBoard(); });
+}
+function mcApplyBoard(){
+  const board=document.getElementById('mc-board'); if(!board) return;
+  const st=mcBoardState();
+  (st.order||[]).forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); });
+  const hidden=new Set(st.hidden||[]);
+  board.querySelectorAll('.mc-widget').forEach(el=>{ el.hidden=hidden.has(el.dataset.w); });
+  mcRenderHiddenTray();
+}
+function mcInitBoard(){
+  const board=document.getElementById('mc-board'); if(!board || board.__mcInit) return; board.__mcInit=true;
+  mcApplyBoard();
+  let dragEl=null;
+  board.querySelectorAll('.mc-widget').forEach(el=>{
+    el.setAttribute('draggable','false');
+    const hb=el.querySelector('.mc-whide');
+    if(hb) hb.onclick=(e)=>{ e.stopPropagation(); const st=mcBoardState(); st.hidden=Array.from(new Set([...(st.hidden||[]), el.dataset.w])); mcSaveBoard(st); mcApplyBoard(); };
+    el.addEventListener('dragstart',e=>{ if(!document.body.classList.contains('mc-customizing')){ e.preventDefault(); return; } dragEl=el; el.classList.add('mc-drag'); e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',el.dataset.w); }catch(_){} });
+    el.addEventListener('dragend',()=>{ if(dragEl) dragEl.classList.remove('mc-drag'); board.querySelectorAll('.mc-over').forEach(x=>x.classList.remove('mc-over')); dragEl=null; const st=mcBoardState(); st.order=mcCurrentOrder(); mcSaveBoard(st); });
+    el.addEventListener('dragover',e=>{ if(!dragEl||dragEl===el) return; e.preventDefault(); const r=el.getBoundingClientRect(); const after=(e.clientY-r.top)/r.height>0.5; board.querySelectorAll('.mc-over').forEach(x=>{ if(x!==el) x.classList.remove('mc-over'); }); el.classList.add('mc-over'); if(after) el.after(dragEl); else el.before(dragEl); });
+    el.addEventListener('dragleave',()=>el.classList.remove('mc-over'));
+  });
+  const btn=document.getElementById('mc-custbtn'), hint=document.getElementById('mc-boardhint'), reset=document.getElementById('mc-resetbtn');
+  if(btn) btn.onclick=()=>{ const on=document.body.classList.toggle('mc-customizing'); btn.classList.toggle('on',on); if(hint) hint.hidden=!on; if(reset) reset.hidden=!on;
+    board.querySelectorAll('.mc-widget').forEach(el=>el.setAttribute('draggable', on?'true':'false')); };
+  if(reset) reset.onclick=()=>{ mcSaveBoard({}); MC_W_DEFAULT.forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); }); board.querySelectorAll('.mc-widget').forEach(el=>el.hidden=false); mcRenderHiddenTray(); };
 }
 function mcPaintFleetBar($){
   const bar=$('mc-fleetbar'); if(!bar) return;
