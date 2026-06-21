@@ -362,6 +362,75 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .logdrawer-status{font-size:12px;color:var(--mut);padding:4px 14px;flex:none}
 .logdrawer-body{flex:1;margin:0;padding:10px 14px;overflow:auto;background:#0b0e14;color:#cdd9e5;
   font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+/* Incident detail drawer — click-through depth view (next_ai) */
+.inc.clickable{cursor:pointer;transition:border-color .12s ease, transform .12s ease}
+.inc.clickable:hover{border-color:var(--info)}
+@media(prefers-reduced-motion:reduce){.inc.clickable{transition:none}}
+.inc-open-row{display:flex;align-items:center;gap:6px;margin-top:11px}
+.inc-details-link{margin-left:auto;font-size:12px;font-weight:600;color:var(--info);background:none;border:0;
+  padding:2px 0;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.inc-details-link:hover{text-decoration:underline}
+.inc-details-link:focus-visible{outline:2px solid var(--info);outline-offset:2px;border-radius:4px}
+.incd{position:fixed;inset:0;z-index:70}
+.incd[hidden]{display:none}
+.incd-scrim{position:absolute;inset:0;background:rgba(0,0,0,.5);animation:lfade .15s ease}
+.incd-panel{position:absolute;top:0;right:0;height:100%;width:min(560px,96vw);display:flex;flex-direction:column;
+  background:var(--card);border-left:1px solid var(--bd);box-shadow:-8px 0 30px rgba(0,0,0,.4);animation:lslide .18s ease}
+@media(prefers-reduced-motion:reduce){.incd-scrim,.incd-panel{animation:none}}
+.incd-head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--bd);flex:none}
+.incd-head .badge{flex:none}
+.incd-state{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.incd-state.open{color:var(--crit)} .incd-state.open.warn{color:var(--warn)} .incd-state.cleared{color:var(--mut)}
+.incd-spacer{flex:1}
+.incd-close{background:var(--inset);color:var(--tx);border:1px solid var(--bd);border-radius:6px;
+  padding:4px 10px;font:inherit;font-size:14px;cursor:pointer;flex:none}
+.incd-close:hover{border-color:var(--accent)}
+.incd-close:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+.incd-body{flex:1;overflow:auto;padding:16px}
+.incd-sec{margin-bottom:20px}
+.incd-sec:last-child{margin-bottom:0}
+.incd-sec-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin-bottom:10px}
+.incd-meta{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
+.incd-meta dt{color:var(--mut)}
+.incd-meta dd{margin:0;font-family:var(--mono);font-size:12.5px}
+.incd-dur{color:var(--info);font-family:inherit;font-size:12px}
+/* timeline */
+.incd-tl{position:relative;margin:0;padding:0 0 0 22px;list-style:none}
+.incd-tl::before{content:'';position:absolute;left:5px;top:4px;bottom:4px;width:2px;background:var(--bd)}
+.incd-tle{position:relative;margin-bottom:15px}
+.incd-tle:last-child{margin-bottom:0}
+.incd-tle::before{content:'';position:absolute;left:-22px;top:3px;width:12px;height:12px;border-radius:50%;
+  background:var(--card);border:2px solid var(--mut)}
+.incd-tle.opened::before{border-color:var(--info)}
+.incd-tle.joined::before{border-color:var(--warn)}
+.incd-tle.joined.spike::before{border-color:var(--crit)}
+.incd-tle.cleared::before{border-color:var(--ok);background:var(--ok)}
+.incd-tle-d{font-size:13px;line-height:1.4}
+.incd-tle-d .arr{font-weight:700}
+.incd-tle-d .arr.spike{color:var(--crit)} .incd-tle-d .arr.dip{color:var(--info)}
+.incd-tle-t{font-size:11px;color:var(--mut);font-family:var(--mono);margin-top:2px}
+/* member breakdown */
+.incd-mem{border:1px solid var(--bd);border-radius:9px;background:var(--inset);padding:11px 13px;margin-bottom:10px}
+.incd-mem:last-child{margin-bottom:0}
+.incd-mem.settled{opacity:.74}
+.incd-mem-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.incd-mem-h .arr{font-weight:700;flex:none}
+.incd-mem-h .arr.spike{color:var(--crit)} .incd-mem-h .arr.dip{color:var(--info)}
+.incd-mem-nm{font-weight:600;font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.incd-mem-sig{font-family:var(--mono);font-size:11px;color:var(--mut);flex:none}
+.incd-mem-st{margin-left:auto;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:2px 7px;border-radius:999px;flex:none}
+.incd-mem-st.active{color:var(--crit);background:var(--critbg)}
+.incd-mem-st.active.warn{color:var(--warn);background:var(--warnbg)}
+.incd-mem-st.settled{color:var(--ok);background:var(--okbg)}
+.incd-mem-vals{margin-top:8px;font-size:12px;color:var(--mut);font-family:var(--mono);line-height:1.5}
+.incd-mem-vals b{color:var(--tx)}
+.incd-why{margin-top:9px}
+.incd-why-btn{font-size:12px;font-weight:600;color:var(--info);background:none;border:0;padding:2px 0;cursor:pointer}
+.incd-why-btn:hover{text-decoration:underline}
+.incd-why-btn:focus-visible{outline:2px solid var(--info);outline-offset:2px;border-radius:4px}
+.incd-load{padding:30px 16px}
+@media(max-width:640px){.incd-panel{width:100%;border-left:0}}
 /* Per-GPU cards (issue #95) */
 .gpucard{border:1px solid var(--bd);border-radius:9px;padding:11px 13px;margin-bottom:10px;background:rgba(127,127,127,.04)}
 .gpucard:last-child{margin-bottom:0}
@@ -1722,6 +1791,20 @@ GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker A
     </header>
     <div class="logdrawer-status" id="logdrawer-status"></div>
     <pre class="logdrawer-body" id="logdrawer-body"></pre>
+  </aside>
+</div>
+<!-- Incident detail drawer (next_ai) — click-through depth view for one correlated incident -->
+<div class="incd" id="incd" hidden>
+  <div class="incd-scrim" id="incd-scrim"></div>
+  <aside class="incd-panel" role="dialog" aria-modal="true" aria-labelledby="incd-title" tabindex="-1">
+    <header class="incd-head">
+      <span class="badge" id="incd-sev" hidden></span>
+      <span class="incd-state" id="incd-state-txt"></span>
+      <span class="incd-title-sr" id="incd-title" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)" data-i18n="incd.title">Incident detail</span>
+      <span class="incd-spacer"></span>
+      <button class="incd-close" id="incd-close" data-i18n-attr="title:incd.close_t;aria-label:share.close" title="Close (Esc)" aria-label="Close">✕</button>
+    </header>
+    <div class="incd-body" id="incd-body"></div>
   </aside>
 </div>
 <script>
@@ -4687,19 +4770,39 @@ function renderIncidents(){
       ? I18N.tf('inc.active_of','{a} of {t} active',{a:it.active_count,t:it.member_count})
       : I18N.tf('inc.signals_n','{t} signals',{t:it.member_count});
     const chips=(it.members||[]).map((m,mi)=>_incMemberChip(m,it.id,mi)).join('');
-    return `<div class="inc ${open?'open':'cleared'} sev-${sev}">`
+    const detailsTxt=I18N.t('incd.details','Details');
+    const openHint=I18N.t('incd.open_hint','Open incident detail');
+    return `<div class="inc clickable ${open?'open':'cleared'} sev-${sev}" tabindex="0" role="button"`
+      +` data-inc-open="${esc(it.id)}" aria-label="${esc(openHint)}">`
       +`<div class="inc-head">`
       +`<span class="badge ${sev==='critical'?'crit':'warn'}">${esc(sevTxt)}</span>`
       +`<span class="inc-state">${esc(stateTxt)}</span>`
       +`<span class="inc-time">${esc(timeTxt)}</span>`
       +`<span class="inc-count">${esc(count)}</span></div>`
       +`<div class="inc-members">${chips}</div>`
+      +`<div class="inc-open-row">`
+      +`<button type="button" class="inc-details-link" data-inc-open-btn="${esc(it.id)}">${esc(detailsTxt)} →</button></div>`
       +`<div class="inc-explain" id="inc-explain-${esc(it.id)}" hidden></div>`
       +`</div>`;
   }).join('')+'</div>';
   // member chip → reuse the Copilot "Why?" explain on that series (optional/graceful)
   body.querySelectorAll('[data-inc-member]').forEach(btn=>{
-    btn.onclick=()=>explainIncidentMember(btn.getAttribute('data-inc-member'));
+    btn.onclick=(e)=>{ e.stopPropagation(); explainIncidentMember(btn.getAttribute('data-inc-member')); };
+  });
+  // explicit "Details →" button → open the detail drawer (don't bubble to the row)
+  body.querySelectorAll('[data-inc-open-btn]').forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); openIncidentDrawer(btn.getAttribute('data-inc-open-btn'), btn); };
+  });
+  // whole-row click-through → drawer, but never when a chip / link / its own explain panel was the target
+  body.querySelectorAll('[data-inc-open]').forEach(row=>{
+    row.addEventListener('click', e=>{
+      if(e.target.closest('.inc-chip, .inc-details-link, .inc-explain')) return;
+      openIncidentDrawer(row.getAttribute('data-inc-open'), row);
+    });
+    row.addEventListener('keydown', e=>{
+      if((e.key==='Enter'||e.key===' ') && e.target===row){
+        e.preventDefault(); openIncidentDrawer(row.getAttribute('data-inc-open'), row); }
+    });
   });
 }
 let INC_EXPLAIN_BUSY={};
@@ -4735,6 +4838,210 @@ async function explainIncidentMember(ref){
   }
   out.dataset.done='1'; INC_EXPLAIN_BUSY[iid]=false;
 }
+// ── Incident detail drawer (next_ai) ──────────────────────────────────────────
+// Click-through depth view for ONE correlated incident: header (severity+state),
+// open/updated/cleared timestamps + durations, a vertical lifecycle timeline
+// (opened → each member_joined → cleared) and a per-member breakdown with a
+// per-member "Why?" that reuses the Copilot explain hookup. a11y: focus-trap,
+// ESC + backdrop close, body scroll-lock, focus restored to the trigger on close.
+let INCD_OPEN=null, INCD_TRIGGER=null, INCD_TIMER=null, INCD_CACHE={};
+function _incdDur(from, to){
+  if(from==null||to==null) return '';
+  const d=Math.max(60, to-from);
+  if(d<3600) return I18N.tf('inc.dur_m','{n}m',{n:Math.max(1,Math.round(d/60))});
+  if(d<86400) return I18N.tf('inc.dur_h','{n}h',{n:Math.round(d/3600)});
+  return I18N.tf('inc.dur_d','{n}d',{n:Math.round(d/86400)});
+}
+function _incdAbsTime(ts){
+  if(!ts) return '—';
+  try{ return new Date(ts*1000).toLocaleString(); }catch(e){ return String(ts); }
+}
+function _incdFocusables(){
+  const p=document.querySelector('#incd .incd-panel'); if(!p) return [];
+  return Array.from(p.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(el=>!el.disabled && el.offsetParent!==null);
+}
+async function openIncidentDrawer(iid, trigger){
+  if(!iid) return;
+  INCD_OPEN=String(iid); INCD_TRIGGER=trigger||document.activeElement;
+  const wrap=document.getElementById('incd'), panel=wrap.querySelector('.incd-panel'),
+        body=document.getElementById('incd-body');
+  wrap.hidden=false;
+  document.documentElement.style.overflow='hidden';   // body scroll-lock
+  // header reset + skeleton
+  _incdHeader(null);
+  body.innerHTML='<div class="incd-load"><div class="skel skel-line w90"></div>'
+    +'<div class="skel skel-line w70"></div><div class="skel skel-line w80"></div></div>';
+  try{ panel.focus(); }catch(e){}
+  await _incdLoad(true);
+  // gentle refresh while open, at the existing incidents cadence (30s)
+  if(INCD_TIMER) clearInterval(INCD_TIMER);
+  INCD_TIMER=setInterval(()=>{ if(INCD_OPEN) _incdLoad(false); }, 30000);
+}
+async function _incdLoad(showErr){
+  const iid=INCD_OPEN; if(iid==null) return;
+  let j, status=0;
+  try{ const r=await fetch('/api/incidents/'+encodeURIComponent(iid)); status=r.status; j=await r.json(); }
+  catch(e){
+    if(INCD_OPEN!==iid) return;
+    if(showErr) _incdError(I18N.t('incd.err','Incident detail is temporarily unavailable.'));
+    return;
+  }
+  if(INCD_OPEN!==iid) return;   // drawer changed/closed mid-flight
+  if(status===404 || (j&&j.error)){
+    _incdError(I18N.t('incd.gone','This incident no longer exists.'));
+    return;
+  }
+  const inc=(j&&j.incident)||null;
+  if(!inc){ if(showErr) _incdError(I18N.t('incd.err','Incident detail is temporarily unavailable.')); return; }
+  INCD_CACHE[iid]=inc;
+  _incdRender(inc);
+}
+function _incdHeader(inc){
+  const sevEl=document.getElementById('incd-sev'), stEl=document.getElementById('incd-state-txt');
+  if(!inc){ sevEl.hidden=true; stEl.textContent=''; stEl.className='incd-state'; return; }
+  const sev=inc.severity==='critical'?'critical':'warning';
+  const open=inc.state==='open';
+  sevEl.hidden=false;
+  sevEl.className='badge '+(sev==='critical'?'crit':'warn');
+  sevEl.textContent=sev==='critical'?I18N.t('inc.sev_critical','Critical'):I18N.t('inc.sev_warning','Warning');
+  stEl.textContent=open?I18N.t('inc.state_open','Open'):I18N.t('inc.state_cleared','Cleared');
+  stEl.className='incd-state '+(open?'open':'cleared')+(sev==='warning'?' warn':'');
+}
+function _incdError(msg){
+  _incdHeader(null);
+  document.getElementById('incd-body').innerHTML=
+    '<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div><div class="t">'
+    +esc(msg)+'</div></div></div>';
+}
+function _incdRender(inc){
+  _incdHeader(inc);
+  const body=document.getElementById('incd-body');
+  const open=inc.state==='open';
+  // ── timestamps + durations
+  const ageTxt=open
+    ? I18N.tf('incd.open_for','open {d}',{d:_incdDur(inc.opened_at, inc.updated_at||Math.floor(Date.now()/1000))})
+    : I18N.tf('inc.cleared_after','cleared after {d}',{d:_incdDur(inc.opened_at, inc.cleared_at)});
+  let meta='<dl class="incd-meta">'
+    +'<dt>'+esc(I18N.t('incd.opened','Opened'))+'</dt><dd>'+esc(_incdAbsTime(inc.opened_at))
+      +' <span class="incd-dur">· '+esc(ageTxt)+'</span></dd>'
+    +'<dt>'+esc(I18N.t('incd.updated','Updated'))+'</dt><dd>'+esc(_incdAbsTime(inc.updated_at))+'</dd>';
+  if(inc.cleared_at) meta+='<dt>'+esc(I18N.t('incd.cleared','Cleared'))+'</dt><dd>'+esc(_incdAbsTime(inc.cleared_at))+'</dd>';
+  meta+='<dt>'+esc(I18N.t('incd.signals','Signals'))+'</dt><dd>'
+    +esc(open?I18N.tf('inc.active_of','{a} of {t} active',{a:inc.active_count,t:inc.member_count})
+              :I18N.tf('inc.signals_n','{t} signals',{t:inc.member_count}))+'</dd>';
+  meta+='</dl>';
+  // ── timeline (opened → member_joined → cleared)
+  const tl=(inc.timeline||[]);
+  let tlHtml;
+  if(!tl.length){
+    tlHtml='<div class="muted" style="font-size:13px">'+esc(I18N.t('incd.tl_empty','No lifecycle events recorded yet.'))+'</div>';
+  }else{
+    tlHtml='<ul class="incd-tl">'+tl.map(e=>{
+      const kind=e.event==='opened'?'opened':e.event==='cleared'?'cleared':'joined';
+      const t=e.at?relTime(e.at):'';
+      let label, spike='';
+      if(e.event==='opened'){
+        label=esc(I18N.t('incd.ev_opened','Incident opened'));
+      }else if(e.event==='cleared'){
+        label=esc(I18N.t('incd.ev_cleared','All signals returned to baseline'));
+      }else{
+        const m=(inc.members||[]).find(x=>x.series===e.series);
+        const sp=m && m.direction==='spike';
+        spike=sp?' spike':'';
+        const arrow=sp?'▲':'▼';
+        const nm=esc((typeof _anomLabel==='function')?_anomLabel(e.series):e.series);
+        const z=m?(Math.round(Math.abs(m.peak_z||0)*10)/10):'';
+        label='<span class="arr '+(sp?'spike':'dip')+'">'+arrow+'</span> '
+          +I18N.tf('incd.ev_joined','{name} joined',{name:nm})
+          +(z!==''?' <span class="incd-mem-sig">'+esc(z)+'σ</span>':'');
+      }
+      return '<li class="incd-tle '+kind+spike+'"><div class="incd-tle-d">'+label+'</div>'
+        +(t?'<div class="incd-tle-t">'+esc(t)+'</div>':'')+'</li>';
+    }).join('')+'</ul>';
+  }
+  // ── per-member breakdown
+  const memHtml=(inc.members||[]).map((m,mi)=>{
+    const sp=m.direction==='spike';
+    const arrow=sp?'▲':'▼';
+    const nm=esc((typeof _anomLabel==='function')?_anomLabel(m.series):m.series);
+    const z=(m.peak_z>0?'+':'')+(Math.round((m.peak_z||0)*10)/10);
+    const sev=inc.severity==='critical';
+    const stCls=m.active?('active'+(sev?'':' warn')):'settled';
+    const stTxt=m.active?I18N.t('incd.m_active','Active'):I18N.t('incd.m_settled','Settled');
+    const u=m.unit||'';
+    const vals=I18N.tf('incd.m_vals','peak {v}{u} vs ~{b}{u} baseline',{v:m.peak_value,u:u,b:m.baseline});
+    const seen=I18N.tf('incd.m_seen','first seen {f} · last {l}',{f:relTime(m.first_seen),l:relTime(m.last_seen)});
+    return '<div class="incd-mem'+(m.active?'':' settled')+'">'
+      +'<div class="incd-mem-h"><span class="arr '+(sp?'spike':'dip')+'">'+arrow+'</span>'
+      +'<span class="incd-mem-nm">'+nm+'</span>'
+      +'<span class="incd-mem-sig">'+esc(z)+'σ</span>'
+      +'<span class="incd-mem-st '+stCls+'">'+esc(stTxt)+'</span></div>'
+      +'<div class="incd-mem-vals">'+esc(vals)+'<br>'+esc(seen)+'</div>'
+      +'<div class="incd-why"><button type="button" class="incd-why-btn" data-incd-why="'+mi+'">🧠 '
+      +esc(I18N.t('incd.why','Why?'))+'</button>'
+      +'<div class="incd-why-out" id="incd-why-'+mi+'" hidden style="margin-top:8px"></div></div>'
+      +'</div>';
+  }).join('') || '<div class="muted" style="font-size:13px">'+esc(I18N.t('incd.no_members','No member signals.'))+'</div>';
+  body.innerHTML=
+    '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+'</section>'
+   +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.timeline','Timeline'))+'</div>'+tlHtml+'</section>'
+   +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.members','Signals'))+'</div>'+memHtml+'</section>';
+  body.querySelectorAll('[data-incd-why]').forEach(btn=>{
+    btn.onclick=()=>_incdExplain(inc, +btn.getAttribute('data-incd-why'), btn);
+  });
+}
+let INCD_WHY_BUSY={};
+async function _incdExplain(inc, mi, btn){
+  const m=(inc.members||[])[mi]; if(!m) return;
+  const out=document.getElementById('incd-why-'+mi); if(!out) return;
+  const k=inc.id+':'+mi;
+  if(INCD_WHY_BUSY[k]) return;
+  if(!out.hidden && out.dataset.done==='1'){ out.hidden=true; out.dataset.done=''; return; }
+  INCD_WHY_BUSY[k]=true; out.hidden=false; out.dataset.done='';
+  out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  const payload={key:m.series, ts:m.last_seen||null, value:m.peak_value, baseline:m.baseline,
+                 z:m.peak_z, unit:m.unit, direction:m.direction, magnitude:Math.abs(m.peak_z||0)};
+  let j;
+  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; INCD_WHY_BUSY[k]=false; return; }
+  if(j.source==='llm' && j.explanation){
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
+  }else{
+    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
+    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
+      +'</div></div>';
+  }
+  out.dataset.done='1'; INCD_WHY_BUSY[k]=false;
+}
+function closeIncidentDrawer(){
+  if(INCD_OPEN==null) return;
+  INCD_OPEN=null;
+  if(INCD_TIMER){ clearInterval(INCD_TIMER); INCD_TIMER=null; }
+  document.getElementById('incd').hidden=true;
+  document.documentElement.style.overflow='';   // release scroll-lock
+  const t=INCD_TRIGGER; INCD_TRIGGER=null;
+  if(t && typeof t.focus==='function'){ try{ t.focus(); }catch(e){} }   // restore focus
+}
+(function _incdWire(){
+  const close=document.getElementById('incd-close'), scrim=document.getElementById('incd-scrim');
+  if(close) close.onclick=closeIncidentDrawer;
+  if(scrim) scrim.onclick=closeIncidentDrawer;
+  document.addEventListener('keydown', e=>{
+    if(INCD_OPEN==null) return;
+    if(e.key==='Escape'){ e.preventDefault(); closeIncidentDrawer(); return; }
+    if(e.key==='Tab'){   // focus-trap inside the panel
+      const f=_incdFocusables(); if(!f.length){ e.preventDefault(); return; }
+      const first=f[0], last=f[f.length-1], a=document.activeElement;
+      const panel=document.querySelector('#incd .incd-panel');
+      if(e.shiftKey){ if(a===first||a===panel){ e.preventDefault(); last.focus(); } }
+      else { if(a===last){ e.preventDefault(); first.focus(); } }
+    }
+  });
+})();
 // ── Lab Copilot (E1): local-LLM digest + ask-box, all read-only ───────────────
 let COPILOT=null, COPILOT_AT=0, COPILOT_BUSY=false;
 function _copilotStatusNote(s){
