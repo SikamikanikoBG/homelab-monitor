@@ -6603,7 +6603,7 @@ def build_public_status():
     tiles, worst = [], 0
     for c in cards:
         key, st = c.get("key"), c.get("status") or "info"
-        worst = max(worst, _STATUS_RANK.get(st, 0))
+        rank = _STATUS_RANK.get(st, 0)
         tile = {"key": key, "status": st}
         if key == "containers" and docker.get("available"):
             s = docker["summary"]
@@ -6614,8 +6614,14 @@ def build_public_status():
             s = systemd["summary"]
             tile["up"] = int(s.get("running", 0))
             tile["failed"] = int(s.get("failed", 0))
+            # A handful of failed systemd units while the bulk still run is a
+            # "degraded" condition, not a whole-lab "down" — only let services
+            # paint the public banner red when nothing is actually running.
+            if rank >= 3 and tile["up"] > 0:
+                rank = 2
         elif key == "gpu":
             tile["busy"] = bool((snap["gpu"]["util"] or 0) >= 5)
+        worst = max(worst, rank)
         tiles.append(tile)
 
     # Headline counts — anonymized aggregates only (no names, no identities).

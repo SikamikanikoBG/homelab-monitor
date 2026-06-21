@@ -149,6 +149,30 @@ class TestPublicStatus(unittest.TestCase):
         self.assertIn("status_page", j)
         self.assertEqual(j["status_page"], app.STATUS_PAGE)
 
+    # ── a few failed units while the bulk run is "degraded", not "down" ───────
+    def test_failed_units_degrade_not_down(self):
+        # clean docker so services is the only red subsystem
+        app.HEALTH["docker"] = {"available": True, "containers": [],
+                                "summary": {"total": 12, "running": 12, "problems": 0}}
+        app.HEALTH["systemd"] = {"available": True, "services": [],
+                                 "summary": {"running": 90, "failed": 4}}
+        j = self.c.get("/api/status").get_json()
+        self.assertEqual(j["status"], "degraded",
+                         "4 failed of 90 running should not paint the lab DOWN")
+        # the services tile still honestly reports it needs attention
+        svc = next(t for t in j["tiles"] if t["key"] == "services")
+        self.assertEqual(svc["status"], "crit")
+        self.assertEqual(svc["failed"], 4)
+
+    def test_nothing_running_stays_down(self):
+        app.HEALTH["docker"] = {"available": True, "containers": [],
+                                "summary": {"total": 12, "running": 12, "problems": 0}}
+        app.HEALTH["systemd"] = {"available": True, "services": [],
+                                 "summary": {"running": 0, "failed": 4}}
+        j = self.c.get("/api/status").get_json()
+        self.assertEqual(j["status"], "down",
+                         "nothing running is a genuine DOWN")
+
     # ── never 500s even with an empty/warming snapshot ───────────────────────
     def test_graceful_when_warming(self):
         app.LATEST["host"] = {}
