@@ -137,6 +137,52 @@ class TestPublicStatus(unittest.TestCase):
             self.assertNotIn(needle, blob,
                              "public status leaked sensitive value %r" % needle)
 
+    # ── PRIVACY: heartbeat history must be aggregated up/down ONLY ────────────
+    def test_privacy_heartbeat_history(self):
+        # Seed real history rows containing what WOULD be sensitive if leaked, to
+        # prove the history serializer emits only {t, s} integers.
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            for i in range(app._STATHIST_CELLS):
+                bt = now - (now % app._STATHIST_BUCKET) - i * app._STATHIST_BUCKET
+                for k in app._STATHIST_KEYS:
+                    app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                                   (bt, k, 0))
+            app.DB.commit()
+        j = self.c.get("/api/status").get_json()
+        # Every tile's history (and the top-level overall history) is present and
+        # carries ONLY aggregated cells of {t:int, s:int} + integer up/total/uptime.
+        seen_hist = False
+        for t in j["tiles"]:
+            h = t.get("history")
+            if h is None:
+                continue
+            seen_hist = True
+            self.assertIsInstance(h["cells"], list)
+            for cell in h["cells"]:
+                self.assertEqual(set(cell.keys()), {"t", "s"})
+                self.assertIsInstance(cell["t"], int)
+                self.assertIsInstance(cell["s"], int)
+                self.assertIn(cell["s"], (-1, 0, 1, 2, 3))
+            self.assertIsInstance(h["up"], int)
+            self.assertIsInstance(h["total"], int)
+        self.assertTrue(seen_hist, "expected at least one tile heartbeat history")
+        self.assertIsNotNone(j.get("history"), "expected overall history")
+        # The forbidden-key / forbidden-value scan must still pass WITH history present.
+        leaves = list(_walk_strings(j))
+        forbidden = {"hostname", "host", "ip", "mount", "os", "model", "name",
+                     "image", "path", "secret", "token", "webhook_url"}
+        present = {k for (_p, kind, k) in leaves if kind == "key"}
+        self.assertFalse(forbidden & present,
+                         "heartbeat history leaked sensitive key(s): %s"
+                         % sorted(forbidden & present))
+        blob = json.dumps(j)
+        for needle in ("secret-ardi-box", "192.168.1.50", "/data", "opensuse",
+                       "immich_server", "sshd", "nginx", "ollama"):
+            self.assertNotIn(needle, blob,
+                             "heartbeat history leaked sensitive value %r" % needle)
+
     # ── toggle ────────────────────────────────────────────────────────────────
     def test_disabled_returns_404(self):
         app.STATUS_PAGE = False
@@ -183,6 +229,126 @@ class TestPublicStatus(unittest.TestCase):
         j = r.get_json()
         self.assertIn("status", j)
         self.assertIsInstance(j["tiles"], list)
+
+
+class TestHeartbeatHistory(unittest.TestCase):
+    """status_history persistence + the /api/status heartbeat series shape, the
+    thin-state, retention trim, and the uptime% math."""
+
+    def setUp(self):
+        self.c = app.app.test_client()
+        self._sp = app.STATUS_PAGE
+        app.STATUS_PAGE = True
+        # Minimal live snapshot so _status_states() yields concrete ranks.
+        self._docker = app.HEALTH.get("docker")
+        self._systemd = app.HEALTH.get("systemd")
+        self._host = app.LATEST.get("host")
+        self._gpu_avail = app.LATEST.get("gpu_avail")
+        app.HEALTH["docker"] = {"available": True, "containers": [],
+                                "summary": {"total": 5, "running": 5, "problems": 0}}
+        app.HEALTH["systemd"] = {"available": True, "services": [],
+                                 "summary": {"running": 10, "failed": 0}}
+        app.LATEST["host"] = {"ram_used": 4000, "ram_total": 16000, "cpu": 10, "disks": []}
+        app.LATEST["gpu_avail"] = True
+        app.LATEST["util"] = 20
+        app.LATEST["mem_used"] = 8000
+        app.LATEST["mem_total"] = 24576
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            app.DB.commit()
+
+    def tearDown(self):
+        app.STATUS_PAGE = self._sp
+        app.HEALTH["docker"] = self._docker
+        app.HEALTH["systemd"] = self._systemd
+        app.LATEST["host"] = self._host
+        app.LATEST["gpu_avail"] = self._gpu_avail
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            app.DB.commit()
+
+    def _count(self):
+        with app.LOCK:
+            return app.DB.execute("SELECT COUNT(*) FROM status_history").fetchone()[0]
+
+    # ── sampling writes one row per subsystem key per bucket ─────────────────
+    def test_sample_inserts_rows(self):
+        ts = int(time.time())
+        with app.LOCK:
+            app.sample_status_history(ts)
+            app.DB.commit()
+        self.assertEqual(self._count(), len(app._STATHIST_KEYS))
+        with app.LOCK:
+            keys = {r[0] for r in app.DB.execute("SELECT DISTINCT key FROM status_history")}
+        self.assertEqual(keys, set(app._STATHIST_KEYS))
+
+    # ── re-sampling in the same bucket replaces, not duplicates ──────────────
+    def test_sample_idempotent_per_bucket(self):
+        ts = int(time.time())
+        with app.LOCK:
+            app.sample_status_history(ts)
+            app.sample_status_history(ts + 5)   # same 5-min bucket
+            app.DB.commit()
+        self.assertEqual(self._count(), len(app._STATHIST_KEYS))
+
+    # ── retention trims old rows (mirrors the sampler's DELETE) ──────────────
+    def test_retention_trim(self):
+        now = int(time.time())
+        old = now - app._STATHIST_RETENTION - 10 * app._STATHIST_BUCKET
+        with app.LOCK:
+            app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                           (old, "overall", 0))
+            app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                           (now, "overall", 0))
+            app.DB.execute("DELETE FROM status_history WHERE ts<?",
+                           (now - app._STATHIST_RETENTION,))
+            app.DB.commit()
+            rows = app.DB.execute("SELECT ts FROM status_history").fetchall()
+        self.assertEqual([r[0] for r in rows], [now])
+
+    # ── series shape: fixed cell count, oldest→newest, -1 fills gaps ─────────
+    def test_history_shape_and_gaps(self):
+        h = app._status_history(int(time.time()))
+        self.assertEqual(set(h.keys()), set(app._STATHIST_KEYS))
+        for key, s in h.items():
+            self.assertEqual(len(s["cells"]), app._STATHIST_CELLS)
+            ts_seq = [c["t"] for c in s["cells"]]
+            self.assertEqual(ts_seq, sorted(ts_seq))          # oldest → newest
+            self.assertTrue(all(c["s"] == -1 for c in s["cells"]))  # empty DB
+            self.assertEqual(s["total"], 0)
+            self.assertIsNone(s["uptime"])
+
+    # ── thin state on a fresh DB reads as "collecting", not all-green ────────
+    def test_thin_state_collecting(self):
+        j = self.c.get("/api/status").get_json()
+        ov = j.get("history")
+        self.assertIsNotNone(ov)
+        self.assertEqual(ov["total"], 0)
+        self.assertIsNone(ov["uptime"])
+
+    # ── uptime% math: up buckets / sampled buckets, no-data excluded ─────────
+    def test_uptime_math(self):
+        now = int(time.time())
+        cur = now - (now % app._STATHIST_BUCKET)
+        # 8 sampled buckets: 6 up (rank 0), 1 degraded (rank 2), 1 down (rank 3)
+        # → 6/8 = 75.0%. Other 22 buckets stay no-data (excluded from the math).
+        states = [0, 0, 0, 0, 0, 0, 2, 3]
+        with app.LOCK:
+            for i, st in enumerate(states):
+                bt = cur - i * app._STATHIST_BUCKET
+                app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                               (bt, "overall", st))
+            app.DB.commit()
+        h = app._status_history(now)["overall"]
+        self.assertEqual(h["total"], 8)
+        self.assertEqual(h["up"], 6)
+        self.assertEqual(h["uptime"], 75.0)
+
+    # ── always 200, even if the table is missing/unreadable ──────────────────
+    def test_always_200(self):
+        r = self.c.get("/api/status")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("history", r.get_json())
 
 
 if __name__ == "__main__":

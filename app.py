@@ -181,6 +181,12 @@ CREATE INDEX IF NOT EXISTS idx_incidents_opened ON incidents(opened_at);
 CREATE TABLE IF NOT EXISTS llm_samples(ts INTEGER NOT NULL, model TEXT, tps REAL,
   ttft_ms REAL, prompt_tps REAL, eval_count INTEGER);
 CREATE INDEX IF NOT EXISTS idx_llm_ts ON llm_samples(ts);
+-- Public status heartbeat history (E4): per-subsystem-key status rank sampled at a
+-- coarse cadence so the /status page can paint Uptime-Kuma-style bars. Aggregated &
+-- anonymized ONLY — `key` is a fixed subsystem label (gpu/host/containers/services/
+-- overall), `state` is the 0..3 status rank (0 ok → 3 down). NO names/topology.
+CREATE TABLE IF NOT EXISTS status_history(ts INTEGER NOT NULL, key TEXT NOT NULL, state INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_stathist_ts ON status_history(ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -4871,9 +4877,13 @@ def sample_once():
             for d in (host.get("disks") or []):
                 DB.execute("INSERT INTO disk_samples(ts,mount,used,total) VALUES(?,?,?,?)",
                            (ts, d["mount"], d.get("used"), d.get("total")))
+            # Coarse public-status heartbeat sample (~5 min) — aggregated up/down
+            # per anonymized subsystem key. Cheap; shares this held LOCK.
+            sample_status_history(ts)
         if ts % 360 < INTERVAL:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc", "disk_samples"):
                 DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
+            DB.execute("DELETE FROM status_history WHERE ts<?", (ts - _STATHIST_RETENTION,))
         if ts % 60 < INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             DB.execute("UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
                        "WHERE status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < ?",
@@ -7595,6 +7605,97 @@ def api_mcp_status():
 _STATUS_RANK = {"crit": 3, "warn": 2, "info": 1, "ok": 0}
 _STATUS_BANNER = {3: "down", 2: "degraded", 1: "operational", 0: "operational"}
 
+# Heartbeat history: keys we sample + how many buckets the public bars show. State
+# is the 0..3 status rank; -1 means "no data" (no sample fell in that bucket / DB
+# was empty). One sample per ~5 min bucket, 30 buckets ≈ last 2.5 h of detail.
+_STATHIST_KEYS   = ("overall", "gpu", "host", "containers", "services")
+_STATHIST_BUCKET = 300        # seconds per heartbeat cell (~5 min)
+_STATHIST_CELLS  = 30         # cells rendered per subsystem strip
+_STATHIST_RETENTION = 30 * 86400   # keep ~30 days of coarse status samples
+
+def _status_states():
+    """Derive the current per-subsystem status RANK (0 ok .. 3 down) + overall,
+    reusing the same Overview logic the public tiles use. Returns a dict of
+    {key: rank} for keys in _STATHIST_KEYS. Aggregated only — no names/topology.
+    Never raises; warming subsystems simply contribute their 'info' rank."""
+    gpu_avail = LATEST.get("gpu_avail")
+    snap = {"gpu": {"util": LATEST.get("util") or 0,
+                    "mem_used": LATEST.get("mem_used") or 0,
+                    "mem_total": (LATEST.get("mem_total") or 24576) if gpu_avail else 0,
+                    "temp": LATEST.get("temp") or 0,
+                    "available": bool(gpu_avail)},
+            "host": LATEST.get("host") or {}}
+    docker  = HEALTH["docker"]  or {"available": False, "containers": [],
+                                    "summary": {"total": 0, "running": 0, "problems": 0}}
+    systemd = HEALTH["systemd"] or {"available": False, "services": [], "summary": {}}
+    cards = build_overview(snap, docker, systemd)
+    states, worst = {}, 0
+    for c in cards:
+        key = c.get("key")
+        rank = _STATUS_RANK.get(c.get("status") or "info", 0)
+        # Mirror the public-tile softening: a few failed systemd units while the
+        # bulk still run is "degraded" (rank 2), not a whole-lab "down" (rank 3).
+        if key == "services" and rank >= 3:
+            up = int((systemd.get("summary") or {}).get("running", 0)) if systemd.get("available") else 0
+            if up > 0:
+                rank = 2
+        if key in _STATHIST_KEYS:
+            states[key] = rank
+        worst = max(worst, rank)
+    states["overall"] = worst
+    return states
+
+def sample_status_history(ts):
+    """Persist one coarse status sample per ~5 min bucket. Caller MUST hold LOCK
+    (it's invoked from inside the sampler's `with LOCK:` block, like the other
+    history writes). Stores only {ts, key, rank} — fully aggregated/anonymized."""
+    try:
+        states = _status_states()
+    except Exception:
+        return
+    bucket = ts - (ts % _STATHIST_BUCKET)
+    # One row per (bucket,key): re-running within the same bucket overwrites with
+    # the latest state rather than piling up duplicate rows.
+    DB.execute("DELETE FROM status_history WHERE ts=? AND key IN (%s)"
+               % ",".join("?" * len(states)), (bucket, *states.keys()))
+    DB.executemany("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                   [(bucket, k, int(v)) for k, v in states.items()])
+
+def _status_history(now):
+    """Build the public heartbeat series: for each subsystem key, the last
+    _STATHIST_CELLS buckets (oldest→newest) as {t, state} where state is the 0..3
+    rank, or -1 for a bucket with no sample. Plus an uptime% (share of sampled
+    buckets that were fully up, i.e. rank 0) and the up/total bucket counts for the
+    a11y summary. Read-only; the caller invokes this OUTSIDE any held LOCK."""
+    out = {}
+    cur_bucket = now - (now % _STATHIST_BUCKET)
+    span_start = cur_bucket - (_STATHIST_CELLS - 1) * _STATHIST_BUCKET
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts,key,state FROM status_history WHERE ts>=? AND key IN (%s)"
+                % ",".join("?" * len(_STATHIST_KEYS)),
+                (span_start, *_STATHIST_KEYS)).fetchall()
+    except Exception:
+        rows = []
+    by_key = {}
+    for ts, key, state in rows:
+        by_key.setdefault(key, {})[ts - (ts % _STATHIST_BUCKET)] = int(state)
+    for key in _STATHIST_KEYS:
+        buckets = by_key.get(key, {})
+        cells, up, total = [], 0, 0
+        for i in range(_STATHIST_CELLS):
+            bt = span_start + i * _STATHIST_BUCKET
+            st = buckets.get(bt, -1)
+            cells.append({"t": bt, "s": st})
+            if st >= 0:
+                total += 1
+                if st == 0:
+                    up += 1
+        out[key] = {"cells": cells, "up": up, "total": total,
+                    "uptime": round(100.0 * up / total, 1) if total else None}
+    return out
+
 def build_public_status():
     """Aggregate, privacy-safe health snapshot for the public /status page.
     Read-only; derives from the same cached signals the Overview tab uses but
@@ -7667,6 +7768,16 @@ def build_public_status():
         gpu_pub["busy"] = bool((gpu["util"] or 0) >= 5)
         gpu_pub["util_pct"] = round(gpu["util"] or 0)
 
+    # Heartbeat history — aggregated up/down per anonymized subsystem key (and an
+    # overall series). Attached to each tile + surfaced top-level so the public
+    # page can paint Uptime-Kuma-style bars. Read happens here, OUTSIDE any held
+    # LOCK. Carries only {bucket-ts, status-rank} — no names/topology/secrets.
+    hist = _status_history(now)
+    for tile in tiles:
+        h = hist.get(tile["key"])
+        if h:
+            tile["history"] = h
+
     return {
         "status": _STATUS_BANNER.get(worst, "operational"),
         "updated": HEALTH["at"] or now,
@@ -7677,6 +7788,8 @@ def build_public_status():
         "anomaly_active": anomaly_active,
         "counts": {"services": n_services, "containers": n_containers,
                    "monitored": n_services + n_containers, "problems": n_problems},
+        "history": hist.get("overall"),
+        "history_bucket": _STATHIST_BUCKET,
     }
 
 @app.route("/api/status")

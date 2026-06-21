@@ -83,6 +83,19 @@ body.demo .demo-pill{display:inline-flex}
 .tile .badge.info{color:var(--mut)}
 .tile .tdetail{margin-top:9px;color:var(--mut);font-size:13px;font-variant-numeric:tabular-nums}
 .tile .tdetail b{color:var(--tx);font-weight:700}
+/* heartbeat bars (Uptime-Kuma-style strip) */
+.hb{margin-top:11px}
+.hb .bar{display:flex;gap:2px;align-items:flex-end;height:26px}
+.hb .cell{flex:1 1 0;min-width:0;height:100%;border-radius:2px;background:var(--bd);transition:transform .12s}
+.hb .cell.ok{background:var(--ok)}
+.hb .cell.warn{background:var(--warn)}
+.hb .cell.crit{background:var(--crit)}
+.hb .cell.nodata{background:var(--bd);opacity:.45}
+.hb .cell:hover{transform:scaleY(1.12)}
+.hb .hbsum{margin-top:7px;display:flex;justify-content:space-between;gap:8px;color:var(--mut);font-size:11.5px;font-variant-numeric:tabular-nums}
+.hb .hbsum b{color:var(--tx);font-weight:700}
+.hb .hbsum.collecting{color:var(--mut);font-style:italic}
+@media(prefers-reduced-motion:reduce){ .hb .cell{transition:none} .hb .cell:hover{transform:none} }
 /* footer */
 .foot{margin-top:30px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12.5px}
 .foot .spacer{flex:1}
@@ -255,7 +268,44 @@ function tile(t){
   el.innerHTML='<div class="th"><span class="tname">'+esc(name)+'</span>'+
     '<span class="badge '+st+'">'+esc(I18N.t(STATE_LBL[st]||'status.state.info'))+'</span></div>'+
     (detail?'<div class="tdetail">'+detail+'</div>':'');
+  if(t.history) el.appendChild(heartbeat(t.history));
   return el;
+}
+// State rank (0..3, -1=no data) → cell class + i18n state label.
+const HB_CLS=['ok','warn','warn','crit'];
+const HB_LBL=['status.state.ok','status.state.warn','status.state.warn','status.state.crit'];
+function hbWhen(t){ const a=Math.max(0,Math.floor(Date.now()/1000)-t); if(a<3600) return ago(a);
+  return I18N.tf('status.ago.hour','{n}h ago',{n:Math.floor(a/3600)}); }
+function heartbeat(h){
+  const wrap=document.createElement('div'); wrap.className='hb';
+  const cells=h.cells||[]; const total=h.total||0;
+  // a11y: the bar is decorative; the summary line carries the real text.
+  const bar=document.createElement('div'); bar.className='bar'; bar.setAttribute('aria-hidden','true');
+  cells.forEach(c=>{
+    const d=document.createElement('span');
+    const s=(c.s==null?-1:c.s);
+    const klass = s<0 ? 'nodata' : HB_CLS[Math.max(0,Math.min(3,s))];
+    d.className='cell '+klass;
+    const lbl = s<0 ? I18N.t('status.hb.nodata','No data') : I18N.t(HB_LBL[Math.max(0,Math.min(3,s))]);
+    d.title = lbl+' · '+hbWhen(c.t);
+    bar.appendChild(d);
+  });
+  wrap.appendChild(bar);
+  const sum=document.createElement('div'); sum.className='hbsum';
+  if(total<=0){
+    sum.classList.add('collecting');
+    sum.textContent=I18N.t('status.hb.collecting','Collecting uptime history…');
+    sum.setAttribute('role','status');
+  }else{
+    const up=h.up||0; const pct=(h.uptime!=null)?h.uptime:Math.round(1000*up/total)/10;
+    const left=document.createElement('span'); left.innerHTML='<b>'+esc(pct)+'%</b> '+esc(I18N.t('status.hb.uptime','uptime'));
+    const right=document.createElement('span'); right.textContent=I18N.tf('status.hb.upofm','{up} of {total} checks up',{up:up,total:total});
+    sum.appendChild(left); sum.appendChild(right);
+    // a11y summary for screen readers (not purely visual).
+    sum.setAttribute('aria-label', I18N.tf('status.hb.a11y','{pct}% uptime, {up} of {total} checks up',{pct:pct,up:up,total:total}));
+  }
+  wrap.appendChild(sum);
+  return wrap;
 }
 function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
