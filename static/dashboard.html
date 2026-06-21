@@ -1250,6 +1250,17 @@ h2 .hic{ opacity:.9 }
     <div class="grid" id="vramfc-kpis"></div>
     <p class="cap" id="vramfc-cap" data-i18n="vramfc.cap">Free VRAM is total minus what loaded models currently hold. The ETA fits VRAM-used over the last few hours; it only shows a time-to-full when the trend is credibly rising under load, otherwise it reads “stable”.</p>
   </div>
+  <div class="card" id="llm-card">
+    <div class="card-h">
+      <h2 data-i18n="llm.title">🧠 LLM engine</h2>
+      <span class="chip" id="llm-model" hidden><span class="dot"></span><span id="llm-model-txt"></span></span>
+      <span class="ch-space"></span>
+      <span class="ch-meta" id="llm-fresh"></span>
+      <button class="osvar" type="button" id="llm-bench" data-i18n="llm.bench" hidden>⚡ Quick benchmark</button>
+    </div>
+    <div class="fleet-meta" data-i18n="llm.desc">Real throughput from this host's local LLM — tokens/sec and time-to-first-token measured off the Copilot's own generations (no cloud, no synthetic numbers), plus the models resident in VRAM right now with their GPU/CPU split and keep-alive countdown.</div>
+    <div id="llm-body" style="margin-top:12px"></div>
+  </div>
   <div class="cols">
     <div class="card"><h2 data-i18n="gpu.now_title">🎮 GPU right now</h2>
       <div class="grid" id="gpukpis" style="grid-template-columns:1fr 1fr"></div>
@@ -2400,7 +2411,7 @@ function showTab(id){
     else renderLocalOnlyNotice(id);
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadHero(); }
-  if(id==='gpu'){ loadForecast(); loadIncidents(); }   // refresh Anomalies + Incidents on view
+  if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); }   // refresh Anomalies + Incidents + LLM engine on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
   if(id==='host')     renderHostTab();
@@ -5528,6 +5539,96 @@ async function copilotAsk(){
   }
   COPILOT_BUSY=false;
 }
+
+// ── LLM engine panel (GPU tab) — the AI Lab Cockpit's throughput surface ───────
+// Honest numbers: tok/s + TTFT come ONLY from real generations (captured as a
+// side-channel off the Copilot); resident models from ollama /api/ps. Calm
+// degrade when ollama is off. Opt-in benchmark fires ONE small ask, no autorun.
+let LLM_BUSY=false;
+function _llmKeepAlive(sec){
+  if(sec==null) return '';
+  if(sec<=0) return I18N.t('llm.expiring','expiring');
+  if(sec<60) return I18N.tf('llm.ka_s','{n}s',{n:sec});
+  if(sec<3600) return I18N.tf('llm.ka_m','{n}m',{n:Math.round(sec/60)});
+  return I18N.tf('llm.ka_h','{n}h',{n:(sec/3600).toFixed(1)});
+}
+function renderLlm(j){
+  const card=document.getElementById('llm-card'); if(!card) return;
+  const body=document.getElementById('llm-body');
+  const fresh=document.getElementById('llm-fresh');
+  const chip=document.getElementById('llm-model'), chipTxt=document.getElementById('llm-model-txt');
+  const bench=document.getElementById('llm-bench');
+  if(chip && chipTxt){ chipTxt.textContent=j.model||''; chip.hidden=!j.model; }
+  // calm not-reachable state
+  if(!j.enabled || !j.ollama_reachable){
+    if(fresh) fresh.textContent='';
+    if(bench) bench.hidden=true;
+    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">🌙</div><div>'
+      +'<div class="t">'+I18N.t('llm.offline','Local LLM not reachable')+'</div>'
+      +'<div class="d">'+I18N.t('llm.offline_d','Start ollama on this host to see live tokens/sec and resident models. Read-only — the monitor never starts or stops it.')+'</div></div></div>';
+    return;
+  }
+  if(bench) bench.hidden=false;
+  const L=j.last;
+  let head;
+  if(L){
+    if(fresh) fresh.textContent=I18N.tf('llm.measured','measured {n}s ago',{n:L.age_sec});
+    const sub=[
+      L.ttft_ms!=null ? '<span class="badge ok">'+I18N.tf('llm.ttft','TTFT {n} ms',{n:Math.round(L.ttft_ms)})+'</span>' : '',
+      L.prompt_tps!=null ? '<span class="badge">'+I18N.tf('llm.prompt_tps','prompt {n} tok/s',{n:L.prompt_tps})+'</span>' : '',
+      L.eval_count ? '<span class="badge">'+I18N.tf('llm.gen_tokens','{n} tokens',{n:L.eval_count})+'</span>' : '',
+    ].filter(Boolean).join(' ');
+    head='<div class="kpi" style="text-align:left;padding-left:2px">'
+      +'<div class="v" style="font-size:34px">'+esc(String(L.tps))+' <span style="font-size:15px;color:var(--mut)">tok/s</span></div>'
+      +'<div class="l">'+I18N.tf('llm.gen_for','generation throughput · {m}',{m:esc(L.model||j.model||'')})+'</div>'
+      +(sub?'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'+sub+'</div>':'')+'</div>';
+  }else{
+    if(fresh) fresh.textContent='';
+    head='<div class="ins info" style="margin:2px 0"><div class="ic">📡</div><div>'
+      +'<div class="t">'+I18N.t('llm.no_gen','No recent generation')+'</div>'
+      +'<div class="d">'+I18N.t('llm.no_gen_d','Throughput is measured from real Copilot generations. Run a digest, ask the Copilot a question, or hit Quick benchmark to populate tokens/sec.')+'</div></div></div>';
+  }
+  // resident models
+  const res=j.resident||[];
+  let resHtml;
+  if(res.length){
+    resHtml='<div class="muted" style="margin:16px 0 7px" data-x>'+I18N.t('llm.resident','Resident models (loaded now)')+'</div>'
+      +'<table><thead><tr><th>'+I18N.t('llm.col_model','Model')+'</th><th>'+I18N.t('llm.col_vram','VRAM')+'</th>'
+      +'<th>'+I18N.t('llm.col_split','GPU / CPU')+'</th><th>'+I18N.t('llm.col_ka','Keep-alive')+'</th></tr></thead><tbody>'
+      +res.map(m=>{
+        const gpuPct = m.gpu_fraction!=null ? Math.round(m.gpu_fraction*100) : null;
+        let split;
+        if(gpuPct==null){ split='<span class="muted">—</span>'; }
+        else if(gpuPct>=100){ split='<span class="badge ok">'+I18N.t('llm.all_gpu','100% GPU')+'</span>'; }
+        else { split='<span class="badge warn">'+I18N.tf('llm.split','{g}% GPU / {c}% CPU',{g:gpuPct,c:100-gpuPct})+'</span>'; }
+        const vram=m.vram_mb!=null?fmtMB(m.vram_mb):(m.size_mb!=null?fmtMB(m.size_mb):'—');
+        const ka=_llmKeepAlive(m.keep_alive_sec);
+        return '<tr><td>'+esc(m.name)+'</td><td>'+esc(vram)+'</td><td>'+split+'</td>'
+          +'<td>'+(ka?'<span class="muted">'+esc(ka)+'</span>':'<span class="muted">—</span>')+'</td></tr>';
+      }).join('')+'</tbody></table>';
+  }else{
+    resHtml='<div class="muted" style="margin-top:14px">'+I18N.t('llm.no_resident','No models resident in VRAM right now — ollama unloads them after the keep-alive window.')+'</div>';
+  }
+  body.innerHTML=head+resHtml;
+}
+async function loadLlm(){
+  if(CURRENT_HOST!=='local'){ const c=document.getElementById('llm-card'); if(c) c.hidden=true; return; }
+  const c=document.getElementById('llm-card'); if(c) c.hidden=false;
+  let j; try{ j=await(await fetch('/api/llm')).json(); }
+  catch(e){ renderLlm({enabled:false,ollama_reachable:false}); return; }
+  renderLlm(j);
+}
+async function llmBenchmark(){
+  if(LLM_BUSY) return;
+  const btn=document.getElementById('llm-bench'); LLM_BUSY=true;
+  if(btn){ btn.disabled=true; btn.textContent='⏳ '+I18N.t('llm.benching','Measuring…'); }
+  // reuse the existing copilot ask path — one small real generation
+  try{ await fetch('/api/copilot/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({question:'Reply with the single word: ok.'})}); }catch(e){}
+  if(btn){ btn.disabled=false; btn.textContent='⚡ '+I18N.t('llm.bench','Quick benchmark'); }
+  LLM_BUSY=false;
+  loadLlm();
+}
 // ── Scheduled digest config (E1) — reuses /api/settings + the channel list ─────
 let DIGEST_SEND_BUSY=false;
 function _digestChannels(s){
@@ -6481,6 +6582,8 @@ document.getElementById('mcpcopy').onclick = async () => {
 (function(){
   const rb=document.getElementById('copilot-refresh');
   if(rb) rb.onclick=()=>loadCopilot(true);
+  const lb=document.getElementById('llm-bench');
+  if(lb) lb.onclick=llmBenchmark;
   const ab=document.getElementById('copilot-ask-btn');
   if(ab) ab.onclick=copilotAsk;
   const q=document.getElementById('copilot-q');

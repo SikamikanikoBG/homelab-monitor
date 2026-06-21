@@ -6074,6 +6074,118 @@ def _copilot_ask_prompt(facts, question):
         "QUESTION: " + question.strip() + "\nANSWER:")
 
 
+# ── LLM throughput side-channel ───────────────────────────────────────────────
+# Honest tok/s + TTFT: we DON'T fabricate. Real numbers come only from actual
+# ollama generation responses (digest / ask / explain), which carry eval_count,
+# eval_duration (ns), prompt_eval_*, and load_duration. We snapshot the latest
+# measurement into a tiny module-level dict — a pure side-channel that never
+# alters the copilot's returned text. Guarded by its own lock (NOT the global
+# LOCK) so capture is independent of the metrics-DB discipline. /api/ps is polled
+# separately, outside any held lock.
+_LLM_LOCK = threading.Lock()
+_LLM_LAST = None  # {model, tps, ttft_ms, prompt_tps, eval_count, prompt_eval_count, ts}
+
+
+def _llm_metrics_from_response(data, model=None):
+    """Derive a throughput measurement from a non-streaming ollama generate
+    response. Returns a dict or None when the response lacks the timing fields
+    (e.g. an error/empty response). Pure + side-effect-free → unit-testable.
+
+    ollama durations are nanoseconds. tok/s = eval_count / eval_duration(s).
+    TTFT (time-to-first-token) ≈ load_duration + prompt_eval_duration: the model
+    load + prompt ingestion before the first generated token streams."""
+    if not isinstance(data, dict):
+        return None
+    eval_count = data.get("eval_count")
+    eval_dur = data.get("eval_duration")  # ns
+    if not eval_count or not eval_dur or eval_dur <= 0:
+        return None
+    tps = round(eval_count / (eval_dur / 1e9), 2)
+    p_count = data.get("prompt_eval_count") or 0
+    p_dur = data.get("prompt_eval_duration") or 0  # ns
+    prompt_tps = round(p_count / (p_dur / 1e9), 2) if (p_count and p_dur > 0) else None
+    load_dur = data.get("load_duration") or 0  # ns
+    ttft_ms = round((load_dur + p_dur) / 1e6, 1) if (load_dur or p_dur) else None
+    return {
+        "model": model or data.get("model") or COPILOT_MODEL,
+        "tps": tps,
+        "ttft_ms": ttft_ms,
+        "prompt_tps": prompt_tps,
+        "eval_count": int(eval_count),
+        "prompt_eval_count": int(p_count) if p_count else 0,
+        "ts": int(time.time()),
+    }
+
+
+def _capture_llm_metrics(data):
+    """Side-channel: stash the latest throughput measurement if the response has
+    usable timing. Never raises; never touches the copilot's text path."""
+    try:
+        m = _llm_metrics_from_response(data, COPILOT_MODEL)
+        if m is None:
+            return
+        global _LLM_LAST
+        with _LLM_LOCK:
+            _LLM_LAST = m
+    except Exception:
+        pass
+
+
+def _llm_resident_models():
+    """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
+    timeout, stdlib only. Returns (list, reachable). Each entry:
+    {name, size_mb, vram_mb, gpu_fraction, keep_alive_sec}. gpu_fraction is the
+    share of the model resident in VRAM (size_vram/size) — surfaces GPU vs CPU
+    offload. keep_alive_sec is seconds until expires_at (keep-alive countdown).
+
+    MUST be called OUTSIDE any held LOCK (it does network I/O)."""
+    if not COPILOT_ENABLED:
+        return [], False
+    url = COPILOT_OLLAMA_URL + "/api/ps"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return [], False
+    return _parse_resident_models(data), True
+
+
+def _parse_resident_models(data, now=None):
+    """Parse an ollama /api/ps payload into the resident-model list. Pure →
+    unit-testable. Tolerates missing/odd fields."""
+    now = now or time.time()
+    out = []
+    for m in (data or {}).get("models", []) if isinstance(data, dict) else []:
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        size = m.get("size") or 0
+        vram = m.get("size_vram") or 0
+        frac = round(vram / size, 3) if size > 0 else None
+        keep = None
+        exp = m.get("expires_at")
+        if exp:
+            try:
+                # ollama emits RFC3339, e.g. 2026-06-21T12:00:00.123456789Z or +TZ
+                from datetime import datetime
+                s = exp.strip()
+                # python's fromisoformat handles offsets; trim ns to µs and Z
+                s = re.sub(r"(\.\d{6})\d+", r"\1", s).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                keep = int(dt.timestamp() - now)
+            except Exception:
+                keep = None
+        out.append({
+            "name": name,
+            "size_mb": round(size / 1048576) if size else None,
+            "vram_mb": round(vram / 1048576) if vram else None,
+            "gpu_fraction": frac,
+            "keep_alive_sec": keep,
+        })
+    return out
+
+
 def _ollama_generate(prompt, timeout=None):
     """Call the local ollama /api/generate (non-streaming). Returns (text, error)
     where exactly one is non-None. Never raises. `error` is a short machine code:
@@ -6090,6 +6202,7 @@ def _ollama_generate(prompt, timeout=None):
     try:
         with urllib.request.urlopen(req, timeout=(timeout or COPILOT_TIMEOUT)) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
+        _capture_llm_metrics(data)  # side-channel; never alters text below
         txt = (data.get("response") or "").strip()
         if not txt:
             return None, "bad_response"
@@ -6122,6 +6235,32 @@ def api_copilot_digest():
     else:
         out.update({"digest": " ".join(facts), "source": "facts", "llm_status": err})
     return jsonify(out)
+
+
+@app.route("/api/llm")
+def api_llm():
+    """The AI Lab Cockpit's live LLM-engine surface. Always 200, graceful-degrade,
+    never 500, no secret leak (we echo a `reachable` bool + model name, never the
+    URL/creds). Honest numbers only:
+      • `last` — the most recent REAL throughput measurement captured as a
+        side-channel off our existing copilot generations (tok/s + TTFT derived
+        from ollama's eval_count/eval_duration/load_duration). null until a
+        generation has run; carries `age_sec` so the UI shows freshness.
+      • `resident` — models loaded RIGHT NOW from ollama /api/ps (read-only),
+        with VRAM, GPU/CPU split, and keep-alive countdown.
+    /api/ps is polled here, outside any held LOCK."""
+    resident, reachable = _llm_resident_models()
+    with _LLM_LOCK:
+        last = dict(_LLM_LAST) if _LLM_LAST else None
+    if last is not None:
+        last["age_sec"] = max(0, int(time.time()) - last.pop("ts"))
+    return jsonify({
+        "enabled": COPILOT_ENABLED,
+        "ollama_reachable": reachable,
+        "model": COPILOT_MODEL,
+        "last": last,
+        "resident": resident,
+    })
 
 
 # ── Scheduled digest ──────────────────────────────────────────────────────────
