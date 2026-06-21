@@ -85,6 +85,45 @@ class TestTelegramNotifier(unittest.TestCase):
         self.assertIn("network down", tg[0][2])
 
 
+class TestAlertHostLabel(unittest.TestCase):
+    """Every alert must name the machine it's about (many-hosts UX)."""
+
+    def test_label_prefers_probe_hostname(self):
+        with patch.object(app, "LATEST", {"host": {"hostname": "ardi"}}):
+            self.assertEqual(app._alert_host_label(), "ardi")
+
+    def test_label_falls_back_to_socket(self):
+        with patch.object(app, "LATEST", {}), \
+             patch("socket.gethostname", return_value="hubbox"):
+            self.assertEqual(app._alert_host_label(), "hubbox")
+
+    @patch("app._post_json")
+    def test_dispatch_prefixes_title_with_host(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        s = {**app.SETTING_DEFAULTS, "telegram_token": "tok", "telegram_chat_id": "99"}
+        with patch.object(app, "_alert_host_label", return_value="ardi"):
+            app.dispatch_alert(s, "warning", "Container immich unhealthy", "down")
+        _, payload = mock_post.call_args[0]
+        self.assertIn("[ardi]", payload["text"])
+        self.assertIn("Container immich unhealthy", payload["text"])
+
+    @patch("app._post_json")
+    def test_dispatch_explicit_host_overrides(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        s = {**app.SETTING_DEFAULTS, "telegram_token": "tok", "telegram_chat_id": "99"}
+        app.dispatch_alert(s, "info", "Title", "Body", host="webserver")
+        _, payload = mock_post.call_args[0]
+        self.assertIn("[webserver]", payload["text"])
+
+    @patch("app._post_json")
+    def test_dispatch_empty_host_opts_out(self, mock_post):
+        mock_post.return_value = (200, b"{}")
+        s = {**app.SETTING_DEFAULTS, "telegram_token": "tok", "telegram_chat_id": "99"}
+        app.dispatch_alert(s, "info", "Title", "Body", host="")
+        _, payload = mock_post.call_args[0]
+        self.assertNotIn("[", payload["text"].split("\n")[0])
+
+
 class TestOutboundUserAgent(unittest.TestCase):
     """Discord sits behind Cloudflare, which 403s the default Python-urllib
     agent (error 1010). Every outbound notifier POST must carry a real

@@ -5,6 +5,12 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.17.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.2) — 2026-06-21 · _patch_
+_Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
+
+**Fixed**
+- **Alerts now name the machine.** Every notification — Discord, ntfy and Telegram — is prefixed with `[<machine>]`, so when you monitor many hosts you can tell at a glance *which* one a "Container unhealthy" / "Disk at 95%" / "GPU VRAM pressure" alert is about. The **Test** button shows the same label so you can confirm it. No configuration needed — the name comes from the host's reported hostname.
+
 ## [0.17.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.1) — 2026-06-21 · _patch_
 _Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
 

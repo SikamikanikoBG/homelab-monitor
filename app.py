@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.17.1"
+VERSION      = "0.17.2"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -3828,8 +3828,33 @@ def _post_to_telegram(token, chat_id, level, title, body):
             f"_HomeLab Monitor · {level}_")
     return _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
 
-def dispatch_alert(s, level, title, detail):
-    """Send to whichever channels are configured. Returns list of (channel, ok, err)."""
+def _alert_host_label():
+    """Machine name to stamp on every alert so a notification says *where* the
+    problem is. Alerts are raised from the hub's own docker/systemd/disk/GPU
+    snapshots, so this is the hub host: prefer the probe-reported hostname (the
+    same name the dashboard's host tab shows), fall back to the OS hostname, and
+    finally to "" so a label-less environment degrades to the old behaviour."""
+    try:
+        name = ((LATEST or {}).get("host") or {}).get("hostname")
+        if name:
+            return str(name).strip()
+    except Exception:
+        pass
+    try:
+        return socket.gethostname()
+    except Exception:
+        return ""
+
+def dispatch_alert(s, level, title, detail, host=None):
+    """Send to whichever channels are configured. Returns list of (channel, ok, err).
+
+    `title` is prefixed with the machine name (`[host] …`) so every channel —
+    Discord, ntfy and Telegram alike — names which machine the alert is about.
+    Pass host="" to opt out (e.g. a generic message that isn't host-specific)."""
+    if host is None:
+        host = _alert_host_label()
+    if host:
+        title = f"[{host}] {title}"
     out = []
     if s.get("discord_webhook_url"):
         try: send_discord(s["discord_webhook_url"], level, title, detail); out.append(("discord", True, None))
