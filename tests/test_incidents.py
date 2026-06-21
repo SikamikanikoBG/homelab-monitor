@@ -166,6 +166,161 @@ class TestIncidentApi(unittest.TestCase):
             app.save_settings({"discord_webhook_url": "", "ntfy_topic": "", "telegram_token": ""})
 
 
+class TestIncidentDetailApi(unittest.TestCase):
+    def setUp(self):
+        _clean()
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        _clean()
+
+    def test_detail_shape_and_200(self):
+        app.evaluate_incidents(_bundle("gpu_util", "gpu_power", "gpu_temp"), 1_000_000)
+        iid = app.list_incidents()[0]["id"]
+        r = self.c.get("/api/incidents/" + iid)
+        self.assertEqual(r.status_code, 200)
+        inc = r.get_json()["incident"]
+        for k in ("id", "state", "severity", "opened_at", "updated_at", "members",
+                  "member_count", "active_count", "timeline"):
+            self.assertIn(k, inc)
+        self.assertEqual(inc["id"], iid)
+        self.assertEqual(inc["member_count"], 3)
+        # full member detail present
+        m = inc["members"][0]
+        for k in ("series", "direction", "peak_z", "unit", "peak_value", "baseline",
+                  "first_seen", "last_seen", "active"):
+            self.assertIn(k, m)
+        # timeline: an 'opened' event + one 'member_joined' per member
+        events = [e["event"] for e in inc["timeline"]]
+        self.assertEqual(events[0], "opened")
+        self.assertEqual(events.count("member_joined"), 3)
+
+    def test_detail_timeline_includes_cleared(self):
+        t = 1_000_000
+        app.evaluate_incidents(_bundle("gpu_power"), t)
+        iid = app.list_incidents()[0]["id"]
+        for k in range(app._INCIDENT_CLEAR_CONFIRM):
+            app.evaluate_incidents(_bundle(), t + 20 + k * 20)
+        inc = self.c.get("/api/incidents/" + iid).get_json()["incident"]
+        self.assertEqual(inc["state"], "cleared")
+        self.assertIn("cleared", [e["event"] for e in inc["timeline"]])
+
+    def test_detail_404_unknown(self):
+        r = self.c.get("/api/incidents/nope-not-real")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("error", r.get_json())          # clean JSON, not a stacktrace
+
+    def test_detail_404_garbage(self):
+        r = self.c.get("/api/incidents/" + "x" * 200)
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(r.get_json().get("error"), "unknown incident")
+
+    def test_detail_no_secret_leak(self):
+        app.save_settings({"discord_webhook_url": "https://discord.test/SECRET",
+                           "ntfy_topic": "topsecret-topic", "telegram_token": "TG-SECRET"})
+        try:
+            app.evaluate_incidents(_bundle("gpu_power", "gpu_temp"), 1_000_000)
+            iid = app.list_incidents()[0]["id"]
+            body = self.c.get("/api/incidents/" + iid).get_data(as_text=True)
+            for needle in ("SECRET", "topsecret-topic", "TG-SECRET", "discord.test"):
+                self.assertNotIn(needle, body)
+        finally:
+            app.save_settings({"discord_webhook_url": "", "ntfy_topic": "", "telegram_token": ""})
+
+
+class TestIncidentRule(unittest.TestCase):
+    """The incident-aware alert rule type: ONE notification for the whole correlated
+    event (vs the human side's one-per-series), edge-triggered fire on open + one
+    recovery on clear, threshold-gated, off-by-default, no double-send."""
+
+    def setUp(self):
+        _clean()
+        app.save_settings({"discord_webhook_url": "", "telegram_token": "",
+                           "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
+
+    def tearDown(self):
+        app.save_settings({"ntfy_topic": ""})
+        _clean()
+
+    def _sig(self):
+        # Mirror the sampler: list_incidents() reflects whatever evaluate_incidents wrote.
+        return {"anomalies": {"items": []}, "incidents": app.list_incidents()}
+
+    def test_validate_rejects_bad_severity(self):
+        rid, err = app.create_rule({"name": "i", "ctype": "incident",
+                                    "params": {"severity": "bogus"}, "enabled": True})
+        self.assertIsNone(rid)
+        self.assertIn("severity", err)
+
+    def test_fires_once_on_open_and_recovers_once_on_clear(self):
+        app.create_rule({"name": "inc", "ctype": "incident",
+                         "params": {"severity": "warning"}, "enabled": True, "cooldown_min": 0})
+        t = 1_000_000
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            # incident opens with 3 correlated series → ONE fire
+            app.evaluate_incidents(_bundle("gpu_util", "gpu_power", "gpu_temp"), t)
+            app.evaluate_rules(self._sig())
+            # still open next pass (cooldown 0 but edge already armed) → no re-fire
+            app.evaluate_incidents(_bundle("gpu_util", "gpu_power", "gpu_temp"), t + 20)
+            app.evaluate_rules(self._sig())
+            # clear it
+            for k in range(app._INCIDENT_CLEAR_CONFIRM):
+                app.evaluate_incidents(_bundle(), t + 40 + k * 20)
+            app.evaluate_rules(self._sig())      # recovery
+            app.evaluate_rules(self._sig())      # already cleared → no double-send
+        statuses = [h["status"] for h in app.list_alert_history()]
+        self.assertEqual(statuses.count("sent"), 1)        # exactly one alarm
+        self.assertEqual(statuses.count("recovered"), 1)   # exactly one recovery
+        # the ONE alarm names the correlated series count
+        sent = [h for h in app.list_alert_history() if h["status"] == "sent"][0]
+        self.assertIn("3 correlated", sent["detail"])
+
+    def test_threshold_gates_below_severity(self):
+        # rule wants critical; a warning-only incident must NOT fire
+        app.create_rule({"name": "inc", "ctype": "incident",
+                         "params": {"severity": "critical"}, "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_incidents(_bundle(("gpu_power", 3.5, "spike")), 1)   # mild single → warning
+            self.assertEqual(app.list_incidents()[0]["severity"], "warning")
+            self.assertEqual(app.evaluate_rules(self._sig()), 0)
+        pt.assert_not_called()
+
+    def test_fires_at_threshold_critical(self):
+        app.create_rule({"name": "inc", "ctype": "incident",
+                         "params": {"severity": "critical"}, "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_incidents(_bundle("gpu_util", "gpu_power", "gpu_temp"), 1)  # broad → critical
+            self.assertEqual(app.list_incidents()[0]["severity"], "critical")
+            self.assertEqual(app.evaluate_rules(self._sig()), 1)
+        self.assertEqual(pt.call_count, 1)
+
+    def test_no_rule_no_op(self):
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_incidents(_bundle("gpu_util", "gpu_power", "gpu_temp"), 1)
+            self.assertEqual(app.evaluate_rules(self._sig()), 0)   # no rules → nothing
+        pt.assert_not_called()
+
+    def test_inert_without_channel(self):
+        app.save_settings({"ntfy_topic": ""})                      # no channel
+        app.create_rule({"name": "inc", "ctype": "incident",
+                         "params": {"severity": "warning"}, "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_incidents(_bundle("gpu_power", "gpu_temp"), 1)
+            self.assertEqual(app.evaluate_rules(self._sig()), 0)
+        pt.assert_not_called()
+
+    def test_existing_anomaly_rule_unaffected(self):
+        # an incident rule alongside an anomaly rule: both arm independently
+        app.create_rule({"name": "anom", "ctype": "anomaly", "params": {"series": "any"},
+                         "enabled": True, "cooldown_min": 0})
+        sig = {"anomalies": {"items": [
+            {"key": "gpu_power", "unit": "W", "value": 320.0, "baseline": 200.0,
+             "z": 4.1, "direction": "spike"}]}, "incidents": []}
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(sig), 1)   # anomaly rule still fires
+        self.assertEqual(pt.call_count, 1)
+
+
 class TestRecoveryNotifications(unittest.TestCase):
     SIG_ON = {"anomalies": {"items": [
         {"key": "gpu_power", "unit": "W", "value": 320.0, "baseline": 200.0,

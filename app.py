@@ -3996,7 +3996,7 @@ def notify_scan():
 # re-arms cleanly once the condition clears (last_state). Snooze suppresses a rule
 # until snoozed_until. Every fire (and every test) appends to alert_history (capped
 # at the last ~200 rows). This only sends data OUT — it never touches the host.
-_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget"}
+_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident"}
 _ALERT_HISTORY_CAP = 200
 
 def _rule_row_to_dict(r):
@@ -4052,6 +4052,11 @@ def _validate_rule(body):
         try: float(params.get("budget"))
         except (TypeError, ValueError):
             return None, "A numeric 'budget' is required."
+    elif ctype == "incident":
+        sev = (params.get("severity") or "warning")
+        if sev not in ("warning", "critical"):
+            return None, "Incident severity threshold must be 'warning' or 'critical'."
+        params = {**params, "severity": sev}
     return {"name": name, "ctype": ctype, "channel": channel, "level": level,
             "cooldown_min": cooldown, "params": params,
             "enabled": 1 if body.get("enabled") else 0}, None
@@ -4192,6 +4197,32 @@ def _eval_rule(rule, signals):
                 f"Projected month energy cost {cur}{proj} exceeds budget "
                 f"{cur}{budget} (month-to-date {cur}{cm.get('month_to_date')}).")
         return False, None, None
+    if ct == "incident":
+        # ONE notification for the whole correlated event. Fires when an incident is
+        # OPEN at/above the configured severity threshold (the edge-triggered arm/
+        # disarm + cooldown machinery below gives exactly one fire per open→clear
+        # cycle, and one recovery on clear), carrying the correlated member series —
+        # vs the human side's one-ping-per-series. Reads the already-computed open
+        # incidents from the shared signal bundle; no DB recompute here.
+        want = (p.get("severity") or "warning")
+        ranks = {"warning": 1, "critical": 2}
+        thr = ranks.get(want, 1)
+        opens = [i for i in (signals.get("incidents") or []) if i.get("state") == "open"]
+        hits = [i for i in opens if ranks.get(i.get("severity"), 0) >= thr]
+        if hits:
+            inc = max(hits, key=lambda i: (ranks.get(i.get("severity"), 0), i.get("opened_at") or 0))
+            mem = [m for m in (inc.get("members") or []) if m.get("active")] or (inc.get("members") or [])
+            n = len(mem)
+            parts = []
+            for m in mem[:6]:
+                arrow = "▲" if m.get("direction") == "spike" else "▼"
+                parts.append(f"{m.get('series')} {arrow}")
+            more = f" +{n - 6} more" if n > 6 else ""
+            sev = inc.get("severity", "warning")
+            title = f"{sev.capitalize()} incident — {n} correlated anomal{'y' if n == 1 else 'ies'}"
+            detail = f"{n} correlated anomal{'y' if n == 1 else 'ies'}: " + ", ".join(parts) + more + "."
+            return True, title, detail
+        return False, None, None
     return False, None, None
 
 def evaluate_rules(signals=None):
@@ -4215,6 +4246,9 @@ def evaluate_rules(signals=None):
                            "cost_month": _cost_projection(cur, ctx, now),
                            "anomalies": _zscore_anomalies(cur, now),
                            "vram": _vram_forecast(cur, now)}
+            # list_incidents() takes LOCK itself — read it OUTSIDE the block above so
+            # we never nest the non-reentrant lock.
+            signals["incidents"] = list_incidents()
         except Exception as e:
             print("evaluate_rules signal error:", e, flush=True)
             return 0
@@ -4229,7 +4263,12 @@ def evaluate_rules(signals=None):
         snoozed = rule.get("snoozed_until") and rule["snoozed_until"] > now
         cooldown_s = rule["cooldown_min"] * 60
         cooled = (not rule.get("last_fired_at")) or (now - rule["last_fired_at"] >= cooldown_s)
-        should_fire = active and not snoozed and cooled
+        # Incident rules are strictly edge-once: an incident is a single discrete
+        # event, so once we've fired for it (last_state=='active') we don't re-fire
+        # while it stays open — ONE notification for the whole correlated event,
+        # regardless of cooldown. (Threshold rules still re-fire after cooldown.)
+        already_armed = rule["ctype"] == "incident" and rule.get("last_state") == "active"
+        should_fire = active and not snoozed and cooled and not already_armed
         if should_fire:
             level = rule["level"]
             full_title = f"{rule['name']}: {title}"
@@ -4307,7 +4346,6 @@ def _trim_incidents():
     rows = DB.execute("SELECT id FROM incidents ORDER BY opened_at DESC").fetchall()
     if len(rows) <= _INCIDENT_RETENTION:
         return
-    keep = {r[0] for r in rows[:_INCIDENT_RETENTION]}
     drop = [r[0] for r in rows[_INCIDENT_RETENTION:]
             if (DB.execute("SELECT state FROM incidents WHERE id=?", (r[0],)).fetchone() or [""])[0] == "cleared"]
     for iid in drop:
@@ -4418,6 +4456,45 @@ def list_incidents(limit=50):
     except Exception as e:
         print("list_incidents error:", e, flush=True)
         return []
+
+def get_incident(iid):
+    """Full detail for ONE incident: all fields + the complete member list + a
+    compact derived timeline (opened → each member's first_seen → cleared). Returns
+    the dict, or None for an unknown/garbage id. Plain reads; never raises out.
+    No topology/secret leak — members are only the monitored telemetry series keys."""
+    iid = str(iid or "")
+    if not iid:
+        return None
+    try:
+        with LOCK:
+            row = DB.execute(
+                "SELECT id, state, severity, opened_at, updated_at, cleared_at, miss "
+                "FROM incidents WHERE id=?", (iid,)).fetchone()
+            if not row:
+                return None
+            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at", "miss")
+            inc = dict(zip(cols, row))
+            inc["members"] = _incident_members(iid)
+        inc["member_count"] = len(inc["members"])
+        inc["active_count"] = sum(1 for m in inc["members"] if m["active"])
+        # Compact, cheaply-derived timeline: open, each member's first appearance,
+        # and (if cleared) the clear event. Sorted by time, ties broken stably.
+        tl = [{"at": inc["opened_at"], "event": "opened",
+               "detail": "incident opened", "series": None}]
+        for m in sorted(inc["members"], key=lambda x: (x["first_seen"] or 0)):
+            arrow = "▲" if m.get("direction") == "spike" else "▼"
+            tl.append({"at": m["first_seen"], "event": "member_joined",
+                       "series": m["series"],
+                       "detail": f"{m['series']} {arrow} (peak σ={round(abs(m.get('peak_z') or 0), 1)})"})
+        if inc.get("cleared_at"):
+            tl.append({"at": inc["cleared_at"], "event": "cleared",
+                       "detail": "all members returned to baseline", "series": None})
+        tl.sort(key=lambda e: (e["at"] or 0))
+        inc["timeline"] = tl
+        return inc
+    except Exception as e:
+        print("get_incident error:", e, flush=True)
+        return None
 
 def incidents_summary():
     """Compact summary for cheap embedding next to `anomalies` on already-polled
@@ -4859,6 +4936,10 @@ def collector():
                             sig["vram"] = _vram_forecast(cur, nowi)
                     evaluate_incidents(anomalies, nowi)
                     if has_rules:
+                        # Run incidents first (above) so the incident-rule type sees the
+                        # just-updated open incident. list_incidents() takes LOCK itself,
+                        # so read it here (outside the block that built `sig`).
+                        sig["incidents"] = list_incidents()
                         evaluate_rules(sig)
                 except Exception as e: print("evaluate_rules error:", e, flush=True)
                 last_notify = now
@@ -5702,6 +5783,18 @@ def api_incidents():
     return jsonify({"now": int(time.time()),
                     "summary": incidents_summary(),
                     "incidents": list_incidents(limit)})
+
+@app.route("/api/incidents/<iid>")
+def api_incident_one(iid):
+    """Full detail for ONE correlated-anomaly incident: all fields + the complete
+    member list (series, direction, peak σ, value-vs-baseline, first/last seen,
+    active) + a compact derived timeline (opened → member joins → cleared). Returns
+    200 with the incident, or a clean 404 JSON for an unknown/garbage id — never a
+    500/stacktrace. No topology/secret leakage: members are only telemetry keys."""
+    inc = get_incident(iid)
+    if inc is None:
+        return jsonify({"error": "unknown incident"}), 404
+    return jsonify({"now": int(time.time()), "incident": inc})
 
 # ── Lab Copilot (E1): local-LLM insight layer ────────────────────────────────
 # Read-only. Assembles a compact, already-computed snapshot of the lab (live GPU

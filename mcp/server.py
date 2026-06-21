@@ -58,7 +58,9 @@ INSTRUCTIONS = (
     "`get_history` (charted time-series), `get_costs`/`get_entity_cost` (power "
     "turned into money, per machine and per process/container/service/model), "
     "`get_experiments`/`get_experiment` (tracked runs priced by the GPU energy they "
-    "burned), `get_events`/`get_alerts` (OOM kills / threshold crossings), and "
+    "burned), `get_events`/`get_alerts` (OOM kills / threshold crossings), "
+    "`get_incidents` (correlated-anomaly incidents — co-firing GPU/host anomalies "
+    "grouped into ONE lifecycled, severity-rated event), and "
     "`scan_disk(path)` (WizTree-style folder treemap). "
     "Resources expose Prometheus `/metrics`, `/healthz` and the CHANGELOG. This "
     "server never mutates the fleet."
@@ -240,6 +242,21 @@ def get_events(range: str = "6h") -> dict:
 def get_alerts(range: str = "6h") -> dict:
     """Alias for `get_events` — the monitor's alerts are its edge-triggered events."""
     return hc.get_alerts(range)
+
+
+@mcp.tool()
+@_track
+def get_incidents(limit: int = 20, incident_id: str = "") -> dict:
+    """Correlated-anomaly **incidents** — co-firing GPU/host z-score anomalies grouped
+    into ONE lifecycled, severity-rated event (vs N independent per-series flags).
+
+    Without `incident_id`: recent incidents (open-first, capped by `limit`), each with
+    its `members` (per-series direction, peak σ, value-vs-baseline, active), derived
+    `severity` (warning/critical), `state` (open/cleared) and timestamps, plus a
+    `summary`. With `incident_id`: full detail for that one incident including a
+    derived `timeline`; an unknown id surfaces as an HTTP 404 error. Read-only.
+    """
+    return hc.get_incidents(limit, incident_id)
 
 
 # ── resources ────────────────────────────────────────────────────────────────

@@ -1271,6 +1271,7 @@ h2 .hic{ opacity:.9 }
             <option value="disk_eta" data-i18n="rules.t_disk">Disk fills within…</option>
             <option value="vram_eta" data-i18n="rules.t_vram">VRAM fills within…</option>
             <option value="cost_budget" data-i18n="rules.t_cost">Projected cost over…</option>
+            <option value="incident" data-i18n="rules.t_incident">Correlated incident opens…</option>
           </select>
         </div>
         <div id="r_p_series_wrap">
@@ -1284,6 +1285,13 @@ h2 .hic{ opacity:.9 }
         <div id="r_p_budget_wrap" hidden>
           <div class="flabel" data-i18n="rules.f_budget">Budget</div>
           <input type="number" id="r_p_budget" class="field" min="0" step="1" value="50">
+        </div>
+        <div id="r_p_incsev_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_incsev">At/above severity</div>
+          <select id="r_p_incsev" class="field">
+            <option value="warning" data-i18n="opt.sev_warning">warning</option>
+            <option value="critical" data-i18n="opt.sev_critical">critical</option>
+          </select>
         </div>
         <div>
           <div class="flabel" data-i18n="rules.f_channel">Channel</div>
@@ -3361,7 +3369,8 @@ async function testAlerts(){
 
 // ── Alerting rule engine (settings → Rules sub-page) ──────────────────────────
 const RULE_TYPE_LABEL = {anomaly:'rules.t_anomaly', disk_eta:'rules.t_disk',
-                         vram_eta:'rules.t_vram', cost_budget:'rules.t_cost'};
+                         vram_eta:'rules.t_vram', cost_budget:'rules.t_cost',
+                         incident:'rules.t_incident'};
 const SERIES_LABEL = {any:'any series', gpu_util:'GPU util', gpu_vram:'GPU VRAM',
                       gpu_power:'GPU power', gpu_temp:'GPU temp', power_draw:'total power'};
 function ruleParamsVisibility(){
@@ -3369,6 +3378,7 @@ function ruleParamsVisibility(){
   document.getElementById('r_p_series_wrap').hidden = t!=='anomaly';
   document.getElementById('r_p_days_wrap').hidden   = !(t==='disk_eta'||t==='vram_eta');
   document.getElementById('r_p_budget_wrap').hidden = t!=='cost_budget';
+  document.getElementById('r_p_incsev_wrap').hidden = t!=='incident';
 }
 function ruleSummary(r){
   const p=r.params||{};
@@ -3376,6 +3386,7 @@ function ruleSummary(r){
   if(r.ctype==='disk_eta')    return I18N.t('rules.sum_disk','Disk fills within ')+p.days+'d';
   if(r.ctype==='vram_eta')    return I18N.t('rules.sum_vram','VRAM fills within ')+p.days+'d';
   if(r.ctype==='cost_budget') return I18N.t('rules.sum_cost','Projected cost over ')+p.budget;
+  if(r.ctype==='incident')    return I18N.t('rules.sum_incident','Correlated incident ≥ ')+(p.severity||'warning');
   return r.ctype;
 }
 async function loadRules(){
@@ -3432,6 +3443,7 @@ async function addRule(){
   if(t==='anomaly')      params={series:document.getElementById('r_p_series').value};
   else if(t==='disk_eta'||t==='vram_eta') params={days:parseFloat(document.getElementById('r_p_days').value||'3')};
   else if(t==='cost_budget') params={budget:parseFloat(document.getElementById('r_p_budget').value||'50')};
+  else if(t==='incident')    params={severity:document.getElementById('r_p_incsev').value};
   const body={
     name: document.getElementById('r_name').value.trim(),
     ctype: t, params,

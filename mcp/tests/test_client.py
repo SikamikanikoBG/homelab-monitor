@@ -162,6 +162,37 @@ DISK_DONE = {
 }
 DISK_SCANNING = {"path": "/slow", "state": "scanning"}
 
+INCIDENTS = {
+    "now": 9000,
+    "summary": {"open": 1, "top": {"id": "inc1", "severity": "critical", "open": 1}},
+    "incidents": [
+        {"id": "inc1", "state": "open", "severity": "critical",
+         "opened_at": 8000, "updated_at": 9000, "cleared_at": None,
+         "member_count": 3, "active_count": 3,
+         "members": [
+             {"series": "gpu_power", "direction": "spike", "peak_z": 7.2, "unit": "W",
+              "peak_value": 320, "baseline": 200, "first_seen": 8000, "last_seen": 9000, "active": True},
+             {"series": "gpu_temp", "direction": "spike", "peak_z": 4.1, "unit": "C",
+              "peak_value": 85, "baseline": 60, "first_seen": 8020, "last_seen": 9000, "active": True},
+         ]},
+        {"id": "inc0", "state": "cleared", "severity": "warning",
+         "opened_at": 1000, "updated_at": 2000, "cleared_at": 2000,
+         "member_count": 1, "active_count": 0, "members": []},
+    ],
+}
+INCIDENT_ONE = {
+    "now": 9000,
+    "incident": {"id": "inc1", "state": "open", "severity": "critical",
+                 "opened_at": 8000, "updated_at": 9000, "cleared_at": None,
+                 "member_count": 2, "active_count": 2,
+                 "members": INCIDENTS["incidents"][0]["members"],
+                 "timeline": [
+                     {"at": 8000, "event": "opened", "detail": "incident opened", "series": None},
+                     {"at": 8000, "event": "member_joined", "series": "gpu_power", "detail": "gpu_power ▲ (peak σ=7.2)"},
+                     {"at": 8020, "event": "member_joined", "series": "gpu_temp", "detail": "gpu_temp ▲ (peak σ=4.1)"},
+                 ]},
+}
+
 METRICS = "# HELP gpu_util GPU utilization\ngpu_util{gpu=\"gpu0\"} 73\n"
 HEALTHZ = {"status": "ok", "version": "0.13.1"}
 
@@ -174,6 +205,7 @@ ROUTES = {
     "/api/costs": COSTS,
     "/api/costs/entity": COSTS_ENTITY,
     "/api/runs": RUNS,
+    "/api/incidents": INCIDENTS,
     "/healthz": HEALTHZ,
 }
 
@@ -211,6 +243,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(b'{"error":"unknown run"}')
+            return
+        if path.startswith("/api/incidents/"):
+            iid = path.rsplit("/", 1)[-1]
+            if iid == "inc1":
+                self._json(INCIDENT_ONE)
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'{"error":"unknown incident"}')
             return
         if path in ROUTES:
             body = json.dumps(ROUTES[path]).encode()
@@ -362,6 +403,27 @@ def run():
             check(False, "unknown run id raises MonitorError")
         except hc.MonitorError as e:
             check("404" in str(e), "unknown run id raises MonitorError (404)")
+
+        print("get_incidents (list)")
+        r = hc.get_incidents()
+        check(r["count"] == 2, "counts incidents")
+        check(r["summary"]["open"] == 1, "summary open count surfaced")
+        check(r["incidents"][0]["id"] == "inc1", "open-first ordering preserved")
+        check(r["incidents"][0]["severity"] == "critical", "severity surfaced")
+        check(r["incidents"][0]["members"][0]["series"] == "gpu_power", "member series surfaced")
+        check(r["incidents"][0]["members"][0]["peak_z"] == 7.2, "member peak z surfaced")
+
+        print("get_incidents (detail)")
+        r = hc.get_incidents(incident_id="inc1")
+        check(r["id"] == "inc1" and r["state"] == "open", "single incident detail")
+        check(r["member_count"] == 2, "member count on detail")
+        check([e["event"] for e in r["timeline"]][0] == "opened", "timeline starts at opened")
+        check(any(e["event"] == "member_joined" for e in r["timeline"]), "timeline has member joins")
+        try:
+            hc.get_incidents(incident_id="nope")
+            check(False, "unknown incident id raises MonitorError")
+        except hc.MonitorError as e:
+            check("404" in str(e), "unknown incident id raises MonitorError (404)")
 
         print("resources")
         check("gpu_util" in hc.get_metrics(), "metrics text")

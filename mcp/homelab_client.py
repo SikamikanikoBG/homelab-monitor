@@ -270,6 +270,36 @@ def get_alerts(range="6h"):
     return get_events(range)
 
 
+def get_incidents(limit=20, incident_id=""):
+    """Correlated-anomaly **incidents** — the monitor groups co-firing z-score
+    anomalies (GPU util/VRAM/power/temp + total power) into ONE lifecycled incident
+    instead of N independent flags.
+
+    Without `incident_id`: recent incidents, open-first then most-recent (capped by
+    `limit`), each with its `members` (per-series direction, peak σ, value-vs-
+    baseline, first/last seen, active), derived `severity` (warning/critical),
+    `state` (open/cleared) and timestamps — plus a `summary` (open count + the top
+    open incident). With `incident_id`: full detail for that one incident including
+    a derived `timeline` (opened → each member joining → cleared); an unknown id
+    surfaces as an HTTP 404 error. Read-only; members are only telemetry series
+    keys (no topology/secret leak).
+    """
+    if incident_id:
+        d = _get("/api/incidents/" + urllib.parse.quote(str(incident_id)))
+        return d.get("incident", d)
+    try:
+        lim = max(1, int(limit))
+    except (TypeError, ValueError):
+        lim = 20
+    d = _get("/api/incidents?limit=" + str(lim))
+    incidents = d.get("incidents") or []
+    return {
+        "summary": d.get("summary") or {"open": 0, "top": None},
+        "count": len(incidents),
+        "incidents": incidents,
+    }
+
+
 def get_memory(range="6h"):
     """RAM breakdown — the data behind the System tab's memory treemap.
 
