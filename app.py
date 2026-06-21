@@ -43,6 +43,12 @@ DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 HOST_ROOT    = os.environ.get("HOST_ROOT", "/rootfs")          # host / mounted read-only (optional)
 PORT         = int(os.environ.get("PORT", "9800"))
 PRESSURE_MB  = int(os.environ.get("PRESSURE_FREE_MB", "2048"))
+# Demo mode (E4): on a *fresh* DB, seed ~7 days of realistic synthetic history so
+# every history-backed feature (disk-fill ETA, cost projection, z-score anomalies,
+# VRAM-ETA, Lab Copilot digest) lights up within seconds — for the README CTA and
+# the judgment-day demo. OFF by default; idempotent (guarded on a marker + row
+# counts) so it never clobbers real data and a real instance is wholly unaffected.
+DEMO_MODE     = os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
 CHECK_UPDATES = os.environ.get("CHECK_UPDATES", "true").strip().lower() not in ("0", "false", "no", "off")
 # Per-host "a newer OS release exists" check. The probe reads pending *package*
 # updates offline; detecting a whole new distro release needs the network, so the
@@ -5290,6 +5296,155 @@ def _zscore_anomalies(cur, now):
     return {"status": status, "checked": checked, "threshold": Z_THRESH,
             "window_h": WINDOW // 3600, "items": out}
 
+# ── Demo mode (E4): seed realistic synthetic history on a fresh DB ─────────────
+# When DEMO_MODE is on AND the DB has no recent real history, lay down ~7 days of
+# believable per-sample series plus a slice of the previous calendar month, so the
+# history-backed features (disk-fill ETA, cost projection, z-score anomalies,
+# VRAM-ETA, Copilot digest) all light up within seconds. Idempotent: guarded on a
+# settings marker *and* on whether real samples already exist, so it never clobbers
+# a live instance and re-running is a no-op. Pure stdlib; writes through the same
+# columns the live sampler uses. Never raises — a seed failure must not block boot.
+_DEMO_MARKER = "demo_seeded"
+
+def _demo_already_seeded(cur):
+    row = cur.execute("SELECT value FROM settings WHERE key=?", (_DEMO_MARKER,)).fetchone()
+    return bool(row and (row[0] or "").strip() in ("1", "true", "yes", "on"))
+
+def _demo_has_real_history(cur, now):
+    """True when there's already non-trivial sample history (real or a prior seed)
+    in the last 24h — the signal that this DB is in use and must not be touched."""
+    try:
+        n = cur.execute("SELECT COUNT(*) FROM samples WHERE ts>=?", (now - 86400,)).fetchone()[0]
+    except Exception:
+        n = 0
+    return n > 50
+
+def _demo_util_at(lt):
+    """A believable GPU-utilisation shape for a given localtime: busy 'work hours'
+    (~9-18) on weekdays, calm overnight and lighter on weekends, with mild noise.
+    Returns util% in [0,100]; callers derive power/temp/VRAM from it."""
+    import math, random
+    h = lt.tm_hour + lt.tm_min / 60.0
+    weekend = lt.tm_wday >= 5
+    # smooth bell centred on ~13:30, widened across the working day
+    base = 70.0 * math.exp(-((h - 13.5) ** 2) / (2 * 4.0 ** 2))
+    if weekend:
+        base *= 0.45
+    idle = 6.0                       # there's always a little background load
+    jitter = random.uniform(-6, 8)
+    return max(0.0, min(100.0, idle + base + jitter))
+
+def _seed_demo_data():
+    """Seed synthetic history when DEMO_MODE is on and the DB is fresh. Safe to call
+    unconditionally at startup — it self-gates and swallows all errors."""
+    if not DEMO_MODE:
+        return
+    import random
+    random.seed(20260715)            # deterministic shape across restarts/tests
+    now = int(time.time())
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            if _demo_already_seeded(cur) or _demo_has_real_history(cur, now):
+                return
+            lt0 = time.localtime(now)
+            month_start = int(time.mktime((lt0.tm_year, lt0.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+            pm_year, pm_mon = (lt0.tm_year - 1, 12) if lt0.tm_mon == 1 else (lt0.tm_year, lt0.tm_mon - 1)
+            last_month_start = int(time.mktime((pm_year, pm_mon, 1, 0, 0, 0, 0, 0, -1)))
+            total_vram = 24576.0     # RTX 3090-class card, matches the live arena rig
+
+            def sample_row(ts):
+                lt = time.localtime(ts)
+                util = _demo_util_at(lt)
+                frac = util / 100.0
+                # VRAM: a resident model footprint that creeps up slightly under load
+                mem_used = 4200.0 + frac * 11000.0 + random.uniform(-300, 300)
+                mem_used = max(800.0, min(total_vram - 200, mem_used))
+                power = 38.0 + frac * 290.0 + random.uniform(-12, 12)      # idle→~330W
+                temp = 34.0 + frac * 38.0 + random.uniform(-2, 2)          # 34→~72°C
+                cpu = 8.0 + frac * 45.0 + random.uniform(-4, 6)
+                ram_total = 128 * 1024.0
+                ram_used = (22 + frac * 40) / 100.0 * ram_total + random.uniform(-1500, 1500)
+                load1 = round(0.6 + frac * 9.0 + random.uniform(-0.4, 0.6), 2)
+                ctemp = 36.0 + frac * 24.0 + random.uniform(-2, 2)
+                cpu_power = 22.0 + frac * 95.0 + random.uniform(-6, 6)     # RAPL package
+                dram_power = 5.0 + frac * 9.0 + random.uniform(-1, 1)
+                return (ts, round(util), round(mem_used), round(total_vram), round(power, 1),
+                        round(temp, 1), round(cpu, 1), round(ram_used), round(ram_total),
+                        load1, round(ctemp, 1), round(cpu_power, 1), round(dram_power, 1))
+
+            rows = []
+            # Older band: from the 1st of last month → 7 days ago, sparse (5-min) — just
+            # enough for the cost projection's vs-last-month delta without bloating.
+            recent_start = now - 7 * 86400
+            for ts in range(last_month_start, recent_start, 300):
+                rows.append(sample_row(ts))
+            # Recent band: last 7 days at 60s — dense enough for every rolling window
+            # (anomaly/VRAM use the last ~6h; MIN_PTS=30 needs ≥30 points there).
+            for ts in range(recent_start, now, 60):
+                rows.append(sample_row(ts))
+
+            # Deliberate spikes so the z-score detector has a real target and
+            # "Explain this spike" has something to explain. The detector scores the
+            # *latest* reading vs its trailing baseline, so the final samples must be
+            # the anomaly: a sharp thermal+power+util spike on top of the normal shape.
+            if rows:
+                for off, mul in ((4, 0.55), (3, 0.8), (2, 0.95), (1, 1.0), (0, 1.0)):
+                    idx = len(rows) - 1 - off
+                    if idx < 0:
+                        continue
+                    ts, util, mem_used, mt, power, temp, cpu, ru, rt, load1, ctemp, cpw, dpw = rows[idx]
+                    rows[idx] = (ts, min(100, round(util + 60 * mul)), min(int(total_vram - 100), round(mem_used + 6500 * mul)),
+                                 mt, round(power + 260 * mul, 1), round(temp + 28 * mul, 1),
+                                 min(100.0, round(cpu + 40 * mul, 1)), ru, rt,
+                                 round(load1 + 14 * mul, 2), round(ctemp + 18 * mul, 1),
+                                 round(cpw + 70 * mul, 1), dpw)
+
+            DB.executemany(
+                "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,"
+                "cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+            # Disk history: one mount filling at a credible rate (clears the slope/R²
+            # gate → a real "days until full" ETA), one essentially stable. Sampled at
+            # ~5 min like the live sampler does.
+            disk_rows = []
+            for ts in range(recent_start, now, 300):
+                d = (ts - recent_start) / 86400.0           # days since window start
+                # /data: 1.86 TB total, ~880 GB used and climbing ~14 GB/day → ~weeks left
+                data_used = 880.0 + 14.0 * d + random.uniform(-1.5, 1.5)
+                disk_rows.append((ts, "/data", round(data_used, 2), 1862.0))
+                # /: 468 GB total, flat ~120 GB used (stable, no ETA)
+                root_used = 120.0 + random.uniform(-0.8, 0.8)
+                disk_rows.append((ts, "/", round(root_used, 2), 468.0))
+            DB.executemany("INSERT INTO disk_samples(ts,mount,used,total) VALUES(?,?,?,?)", disk_rows)
+
+            # A couple of model VRAM rows + an OOM event so the model/events panels and
+            # the Copilot digest have something concrete to phrase.
+            for ts in range(now - 3600, now, 600):
+                DB.execute("INSERT INTO models VALUES(?,?,?,?)", (ts, "ollama", "qwen2.5:14b", 9200))
+                DB.execute("INSERT INTO models VALUES(?,?,?,?)", (ts, "ollama", "nomic-embed-text", 640))
+            DB.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)",
+                       (now - 5 * 86400, "stable-diffusion", "oom",
+                        "CUDA error: out of memory (demo) — allocation of 2.10 GiB failed"))
+
+            # Tariff defaults so the cost projection renders out of the box (only if
+            # the operator hasn't set their own price).
+            srow = cur.execute("SELECT value FROM settings WHERE key='kwh_price'").fetchone()
+            if not (srow and (srow[0] or "").strip()):
+                DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('kwh_price','0.28')")
+            crow = cur.execute("SELECT value FROM settings WHERE key='currency'").fetchone()
+            if not (crow and (crow[0] or "").strip()):
+                DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('currency','$')")
+
+            DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?, '1')", (_DEMO_MARKER,))
+            DB.commit()
+            print(f"DEMO_MODE: seeded {len(rows)} sample rows + {len(disk_rows)} disk rows "
+                  f"(synthetic history; real instances are unaffected).", flush=True)
+    except Exception as e:
+        print("DEMO_MODE seed skipped (continuing):", e, flush=True)
+
+
 @app.route("/api/forecast")
 def api_forecast():
     """Read-only forecasts computed from the history already in SQLite, using pure
@@ -6425,6 +6580,7 @@ def api_health():
     # env flag takes effect on restart without waiting for the update cache.
     update["self_update_enabled"] = ALLOW_SELF_UPDATE
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
+                    "demo": DEMO_MODE,
                     "docker": docker, "systemd": systemd, "update": update,
                     "processes": HEALTH["processes"],
                     "os_updates": os_updates_summary(),
@@ -7033,6 +7189,7 @@ def api_update_app_status():
 def index():
     return app.send_static_file("dashboard.html")
 
+_seed_demo_data()    # no-op unless DEMO_MODE is on and the DB is fresh
 threading.Thread(target=collector, daemon=True).start()
 threading.Thread(target=host_poller, daemon=True).start()
 

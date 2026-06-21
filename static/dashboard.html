@@ -20,6 +20,7 @@
 header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 h1{font-size:22px;margin:0}.ver{color:var(--mut);font-size:12px;border:1px solid var(--bd);border-radius:20px;padding:1px 9px}
 .prebadge{display:inline-block;margin-left:5px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#d29922;border:1px solid #d29922;border-radius:6px;padding:0 5px;vertical-align:middle}
+.demobadge{display:inline-block;margin-left:5px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a371f7;border:1px solid #a371f7;border-radius:6px;padding:0 5px;vertical-align:middle}
 /* GitHub engagement cluster — sits in the sidebar right under the brand/version */
 .ghbox{display:flex;flex-direction:column;gap:7px;padding:11px 13px 12px;border-bottom:1px solid var(--bd)}
 .ghstar{position:relative;display:flex;align-items:center;gap:8px;text-decoration:none;border:1px solid var(--accent);border-radius:9px;padding:7px 11px;color:#1a1100;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6b948,#d29922);box-shadow:0 1px 1px #0000001f;transition:transform .12s ease,filter .2s;overflow:visible}
@@ -2080,8 +2081,20 @@ function renderMcpPill(s){
   if(s.port) tip.push(I18N.tf('mcp.port','Port {n}',{n:s.port}));
   el.title = tip.join(' · ');
 }
+// Demo-mode pill in the header — only when the backend reports DEMO_MODE on, so
+// nobody mistakes the synthetic seed for real telemetry. Reuses #ver's neighbour.
+function setDemoBadge(on){
+  const ver=document.getElementById('ver'); if(!ver) return;
+  let b=document.getElementById('demoBadge');
+  if(on){
+    if(!b){ b=document.createElement('span'); b.id='demoBadge'; b.className='demobadge';
+            b.textContent='DEMO'; b.title=I18N.t('demo.badge_title','Demo mode: history is synthetic seed data, not live telemetry.');
+            ver.insertAdjacentElement('afterend', b); }
+  } else if(b){ b.remove(); }
+}
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
+  setDemoBadge(!!(HH && HH.demo));
   renderHealth();
   if(HH && HH.version) maybeWhatsNew(HH.version);   // one-time post-upgrade modal
   try{ renderMcpPill(await(await fetch('/api/mcp-status')).json()); }

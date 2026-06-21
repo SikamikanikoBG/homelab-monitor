@@ -24,6 +24,7 @@
   "nav.backup": "Backup",
   "brand.name": "HomeLab Monitor",
   "brand.home_aria": "Go to Overview",
+  "demo.badge_title": "Demo mode: history is synthetic seed data, not live telemetry.",
   "sidebar.star": "Star on GitHub",
   "sidebar.star_title": "Star HomeLab Monitor on GitHub — it genuinely helps the project grow",
   "sidebar.repo": "Repo",

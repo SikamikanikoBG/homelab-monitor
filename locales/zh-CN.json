@@ -49,6 +49,7 @@
   "nav.backup": "备份",
   "brand.name": "HomeLab Monitor",
   "brand.home_aria": "前往概览",
+  "demo.badge_title": "演示模式：历史数据为合成的种子数据，并非实时遥测。",
   "sidebar.star": "在 GitHub 上加星",
   "sidebar.star_title": "在 GitHub 上给 HomeLab Monitor 加星 — 这对项目成长真的很有帮助",
   "sidebar.repo": "仓库",
