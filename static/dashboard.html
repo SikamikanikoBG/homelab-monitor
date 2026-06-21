@@ -6318,6 +6318,7 @@ function _cmdkRender(){
   const list=document.getElementById('cmdk-list'); if(!list) return;
   if(!CMDK.filtered.length){
     list.innerHTML='<div class="cmdk-empty">'+esc(I18N.t('cmdk.empty','No commands match'))+'</div>';
+    const input=document.getElementById('cmdk-input'); if(input) input.removeAttribute('aria-activedescendant');
     return;
   }
   let html='', lastGroup=null;
