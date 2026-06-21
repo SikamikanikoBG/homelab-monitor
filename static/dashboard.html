@@ -943,6 +943,12 @@ a{color:var(--info)}
 #controls .ranges .rb{border:0;border-right:1px solid var(--bd);border-radius:0;font-family:var(--mono);font-size:12px;padding:4px 9px}
 #controls .ranges .rb:last-child{border-right:0}
 #controls .ranges .rb.on{background:var(--sel);color:var(--tx)}
+/* honest "this window outruns retained history" hint next to the range control */
+.range-hint{display:inline-flex;align-items:center;gap:5px;font-size:11px;line-height:1.2;color:var(--warn,#e3b341);
+  background:color-mix(in srgb,var(--warn,#e3b341) 13%,transparent);border:1px solid color-mix(in srgb,var(--warn,#e3b341) 35%,transparent);
+  border-radius:6px;padding:3px 8px;max-width:240px}
+.range-hint[hidden]{display:none}
+.range-hint::before{content:"⏳";font-size:11px}
 /* System / Network / Security detail */
 .infogrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
 .infocard{background:var(--inset);border:1px solid var(--bd);border-radius:9px;padding:12px 14px}
@@ -1089,11 +1095,12 @@ h2 .hic{ opacity:.9 }
   </div>
 </div>
 
-<div class="card" id="controls" hidden><div class="ranges">
-<button class="rb" data-r="1h">1h</button><button class="rb" data-r="6h">6h</button><button class="rb" data-r="24h">24h</button>
-<button class="rb" data-r="7d">7d</button><button class="rb" data-r="30d">30d</button><button class="rb" data-r="all">All</button>
+<div class="card" id="controls" hidden><div class="ranges" id="rangegroup" role="radiogroup" data-i18n-attr="aria-label:range.group_aria" aria-label="History time range">
+<button class="rb" role="radio" data-r="1h" aria-checked="false" tabindex="-1">1h</button><button class="rb" role="radio" data-r="6h" aria-checked="false" tabindex="-1">6h</button><button class="rb" role="radio" data-r="24h" aria-checked="false" tabindex="-1">24h</button>
+<button class="rb" role="radio" data-r="7d" aria-checked="false" tabindex="-1">7d</button><button class="rb" role="radio" data-r="30d" aria-checked="false" tabindex="-1">30d</button><button class="rb" role="radio" data-r="all" aria-checked="false" tabindex="-1" data-i18n="range.all">All</button>
 <span class="spacer"></span><label class="tg"><input type="checkbox" id="auto" checked> <span data-i18n="range.autorefresh">auto-refresh</span></label>
 </div>
+<span class="range-hint" id="rangehint" role="status" hidden></span>
 <span class="ctrl-spring"></span>
 <div class="sharewrap" id="sharewrap">
   <button class="sharebtn" id="sharebtn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-attr="title:share.button_title" title="Snapshot or share this view">
@@ -2428,6 +2435,24 @@ async function loadData(){
   renderData();
   if(TAB==='disks') renderDisksTab();   // populate/refresh disk cards (sig-guarded; won't wipe a scan)
 }
+// Honest retention hint: if the picked window outruns the history actually stored,
+// say so instead of letting a wide range render a misleadingly short/flat chart.
+const RANGE_SECONDS = {'1h':3600,'6h':21600,'24h':86400,'7d':604800,'30d':2592000};
+function updateRangeHint(){
+  const el=document.getElementById('rangehint'); if(!el) return;
+  const want=RANGE_SECONDS[R];                       // 'all' has no target window
+  const labels=(D&&D.labels)||[];
+  if(!want || labels.length<2){ el.hidden=true; el.textContent=''; return; }
+  const covered=labels[labels.length-1]-labels[0];   // span actually returned (seconds)
+  // Only warn when the stored history covers materially less than asked for (<70%).
+  if(covered < want*0.7){
+    const days=covered/86400, hrs=covered/3600;
+    const have = days>=1 ? I18N.tf('range.have_days','{n}d',{n:Math.max(1,Math.round(days))})
+                         : I18N.tf('range.have_hours','{n}h',{n:Math.max(1,Math.round(hrs))});
+    el.textContent=I18N.tf('range.limited','Showing {have} — limited by retained history',{have});
+    el.hidden=false;
+  } else { el.hidden=true; el.textContent=''; }
+}
 function fmtMcpAge(sec){
   if(sec < 60) return I18N.tf('time.ago_s','{n}s ago',{n:sec});
   if(sec < 3600) return I18N.tf('time.ago_m','{n}m ago',{n:Math.floor(sec / 60)});
@@ -2474,6 +2499,7 @@ function renderData(){
   const n=D.now, H=n.host||{}, tot=D.mem_total;
   setVer(D.version);
   document.getElementById('lastup').textContent=I18N.tf('header.updated','updated {t}',{t:new Date().toLocaleTimeString()});
+  updateRangeHint();
 
   // insights & at-a-glance cards used to live on the old Overview; that tab is
   // now the fleet table. The IDs may no longer exist on the page — guard the
@@ -6183,13 +6209,50 @@ document.addEventListener('lang:changed', ()=>{
   if(TAB==='hosts')       safe(()=>loadHosts());
   if(TAB==='disks')       safe(()=>{ const r=document.getElementById('disksbody'); if(r) r.dataset.sig=''; renderDisksTab(); });
 });
-document.querySelectorAll('.rb').forEach(b=>b.onclick=()=>{R=b.dataset.r;localStorage.setItem('hl_range',R);
-  document.querySelectorAll('.rb').forEach(x=>x.classList.toggle('on',x.dataset.r===R));loadData();
+// ── Time-range control (1h · 6h · 24h · 7d · 30d · All) ───────────────────────
+// One control drives every history view. `R` is the shared range token; selecting
+// a range persists it, re-fetches /api/data (GPU + System charts always poll at R)
+// and re-renders the active range-governed tab. The poll loop reads the same `R`,
+// so auto-refresh stays at the selected window instead of snapping back to default.
+const RANGE_OPTS = ['1h','6h','24h','7d','30d','all'];
+function _syncRangeUI(){
+  document.querySelectorAll('#rangegroup .rb').forEach(x=>{
+    const on = x.dataset.r===R;
+    x.classList.toggle('on', on);
+    x.setAttribute('aria-checked', on?'true':'false');
+    x.tabIndex = on ? 0 : -1;   // roving tabindex: only the checked option is in the tab order
+  });
+}
+function applyRange(r, opts){
+  if(!RANGE_OPTS.includes(r)) return;
+  R = r; localStorage.setItem('hl_range', R);
+  _syncRangeUI();
+  // History views that read R. loadData() always runs (it backs the GPU/System
+  // charts and the overview hero); the per-tab renders only fire for the live tab.
+  loadData();
   if(TAB==='experiments') renderExperiments(true);
-  if(TAB==='costs') renderCosts(true);});
+  if(TAB==='costs')       renderCosts(true);
+  if(TAB==='network')     renderNetwork();
+}
+document.querySelectorAll('#rangegroup .rb').forEach(b=>{
+  b.onclick = ()=>applyRange(b.dataset.r);
+  // Arrow-key navigation within the radiogroup (a11y): move selection + focus.
+  b.onkeydown = e=>{
+    const i = RANGE_OPTS.indexOf(R);
+    let ni = -1;
+    if(e.key==='ArrowRight'||e.key==='ArrowDown') ni=(i+1)%RANGE_OPTS.length;
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp') ni=(i-1+RANGE_OPTS.length)%RANGE_OPTS.length;
+    else if(e.key==='Home') ni=0;
+    else if(e.key==='End') ni=RANGE_OPTS.length-1;
+    else return;
+    e.preventDefault();
+    applyRange(RANGE_OPTS[ni]);
+    document.querySelector(`#rangegroup .rb[data-r="${R}"]`)?.focus();
+  };
+});
 document.querySelectorAll('#costs-breakdown-card th[data-sort]').forEach(th=>{ th.style.cursor='pointer';
   th.onclick=()=>{ const k=th.dataset.sort; COSTS_SORT.dir=(COSTS_SORT.key===k)?-COSTS_SORT.dir:-1; COSTS_SORT.key=k; renderCostsTable(); }; });
-document.querySelector(`.rb[data-r="${R}"]`)?.classList.add('on');
+_syncRangeUI();
 
 /* ════════ Snapshot + Share (#31 / #87) ════════
    One capture engine (html2canvas on the visible tab) feeds two consumers:
@@ -6753,6 +6816,16 @@ function _cmdkBuild(){
     run:()=>{ showTab('gpu'); if(typeof loadIncidents==='function') loadIncidents(true);
       requestAnimationFrame(()=>{ const c=document.getElementById('inc-card');
         if(c && !c.hidden) c.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth',block:'start'}); }); } });
+  // Time range — drive the history charts straight from the palette (Set range: 24h).
+  const G_RANGE = I18N.t('cmdk.grp_range','Time range');
+  const RANGE_LBL = {'1h':'1h','6h':'6h','24h':'24h','7d':'7d','30d':'30d','all':I18N.t('range.all','All')};
+  if(typeof RANGE_OPTS!=='undefined') RANGE_OPTS.forEach(r=>{
+    list.push({ id:'range:'+r, group:G_RANGE, icon:'⏱',
+      label:I18N.tf('cmdk.set_range','Set range: {name}',{name:RANGE_LBL[r]}),
+      sub: r===R ? I18N.t('cmdk.range_current','Current') : '',
+      keywords:'range window time history hours days '+r,
+      run:()=>{ if(typeof applyRange==='function') applyRange(r); } });
+  });
   // Language toggle — only when more than one locale is actually available.
   if(I18N.available.length > 1){
     const other = I18N.available.find(a=>a.code!==I18N.locale);
