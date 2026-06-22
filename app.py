@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
+import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -214,10 +214,11 @@ CREATE TABLE IF NOT EXISTS uptime_checks(
   id TEXT PRIMARY KEY, label TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'http',
   target TEXT NOT NULL, interval_sec INTEGER NOT NULL DEFAULT 60,
   timeout_sec INTEGER NOT NULL DEFAULT 10, expected_status INTEGER,
-  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+  cert_warn_days INTEGER);
 CREATE TABLE IF NOT EXISTS uptime_results(
   check_id TEXT NOT NULL, ts INTEGER NOT NULL, up INTEGER NOT NULL,
-  latency_ms REAL, code INTEGER, err TEXT);
+  latency_ms REAL, code INTEGER, err TEXT, days_to_expiry INTEGER);
 CREATE INDEX IF NOT EXISTS idx_uptime_results ON uptime_results(check_id, ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
@@ -225,6 +226,10 @@ _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL
                       "cpu_power REAL", "dram_power REAL")
 # Per-host adaptive poll-timeout state (issue #99); added to the hosts table.
 _HOST_MIGRATIONS = ("poll_timeout INTEGER", "poll_fails INTEGER DEFAULT 0", "poll_calibrated_at INTEGER")
+# cert_warn_days: per-check TLS expiry warning window (cert checks only). days_to_expiry:
+# the cert's days-to-expiry recorded on each cert probe. Both NULL for http/tcp checks.
+_UPTIME_CHECKS_MIGRATIONS = ("cert_warn_days INTEGER",)
+_UPTIME_RESULTS_MIGRATIONS = ("days_to_expiry INTEGER",)
 # Which API key pushed a run (for per-key attribution); added to the runs table.
 _RUNS_MIGRATIONS = ("key_id TEXT",)
 
@@ -259,6 +264,16 @@ def _apply_schema_migrations(conn):
     for col in _RUNS_MIGRATIONS:
         try:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in _UPTIME_CHECKS_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE uptime_checks ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in _UPTIME_RESULTS_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE uptime_results ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     # Migrate a legacy single instance-wide api_key (the previous design) into the
@@ -8995,11 +9010,14 @@ _UPTIME_MAX_TIMEOUT  = 30      # hard cap so a probe can't pin a worker forever
 _UPTIME_MAX_REDIRECTS = 3
 _UPTIME_RESULT_CAP   = 5000    # per-check ring-buffer of results
 _UPTIME_UA = "HomeLab-Monitor uptime check"
+_UPTIME_CERT_DEFAULT_PORT = 443
+_UPTIME_CERT_DEFAULT_WARN_DAYS = 21    # warn when a cert expires within this window
+_UPTIME_CERT_MAX_WARN_DAYS = 365
 _uptime_due = {}               # check_id -> next monotonic due time (scheduler state)
 
 def _uptime_row_to_dict(r):
     cols = ("id", "label", "type", "target", "interval_sec", "timeout_sec",
-            "expected_status", "enabled", "created_at")
+            "expected_status", "enabled", "created_at", "cert_warn_days")
     d = dict(zip(cols, r))
     d["enabled"] = bool(d["enabled"])
     return d
@@ -9017,7 +9035,7 @@ def _redact_target(s):
 def list_uptime_checks():
     with LOCK:
         rows = DB.execute(
-            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,enabled,created_at "
+            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,enabled,created_at,cert_warn_days "
             "FROM uptime_checks ORDER BY created_at").fetchall()
     return [_uptime_row_to_dict(r) for r in rows]
 
@@ -9030,15 +9048,32 @@ def _validate_uptime_check(body):
     if len(label) > 120:
         return None, "Label is too long (max 120 characters)."
     ctype = (body.get("type") or "http").strip().lower()
-    if ctype not in ("http", "tcp"):
-        return None, "Type must be 'http' or 'tcp'."
+    if ctype not in ("http", "tcp", "cert"):
+        return None, "Type must be 'http', 'tcp', or 'cert'."
     target = (body.get("target") or "").strip()
     if not target:
         return None, "A target is required."
     if len(target) > 2048:
         return None, "Target is too long."
     expected = None
-    if ctype == "http":
+    cert_warn_days = None
+    if ctype == "cert":
+        host, port = _parse_cert_target(target)
+        if host is None:
+            return None, "Cert checks need a host, host:port, or https:// URL (e.g. example.com:443)."
+        cwd = body.get("cert_warn_days")
+        if cwd in (None, ""):
+            cert_warn_days = _UPTIME_CERT_DEFAULT_WARN_DAYS
+        else:
+            try:
+                cert_warn_days = int(cwd)
+            except (TypeError, ValueError):
+                return None, "Cert warning window must be a whole number of days."
+            if cert_warn_days < 1:
+                return None, "Cert warning window must be at least 1 day."
+            if cert_warn_days > _UPTIME_CERT_MAX_WARN_DAYS:
+                return None, f"Cert warning window must be at most {_UPTIME_CERT_MAX_WARN_DAYS} days."
+    elif ctype == "http":
         u = urllib.parse.urlsplit(target)
         if u.scheme not in ("http", "https"):
             return None, "HTTP checks need an http:// or https:// URL."
@@ -9074,7 +9109,7 @@ def _validate_uptime_check(body):
         return None, f"Timeout must be at most {_UPTIME_MAX_TIMEOUT} seconds."
     return {"label": label, "type": ctype, "target": target,
             "interval_sec": interval, "timeout_sec": timeout,
-            "expected_status": expected,
+            "expected_status": expected, "cert_warn_days": cert_warn_days,
             "enabled": 1 if body.get("enabled", True) else 0}, None
 
 def _parse_host_port(target):
@@ -9107,6 +9142,60 @@ def _parse_host_port(target):
         return None, None
     return host, port
 
+def _parse_cert_target(target):
+    """Parse a cert-check target into (host, port). Accepts:
+      - 'host'              → port defaults to 443
+      - 'host:port'
+      - 'https://host[:port][/path]' (scheme/path ignored; host[+port] taken)
+    Returns (host, port) or (None, None) on garbage. IPv6 literals use [..]:port."""
+    t = (target or "").strip()
+    if not t:
+        return None, None
+    if "://" in t:
+        u = urllib.parse.urlsplit(t)
+        host = u.hostname
+        if not host:
+            return None, None
+        port = u.port or _UPTIME_CERT_DEFAULT_PORT
+        if not (1 <= port <= 65535):
+            return None, None
+        return host, port
+    # Bracketed IPv6 literal, optionally with :port.
+    if t.startswith("[") and "]" in t:
+        host, _, rest = t[1:].partition("]")
+        host = host.strip()
+        if not host:
+            return None, None
+        if not rest:
+            return host, _UPTIME_CERT_DEFAULT_PORT
+        if not rest.startswith(":"):
+            return None, None
+        try:
+            port = int(rest[1:])
+        except (TypeError, ValueError):
+            return None, None
+        if not (1 <= port <= 65535):
+            return None, None
+        return host, port
+    # bare host or host:port (a bare IPv6 with multiple colons is rejected — use [..])
+    if t.count(":") == 1:
+        host, _, portstr = t.partition(":")
+        host = host.strip()
+        if not host:
+            return None, None
+        try:
+            port = int(portstr)
+        except (TypeError, ValueError):
+            return None, None
+        if not (1 <= port <= 65535):
+            return None, None
+        return host, port
+    if ":" in t:                 # bare unbracketed IPv6 / multi-colon garbage
+        return None, None
+    if any(ch.isspace() for ch in t):
+        return None, None
+    return t, _UPTIME_CERT_DEFAULT_PORT
+
 def create_uptime_check(body):
     clean, err = _validate_uptime_check(body)
     if err:
@@ -9115,9 +9204,10 @@ def create_uptime_check(body):
     with LOCK:
         DB.execute(
             "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
-            "expected_status,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "expected_status,enabled,created_at,cert_warn_days) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (cid, clean["label"], clean["type"], clean["target"], clean["interval_sec"],
-             clean["timeout_sec"], clean["expected_status"], clean["enabled"], int(time.time())))
+             clean["timeout_sec"], clean["expected_status"], clean["enabled"],
+             int(time.time()), clean["cert_warn_days"]))
         DB.commit()
     _uptime_due.pop(cid, None)   # probe promptly on next scheduler pass
     return cid, None
@@ -9142,9 +9232,10 @@ def update_uptime_check(cid, body):
     with LOCK:
         DB.execute(
             "UPDATE uptime_checks SET label=?,type=?,target=?,interval_sec=?,timeout_sec=?,"
-            "expected_status=?,enabled=? WHERE id=?",
+            "expected_status=?,enabled=?,cert_warn_days=? WHERE id=?",
             (clean["label"], clean["type"], clean["target"], clean["interval_sec"],
-             clean["timeout_sec"], clean["expected_status"], clean["enabled"], cid))
+             clean["timeout_sec"], clean["expected_status"], clean["enabled"],
+             clean["cert_warn_days"], cid))
         DB.commit()
     _uptime_due.pop(cid, None)   # re-probe with new config promptly
     return True, None
@@ -9222,23 +9313,100 @@ def probe_tcp(target, timeout):
         latency = round((time.monotonic() - start) * 1000, 1)
         return False, latency, None, str(e)[:200]
 
+def _parse_cert_not_after(s):
+    """Parse the OpenSSL notAfter string (e.g. 'Jun  1 12:00:00 2026 GMT') into a
+    POSIX timestamp (UTC). Returns float seconds or None on unparseable input."""
+    if not s:
+        return None
+    try:
+        return calendar.timegm(time.strptime(s, "%b %d %H:%M:%S %Y %Z"))
+    except (ValueError, OverflowError):
+        return None
+
+def _cert_cn(name_tuples):
+    """Pull the commonName out of an ssl cert subject/issuer structure
+    (a tuple of RDN tuples-of-pairs). Returns the CN string or None."""
+    try:
+        for rdn in (name_tuples or ()):
+            for k, v in rdn:
+                if k == "commonName":
+                    return v
+    except Exception:
+        pass
+    return None
+
+def probe_cert(target, timeout, warn_days, verify=True):
+    """Open a TLS handshake to the cert-check target (SNI = host), read the peer
+    certificate, and compute days-to-expiry. Returns
+    (up, latency_ms, days_to_expiry, err, extra) where:
+      up=True  → cert valid AND > warn_days from expiry
+      up=False → cert EXPIRED, expiring within warn_days (warn/degraded), OR the
+                 handshake failed (verify error / refused / timeout / no cert).
+    `extra` carries {not_after, subject_cn, issuer_cn, expiring} for the result/UI.
+    Never raises; strictly bounded by `timeout`. Pure stdlib ssl/socket. The cert
+    fetch is read-only — same trust as the existing http/tcp probes."""
+    start = time.monotonic()
+    host, port = _parse_cert_target(target)
+    if host is None:
+        return False, None, None, "bad cert target", {}
+    extra = {}
+    try:
+        ctx = ssl.create_default_context()
+        if not verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                cert = ss.getpeercert()
+    except Exception as e:
+        latency = round((time.monotonic() - start) * 1000, 1)
+        return False, latency, None, _redact_target(str(e))[:200], extra
+    latency = round((time.monotonic() - start) * 1000, 1)
+    if not cert:
+        # verify-disabled handshakes return {} — no structured cert to read.
+        return False, latency, None, "no certificate presented", extra
+    not_after_raw = cert.get("notAfter")
+    exp = _parse_cert_not_after(not_after_raw)
+    if exp is None:
+        return False, latency, None, "could not parse certificate expiry", extra
+    days = int(math.floor((exp - time.time()) / 86400.0))
+    extra["not_after"] = not_after_raw
+    extra["subject_cn"] = _cert_cn(cert.get("subject"))
+    extra["issuer_cn"] = _cert_cn(cert.get("issuer"))
+    warn = warn_days if warn_days is not None else _UPTIME_CERT_DEFAULT_WARN_DAYS
+    if days < 0:
+        return False, latency, days, f"certificate expired {abs(days)}d ago", extra
+    if days <= warn:
+        # Expiring within the warning window: degraded/warn — recorded as up=1 with
+        # a day count so the UI + exporter can flag it, while uptime_down stays
+        # reserved for hard failures (expired / unreachable), mirroring http/tcp.
+        extra["expiring"] = True
+        return True, latency, days, f"certificate expires in {days}d", extra
+    return True, latency, days, None, extra
+
 def run_uptime_check(check):
     """Execute one check (dict) and persist its result. Returns the result dict.
     The probe itself is bounded by the check's timeout; the DB write is the only
     LOCK held, and it's brief. Called from the dedicated uptime worker thread."""
     ctype = check["type"]
     timeout = min(int(check.get("timeout_sec") or 10), _UPTIME_MAX_TIMEOUT)
+    days_to_expiry = None
     if ctype == "tcp":
         up, latency, code, err = probe_tcp(check["target"], timeout)
+    elif ctype == "cert":
+        up, latency, days_to_expiry, err, _extra = probe_cert(
+            check["target"], timeout, check.get("cert_warn_days"))
+        code = None
     else:
         up, latency, code, err = probe_http(check["target"], timeout, check.get("expected_status"))
     ts = int(time.time())
     if not _DB_MAINTENANCE:
         try:
             with LOCK:
-                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
-                           "VALUES(?,?,?,?,?,?)",
-                           (check["id"], ts, 1 if up else 0, latency, code, err))
+                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry) "
+                           "VALUES(?,?,?,?,?,?,?)",
+                           (check["id"], ts, 1 if up else 0, latency, code, err, days_to_expiry))
                 # Per-check ring buffer: keep only the newest CAP rows. Trim by rowid
                 # (monotonic + unique) so it's exact even when many results share a
                 # second — a ts-based MIN() would under-trim on timestamp collisions.
@@ -9250,7 +9418,8 @@ def run_uptime_check(check):
                 DB.commit()
         except Exception as e:
             print("uptime persist error:", e, flush=True)
-    return {"ts": ts, "up": up, "latency_ms": latency, "code": code, "err": err}
+    return {"ts": ts, "up": up, "latency_ms": latency, "code": code, "err": err,
+            "days_to_expiry": days_to_expiry}
 
 def _uptime_state(check_id, now, window=86400):
     """Read-only summary for one check over `window` seconds: current state
@@ -9262,25 +9431,28 @@ def _uptime_state(check_id, now, window=86400):
             "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? AND ts>=? "
             "ORDER BY ts", (check_id, since)).fetchall()
         last = DB.execute(
-            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? "
+            "SELECT ts,up,latency_ms,code,err,days_to_expiry FROM uptime_results WHERE check_id=? "
             "ORDER BY ts DESC LIMIT 1", (check_id,)).fetchone()
     total = len(rows)
     up_n = sum(1 for r in rows if r[1])
     uptime = round(100.0 * up_n / total, 2) if total else None
     state = "unknown"
     last_latency = last_checked = last_err = last_code = None
+    days_to_expiry = None
     if last:
         state = "up" if last[1] else "down"
         last_checked = last[0]
         last_latency = last[2]
         last_code = last[3]
         last_err = last[4]
+        days_to_expiry = last[5]
     # Heartbeat strip: most recent up-to-_STATHIST_CELLS results, oldest→newest,
     # carrying only {up, ts} — same visual language as the /status bars.
     strip = [{"up": bool(r[1]), "t": r[0]} for r in rows[-_STATHIST_CELLS:]]
     return {"state": state, "uptime": uptime, "window_total": total,
             "last_latency_ms": last_latency, "last_checked": last_checked,
-            "last_code": last_code, "last_err": last_err, "strip": strip}
+            "last_code": last_code, "last_err": last_err,
+            "days_to_expiry": days_to_expiry, "strip": strip}
 
 def uptime_overview(window=86400):
     """All checks + their current state. The user-facing private payload."""
@@ -9288,7 +9460,17 @@ def uptime_overview(window=86400):
     out = []
     for c in list_uptime_checks():
         st = _uptime_state(c["id"], now, window)
-        out.append({**c, **st})
+        rec = {**c, **st}
+        # Cert checks expose a soft "warn" when up-but-expiring within the window —
+        # state stays 'up' (so uptime_down stays reserved for hard failures), but
+        # the UI/exporter can flag the imminent expiry. A hard-expired cert reads
+        # as state 'down' already and fires uptime_down like any other failure.
+        if rec.get("type") == "cert":
+            warn = rec.get("cert_warn_days")
+            warn = warn if warn is not None else _UPTIME_CERT_DEFAULT_WARN_DAYS
+            d = rec.get("days_to_expiry")
+            rec["cert_warn"] = bool(rec.get("state") == "up" and d is not None and d <= warn)
+        out.append(rec)
     return {"checks": out, "now": now, "window": window,
             "min_interval": _UPTIME_MIN_INTERVAL, "max_timeout": _UPTIME_MAX_TIMEOUT}
 
@@ -9628,7 +9810,7 @@ def _extra_metrics_text():
     try:
         checks = (uptime_overview().get("checks") or [])
         if checks:
-            up_s, lat_s, ratio_s = [], [], []
+            up_s, lat_s, ratio_s, cert_s = [], [], [], []
             down_n = 0
             for c in checks:
                 lbl = {"check": c.get("label") or c.get("id") or "?"}
@@ -9646,6 +9828,10 @@ def _extra_metrics_text():
                 up_pct = c.get("uptime")
                 if up_pct is not None:
                     ratio_s.append((lbl, up_pct / 100.0))
+                # Cert checks contribute their days-to-expiry (can be negative when
+                # expired). Only emitted for cert checks that have actually probed.
+                if c.get("type") == "cert" and c.get("days_to_expiry") is not None:
+                    cert_s.append((lbl, c.get("days_to_expiry")))
             _prom_metric(out, "homelab_uptime_up", "gauge",
                          "Uptime check current state (1=up, 0=down; unknown omitted)", up_s)
             _prom_metric(out, "homelab_uptime_latency_ms", "gauge",
@@ -9656,6 +9842,11 @@ def _extra_metrics_text():
                          "Configured uptime checks (count)", [(None, len(checks))])
             _prom_metric(out, "homelab_uptime_checks_down", "gauge",
                          "Uptime checks currently down (count)", [(None, down_n)])
+            # TLS cert expiry — days remaining per cert check. Family appears ONLY
+            # when ≥1 cert check has probed (zero cert checks ⇒ absent entirely).
+            if cert_s:
+                _prom_metric(out, "homelab_uptime_cert_days_remaining", "gauge",
+                             "TLS certificate days remaining per cert check (negative = expired)", cert_s)
     except Exception:
         pass
 
@@ -9765,6 +9956,10 @@ def _mqtt_collect_state():
             lat = c.get("last_latency_ms")
             if lat is not None:
                 state["uptime_%s_latency" % sid] = lat
+            # Cert checks also publish days-to-expiry (negative = expired) so HA can
+            # alert ahead of a renewal. Only present for cert checks that have probed.
+            if c.get("type") == "cert" and c.get("days_to_expiry") is not None:
+                state["uptime_%s_cert_days" % sid] = c.get("days_to_expiry")
     except Exception:
         pass
     if attrs:

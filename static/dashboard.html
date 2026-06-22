@@ -841,6 +841,7 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .upcard{background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:10px;padding:13px 14px;display:flex;flex-direction:column;gap:9px}
 .upcard.up{border-left-color:var(--ok)}
 .upcard.down{border-left-color:var(--crit)}
+.upcard.warn{border-left-color:var(--warn)}
 .upcard.unknown{border-left-color:var(--mut)}
 .upcard .uphead{display:flex;align-items:flex-start;gap:8px}
 .upcard .uplabel{font-weight:700;font-size:15px;word-break:break-word;flex:1;min-width:0}
@@ -1592,6 +1593,7 @@ h2 .hic{ opacity:.9 }
             <select id="up_type">
               <option value="http" data-i18n="uptime.type_http">HTTP(S)</option>
               <option value="tcp" data-i18n="uptime.type_tcp">TCP port</option>
+              <option value="cert" data-i18n="uptime.type_cert">TLS cert expiry</option>
             </select>
           </div>
           <div style="flex:1;min-width:220px">
@@ -1611,6 +1613,10 @@ h2 .hic{ opacity:.9 }
           <div id="up_expected_wrap">
             <div class="flabel" data-i18n="uptime.f_expected">Expected status (optional)</div>
             <input type="number" id="up_expected" min="100" max="599" placeholder="2xx/3xx" style="width:130px">
+          </div>
+          <div id="up_certwarn_wrap" style="display:none">
+            <div class="flabel" data-i18n="uptime.f_cert_warn">Warn before expiry (days)</div>
+            <input type="number" id="up_certwarn" min="1" max="365" value="21" placeholder="21" style="width:160px">
           </div>
         </div>
         <div id="up_form_err" class="ins crit" style="display:none"></div>
@@ -3943,13 +3949,35 @@ function upHeartbeat(strip){
 }
 function upCard(c){
   const st = c.state||'unknown';
+  const isCert = c.type==='cert';
+  // A cert that's up-but-expiring (cert_warn) paints amber even though state is 'up'.
+  const cls = (isCert && c.cert_warn && st==='up') ? 'warn' : st;
   const up = c.uptime!=null ? c.uptime+'%' : '—';
   const lat = c.last_latency_ms!=null ? Math.round(c.last_latency_ms)+' ms' : '—';
-  const tgt = c.type==='http' ? c.target : (I18N.t('uptime.tcp_prefix','TCP')+' '+c.target);
-  const badge = `<span class="badge ${st==='up'?'ok':st==='down'?'crit':'info'}">${esc(upStateLabel(st))}</span>`;
+  const tgt = c.type==='http' ? c.target
+            : isCert ? (I18N.t('uptime.cert_prefix','TLS')+' '+c.target)
+            : (I18N.t('uptime.tcp_prefix','TCP')+' '+c.target);
+  const badgeCls = (isCert && c.cert_warn && st==='up') ? 'warn' : (st==='up'?'ok':st==='down'?'crit':'info');
+  const badgeTxt = (isCert && c.cert_warn && st==='up') ? I18N.t('uptime.st_expiring','Expiring') : upStateLabel(st);
+  const badge = `<span class="badge ${badgeCls}">${esc(badgeTxt)}</span>`;
   let err='';
   if(st==='down' && c.last_err) err = `<div class="uperr">${esc(c.last_err)}</div>`;
-  return `<div class="upcard ${st}" data-id="${esc(c.id)}">
+  // Cert checks show days-to-expiry + the notAfter date in place of the 24h uptime%.
+  let meta;
+  if(isCert){
+    const d = c.days_to_expiry;
+    const expTxt = (d==null) ? '—'
+                 : (d<0) ? I18N.tf('uptime.cert_expired','expired {n}d ago',{n:Math.abs(d)})
+                 : I18N.tf('uptime.cert_expires_in','in {n}d',{n:d});
+    meta = `<span>${esc(I18N.t('uptime.cert_expires','Cert expires'))}: <b>${esc(expTxt)}</b></span>
+      <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
+      <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>`;
+  } else {
+    meta = `<span>${esc(I18N.t('uptime.uptime24','24h uptime'))}: <b>${up}</b></span>
+      <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
+      <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>`;
+  }
+  return `<div class="upcard ${cls}" data-id="${esc(c.id)}">
     <div class="uphead">
       <div class="uplabel">${esc(c.label)}${c.enabled?'':' <span class="cap">('+esc(I18N.t('uptime.disabled','disabled'))+')</span>'}</div>
       ${badge}
@@ -3957,9 +3985,7 @@ function upCard(c){
     <div class="uptarget">${esc(tgt)}</div>
     ${upHeartbeat(c.strip)}
     <div class="upmeta">
-      <span>${esc(I18N.t('uptime.uptime24','24h uptime'))}: <b>${up}</b></span>
-      <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
-      <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>
+      ${meta}
     </div>
     ${err}
     <div class="upactions">
@@ -4003,8 +4029,10 @@ function upSyncTypeUI(){
   const tl=document.getElementById('up_target_label');
   const inp=document.getElementById('up_target');
   const exp=document.getElementById('up_expected_wrap');
-  if(t==='tcp'){ tl.textContent=I18N.t('uptime.f_target_tcp','Host:port'); inp.placeholder='db.lan:5432'; exp.style.display='none'; }
-  else{ tl.textContent=I18N.t('uptime.f_target_http','URL'); inp.placeholder='https://example.com'; exp.style.display=''; }
+  const cw=document.getElementById('up_certwarn_wrap');
+  if(t==='tcp'){ tl.textContent=I18N.t('uptime.f_target_tcp','Host:port'); inp.placeholder='db.lan:5432'; exp.style.display='none'; cw.style.display='none'; }
+  else if(t==='cert'){ tl.textContent=I18N.t('uptime.f_target_cert','Host:port or https://host'); inp.placeholder='example.com:443'; exp.style.display='none'; cw.style.display=''; }
+  else{ tl.textContent=I18N.t('uptime.f_target_http','URL'); inp.placeholder='https://example.com'; exp.style.display=''; cw.style.display='none'; }
 }
 async function upAdd(){
   const errEl=document.getElementById('up_form_err'); errEl.style.display='none';
@@ -4017,6 +4045,7 @@ async function upAdd(){
   };
   const ev=document.getElementById('up_expected').value;
   if(body.type==='http' && ev) body.expected_status=ev;
+  if(body.type==='cert'){ const cw=document.getElementById('up_certwarn').value; if(cw) body.cert_warn_days=cw; }
   let r; try{ r=await fetch('/api/uptime',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
   catch(e){ errEl.textContent=I18N.t('uptime.err_network','Could not reach the server.'); errEl.style.display='block'; return; }
   const jj=await r.json().catch(()=>({}));
