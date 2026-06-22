@@ -553,7 +553,7 @@
   "uptime.title": "🛰️ Uptime checks",
   "uptime.intro": "Monitor any HTTP endpoint or TCP port from inside this container — your own services, a NAS, a remote site. No extra uptime service to self-host — it's already here. Down/recovery alerts reuse your configured channels. Targets stay private to this dashboard — they never reach the public status page.",
   "uptime.empty": "No checks yet. Add one below — until then nothing is probed (zero outbound traffic).",
-  "uptime.add": "➕ Add a check",
+  "uptime.add": "+ Add a check",
   "uptime.add_btn": "Add check",
   "uptime.save_btn": "Save changes",
   "uptime.cancel": "Cancel",

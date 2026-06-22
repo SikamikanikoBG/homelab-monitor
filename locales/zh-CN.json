@@ -578,7 +578,7 @@
   "uptime.title": "🛰️ 在线监测",
   "uptime.intro": "从本容器内部监测任意 HTTP 端点或 TCP 端口 — 你自己的服务、NAS 或远程站点。无需再自建独立的在线监测服务 — 它已内置于此。宕机/恢复告警复用你已配置的通道。目标仅对本面板可见 — 永远不会出现在公开状态页。",
   "uptime.empty": "尚无检查项。在下方添加一个 — 在此之前不会发起任何探测（零出站流量）。",
-  "uptime.add": "➕ 添加检查",
+  "uptime.add": "+ 添加检查",
   "uptime.add_btn": "添加检查",
   "uptime.save_btn": "保存更改",
   "uptime.cancel": "取消",

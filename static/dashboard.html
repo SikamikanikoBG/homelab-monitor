@@ -2109,7 +2109,7 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
       No checks yet. Add one below — until then nothing is probed (zero outbound traffic).</div>
 
     <div class="upadd" style="margin-top:16px">
-      <button type="button" class="rb on" id="up_add_toggle" data-i18n="uptime.add">➕ Add a check</button>
+      <button type="button" class="rb on" id="up_add_toggle" data-i18n="uptime.add">+ Add a check</button>
       <div class="upform" id="up_form" hidden>
         <div class="upform-grid">
           <div>
@@ -2487,11 +2487,14 @@ const ICONS={
   '🔑':'<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
   '🟢':'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
   '🔔':'<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
+  '🛰':'<path d="M4 10a7.31 7.31 0 0 0 10 10Z"/><path d="m9 15 3-3"/><path d="M17 13a6 6 0 0 0-6-6"/><path d="M21 13A10 10 0 0 0 11 3"/>',
 };
 function svgIc(d){ return `<svg class="hic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`; }
 // Inline status icons (same stroke family, em-sized) for dynamic content — so the
 // chips/tiles/badges match the heading icons instead of clashing emoji.
 const SIC={
+  bell:'<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
+  bellOff:'<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.96 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/>',
   flame:'<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>',
   moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
@@ -3586,8 +3589,8 @@ function upCard(c){
     if(s) downFor=` · <span class="down-for">${I18N.tf('uptime.down_for','down {d}',{d:fmtDur((Date.now()/1000)-s)})}</span>`;
   }
   const bell=c.alerts_enabled
-    ? `<span class="upbell">🔔 ${esc(I18N.t('uptime.alerts_on','alerts on'))}${downFor}</span>`
-    : `<span class="upbell">🔕 ${esc(I18N.t('uptime.alerts_off','alerts off'))}</span>`;
+    ? `<span class="upbell">${sic('bell')} ${esc(I18N.t('uptime.alerts_on','alerts on'))}${downFor}</span>`
+    : `<span class="upbell">${sic('bellOff')} ${esc(I18N.t('uptime.alerts_off','alerts off'))}</span>`;
   return `<div class="mc-panel upcard ${st}${c.enabled?'':' paused'}" data-id="${esc(c.id)}">
     <div class="uphead">
       <span class="mc-sdot ${dotcls}"></span>
