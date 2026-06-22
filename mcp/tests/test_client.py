@@ -196,6 +196,38 @@ INCIDENT_ONE = {
 METRICS = "# HELP gpu_util GPU utilization\ngpu_util{gpu=\"gpu0\"} 73\n"
 HEALTHZ = {"status": "ok", "version": "0.13.1"}
 
+# /api/recommendations deterministic (brief=1, LLM-free) body. `priority` is None
+# and llm_used False because the brief path never calls the LLM.
+RECOS = {
+    "now": 9000, "generated_at": 9000, "model": "qwen2.5:7b", "enabled": True,
+    "llm_used": False, "priority": None, "llm_status": "skipped",
+    "count": 3, "counts": {"crit": 1, "warn": 1, "total": 3},
+    "items": [
+        {"id": "disk-/backup", "severity": "crit", "title": "/backup fills in 4 days",
+         "detail": "88% used, +3%/day", "action": "Free space or expand /backup",
+         "source": "forecast", "link": "#disks", "ts": 8900},
+        {"id": "oom-immich_ml", "severity": "warn", "title": "immich_ml OOM-killed 3x",
+         "detail": "3 kills in 7 days", "action": "Cap immich_ml memory", "source": "oom"},
+        {"id": "cost-month", "severity": "info", "title": "On track for 18.70 BGN this month",
+         "detail": "vs 16.10 last", "action": "Review the Costs tab", "source": "cost"},
+    ],
+}
+
+# /api/copilot/ask responses, keyed by whether the LLM "answered".
+ASK_LLM = {
+    "now": 9000, "model": "qwen2.5:7b", "question": "why is the gpu busy?",
+    "facts": ["GPU util 73%", "ollama serving llama3:70b"],
+    "sources": ["gpu", "models"], "routing": "live", "enabled": True,
+    "answer": "The GPU is busy because ollama is serving llama3:70b at 73% util.",
+    "source": "llm", "llm_status": "ok",
+}
+ASK_NOLLM = {
+    "now": 9000, "model": "qwen2.5:7b", "question": "down llm",
+    "facts": ["GPU util 73%"], "sources": ["gpu"], "routing": "live",
+    "enabled": True, "answer": "", "facts_summary": "GPU util 73%",
+    "source": "facts", "llm_status": "ollama unreachable",
+}
+
 ROUTES = {
     "/api/fleet": FLEET,
     "/api/host_data/local": HOST_LOCAL,
@@ -209,10 +241,31 @@ ROUTES = {
     "/healthz": HEALTHZ,
 }
 
+# Records the raw query/body each handler saw, so tests can assert the client used
+# the LLM-free path and posted the question.
+_SEEN = {"reco_query": None, "ask_body": None}
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # silence
         pass
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+        if path == "/api/copilot/ask":
+            try:
+                body = json.loads(raw) if raw else {}
+            except ValueError:
+                body = {}
+            _SEEN["ask_body"] = body
+            q = (body.get("question") or "")
+            self._json(ASK_NOLLM if "down llm" in q else ASK_LLM)
+            return
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b'{"error":"not found"}')
 
     def _json(self, obj):
         body = json.dumps(obj).encode()
@@ -223,6 +276,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/recommendations":
+            _SEEN["reco_query"] = self.path.split("?", 1)[1] if "?" in self.path else ""
+            self._json(RECOS)
+            return
         if path == "/api/disk_scan":
             # crude query parse: /slow always scanning, everything else done.
             scanning = "%2Fslow" in self.path or "/slow" in self.path
@@ -425,6 +482,33 @@ def run():
         except hc.MonitorError as e:
             check("404" in str(e), "unknown incident id raises MonitorError (404)")
 
+        print("get_recommendations (deterministic / LLM-free)")
+        r = hc.get_recommendations()
+        check("brief=1" in (_SEEN["reco_query"] or ""), "uses the LLM-free brief=1 path")
+        check(r["count"] == 3, "counts items")
+        check(r["counts"]["crit"] == 1 and r["counts"]["warn"] == 1, "severity counts surfaced")
+        top = r["items"][0]
+        check(top["severity"] == "crit", "ranked crit first")
+        check(top["title"] == "/backup fills in 4 days", "item title")
+        check(top["action"] == "Free space or expand /backup", "actionable suggestion")
+        check(top["source"] == "forecast" and top["link"] == "#disks", "source + link")
+        r2 = hc.get_recommendations(limit=1)
+        check(r2["count"] == 1 and len(r2["items"]) == 1, "limit caps returned items")
+
+        print("ask_lab (LLM answered)")
+        r = hc.ask_lab("why is the gpu busy?")
+        check(_SEEN["ask_body"] == {"question": "why is the gpu busy?"}, "posts the question body")
+        check(r["answer"].startswith("The GPU is busy"), "returns the LLM answer")
+        check(r["sources"] == ["gpu", "models"], "names the sources")
+        check(r["routing"] == "live", "routing surfaced")
+        check(r["llm_status"] == "ok", "llm_status ok")
+
+        print("ask_lab (LLM unreachable -> routed facts)")
+        r = hc.ask_lab("down llm")
+        check(r["answer"] == "", "no answer when LLM unreachable")
+        check(r["facts_summary"] == "GPU util 73%", "degrades to routed facts summary")
+        check(r["llm_status"] == "ollama unreachable", "carries the degrade reason")
+
         print("resources")
         check("gpu_util" in hc.get_metrics(), "metrics text")
         check(hc.get_version()["status"] == "ok", "healthz")
@@ -436,6 +520,16 @@ def run():
             check(False, "unreachable monitor raises MonitorError")
         except hc.MonitorError as e:
             check("cannot reach monitor" in str(e), "unreachable monitor raises MonitorError")
+        try:
+            hc.get_recommendations()
+            check(False, "unreachable monitor raises MonitorError (get_recommendations)")
+        except hc.MonitorError as e:
+            check("cannot reach monitor" in str(e), "get_recommendations errors like the rest")
+        try:
+            hc.ask_lab("anything")
+            check(False, "unreachable monitor raises MonitorError (ask_lab POST)")
+        except hc.MonitorError as e:
+            check("cannot reach monitor" in str(e), "ask_lab POST errors like the rest")
     finally:
         srv.shutdown()
 

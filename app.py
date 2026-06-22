@@ -7859,7 +7859,11 @@ def api_recommendations():
     uptime/OOM. Always 200, graceful-degrade, read-only, advice-only (NEVER mutates
     the host). The local LLM optionally adds a one-line 'top priority' framing; if
     it's off/unreachable the deterministic items render unchanged. Reuses the same
-    forecast accessors as /api/forecast (no extra heavy work)."""
+    forecast accessors as /api/forecast (no extra heavy work).
+
+    `?brief=1` (or `?llm=0`) returns the ranked deterministic ITEMS + counts WITHOUT
+    ever calling the local LLM — fast, GPU-free, stable. This is what agent clients
+    (the MCP `get_recommendations` tool) poll so they never spin up ollama."""
     now = int(time.time())
     try:
         sig = _reco_signals(now)
@@ -7867,10 +7871,20 @@ def api_recommendations():
     except Exception as e:
         print("recommendations error:", e, flush=True)
         items = []
+    crit = sum(1 for it in items if it.get("severity") == "crit")
+    warn = sum(1 for it in items if it.get("severity") == "warn")
     out = {"now": now, "generated_at": now, "items": items,
-           "count": len(items), "model": COPILOT_MODEL,
+           "count": len(items), "counts": {"crit": crit, "warn": warn,
+                                            "total": len(items)},
+           "model": COPILOT_MODEL,
            "enabled": COPILOT_ENABLED, "llm_used": False,
            "priority": None, "llm_status": "skipped"}
+    # Deterministic, LLM-free mode: hand back the ranked items + counts, never touch
+    # ollama. Keeps agent polling cheap and the GPU idle.
+    brief = (request.args.get("brief") in ("1", "true", "yes")
+             or request.args.get("llm") in ("0", "false", "no"))
+    if brief:
+        return jsonify(out)
     # Optional, bounded LLM framing — only when there's something to prioritise.
     # Never blocks or errors the panel: the deterministic items above stand alone.
     if items:

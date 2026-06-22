@@ -62,6 +62,11 @@ INSTRUCTIONS = (
     "`get_incidents` (correlated-anomaly incidents — co-firing GPU/host anomalies "
     "grouped into ONE lifecycled, severity-rated event), and "
     "`scan_disk(path)` (WizTree-style folder treemap). "
+    "AI-native surfaces: `get_recommendations` (the proactive, ranked, actionable "
+    "to-do list derived from the lab's own live signals — fast & LLM-free) and "
+    "`ask_lab(question)` (a free-text ask-box answered by the local LLM over the "
+    "lab's own live data; may take a few seconds, degrades to routed facts if the "
+    "LLM is off). "
     "Resources expose Prometheus `/metrics`, `/healthz` and the CHANGELOG. This "
     "server never mutates the fleet."
 )
@@ -257,6 +262,34 @@ def get_incidents(limit: int = 20, incident_id: str = "") -> dict:
     derived `timeline`; an unknown id surfaces as an HTTP 404 error. Read-only.
     """
     return hc.get_incidents(limit, incident_id)
+
+
+@mcp.tool()
+@_track
+def get_recommendations(limit: int = 20) -> dict:
+    """Proactive, ranked, actionable to-do list derived from the lab's OWN live
+    signals (disk-fill ETA, VRAM/cost projections, anomalies, incidents, uptime,
+    recurring OOM kills). Each item carries a `severity` (crit/warn/info), `title`,
+    `detail`, a concrete suggested `action` (advice only — NEVER auto-executed) and
+    the `source` signal that fired it, plus `counts` by severity. Uses the
+    monitor's deterministic, **LLM-free** path so polling it stays fast and never
+    spins the GPU. Read-only; advice-only. Answers "what should I fix next?".
+    """
+    return hc.get_recommendations(limit)
+
+
+@mcp.tool()
+@_track
+def ask_lab(question: str) -> dict:
+    """Ask the lab a free-text question, answered by the **local LLM** over the lab's
+    OWN live data (the agentic ask-box). A deterministic step first routes the
+    question to the relevant live facts, which the LLM then answers from. May take a
+    few seconds (the LLM runs on the hub's GPU); degrades gracefully — if the LLM is
+    off/unreachable it returns the routed facts so it's never a dead end. Returns
+    `answer`, `sources`, `routing`, `llm_status` and the `facts` used. Read-only over
+    the lab's data — no host mutation.
+    """
+    return hc.ask_lab(question)
 
 
 # ── resources ────────────────────────────────────────────────────────────────

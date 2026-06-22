@@ -65,6 +65,29 @@ def _get(path):
         raise MonitorError("monitor returned a non-JSON body for %s" % path)
 
 
+def _post(path, body):
+    """POST a JSON body to an endpoint and return the decoded JSON object."""
+    url = base_url() + path
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Accept": "application/json", "Content-Type": "application/json",
+                 "User-Agent": "homelab-monitor-mcp"})
+    try:
+        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise MonitorError("monitor returned HTTP %s for %s" % (e.code, path))
+    except urllib.error.URLError as e:
+        raise MonitorError("cannot reach monitor at %s (%s)" % (base_url(), e.reason))
+    except OSError as e:
+        raise MonitorError("cannot reach monitor at %s (%s)" % (base_url(), e))
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise MonitorError("monitor returned a non-JSON body for %s" % path)
+
+
 def _get_text(path):
     """GET a text endpoint (e.g. /metrics) and return the raw string."""
     url = base_url() + path
@@ -488,6 +511,69 @@ def scan_disk(path="/", rescan=False, max_wait=60):
         time.sleep(1.5)
         waited += 1.5
         query = base_q  # never re-trigger a rescan on subsequent polls
+
+
+# ── proactive advice & ask-box (the AI-native surfaces, over MCP) ────────────
+
+def get_recommendations(limit=20):
+    """Proactive, ranked, actionable to-do list derived from the lab's OWN live
+    signals (disk-fill ETA, VRAM/cost projections, anomalies, incidents, uptime,
+    recurring OOM kills).
+
+    Uses the endpoint's **deterministic, LLM-free** path (`?brief=1`) so polling
+    this never spins up the GPU/ollama. Each item: `id`, `severity`
+    (crit/warn/info), `title`, `detail`, `action` (the suggested fix — advice
+    only, NEVER auto-executed), `source` (which signal fired it) and an optional
+    `link`/`ts`. Read-only; advice-only. Returns the ranked items (capped by
+    `limit`) plus `counts` (crit/warn/total).
+    """
+    d = _get("/api/recommendations?brief=1")
+    items = d.get("items") or []
+    try:
+        lim = max(1, int(limit))
+    except (TypeError, ValueError):
+        lim = 20
+    items = items[:lim]
+    counts = d.get("counts") or {}
+    return {
+        "now": d.get("now"),
+        "generated_at": d.get("generated_at"),
+        "count": len(items),
+        "counts": {
+            "crit": counts.get("crit", sum(1 for it in items if it.get("severity") == "crit")),
+            "warn": counts.get("warn", sum(1 for it in items if it.get("severity") == "warn")),
+            "total": counts.get("total", len(items)),
+        },
+        "items": items,
+    }
+
+
+def ask_lab(question):
+    """Ask the lab a free-text question, answered by the LOCAL LLM over the lab's
+    OWN live data (the agentic ask-box).
+
+    A deterministic routing step first pulls the relevant live fact slice for the
+    question; those facts are then handed to the local LLM. May take a few seconds
+    (the LLM runs on the hub's GPU). Degrades gracefully: if the LLM is
+    off/unreachable it returns the routed facts (`facts`/`facts_summary`) so the
+    answer is never a dead end. Read-only over the lab's data — no host mutation.
+
+    Returns `answer` (the LLM prose, or "" when the LLM is unavailable),
+    `sources`/`routing` (what data informed it and how it was routed),
+    `llm_status` ("ok" or the reason it was skipped), and the `facts` it used.
+    """
+    q = (question or "").strip()
+    d = _post("/api/copilot/ask", {"question": q})
+    return {
+        "question": d.get("question", q),
+        "answer": d.get("answer", ""),
+        "facts_summary": d.get("facts_summary"),
+        "facts": d.get("facts") or [],
+        "sources": d.get("sources") or [],
+        "routing": d.get("routing"),
+        "llm_status": d.get("llm_status"),
+        "model": d.get("model"),
+    }
 
 
 def get_metrics():

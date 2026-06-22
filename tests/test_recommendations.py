@@ -281,6 +281,47 @@ class TestEndpoint(unittest.TestCase):
         self.assertEqual(called["n"], 0)
         self.assertFalse(j["llm_used"])
 
+    def test_brief_returns_items_without_llm(self):
+        # ?brief=1 must return the deterministic items + counts but NEVER call the LLM,
+        # even when detectors fire. This is the path the MCP get_recommendations tool
+        # rides on, so agent polling never spins the GPU.
+        called = {"n": 0}
+        def spy(*a, **k):
+            called["n"] += 1
+            return ("should-not-appear", None)
+        app._ollama_generate = spy
+        orig = app._reco_signals
+        app._reco_signals = lambda now: _sig(disk=[{"mount": "/x", "status": "filling",
+                                "eta_days": 3, "pct": 95, "free_gb": 10, "gb_per_day": 9}])
+        try:
+            j = self.c.get("/api/recommendations?brief=1").get_json()
+        finally:
+            app._reco_signals = orig
+        self.assertEqual(called["n"], 0)  # LLM never invoked on the brief path
+        self.assertFalse(j["llm_used"])
+        self.assertIsNone(j["priority"])
+        self.assertEqual(j["llm_status"], "skipped")
+        self.assertTrue(any(it["id"] == "disk:/x" for it in j["items"]))
+        # counts block is present and consistent with the items
+        self.assertIn("counts", j)
+        self.assertEqual(j["counts"]["total"], len(j["items"]))
+        self.assertEqual(j["counts"]["crit"],
+                         sum(1 for it in j["items"] if it.get("severity") == "crit"))
+
+    def test_llm_zero_param_also_skips(self):
+        # ?llm=0 is an accepted alias for the brief/LLM-free path.
+        called = {"n": 0}
+        app._ollama_generate = lambda *a, **k: (called.__setitem__("n", called["n"] + 1), ("x", None))[1]
+        orig = app._reco_signals
+        app._reco_signals = lambda now: _sig(disk=[{"mount": "/x", "status": "filling",
+                                "eta_days": 3, "pct": 95, "free_gb": 10, "gb_per_day": 9}])
+        try:
+            j = self.c.get("/api/recommendations?llm=0").get_json()
+        finally:
+            app._reco_signals = orig
+        self.assertEqual(called["n"], 0)
+        self.assertTrue(any(it["id"] == "disk:/x" for it in j["items"]))
+
 
 class TestNoSecretLeak(unittest.TestCase):
     """The LLM prompt must carry ONLY the deterministic title/severity text — never
