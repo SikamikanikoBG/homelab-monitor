@@ -131,7 +131,20 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
 .chip.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
 .chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.chip.info{color:var(--info);border-color:var(--info)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.reco-act b{color:var(--tx);font-weight:600}
+/* Recommendations panel: ranked, actionable to-do rows (reuses .ins severity borders). */
+.reco-item{flex-direction:column;gap:7px}
+.reco-top{display:flex;align-items:center;gap:9px;width:100%}
+.reco-top .t{font-weight:600;flex:1 1 auto;min-width:0}
+.reco-act{font-size:13px}
+.reco-act .reco-do{color:var(--mut)}
+.reco-link{margin-left:auto;font-size:12px;background:none;border:1px solid var(--bd);border-radius:7px;
+  padding:3px 9px;color:var(--accent);cursor:pointer;white-space:nowrap}
+.reco-link:hover{background:var(--hover)}
+.reco-prio{font-size:13px;color:var(--mut);margin:0 0 11px;display:flex;gap:8px;align-items:flex-start}
+.reco-prio .ic{flex:none}
 /* skeleton loading shimmer for card bodies that fetch async (copilot/forecast) */
 .skel{background:linear-gradient(90deg,var(--free) 25%,var(--hover) 37%,var(--free) 63%);
   background-size:400% 100%;border-radius:6px;animation:skel 1.3s ease infinite}
@@ -1200,6 +1213,17 @@ h2 .hic{ opacity:.9 }
     <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
     <div class="grid" id="ai-band-kpis"></div>
     <p class="cap" id="ai-band-cap"></p>
+  </div>
+  <div class="card" id="recocard">
+    <div class="card-h">
+      <h2 data-i18n="reco.title">✅ Recommendations</h2>
+      <span class="chip" id="reco-count" hidden></span>
+      <span class="ch-space"></span>
+      <button class="osvar" type="button" id="reco-refresh" data-i18n="reco.refresh">↻ Refresh</button>
+    </div>
+    <div class="fleet-meta" data-i18n="reco.card_desc">A ranked, actionable to-do list derived from your lab's own live signals — disk-fill ETAs, VRAM headroom, cost trend, active incidents/anomalies, OOM kills and uptime. Each item carries a severity, the signal it's based on, and a concrete next step. Advice only — nothing here changes your host.</div>
+    <div id="reco-prio" class="reco-prio" hidden></div>
+    <div id="reco-body" style="margin-top:11px" aria-live="polite"></div>
   </div>
   <div class="card" id="diagcard" hidden>
     <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
@@ -2616,7 +2640,7 @@ function showTab(id){
     if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
     else renderLocalOnlyNotice(id);
   }
-  if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadHero(); }
+  if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadReco(); loadHero(); }
   if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); }   // refresh Anomalies + Incidents + LLM engine on view
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -5976,6 +6000,94 @@ function _copilotSourcesLine(sources){
   return '<div class="muted" style="font-size:11px;margin-top:6px">'+esc(I18N.t('copilot.based_on','based on'))+': '+chips+'</div>';
 }
 
+// ── Recommendations panel — ranked, actionable to-do list (read-only, advice-only).
+// Deterministic detectors on the backend; the LLM only optionally adds a one-line
+// "top priority" framing. Always renders the deterministic items even with no LLM.
+let RECO=null, RECO_AT=0, RECO_BUSY=false;
+// severity → {ins class for the row border, chip class, icon, label key}
+const RECO_SEV={
+  crit:{ins:'critical',chip:'crit',ic:'🔴',k:'reco.sev_crit',d:'Critical'},
+  warn:{ins:'warning', chip:'warn',ic:'🟠',k:'reco.sev_warn',d:'Warning'},
+  info:{ins:'info',    chip:'info',ic:'🔵',k:'reco.sev_info',d:'Info'},
+};
+const RECO_SRC={
+  disk:'reco.src_disk', vram:'reco.src_vram', cost:'reco.src_cost',
+  incident:'reco.src_incident', anomaly:'reco.src_anomaly', oom:'reco.src_oom',
+  uptime:'reco.src_uptime',
+};
+// Map an item's `link` to a navigation action. incident:<id> opens the drawer;
+// everything else switches tabs. Advice-only — none of these mutate the host.
+function _recoGo(link){
+  if(!link) return;
+  if(link.indexOf('incident:')===0){
+    const id=link.slice('incident:'.length);
+    if(typeof openIncidentDrawer==='function'){ openIncidentDrawer(id); return; }
+    if(typeof showTab==='function') showTab('overview');
+    return;
+  }
+  if(typeof showTab==='function') showTab(link);
+}
+function renderReco(){
+  const body=document.getElementById('reco-body'); if(!body) return;
+  const j=RECO||{}; const items=j.items||[];
+  const cnt=document.getElementById('reco-count');
+  const prio=document.getElementById('reco-prio');
+  // count chip reflects the worst severity present
+  if(cnt){
+    if(!items.length){ cnt.hidden=true; }
+    else{
+      const worst=items[0].severity||'info'; const meta=RECO_SEV[worst]||RECO_SEV.info;
+      cnt.hidden=false; cnt.className='chip '+meta.chip;
+      cnt.textContent=I18N.tf('reco.count','{n} to review',{n:items.length});
+    }
+  }
+  // optional LLM "top priority" line — shown only when the LLM actually framed it
+  if(prio){
+    if(j.llm_used && j.priority){
+      prio.hidden=false;
+      prio.innerHTML='<span class="ic">🧠</span><span>'+esc(j.priority)+'</span>';
+    }else{ prio.hidden=true; prio.innerHTML=''; }
+  }
+  if(!items.length){
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">✅</div><div>'
+      +'<div class="t">'+esc(I18N.t('reco.allclear_t','All clear'))+'</div>'
+      +'<div class="d">'+esc(I18N.t('reco.allclear_d','No recommendations right now — disks, VRAM, cost, incidents and uptime all look healthy.'))+'</div></div></div>';
+    return;
+  }
+  body.innerHTML=items.map(it=>{
+    const meta=RECO_SEV[it.severity]||RECO_SEV.info;
+    const sevChip='<span class="chip '+meta.chip+'">'+esc(I18N.t(meta.k,meta.d))+'</span>';
+    const src=RECO_SRC[it.source];
+    const srcChip=src?'<span class="chip" style="font-size:10px">'+esc(I18N.t(src,it.source))+'</span>':'';
+    const link=it.link?'<button class="reco-link" type="button" data-reco-link="'+esc(it.link)+'">'
+      +esc(I18N.t('reco.open','Open →'))+'</button>':'';
+    const act=it.action?'<div class="reco-act"><span class="reco-do">'+esc(I18N.t('reco.suggest','Suggested:'))+'</span> <b>'+esc(it.action)+'</b></div>':'';
+    return '<div class="ins '+meta.ins+' reco-item">'
+      +'<div class="reco-top"><span class="ic">'+meta.ic+'</span>'
+      +'<span class="t">'+esc(it.title||'')+'</span>'+sevChip+srcChip+link+'</div>'
+      +(it.detail?'<div class="d">'+esc(it.detail)+'</div>':'')
+      +act
+      +'</div>';
+  }).join('');
+  body.querySelectorAll('[data-reco-link]').forEach(b=>{
+    b.onclick=()=>_recoGo(b.getAttribute('data-reco-link'));
+  });
+}
+async function loadReco(force){
+  if(CURRENT_HOST!=='local'){ const c=document.getElementById('recocard'); if(c) c.hidden=true; return; }
+  const c=document.getElementById('recocard'); if(c) c.hidden=false;
+  if(RECO_BUSY) return;
+  if(!force && Date.now()-RECO_AT < 120000 && RECO){ renderReco(); return; }
+  RECO_BUSY=true;
+  const body=document.getElementById('reco-body');
+  if(body && !RECO) body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">✅</div><div style="flex:1">'
+    +'<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div></div></div>';
+  try{ RECO=await(await fetch('/api/recommendations')).json(); RECO_AT=Date.now(); }
+  catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('reco.err','Could not load recommendations.')+'</div>'; RECO_BUSY=false; return; }
+  RECO_BUSY=false;
+  renderReco();
+}
+
 // ── LLM engine panel (GPU tab) — the AI Lab Cockpit's throughput surface ───────
 // Honest numbers: tok/s + TTFT come ONLY from real generations (captured as a
 // side-channel off the Copilot); resident models from ollama /api/ps. Calm
@@ -7149,6 +7261,8 @@ document.getElementById('mcpcopy').onclick = async () => {
 (function(){
   const rb=document.getElementById('copilot-refresh');
   if(rb) rb.onclick=()=>loadCopilot(true);
+  const rrb=document.getElementById('reco-refresh');
+  if(rrb) rrb.onclick=()=>loadReco(true);
   const lb=document.getElementById('llm-bench');
   if(lb) lb.onclick=llmBenchmark;
   const ab=document.getElementById('copilot-ask-btn');

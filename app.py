@@ -86,6 +86,20 @@ COPILOT_OLLAMA_URL = os.environ.get("COPILOT_OLLAMA_URL", "http://127.0.0.1:1143
 COPILOT_MODEL      = os.environ.get("COPILOT_MODEL", "gemma3:1b")  # small, fast, usually pulled
 COPILOT_TIMEOUT    = float(os.environ.get("COPILOT_TIMEOUT", "30"))  # seconds, hard cap per call
 COPILOT_ENABLED    = os.environ.get("COPILOT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+# Proactive Recommendations panel (E1): deterministic detectors over the live
+# signals (forecast/anomaly/cost/incident/uptime/OOM) emit a ranked, actionable
+# to-do list. Pure rules — the LLM only OPTIONALLY phrases them; the panel always
+# works with ollama off. Thresholds are env-tunable with safe defaults.
+RECO_DISK_CRIT_DAYS  = float(os.environ.get("RECO_DISK_CRIT_DAYS", "14"))   # disk fills < this → crit
+RECO_DISK_WARN_DAYS  = float(os.environ.get("RECO_DISK_WARN_DAYS", "60"))   # disk fills < this → warn
+RECO_VRAM_WARN_GB    = float(os.environ.get("RECO_VRAM_WARN_GB", "2"))      # VRAM headroom < this → warn
+RECO_VRAM_CRIT_GB    = float(os.environ.get("RECO_VRAM_CRIT_GB", "0.75"))   # VRAM headroom < this → crit
+RECO_COST_WARN_PCT   = int(os.environ.get("RECO_COST_WARN_PCT", "25"))      # projected +% vs last month → warn
+RECO_COST_CRIT_PCT   = int(os.environ.get("RECO_COST_CRIT_PCT", "50"))      # projected +% vs last month → crit
+RECO_OOM_WARN_N      = int(os.environ.get("RECO_OOM_WARN_N", "1"))          # OOM kills in window → warn
+RECO_OOM_CRIT_N      = int(os.environ.get("RECO_OOM_CRIT_N", "3"))          # OOM kills in window → crit
+RECO_OOM_WINDOW_DAYS = float(os.environ.get("RECO_OOM_WINDOW_DAYS", "7"))   # OOM look-back window
+RECO_MAX_ITEMS       = int(os.environ.get("RECO_MAX_ITEMS", "6"))           # cap the list
 # Multi-machine monitoring (Issue #35, slice 1: registry + probe). The hub's own
 # SSH key lives under SSH_DIR — it's inside /data so it persists across rebuilds
 # the same way the SQLite history does. Capability probes run via the system
@@ -7519,6 +7533,304 @@ def api_copilot_explain():
         # No LLM: hand back the deterministic facts as the explanation so the
         # "Why?" action is never a dead end.
         out.update({"explanation": " ".join(facts), "source": "facts", "llm_status": err})
+    return jsonify(out)
+
+
+# ── Proactive Recommendations (E1) ─────────────────────────────────────────────
+# The AI Lab Cockpit doesn't just SHOW state — it tells you what to DO. A ranked,
+# actionable to-do list derived from the lab's OWN live signals (forecasts,
+# anomalies, costs, incidents, uptime, OOM). Distinct from the digest: the digest
+# is a narrative summary; recommendations are prioritized, per-signal, each with a
+# severity, the signal it's based on, and a concrete suggested action.
+#
+# HARD CONSTRAINTS: advice only — recommendations NEVER auto-execute anything; no
+# host mutation, no buttons that change the host. Read-only over our own data. The
+# deterministic detectors are the reliable core; the LLM ONLY optionally phrases a
+# one-line framing and never blocks/errors the panel.
+_RECO_SEV_RANK = {"crit": 3, "warn": 2, "info": 1}
+
+def _reco_signals(now):
+    """Assemble the live signal bundle the detectors scan. Reuses the SAME forecast
+    accessors the /api/forecast + Copilot paths use (no new heavy work), with the
+    SAME lock discipline: the history-backed helpers run in one LOCK pass; the
+    accessors that take LOCK themselves (incidents/uptime) and the OOM read run
+    OUTSIDE it so the non-reentrant lock is never nested. Never raises — a failed
+    sub-signal degrades to empty/absent, the panel still renders what it can."""
+    sig = {"disk": [], "vram": {}, "cost_month": {}, "anomalies": {},
+           "incidents": {"open": 0, "top": None}, "uptime": [], "ooms": []}
+    try:
+        ctx = _cost_ctx()
+        with LOCK:
+            cur = DB.cursor()
+            sig["disk"] = _disk_forecasts(cur, now)
+            sig["cost_month"] = _cost_projection(cur, ctx, now)
+            sig["anomalies"] = _zscore_anomalies(cur, now)
+            sig["vram"] = _vram_forecast(cur, now)
+            # Recurring OOM kills, grouped per service over the look-back window.
+            try:
+                cutoff = int(now - RECO_OOM_WINDOW_DAYS * 86400)
+                rows = cur.execute(
+                    "SELECT service, COUNT(*) n, MAX(ts) last FROM events "
+                    "WHERE kind='oom' AND ts>=? GROUP BY service ORDER BY n DESC, last DESC",
+                    (cutoff,)).fetchall()
+                sig["ooms"] = [{"service": r[0], "count": r[1], "last_ts": r[2]} for r in rows]
+            except Exception:
+                sig["ooms"] = []
+    except Exception as e:
+        print("recommendations signal error:", e, flush=True)
+    # incidents_summary() + uptime_overview() take LOCK themselves → call OUTSIDE.
+    try:
+        sig["incidents"] = incidents_summary()
+    except Exception as e:
+        print("recommendations incidents error:", e, flush=True)
+    try:
+        sig["uptime"] = uptime_overview().get("checks", []) or []
+    except Exception as e:
+        print("recommendations uptime error:", e, flush=True)
+    return sig
+
+
+def _reco_detect(sig, now=None):
+    """Pure-Python detectors: scan the signal bundle, emit a recommendation dict per
+    fired condition. Each item: {id, severity, title, detail, action, source, link?,
+    ts?}. NO LLM, NO mutation — advice only. Deterministic + unit-testable. Items are
+    ranked (severity, then recency/impact) and capped by the caller."""
+    now = now or int(time.time())
+    items = []
+
+    # 1) Disk fill ETA below threshold ----------------------------------------
+    for d in (sig.get("disk") or []):
+        if d.get("status") != "filling":
+            continue
+        eta = d.get("eta_days")
+        if eta is None:
+            continue
+        mp = d.get("mount") or "?"
+        if eta < RECO_DISK_CRIT_DAYS:
+            sev = "crit"
+        elif eta < RECO_DISK_WARN_DAYS:
+            sev = "warn"
+        else:
+            continue
+        free = d.get("free_gb")
+        free_txt = (" %s GB free" % free) if free is not None else ""
+        items.append({
+            "id": "disk:" + mp, "severity": sev, "source": "disk",
+            "title": "Disk %s fills in ~%sd" % (mp, _reco_num(eta)),
+            "detail": "%s is %s%% full%s and trending up at ~%s GB/day." % (
+                mp, d.get("pct"), free_txt, _reco_num(d.get("gb_per_day"))),
+            "action": "Archive or prune data on %s, or expand the volume." % mp,
+            "link": "disks", "ts": d.get("eta_ts"), "impact": -eta,
+        })
+
+    # 2) VRAM headroom low / VRAM-ETA short -----------------------------------
+    v = sig.get("vram") or {}
+    free_gb = v.get("free_gb")
+    total_gb = v.get("total_gb")
+    if free_gb is not None and total_gb:
+        if free_gb < RECO_VRAM_CRIT_GB:
+            sev = "crit"
+        elif free_gb < RECO_VRAM_WARN_GB:
+            sev = "warn"
+        else:
+            sev = None
+        if sev:
+            items.append({
+                "id": "vram:headroom", "severity": sev, "source": "vram",
+                "title": "VRAM headroom %s GB" % _reco_num(free_gb),
+                "detail": "Only %s GB free of %s GB total (loaded models hold %s GB)." % (
+                    _reco_num(free_gb), _reco_num(total_gb), _reco_num(v.get("models_gb"))),
+                "action": "Unload an idle model or cap concurrent models / keep-alive.",
+                "link": "models", "impact": -(free_gb),
+            })
+    # short VRAM-exhaustion ETA (separate, trend-based) — only when filling soon
+    if v.get("status") == "filling" and v.get("eta_min") is not None:
+        eta_min = v.get("eta_min")
+        if eta_min < 120:    # under ~2h to full is worth flagging
+            items.append({
+                "id": "vram:eta", "severity": "warn", "source": "vram",
+                "title": "VRAM trending to full in ~%s min" % _reco_num(eta_min),
+                "detail": "VRAM is climbing at ~%s MB/min and would fill the GPU soon." % _reco_num(v.get("mb_per_min")),
+                "action": "Stagger heavy jobs or shorten keep-alive before it OOMs.",
+                "link": "models", "ts": v.get("eta_ts"), "impact": -(eta_min / 60.0),
+            })
+
+    # 3) Cost projection up sharply vs last month -----------------------------
+    cm = sig.get("cost_month") or {}
+    if cm.get("enabled") and cm.get("delta_pct") is not None and cm.get("last_month"):
+        dp = cm.get("delta_pct")
+        if dp >= RECO_COST_CRIT_PCT:
+            sev = "crit"
+        elif dp >= RECO_COST_WARN_PCT:
+            sev = "warn"
+        else:
+            sev = None
+        if sev:
+            cur_sym = cm.get("currency") or "$"
+            items.append({
+                "id": "cost:projection", "severity": sev, "source": "cost",
+                "title": "Projected spend %s%s (+%s%% vs last month)" % (
+                    cur_sym, _reco_num(cm.get("projected_month")), dp),
+                "detail": "Month-to-date %s%s; last month was %s%s." % (
+                    cur_sym, _reco_num(cm.get("month_to_date")), cur_sym, _reco_num(cm.get("last_month"))),
+                "action": "Shift heavy jobs to off-peak hours or trim idle GPU load.",
+                "link": "costs", "impact": dp,
+            })
+
+    # 4) Active incident / active anomaly -------------------------------------
+    inc = sig.get("incidents") or {}
+    top = inc.get("top")
+    if inc.get("open") and top:
+        sev = "crit" if top.get("severity") == "critical" else "warn"
+        series = top.get("series") or []
+        slabel = ", ".join(str(s) for s in series[:4]) if series else "correlated series"
+        items.append({
+            "id": "incident:" + str(top.get("id")), "severity": sev, "source": "incident",
+            "title": "%s incident active (%s series)" % (
+                (top.get("severity") or "warning").capitalize(), top.get("active_count") or top.get("member_count") or 1),
+            "detail": "Open incident correlating: %s. Investigate the driving entity." % slabel,
+            "action": "Open the incident drawer to see members and likely cause.",
+            "link": "incident:" + str(top.get("id")), "ts": top.get("opened_at"),
+            "impact": (top.get("active_count") or 1),
+        })
+    else:
+        # No incident, but a standalone active anomaly is still worth surfacing.
+        anoms = (sig.get("anomalies") or {}).get("items") or []
+        if anoms:
+            a = anoms[0]
+            items.append({
+                "id": "anomaly:" + str(a.get("key")), "severity": "warn", "source": "anomaly",
+                "title": "%s anomaly active (%sσ)" % (str(a.get("key")), _reco_num(abs(a.get("z") or 0))),
+                "detail": "%s %s — %s%s now vs ~%s%s baseline." % (
+                    a.get("key"), a.get("direction"), a.get("value"), a.get("unit"),
+                    a.get("baseline"), a.get("unit")),
+                "action": "Check what changed on the GPU/host around now.",
+                "link": "gpu", "impact": abs(a.get("z") or 0),
+            })
+
+    # 5) Recurring OOM kills ---------------------------------------------------
+    for o in (sig.get("ooms") or []):
+        n = o.get("count") or 0
+        if n < RECO_OOM_WARN_N:
+            continue
+        svc = o.get("service") or "?"
+        sev = "crit" if n >= RECO_OOM_CRIT_N else "warn"
+        items.append({
+            "id": "oom:" + svc, "severity": sev, "source": "oom",
+            "title": "%s OOM-killed %d time%s" % (svc, n, "" if n == 1 else "s"),
+            "detail": "%s ran out of memory %d time%s in the last %s days." % (
+                svc, n, "" if n == 1 else "s", _reco_num(RECO_OOM_WINDOW_DAYS)),
+            "action": "Raise its memory limit or reduce its batch/model size.",
+            "link": "containers", "ts": o.get("last_ts"), "impact": n,
+        })
+
+    # 6) Uptime check down / flapping -----------------------------------------
+    for c in (sig.get("uptime") or []):
+        if not c.get("enabled"):
+            continue
+        state = c.get("state")
+        label = str(c.get("label") or c.get("id") or "check")
+        up_pct = c.get("uptime")
+        if state == "down":
+            items.append({
+                "id": "uptime:" + str(c.get("id")), "severity": "crit", "source": "uptime",
+                "title": "%s is DOWN" % label,
+                "detail": _reco_uptime_detail(c) or ("Uptime check '%s' is failing." % label),
+                "action": "Investigate the endpoint — service, network, or TLS.",
+                "link": "uptime", "ts": c.get("last_checked"), "impact": 100,
+            })
+        elif up_pct is not None and up_pct < 95 and (c.get("window_total") or 0) >= 5:
+            # Flapping: not currently down, but a poor recent uptime% over the window.
+            items.append({
+                "id": "uptime:" + str(c.get("id")), "severity": "warn", "source": "uptime",
+                "title": "%s is flapping (%s%% uptime)" % (label, _reco_num(up_pct)),
+                "detail": "'%s' has only %s%% uptime over the recent window." % (label, _reco_num(up_pct)),
+                "action": "Investigate intermittent failures on this endpoint.",
+                "link": "uptime", "ts": c.get("last_checked"), "impact": 100 - up_pct,
+            })
+
+    # Rank: severity desc, then impact desc, then recency (newer ts first).
+    items.sort(key=lambda it: (
+        _RECO_SEV_RANK.get(it.get("severity"), 0),
+        it.get("impact") or 0,
+        it.get("ts") or 0,
+    ), reverse=True)
+    return items
+
+
+def _reco_num(x):
+    """Format a number tersely: drop a trailing .0 so '14.0' reads '14'. Tolerant of
+    None/strings (returns them stringified) so a detector line never raises."""
+    if x is None:
+        return "?"
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    return str(int(f)) if f == int(f) else str(round(f, 1))
+
+
+def _reco_uptime_detail(c):
+    """Credential-safe down reason for an uptime recommendation (reuses the same
+    redaction the notifier uses). Never leaks the target URL."""
+    try:
+        bits = []
+        code = c.get("last_code")
+        if code is not None:
+            bits.append("status %s" % code)
+        err = c.get("last_err")
+        if err:
+            bits.append(_redact_target(str(err))[:160])
+        return ("Down — " + " — ".join(bits)) if bits else ""
+    except Exception:
+        return ""
+
+
+def _reco_llm_prompt(items):
+    """Build a SMALL, secret-free prompt asking the LLM for one short 'top priority'
+    line over the already-detected recommendation titles. We send ONLY the
+    deterministic title/severity text — no URLs, no creds, no raw host data beyond
+    what the panel already shows. Bounded to the top few items."""
+    lines = []
+    for it in items[:RECO_MAX_ITEMS]:
+        lines.append("[%s] %s" % ((it.get("severity") or "info").upper(), it.get("title") or ""))
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Below is a ranked list of detected recommendations (already computed by the "
+        "monitor). In ONE short sentence (plain English, no markdown), tell the owner "
+        "what to tackle FIRST and why. Use ONLY these items; invent nothing.\n\n"
+        "RECOMMENDATIONS:\n- " + "\n- ".join(lines) + "\n\nTOP PRIORITY:")
+
+
+@app.route("/api/recommendations")
+def api_recommendations():
+    """Ranked, actionable to-do list derived from the lab's own live signals —
+    deterministic detectors (the reliable core) over forecast/anomaly/cost/incident/
+    uptime/OOM. Always 200, graceful-degrade, read-only, advice-only (NEVER mutates
+    the host). The local LLM optionally adds a one-line 'top priority' framing; if
+    it's off/unreachable the deterministic items render unchanged. Reuses the same
+    forecast accessors as /api/forecast (no extra heavy work)."""
+    now = int(time.time())
+    try:
+        sig = _reco_signals(now)
+        items = _reco_detect(sig, now)[:RECO_MAX_ITEMS]
+    except Exception as e:
+        print("recommendations error:", e, flush=True)
+        items = []
+    out = {"now": now, "generated_at": now, "items": items,
+           "count": len(items), "model": COPILOT_MODEL,
+           "enabled": COPILOT_ENABLED, "llm_used": False,
+           "priority": None, "llm_status": "skipped"}
+    # Optional, bounded LLM framing — only when there's something to prioritise.
+    # Never blocks or errors the panel: the deterministic items above stand alone.
+    if items:
+        text, err = _ollama_generate(_reco_llm_prompt(items), timeout=min(COPILOT_TIMEOUT, 12))
+        if text is not None:
+            out["priority"] = text
+            out["llm_used"] = True
+            out["llm_status"] = "ok"
+        else:
+            out["llm_status"] = err
     return jsonify(out)
 
 
