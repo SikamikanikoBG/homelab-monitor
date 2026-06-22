@@ -6181,6 +6181,76 @@ def _seed_demo_data():
                        (now - 5 * 86400, "stable-diffusion", "oom",
                         "CUDA error: out of memory (demo) — allocation of 2.10 GiB failed"))
 
+            # Status history: synthesize ~90 days of coarse status samples so the
+            # public /status page renders complete out of the box — the 90-day uptime
+            # ribbon (_status_daily over the 'overall' key) AND the per-subsystem
+            # heartbeat strips (_status_history's last _STATHIST_CELLS buckets) — instead
+            # of waiting days for the live sampler to accumulate. Same {ts,key,state}
+            # shape, same bucket alignment, same 0..3 rank meaning the readers expect.
+            #
+            # Realism is DETERMINISTIC (derived from the day index, no RNG) so it's
+            # reproducible across restarts/tests: mostly ok (rank 0) with a degraded day
+            # (rank 1-2) every ~17 days and a brief down blip (rank 3) every ~40 days →
+            # the ribbon shows ~98-99% uptime with a couple of amber/red daily cells, and
+            # the recent heartbeat strip is mostly-green with the odd non-green cell.
+            #
+            # Cadence is mixed to keep row counts sane: HOURLY across the full 90-day
+            # ribbon range, then 5-min (live cadence) over the last ~2 days that feed the
+            # per-bucket heartbeat window. ~90d×24h + 2d×288 buckets × 5 keys ≈ 14k rows.
+            stat_rows = []
+            sh_recent_span = 2 * 86400          # last 2 days at live 5-min cadence
+            sh_hourly_start = now - _DAILY_RIBBON_DAYS * 86400 - 86400
+            sh_recent_start = now - sh_recent_span
+
+            def _demo_day_states(day_idx):
+                """Per-subsystem ranks for whole-day baseline 'day_idx' (0 = oldest).
+                Deterministic: a degraded day every ~17 days (a couple of subsystems
+                blip to warn), a down blip every ~40 days (overall goes down via one
+                subsystem). Most days are fully ok (rank 0)."""
+                base = {k: 0 for k in _STATHIST_KEYS}
+                # Two degraded days + one brief outage across the 90-day window keep the
+                # ribbon at a believable ~96-97% with a couple of amber cells + one red.
+                if day_idx % 90 == 23:           # single brief outage (down)
+                    base["containers"] = 3
+                elif day_idx % 90 in (41, 67):   # two degraded days
+                    base["services"] = 2
+                base["overall"] = max(base[k] for k in _STATHIST_KEYS if k != "overall")
+                return base
+
+            def _emit_status_bucket(bucket_ts):
+                day_idx = int((bucket_ts - sh_hourly_start) // 86400)
+                states = _demo_day_states(day_idx)
+                # Within a non-ok day, only a short slice of buckets actually carries the
+                # bad rank (a real incident is bounded in time); the rest of the day is
+                # ok. The daily rollup takes the worst rank seen, so a single bad bucket
+                # still tints the day's cell while keeping the bucket-level uptime high.
+                hod = time.localtime(bucket_ts).tm_hour
+                incident = 9 <= hod <= 11        # mid-morning incident window
+                bucket_states = {}
+                for k in _STATHIST_KEYS:
+                    if k == "overall":
+                        continue
+                    r = states[k]
+                    if r > 0 and not incident:
+                        r = 0                    # incident bounded in time within the day
+                    bucket_states[k] = int(r)
+                # overall is the worst across subsystems for THIS bucket
+                bucket_states["overall"] = max(bucket_states.values()) if bucket_states else 0
+                for k in _STATHIST_KEYS:
+                    stat_rows.append((bucket_ts, k, bucket_states[k]))
+
+            # Hourly band across the whole ribbon range (up to the dense recent band).
+            for ts in range(sh_hourly_start - (sh_hourly_start % _STATHIST_BUCKET),
+                            sh_recent_start, 3600):
+                _emit_status_bucket(ts - (ts % _STATHIST_BUCKET))
+            # Dense band: last ~2 days at the live 5-min bucket cadence so the heartbeat
+            # strip's last _STATHIST_CELLS buckets are fully populated.
+            for ts in range(sh_recent_start - (sh_recent_start % _STATHIST_BUCKET),
+                            now + _STATHIST_BUCKET, _STATHIST_BUCKET):
+                _emit_status_bucket(ts - (ts % _STATHIST_BUCKET))
+            DB.executemany("INSERT OR REPLACE INTO status_history(ts,key,state) VALUES(?,?,?)",
+                           stat_rows)
+
             # Tariff defaults so the cost projection renders out of the box (only if
             # the operator hasn't set their own price).
             srow = cur.execute("SELECT value FROM settings WHERE key='kwh_price'").fetchone()
@@ -6193,6 +6263,7 @@ def _seed_demo_data():
             DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?, '1')", (_DEMO_MARKER,))
             DB.commit()
             print(f"DEMO_MODE: seeded {len(rows)} sample rows + {len(disk_rows)} disk rows "
+                  f"+ {len(stat_rows)} status-history rows "
                   f"(synthetic history; real instances are unaffected).", flush=True)
     except Exception as e:
         print("DEMO_MODE seed skipped (continuing):", e, flush=True)
