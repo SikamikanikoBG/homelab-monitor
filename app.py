@@ -4539,6 +4539,16 @@ def evaluate_rules(signals=None):
         except Exception as e:
             print("evaluate_rules signal error:", e, flush=True)
             return 0
+    # Defense-in-depth: uptime_down rules need per-check states. If a caller passed a
+    # pre-built bundle (e.g. the collector) that omitted "uptime", back-fill it here so
+    # the rule can never silently go dead. uptime_overview() takes LOCK itself, so this
+    # runs outside any held lock. Only pays the read when such a rule is actually enabled.
+    if "uptime" not in signals and any(r["ctype"] == "uptime_down" for r in rules):
+        try:
+            signals["uptime"] = uptime_overview().get("checks", [])
+        except Exception as e:
+            print("evaluate_rules uptime back-fill error:", e, flush=True)
+            signals["uptime"] = []
     fired = 0
     for rule in rules:
         try:
@@ -5253,6 +5263,12 @@ def collector():
                         # just-updated open incident. list_incidents() takes LOCK itself,
                         # so read it here (outside the block that built `sig`).
                         sig["incidents"] = list_incidents()
+                        # uptime_down rules read the per-check states from the bundle.
+                        # uptime_overview() takes LOCK internally, so read it here —
+                        # outside the block above — and never nest the non-reentrant lock.
+                        # Without this the collector hands evaluate_rules a bundle with no
+                        # "uptime" key, so uptime_down rules would silently never fire.
+                        sig["uptime"] = uptime_overview().get("checks", [])
                         evaluate_rules(sig)
                 except Exception as e: print("evaluate_rules error:", e, flush=True)
                 # Scheduled Lab Copilot digest. Runs OUTSIDE any held lock (it

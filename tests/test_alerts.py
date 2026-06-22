@@ -709,6 +709,31 @@ class TestUptimeDownEngineIntegration(unittest.TestCase):
         self.assertIsNone(self._state(rid))
         self.assertEqual(app.list_alert_history()[0]["status"], "suppressed")
 
+    def test_fires_from_real_db_without_prebuilt_bundle(self):
+        """Regression: the collector calls evaluate_rules with a PRE-BUILT bundle that
+        (historically) omitted the 'uptime' key, so uptime_down rules silently never
+        fired in production even though the unit tests — which always hand-built a bundle
+        WITH 'uptime' — passed. The engine must back-fill per-check states from the DB
+        when an uptime_down rule is enabled but the bundle lacks 'uptime'."""
+        app.create_rule({"name": "u", "ctype": "uptime_down",
+                         "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 0})
+        ts = int(time.time())
+        with app.LOCK:
+            app.DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                           "VALUES(?,?,?,?,?,?)", (self.cid, ts, 0, None, 503, "HTTP 503"))
+            app.DB.commit()
+        # (a) No-args path: engine self-sources the whole bundle including uptime.
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(), 1)
+        pt.assert_called()
+        # (b) Collector-shaped bundle WITHOUT 'uptime' (mirrors collector's sig dict):
+        #     the back-fill must still let the down check fire (cooldown=0 so it re-fires).
+        collector_sig = {"anomalies": {"items": []}, "incidents": []}
+        self.assertNotIn("uptime", collector_sig)
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(collector_sig), 1)
+        pt.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()
