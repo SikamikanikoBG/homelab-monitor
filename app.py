@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.17.3"
+VERSION      = "0.18.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS hosts(
   last_check_json TEXT
 );
 CREATE TABLE IF NOT EXISTS power_proc(ts INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, watts REAL NOT NULL);
--- External uptime checks (Uptime-Kuma-style): the user's OWN configured HTTP/TCP
+-- External uptime checks (HTTP/TCP endpoint monitors): the user's OWN configured HTTP/TCP
 -- endpoint monitors. `target` is a URL (http) or host:port (tcp) — treated like
 -- webhook_url (may carry credentials): persisted for the user, never logged.
 -- These are PRIVATE (LAN dashboard + authed API only); they never reach /status.
@@ -3786,7 +3786,7 @@ def save_settings(updates):
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
 
-# ── Uptime checks: Uptime-Kuma-in-the-box ──────────────────────────────────
+# ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
 # User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
 # DEDICATED worker thread (never the metrics sampler). Each check carries its own
 # smart-alerting config (down/recovery/slow) which notify_scan() acts on, reusing

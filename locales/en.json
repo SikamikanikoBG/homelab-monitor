@@ -551,7 +551,7 @@
   "net.talkers_cap": "Total bytes each container moved over the selected range (its own network namespace).",
   "security.cap": "Read-only, agentless — no changes are made to any host. Items shown in grey (⚪) couldn't be read without elevated privileges on that machine.",
   "uptime.title": "🛰️ Uptime checks",
-  "uptime.intro": "Monitor any HTTP endpoint or TCP port from inside this container — your own services, a NAS, a remote site. One box replaces the monitor and Uptime-Kuma. Down/recovery alerts reuse your configured channels. Targets stay private to this dashboard — they never reach the public status page.",
+  "uptime.intro": "Monitor any HTTP endpoint or TCP port from inside this container — your own services, a NAS, a remote site. No extra uptime service to self-host — it's already here. Down/recovery alerts reuse your configured channels. Targets stay private to this dashboard — they never reach the public status page.",
   "uptime.empty": "No checks yet. Add one below — until then nothing is probed (zero outbound traffic).",
   "uptime.add": "➕ Add a check",
   "uptime.add_btn": "Add check",

@@ -5,6 +5,18 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.18.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.18.0) — 2026-06-22 · **Is my lab up? — Uptime monitoring built in**
+*Point it at any URL or port and it watches them for you — heartbeat, uptime %, and alerts that page once (not on every dropped packet) and tell you when it's back.*
+
+**Added**
+- **Uptime checks — built right in.** A new **Uptime** tab monitors any **HTTP endpoint or TCP port** (your own services, a NAS, a remote site) from inside the container — a heartbeat strip, **24h + 7d uptime %**, latency and last error per check. Probes run on a dedicated worker (never the metrics sampler), each bounded by its own timeout, so a hanging endpoint can't stall the rest; nothing is probed until you add a check.
+- **Smart per-check alerting**, reusing your existing channels (Discord / ntfy / Telegram): a check is only called **DOWN after N consecutive failures** (anti-flap — a single dropped packet won't page you), a **recovery alert quotes the downtime**, and an optional **latency warning** fires when an endpoint is up but slow. On by default per check; honours the global minimum severity.
+- **Overview at a glance** — a 🛰 uptime chip on the cockpit's fleet rollup (red the moment a check is down), and down/slow endpoints surface in the Insight Feed.
+
+**Privacy:** check targets/labels/errors stay on the private dashboard + authed API — they never reach the public status payload.
+
+_Rolls up the silent 0.17.1–0.17.3 patches below._
+
 ## [0.17.3](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.3) — 2026-06-21 · _patch_
 _Silent patch — Docker image rebuilt, no release announcement (patches roll up into the next minor)._
 
