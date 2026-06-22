@@ -75,7 +75,21 @@ class TestMqttPacketEncoding(unittest.TestCase):
             app._mqtt_publish_packet("t", "p", qos=1)
 
 
+def _clear_uptime_checks():
+    """Remove all uptime checks/results so the static-sensor count is
+    deterministic (the per-check uptime sensors are tested separately)."""
+    app.DB.execute("DELETE FROM uptime_results")
+    app.DB.execute("DELETE FROM uptime_checks")
+    app.DB.commit()
+
+
 class TestMqttDiscovery(unittest.TestCase):
+    def setUp(self):
+        _clear_uptime_checks()
+
+    def tearDown(self):
+        _clear_uptime_checks()
+
     def test_discovery_topics_and_device(self):
         msgs = app._mqtt_discovery_messages("homeassistant")
         self.assertEqual(len(msgs), len(app._MQTT_SENSORS))
@@ -164,6 +178,12 @@ class TestMqttInert(unittest.TestCase):
 
 
 class TestMqttRobustness(unittest.TestCase):
+    def setUp(self):
+        _clear_uptime_checks()
+
+    def tearDown(self):
+        _clear_uptime_checks()
+
     def test_unreachable_broker_is_caught(self):
         """A refused connection must raise out of _mqtt_session_publish so the
         worker's try/except records it — and must NOT be a credential leak."""
@@ -215,6 +235,102 @@ class TestMqttRobustness(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 app._mqtt_session_publish(cfg)
             self.assertNotIn("pw", str(ctx.exception))
+
+
+class TestMqttUptimeDiscovery(unittest.TestCase):
+    """Per uptime check ⇒ an HA connectivity binary_sensor + a latency sensor,
+    under the same device, with a safe slug/unique_id, off when zero checks."""
+
+    def setUp(self):
+        _clear_uptime_checks()
+
+    def tearDown(self):
+        _clear_uptime_checks()
+
+    def _result(self, cid, up, latency=None):
+        import time as _t
+        app.DB.execute(
+            "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) VALUES(?,?,?,?,?,?)",
+            (cid, int(_t.time()), 1 if up else 0, latency, 200 if up else None,
+             None if up else "fail"))
+        app.DB.commit()
+
+    def test_no_uptime_topics_when_zero_checks(self):
+        msgs = app._mqtt_discovery_messages("homeassistant")
+        self.assertEqual(len(msgs), len(app._MQTT_SENSORS))
+        self.assertFalse(any("uptime_" in t and "binary_sensor" in t for t, _, _ in msgs))
+
+    def test_per_check_binary_and_latency_sensor(self):
+        cid, _ = app.create_uptime_check(
+            {"label": 'Edge "router"\\x', "type": "tcp", "target": "h:1"})
+        self._result(cid, up=True, latency=9)
+        msgs = app._mqtt_discovery_messages("homeassistant")
+        topics = [t for t, _, _ in msgs]
+        sid = app._mqtt_slug(cid)
+        btopic = "homeassistant/binary_sensor/homelab_uptime_%s_up/config" % sid
+        ltopic = "homeassistant/sensor/homelab_uptime_%s_latency/config" % sid
+        self.assertIn(btopic, topics)
+        self.assertIn(ltopic, topics)
+        # topic token is ascii/safe — no spaces/quotes/backslashes
+        for t in (btopic, ltopic):
+            self.assertNotRegex(t, r'[ "\\]')
+        bcfg = json.loads(next(p for t, p, _ in msgs if t == btopic))
+        self.assertEqual(bcfg["device_class"], "connectivity")
+        self.assertEqual(bcfg["payload_on"], "up")
+        self.assertEqual(bcfg["payload_off"], "down")
+        self.assertEqual(bcfg["device"]["identifiers"], ["homelab_monitor"])
+        # friendly name carries the (raw) label; unique_id keys off the stable id
+        self.assertIn('Edge "router"', bcfg["name"])
+        self.assertEqual(bcfg["unique_id"], "homelab_uptime_%s_up" % sid)
+        lcfg = json.loads(next(p for t, p, _ in msgs if t == ltopic))
+        self.assertEqual(lcfg["unit_of_measurement"], "ms")
+        self.assertEqual(lcfg["device"]["identifiers"], ["homelab_monitor"])
+
+    def test_state_includes_per_check_keys(self):
+        cid, _ = app.create_uptime_check({"label": "api", "type": "tcp", "target": "h:1"})
+        self._result(cid, up=True, latency=7)
+        st = app._mqtt_collect_state()
+        sid = app._mqtt_slug(cid)
+        self.assertEqual(st["uptime_%s_up" % sid], "up")
+        self.assertEqual(st["uptime_%s_latency" % sid], 7)
+
+    def test_unique_id_keys_off_stable_id_not_label(self):
+        cid, _ = app.create_uptime_check({"label": "first", "type": "tcp", "target": "h:1"})
+        sid = app._mqtt_slug(cid)
+        btopic = "homeassistant/binary_sensor/homelab_uptime_%s_up/config" % sid
+        msgs1 = app._mqtt_discovery_messages("homeassistant")
+        uid1 = json.loads(next(p for t, p, _ in msgs1 if t == btopic))["unique_id"]
+        # rename the check; the unique_id/topic must NOT change (keyed off id)
+        app.update_uptime_check(cid, {"label": "renamed", "type": "tcp", "target": "h:1"})
+        msgs2 = app._mqtt_discovery_messages("homeassistant")
+        cfg2 = json.loads(next(p for t, p, _ in msgs2 if t == btopic))
+        self.assertEqual(cfg2["unique_id"], uid1)
+        self.assertIn("renamed", cfg2["name"])   # only the friendly name changed
+
+    def test_no_cred_in_discovery_or_state(self):
+        cid, _ = app.create_uptime_check(
+            {"label": "svc", "type": "http", "target": "https://u:hunter2@svc.lan/h"})
+        self._result(cid, up=True, latency=4)
+        blob = json.dumps(app._mqtt_discovery_messages("homeassistant")) \
+            + json.dumps(app._mqtt_collect_state())
+        self.assertNotIn("hunter2", blob)
+
+    def test_disabled_publishes_nothing_uptime(self):
+        # MQTT disabled ⇒ cfg None ⇒ worker inert, regardless of checks existing.
+        app.create_uptime_check({"label": "x", "type": "tcp", "target": "h:1"})
+        self.assertIsNone(app._mqtt_cfg_from_settings(
+            {"mqtt_enabled": "0", "mqtt_host": "broker.lan"}))
+
+
+class TestMqttSlug(unittest.TestCase):
+    def test_slug_is_ascii_safe(self):
+        self.assertEqual(app._mqtt_slug("Hello World!"), "hello_world")
+        self.assertEqual(app._mqtt_slug('a"b\\c'), "a_b_c")
+        self.assertEqual(app._mqtt_slug("café"), "caf")   # trailing _ stripped
+        self.assertEqual(app._mqtt_slug(""), "x")
+        self.assertEqual(app._mqtt_slug("___"), "x")
+        # hex db ids pass through unchanged
+        self.assertEqual(app._mqtt_slug("deadbeef1234"), "deadbeef1234")
 
 
 class TestMqttTestEndpoint(unittest.TestCase):

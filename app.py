@@ -9243,6 +9243,46 @@ def _extra_metrics_text():
     except Exception:
         pass
 
+    # External uptime checks → Grafana. Only emitted when ≥1 check exists (zero
+    # checks ⇒ none of these families appear at all). We read uptime_overview()
+    # OUTSIDE any held lock (it takes LOCK briefly itself, like every exporter
+    # here). The check LABEL is used as the series label — escaped via
+    # _prom_label_val so a quote/backslash/newline can't break exposition — and
+    # we NEVER put the raw target (which may carry user:pass creds) into a label.
+    try:
+        checks = (uptime_overview().get("checks") or [])
+        if checks:
+            up_s, lat_s, ratio_s = [], [], []
+            down_n = 0
+            for c in checks:
+                lbl = {"check": c.get("label") or c.get("id") or "?"}
+                state = c.get("state")
+                # Emit up=1/0 ONLY for known states; a flapping 'unknown'
+                # (no result yet) is skipped so it never reads as down.
+                if state == "up":
+                    up_s.append((lbl, 1))
+                elif state == "down":
+                    up_s.append((lbl, 0))
+                    down_n += 1
+                lat = c.get("last_latency_ms")
+                if lat is not None:
+                    lat_s.append((lbl, lat))
+                up_pct = c.get("uptime")
+                if up_pct is not None:
+                    ratio_s.append((lbl, up_pct / 100.0))
+            _prom_metric(out, "homelab_uptime_up", "gauge",
+                         "Uptime check current state (1=up, 0=down; unknown omitted)", up_s)
+            _prom_metric(out, "homelab_uptime_latency_ms", "gauge",
+                         "Uptime check last measured latency (ms)", lat_s)
+            _prom_metric(out, "homelab_uptime_uptime_ratio", "gauge",
+                         "Uptime check uptime fraction over the window (0..1)", ratio_s)
+            _prom_metric(out, "homelab_uptime_checks_total", "gauge",
+                         "Configured uptime checks (count)", [(None, len(checks))])
+            _prom_metric(out, "homelab_uptime_checks_down", "gauge",
+                         "Uptime checks currently down (count)", [(None, down_n)])
+    except Exception:
+        pass
+
     return "\n".join(out) + ("\n" if out else "")
 
 # ── Home Assistant / MQTT auto-discovery publisher (E4) ──────────────────────
@@ -9337,6 +9377,18 @@ def _mqtt_collect_state():
         up = sum(1 for c in checks if (c.get("state") or c.get("status")) == "up")
         state["uptime_total"] = len(checks)
         state["uptime_up"]    = up
+        # Per-check state, keyed by the SAME stable id used in discovery. Only the
+        # label/slug ever rides the payload — never the raw target (creds-safe).
+        for c in checks:
+            cid = c.get("id") or _mqtt_slug(c.get("label"))
+            sid = _mqtt_slug(cid)
+            cstate = c.get("state")
+            # binary_sensor reads payload_on='up'/payload_off='down'; an unknown
+            # (no result yet) maps to 'down' for HA's connectivity class.
+            state["uptime_%s_up" % sid] = "up" if cstate == "up" else "down"
+            lat = c.get("last_latency_ms")
+            if lat is not None:
+                state["uptime_%s_latency" % sid] = lat
     except Exception:
         pass
     if attrs:
@@ -9406,6 +9458,40 @@ def _mqtt_device_block():
             "manufacturer": "HomeLab Monitor", "model": "GPU/host monitor",
             "sw_version": VERSION}
 
+def _mqtt_slug(s):
+    """Slugify text to a safe MQTT topic / HA object_id token: ascii lowercase,
+    alnum + underscore only, collapsed. Used only as a fallback friendly token —
+    the STABLE id for unique_id/topic is the check's DB id, never the mutable
+    label. Empty/garbage input → 'x' so a topic is always well-formed."""
+    out = []
+    for ch in (s or ""):
+        if ch.isalnum() and ord(ch) < 128:
+            out.append(ch.lower())
+        else:
+            out.append("_")
+    slug = "".join(out).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug or "x"
+
+def _uptime_state_keys():
+    """The flat state-topic JSON keys for the current uptime checks, as
+    (binary_key, latency_key, friendly_label, stable_id) tuples — derived from
+    the same uptime_overview() the discovery + state share so they stay in sync.
+    Read OUTSIDE any held lock. Returns [] on any error or when no checks."""
+    try:
+        checks = uptime_overview().get("checks") or []
+    except Exception:
+        return []
+    keys = []
+    for c in checks:
+        cid = c.get("id") or _mqtt_slug(c.get("label"))
+        # DB id is hex (uuid4().hex) — already a safe token; slug-guard anyway.
+        sid = _mqtt_slug(cid)
+        keys.append(("uptime_%s_up" % sid, "uptime_%s_latency" % sid,
+                     c.get("label") or sid, sid))
+    return keys
+
 def _mqtt_discovery_messages(prefix):
     """Return a list of (topic, payload_json, retain) for the retained HA
     discovery config topics — one per sensor, plus the shared device block."""
@@ -9433,6 +9519,41 @@ def _mqtt_discovery_messages(prefix):
             cfg["icon"] = icon
         topic = "%s/sensor/homelab_%s/config" % (prefix, key)
         msgs.append((topic, json.dumps(cfg, separators=(",", ":")), True))
+
+    # Per uptime check: a connectivity binary_sensor (ON=up/OFF=down) + a latency
+    # sensor (ms), grouped under the SAME device. unique_id/topic key off the
+    # STABLE check id (not the mutable label); the label is only the friendly
+    # `name`. Only present when ≥1 check exists (zero checks ⇒ no extra topics).
+    for bkey, lkey, label, sid in _uptime_state_keys():
+        bin_cfg = {
+            "name": "Uptime: " + label,
+            "unique_id": "homelab_" + bkey,
+            "object_id": "homelab_" + bkey,
+            "state_topic": state_topic,
+            "value_template": "{{ value_json.%s }}" % bkey,
+            "device_class": "connectivity",
+            "payload_on": "up",
+            "payload_off": "down",
+            "availability_topic": "homelab/monitor/availability",
+            "icon": "mdi:check-network",
+            "device": dev,
+        }
+        msgs.append(("%s/binary_sensor/homelab_%s/config" % (prefix, bkey),
+                     json.dumps(bin_cfg, separators=(",", ":")), True))
+        lat_cfg = {
+            "name": "Uptime latency: " + label,
+            "unique_id": "homelab_" + lkey,
+            "object_id": "homelab_" + lkey,
+            "state_topic": state_topic,
+            "value_template": "{{ value_json.%s }}" % lkey,
+            "unit_of_measurement": "ms",
+            "device_class": "duration",
+            "icon": "mdi:timer-outline",
+            "availability_topic": "homelab/monitor/availability",
+            "device": dev,
+        }
+        msgs.append(("%s/sensor/homelab_%s/config" % (prefix, lkey),
+                     json.dumps(lat_cfg, separators=(",", ":")), True))
     return msgs
 
 # Live status surfaced in the UI (no secrets). Updated only by the publisher
