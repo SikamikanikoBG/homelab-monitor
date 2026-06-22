@@ -283,5 +283,240 @@ class TestAlertHistoryApiAndAck(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+def _clean_maint():
+    with app.LOCK:
+        app.DB.execute("DELETE FROM maintenance_windows")
+        app.DB.commit()
+
+
+class TestMaintenanceCrudAndValidation(unittest.TestCase):
+    def setUp(self):
+        _clean_maint()
+
+    def tearDown(self):
+        _clean_maint()
+
+    def test_recurring_create_and_list(self):
+        mid, err = app.create_maintenance({"label": "nightly", "recurring": True,
+                                           "daily_start": "02:00", "daily_end": "02:30"})
+        self.assertIsNone(err)
+        ws = app.list_maintenance()
+        self.assertEqual(len(ws), 1)
+        self.assertTrue(ws[0]["recurring"])
+        self.assertEqual(ws[0]["daily_start"], "02:00")
+        self.assertEqual(ws[0]["daily_end"], "02:30")
+
+    def test_recurring_overnight_wrap_allowed(self):
+        mid, err = app.create_maintenance({"label": "ovn", "recurring": True,
+                                           "daily_start": "23:00", "daily_end": "01:00"})
+        self.assertIsNone(err)
+        self.assertIsNotNone(mid)
+
+    def test_oneoff_create(self):
+        now = int(time.time())
+        mid, err = app.create_maintenance({"label": "planned", "recurring": False,
+                                           "start_ts": now, "end_ts": now + 3600})
+        self.assertIsNone(err)
+        self.assertIsNotNone(mid)
+
+    def test_missing_label_rejected(self):
+        _, err = app.create_maintenance({"recurring": True, "daily_start": "02:00", "daily_end": "03:00"})
+        self.assertIn("label", err)
+
+    def test_bad_hhmm_rejected(self):
+        for bad in ("2400", "25:00", "12:60", "ab:cd", "9:5", "", None):
+            _, err = app.create_maintenance({"label": "x", "recurring": True,
+                                             "daily_start": bad, "daily_end": "03:00"})
+            self.assertIsNotNone(err, f"expected reject for {bad!r}")
+
+    def test_recurring_equal_times_rejected(self):
+        _, err = app.create_maintenance({"label": "x", "recurring": True,
+                                         "daily_start": "02:00", "daily_end": "02:00"})
+        self.assertIn("same", err.lower())
+
+    def test_oneoff_bad_range_rejected(self):
+        now = int(time.time())
+        _, err = app.create_maintenance({"label": "x", "recurring": False,
+                                         "start_ts": now, "end_ts": now})
+        self.assertIn("after", err)
+
+    def test_oneoff_non_numeric_rejected(self):
+        _, err = app.create_maintenance({"label": "x", "recurring": False,
+                                         "start_ts": "soon", "end_ts": "later"})
+        self.assertIsNotNone(err)
+
+    def test_toggle_and_delete(self):
+        mid, _ = app.create_maintenance({"label": "x", "recurring": True,
+                                         "daily_start": "02:00", "daily_end": "03:00"})
+        ok, err = app.update_maintenance(mid, {"enabled": False})
+        self.assertTrue(ok)
+        self.assertFalse(app.list_maintenance()[0]["enabled"])
+        self.assertTrue(app.delete_maintenance(mid))
+        self.assertEqual(app.list_maintenance(), [])
+
+    def test_update_unknown_404(self):
+        ok, err = app.update_maintenance("nope", {"enabled": True})
+        self.assertFalse(ok)
+        self.assertEqual(err, "not found")
+
+    def test_api_roundtrip_always_200_clean_400(self):
+        c = app.app.test_client()
+        r = c.post("/api/alerts/maintenance", json={"label": "n", "recurring": True,
+                                                    "daily_start": "02:00", "daily_end": "02:30"})
+        self.assertEqual(r.status_code, 201)
+        mid = r.get_json()["id"]
+        j = c.get("/api/alerts/maintenance").get_json()
+        self.assertEqual(len(j["windows"]), 1)
+        self.assertIn("active", j)
+        # bad create -> clean 400
+        r = c.post("/api/alerts/maintenance", json={"label": "bad", "recurring": True,
+                                                    "daily_start": "99:99", "daily_end": "02:30"})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.get_json()["ok"])
+        self.assertEqual(c.delete(f"/api/alerts/maintenance/{mid}").status_code, 200)
+        self.assertEqual(c.delete(f"/api/alerts/maintenance/{mid}").status_code, 404)
+
+
+class TestInMaintenance(unittest.TestCase):
+    def setUp(self):
+        _clean_maint()
+
+    def tearDown(self):
+        _clean_maint()
+
+    def _at(self, hh, mm):
+        """An epoch whose localtime is hh:mm today (uses the test machine's TZ)."""
+        lt = list(time.localtime())
+        lt[3], lt[4], lt[5] = hh, mm, 0
+        lt[8] = -1
+        return int(time.mktime(time.struct_time(tuple(lt))))
+
+    def test_no_windows_inactive(self):
+        active, until = app._in_maintenance(int(time.time()))
+        self.assertFalse(active)
+        self.assertIsNone(until)
+
+    def test_recurring_inside_window(self):
+        app.create_maintenance({"label": "n", "recurring": True,
+                                "daily_start": "02:00", "daily_end": "03:00"})
+        active, until = app._in_maintenance(self._at(2, 30))
+        self.assertTrue(active)
+        self.assertIsNotNone(until)
+
+    def test_recurring_outside_window(self):
+        app.create_maintenance({"label": "n", "recurring": True,
+                                "daily_start": "02:00", "daily_end": "03:00"})
+        active, _ = app._in_maintenance(self._at(5, 0))
+        self.assertFalse(active)
+
+    def test_recurring_overnight_wrap_true_both_sides(self):
+        app.create_maintenance({"label": "ovn", "recurring": True,
+                                "daily_start": "23:00", "daily_end": "01:00"})
+        self.assertTrue(app._in_maintenance(self._at(23, 30))[0])  # before midnight
+        self.assertTrue(app._in_maintenance(self._at(0, 30))[0])   # after midnight
+        self.assertFalse(app._in_maintenance(self._at(12, 0))[0])  # midday
+
+    def test_disabled_window_inactive(self):
+        mid, _ = app.create_maintenance({"label": "n", "recurring": True,
+                                         "daily_start": "00:00", "daily_end": "23:59"})
+        app.update_maintenance(mid, {"enabled": False})
+        self.assertFalse(app._in_maintenance(int(time.time()))[0])
+
+    def test_oneoff_active_and_outside(self):
+        now = int(time.time())
+        app.create_maintenance({"label": "p", "recurring": False,
+                                "start_ts": now - 60, "end_ts": now + 60})
+        self.assertTrue(app._in_maintenance(now)[0])
+        self.assertFalse(app._in_maintenance(now + 600)[0])
+        self.assertFalse(app._in_maintenance(now - 600)[0])
+
+
+class TestMaintenanceMutesAlerting(unittest.TestCase):
+    """Suppression + arm/disarm preservation. Channel send + maintenance state mocked."""
+    def setUp(self):
+        _clean_db()
+        _clean_maint()
+        app.save_settings({"discord_webhook_url": "", "telegram_token": "",
+                           "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
+
+    def tearDown(self):
+        app.save_settings({"ntfy_topic": ""})
+        _clean_db()
+        _clean_maint()
+
+    def _state(self, rid):
+        with app.LOCK:
+            return app.DB.execute("SELECT last_state FROM alert_rules WHERE id=?", (rid,)).fetchone()[0]
+
+    def test_no_window_unchanged(self):
+        app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_ANOMALY), 1)
+        pt.assert_called()
+
+    def test_fire_suppressed_during_window(self):
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                                  "enabled": True, "cooldown_min": 60})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            n = app.evaluate_rules(SIG_ANOMALY)
+        self.assertEqual(n, 0)
+        pt.assert_not_called()
+        # NOT armed — last_state untouched so no spurious recovery is owed.
+        self.assertIsNone(self._state(rid))
+        hist = app.list_alert_history()
+        self.assertEqual(hist[0]["status"], "suppressed")
+
+    def test_alarm_starts_and_ends_inside_window_never_notifies(self):
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                                  "enabled": True, "cooldown_min": 0})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(SIG_ANOMALY)   # active inside window -> suppressed
+            app.evaluate_rules(SIG_QUIET)     # cleared inside window -> no recovery
+        pt.assert_not_called()
+        self.assertIsNone(self._state(rid))
+        # No 'sent' or 'recovered' rows — only the suppressed flag.
+        statuses = {h["status"] for h in app.list_alert_history()}
+        self.assertNotIn("sent", statuses)
+        self.assertNotIn("recovered", statuses)
+
+    def test_condition_still_active_when_window_ends_fires_after(self):
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                                  "enabled": True, "cooldown_min": 0})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_ANOMALY), 0)  # suppressed during window
+        pt.assert_not_called()
+        with patch("app._in_maintenance", return_value=(False, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_ANOMALY), 1)  # window ended -> fires
+        pt.assert_called()
+        self.assertEqual(self._state(rid), "active")
+
+    def test_recovery_deferred_until_window_ends_then_sends_once(self):
+        rid, _ = app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                                  "enabled": True, "cooldown_min": 0})
+        # Fire BEFORE maintenance (armed for recovery).
+        with patch("app._in_maintenance", return_value=(False, None)), \
+             patch("app._post_text", return_value=(200, b"")):
+            app.evaluate_rules(SIG_ANOMALY)
+        self.assertEqual(self._state(rid), "active")
+        # Condition clears WHILE in maintenance: no recovery sent, stays armed.
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(SIG_QUIET)
+        pt.assert_not_called()
+        self.assertEqual(self._state(rid), "active")
+        # Window ends, condition still clear: ONE recovery now.
+        with patch("app._in_maintenance", return_value=(False, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(SIG_QUIET)
+        self.assertEqual(pt.call_count, 1)
+        self.assertEqual(self._state(rid), "clear")
+        self.assertTrue(any(h["status"] == "recovered" for h in app.list_alert_history()))
+
+
 if __name__ == "__main__":
     unittest.main()

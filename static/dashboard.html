@@ -1626,6 +1626,45 @@ h2 .hic{ opacity:.9 }
         <button class="rb" id="r_test_btn" data-i18n="rules.test_btn">Send test</button>
       </div>
 
+      <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="maint.title">🔕 Maintenance windows</div>
+      <p class="cap" style="margin:2px 0 10px" data-i18n="maint.intro">
+        Mute outbound alert notifications during a scheduled window — a nightly docker-pull restart cycle, or planned maintenance.
+        Alerting is paused (not changed): an alarm that begins and ends inside a window never notifies, but anything still active when the window ends fires normally afterward. This never touches the host.</p>
+      <div id="maint_banner" class="ins warning" style="display:none" role="status" aria-live="polite"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;max-width:880px;align-items:end">
+        <div style="grid-column:1/-1">
+          <div class="flabel" data-i18n="maint.f_label">Label</div>
+          <input type="text" id="m_label" class="field" placeholder="e.g. Nightly restart" maxlength="120">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="maint.f_kind">Type</div>
+          <select id="m_kind" class="field">
+            <option value="recurring" data-i18n="maint.k_recurring">Recurring daily</option>
+            <option value="oneoff" data-i18n="maint.k_oneoff">One-off</option>
+          </select>
+        </div>
+        <div id="m_daily_start_wrap">
+          <div class="flabel" data-i18n="maint.f_daily_start">Start (HH:MM, local)</div>
+          <input type="time" id="m_daily_start" class="field" value="02:00">
+        </div>
+        <div id="m_daily_end_wrap">
+          <div class="flabel" data-i18n="maint.f_daily_end">End (HH:MM, local)</div>
+          <input type="time" id="m_daily_end" class="field" value="02:30">
+        </div>
+        <div id="m_start_wrap" hidden>
+          <div class="flabel" data-i18n="maint.f_start">From</div>
+          <input type="datetime-local" id="m_start" class="field">
+        </div>
+        <div id="m_end_wrap" hidden>
+          <div class="flabel" data-i18n="maint.f_end">Until</div>
+          <input type="datetime-local" id="m_end" class="field">
+        </div>
+        <div>
+          <button class="rb on" id="m_add" data-i18n="maint.add_btn">Add window</button>
+        </div>
+      </div>
+      <div id="maint_list" style="margin-top:12px"></div>
+
       <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.history_title">Alert history</div>
       <div id="rules_history"></div>
     </div><!-- /set-pane-rules -->
@@ -3866,7 +3905,69 @@ async function loadRules(){
       await fetch('/api/alerts/rules/'+el.dataset.rdel,{method:'DELETE'}); loadRules();
     });
   }
+  loadMaintenance();
   loadAlertHistory();
+}
+
+// ── Maintenance / alert-silence windows ──────────────────────────────────────
+function maintKindVisibility(){
+  const k=document.getElementById('m_kind').value;
+  const rec = k==='recurring';
+  document.getElementById('m_daily_start_wrap').hidden = !rec;
+  document.getElementById('m_daily_end_wrap').hidden   = !rec;
+  document.getElementById('m_start_wrap').hidden = rec;
+  document.getElementById('m_end_wrap').hidden   = rec;
+}
+function maintSummary(w){
+  if(w.recurring) return I18N.t('maint.sum_daily','Daily ')+esc(w.daily_start||'')+'–'+esc(w.daily_end||'')
+    +' '+I18N.t('maint.sum_local','(local)');
+  const f=w.start_ts?new Date(w.start_ts*1000).toLocaleString():'?';
+  const t=w.end_ts?new Date(w.end_ts*1000).toLocaleString():'?';
+  return I18N.t('maint.sum_oneoff','One-off ')+esc(f)+' → '+esc(t);
+}
+async function loadMaintenance(){
+  let j; try{ j=await(await fetch('/api/alerts/maintenance')).json(); }catch(e){ return; }
+  const banner=document.getElementById('maint_banner');
+  if(j.active){
+    const until = j.until ? new Date(j.until*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    banner.textContent = I18N.tf('maint.active_until','🔕 Maintenance active — alerts muted until {until}', {until});
+    banner.style.display='';
+  } else { banner.style.display='none'; }
+  const box=document.getElementById('maint_list');
+  if(!(j.windows||[]).length){ box.innerHTML='<p class="cap">'+I18N.t('maint.none','No maintenance windows — alerts are never muted.')+'</p>'; return; }
+  box.innerHTML = j.windows.map(w=>
+    `<div class="ins ${w.enabled?'info':''}" style="display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap">
+      <div><b>${esc(w.label)}</b> <span class="cap">· ${maintSummary(w)}</span></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label class="cap" style="display:flex;align-items:center;gap:5px">
+          <input type="checkbox" data-mtoggle="${w.id}" ${w.enabled?'checked':''}> ${I18N.t('rules.enabled','enabled')}</label>
+        <button class="rb" data-mdel="${w.id}">${I18N.t('btn.delete','Delete')}</button>
+      </div></div>`).join('');
+  box.querySelectorAll('[data-mtoggle]').forEach(el=>el.onchange=async()=>{
+    await fetch('/api/alerts/maintenance/'+el.dataset.mtoggle,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled:el.checked})}); loadMaintenance();
+  });
+  box.querySelectorAll('[data-mdel]').forEach(el=>el.onclick=async()=>{
+    await fetch('/api/alerts/maintenance/'+el.dataset.mdel,{method:'DELETE'}); loadMaintenance();
+  });
+}
+async function addMaintenance(){
+  const k=document.getElementById('m_kind').value;
+  const body={ label: document.getElementById('m_label').value.trim(), enabled:true };
+  if(k==='recurring'){
+    body.recurring=true;
+    body.daily_start=document.getElementById('m_daily_start').value;
+    body.daily_end=document.getElementById('m_daily_end').value;
+  } else {
+    body.recurring=false;
+    const sv=document.getElementById('m_start').value, ev=document.getElementById('m_end').value;
+    body.start_ts = sv ? Math.floor(new Date(sv).getTime()/1000) : null;
+    body.end_ts   = ev ? Math.floor(new Date(ev).getTime()/1000) : null;
+  }
+  let j; try{ j=await(await fetch('/api/alerts/maintenance',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not add window: '+e); return; }
+  if(j.ok){ document.getElementById('m_label').value=''; showAlertStatus('ok',I18N.t('maint.added','Maintenance window added.')); loadMaintenance(); }
+  else showAlertStatus('critical', j.error||'Could not add window.');
 }
 async function addRule(){
   const t=document.getElementById('r_type').value;
@@ -3920,6 +4021,8 @@ async function loadAlertHistory(){
 document.getElementById('r_type').onchange = ruleParamsVisibility;
 document.getElementById('r_add').onclick = addRule;
 document.getElementById('r_test_btn').onclick = testRuleChannel;
+document.getElementById('m_kind').onchange = maintKindVisibility;
+document.getElementById('m_add').onclick = addMaintenance;
 
 // ── Backup (settings) tab ─────────────────────────────────────────────────────
 function showBackupStatus(level,text){

@@ -168,6 +168,11 @@ CREATE TABLE IF NOT EXISTS alert_history(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, rule_id TEXT, rule_name TEXT,
   level TEXT, channel TEXT, status TEXT, title TEXT, detail TEXT, acked INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_alerthist_ts ON alert_history(ts);
+CREATE TABLE IF NOT EXISTS maintenance_windows(
+  id TEXT PRIMARY KEY, label TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  recurring INTEGER NOT NULL DEFAULT 0,
+  start_ts INTEGER, end_ts INTEGER, daily_start TEXT, daily_end TEXT,
+  created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS incidents(
   id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'open', severity TEXT NOT NULL DEFAULT 'warning',
   opened_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cleared_at INTEGER,
@@ -4167,6 +4172,171 @@ def ack_alert(hid):
         DB.commit()
         return cur.rowcount > 0
 
+# ── Maintenance / alert-silence windows ───────────────────────────────────────
+# A scheduled window during which OUTBOUND alert notifications are MUTED. The
+# headline use case is a nightly docker-pull restart cycle (recurring daily
+# HH:MM–HH:MM, overnight-wrap allowed) or one planned maintenance (one-off
+# start_ts/end_ts). This ONLY suppresses sends — it never touches the host or
+# what's monitored, and it's wholly inert with zero windows configured.
+#
+# CRITICAL contract for the recovery edge: while a window is active the engine is
+# PAUSED — evaluate_rules does NOT dispatch and does NOT mutate the arm/disarm
+# last_state. So an alarm that begins+ends entirely inside a window never sends a
+# fire (and thus never owes a recovery), and a condition still active when the
+# window ENDS fires normally afterward. A recovery is never sent for a fire that
+# was suppressed.
+
+def _maint_row_to_dict(r):
+    cols = ("id", "label", "enabled", "recurring", "start_ts", "end_ts",
+            "daily_start", "daily_end", "created_at")
+    d = dict(zip(cols, r))
+    d["enabled"] = bool(d["enabled"])
+    d["recurring"] = bool(d["recurring"])
+    return d
+
+def list_maintenance():
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,label,enabled,recurring,start_ts,end_ts,daily_start,daily_end,created_at "
+            "FROM maintenance_windows ORDER BY created_at").fetchall()
+    return [_maint_row_to_dict(r) for r in rows]
+
+def _parse_hhmm(v):
+    """Return minutes-since-midnight for a 'HH:MM' string, or None if invalid."""
+    if not isinstance(v, str):
+        return None
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", v)
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if h > 23 or mi > 59:
+        return None
+    return h * 60 + mi
+
+def _validate_maintenance(body):
+    """Return (clean_dict, None) or (None, error_string)."""
+    label = (body.get("label") or "").strip()
+    if not label:
+        return None, "A label is required."
+    label = label[:120]
+    recurring = bool(body.get("recurring"))
+    enabled = 1 if body.get("enabled", True) else 0
+    if recurring:
+        ds, de = body.get("daily_start"), body.get("daily_end")
+        sm, em = _parse_hhmm(ds), _parse_hhmm(de)
+        if sm is None or em is None:
+            return None, "Recurring windows need daily_start and daily_end as HH:MM."
+        if sm == em:
+            return None, "Daily start and end cannot be the same time."
+        # Overnight wrap (e.g. 23:00–01:00) is allowed; equal times rejected above.
+        return {"label": label, "enabled": enabled, "recurring": 1,
+                "start_ts": None, "end_ts": None,
+                "daily_start": f"{sm // 60:02d}:{sm % 60:02d}",
+                "daily_end": f"{em // 60:02d}:{em % 60:02d}"}, None
+    # One-off
+    try:
+        start_ts = int(body.get("start_ts"))
+        end_ts = int(body.get("end_ts"))
+    except (TypeError, ValueError):
+        return None, "One-off windows need numeric start_ts and end_ts (epoch seconds)."
+    if end_ts <= start_ts:
+        return None, "end_ts must be after start_ts."
+    return {"label": label, "enabled": enabled, "recurring": 0,
+            "start_ts": start_ts, "end_ts": end_ts,
+            "daily_start": None, "daily_end": None}, None
+
+def create_maintenance(body):
+    clean, err = _validate_maintenance(body)
+    if err:
+        return None, err
+    mid = uuid.uuid4().hex
+    with LOCK:
+        DB.execute(
+            "INSERT INTO maintenance_windows"
+            "(id,label,enabled,recurring,start_ts,end_ts,daily_start,daily_end,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (mid, clean["label"], clean["enabled"], clean["recurring"], clean["start_ts"],
+             clean["end_ts"], clean["daily_start"], clean["daily_end"], int(time.time())))
+        DB.commit()
+    return mid, None
+
+def update_maintenance(mid, body):
+    with LOCK:
+        exists = DB.execute("SELECT 1 FROM maintenance_windows WHERE id=?", (mid,)).fetchone()
+    if not exists:
+        return False, "not found"
+    if not body:
+        return False, "empty update"
+    # Quick enable/disable toggle without full revalidation.
+    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+        with LOCK:
+            DB.execute("UPDATE maintenance_windows SET enabled=? WHERE id=?",
+                       (1 if body.get("enabled") else 0, mid))
+            DB.commit()
+        return True, None
+    clean, err = _validate_maintenance(body)
+    if err:
+        return False, err
+    with LOCK:
+        DB.execute(
+            "UPDATE maintenance_windows SET label=?,enabled=?,recurring=?,start_ts=?,end_ts=?,"
+            "daily_start=?,daily_end=? WHERE id=?",
+            (clean["label"], clean["enabled"], clean["recurring"], clean["start_ts"],
+             clean["end_ts"], clean["daily_start"], clean["daily_end"], mid))
+        DB.commit()
+    return True, None
+
+def delete_maintenance(mid):
+    with LOCK:
+        cur = DB.execute("DELETE FROM maintenance_windows WHERE id=?", (mid,))
+        DB.commit()
+        return cur.rowcount > 0
+
+def _window_active(w, now):
+    """Is this single window active at epoch `now`? Returns (active, ends_at_ts_or_None).
+    For recurring windows the second element is the epoch when the current active
+    span ends (for the banner countdown); None when not active."""
+    if not w["enabled"]:
+        return False, None
+    if w["recurring"]:
+        sm = _parse_hhmm(w["daily_start"])
+        em = _parse_hhmm(w["daily_end"])
+        if sm is None or em is None:
+            return False, None
+        lt = time.localtime(now)
+        cur_min = lt.tm_hour * 60 + lt.tm_min
+        midnight = now - (cur_min * 60 + lt.tm_sec)   # epoch of local 00:00 today
+        if sm < em:
+            active = sm <= cur_min < em
+            ends_at = midnight + em * 60
+        else:
+            # Overnight wrap: active if at/after start OR before end.
+            active = cur_min >= sm or cur_min < em
+            # If we're in the post-midnight tail the span ends today, else tomorrow.
+            ends_at = midnight + em * 60 + (0 if cur_min < em else 86400)
+        return active, (ends_at if active else None)
+    # One-off
+    if w["start_ts"] is None or w["end_ts"] is None:
+        return False, None
+    active = w["start_ts"] <= now <= w["end_ts"]
+    return active, (w["end_ts"] if active else None)
+
+def _in_maintenance(now=None):
+    """True if ANY enabled window is active at `now`. Returns (active, ends_at_ts).
+    ends_at_ts is the latest end among active windows (for the 'muted until' banner),
+    or None when nothing is active."""
+    if now is None:
+        now = int(time.time())
+    latest_end = None
+    active = False
+    for w in list_maintenance():
+        a, ends = _window_active(w, now)
+        if a:
+            active = True
+            if ends is not None and (latest_end is None or ends > latest_end):
+                latest_end = ends
+    return active, latest_end
+
 def _eval_rule(rule, signals):
     """Evaluate one rule against the precomputed signal bundle. Returns
     (fired_bool, title, detail). Pure; no I/O, no recompute."""
@@ -4259,6 +4429,10 @@ def evaluate_rules(signals=None):
     if not _configured_channels(s):
         return 0
     now = int(time.time())
+    # Maintenance / silence windows: while ANY enabled window is active the engine
+    # is PAUSED. We still EVALUATE (so suppressed events can be recorded), but we
+    # neither dispatch nor mutate the arm/disarm last_state — see _in_maintenance.
+    in_maint, _maint_end = _in_maintenance(now)
     if signals is None:
         try:
             ctx = _cost_ctx()
@@ -4291,6 +4465,15 @@ def evaluate_rules(signals=None):
         # regardless of cooldown. (Threshold rules still re-fire after cooldown.)
         already_armed = rule["ctype"] == "incident" and rule.get("last_state") == "active"
         should_fire = active and not snoozed and cooled and not already_armed
+        if should_fire and in_maint:
+            # Engine paused by a maintenance window: do NOT send and do NOT arm
+            # (no last_state/last_fired_at mutation), so an alarm that begins and
+            # ends entirely inside the window never sends a fire — and therefore
+            # never owes a spurious recovery. Record-only, flagged, never sent.
+            full_title = f"{rule['name']}: {title}"
+            record_alert(rule["id"], rule["name"], rule["level"], rule["channel"],
+                         "suppressed", full_title, "suppressed (maintenance)")
+            continue
         if should_fire:
             level = rule["level"]
             full_title = f"{rule['name']}: {title}"
@@ -4306,6 +4489,13 @@ def evaluate_rules(signals=None):
                            (now, "active", rule["id"]))
                 DB.commit()
             fired += 1
+        elif not active and rule.get("last_state") == "active" and in_maint:
+            # Recovery edge reached while PAUSED: leave the rule armed (last_state
+            # stays 'active') and send nothing. The fire it recovers from happened
+            # before maintenance; we defer the recovery until the window ends, when
+            # this branch runs normally (or, if the condition has resolved by then,
+            # one recovery is sent the first pass after the window closes).
+            continue
         elif not active and rule.get("last_state") == "active":
             # Recovery edge: the signal that fired has returned to normal. Send one
             # ✅ "cleared" notice through the same channel, marked as a recovery (not a
@@ -8414,9 +8604,11 @@ def api_alert_rules():
         if err:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "id": rid}), 201
+    m_active, m_end = _in_maintenance()
     return jsonify({"rules": list_rules(), "channels": _configured_channels(get_settings()),
                     "types": sorted(_RULE_TYPES),
-                    "series": ["any"] + [k for k, *_ in _ANOMALY_SERIES]})
+                    "series": ["any"] + [k for k, *_ in _ANOMALY_SERIES],
+                    "maintenance_active": m_active, "maintenance_until": m_end})
 
 @app.route("/api/alerts/rules/<rid>", methods=["PATCH", "DELETE"])
 def api_alert_rule_one(rid):
@@ -8425,6 +8617,29 @@ def api_alert_rule_one(rid):
         return jsonify({"ok": ok}), (200 if ok else 404)
     body = request.get_json(silent=True) or {}
     ok, err = update_rule(rid, body)
+    if not ok:
+        code = 404 if err == "not found" else 400
+        return jsonify({"ok": False, "error": err}), code
+    return jsonify({"ok": True})
+
+@app.route("/api/alerts/maintenance", methods=["GET", "POST"])
+def api_maintenance():
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        mid, err = create_maintenance(body)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "id": mid}), 201
+    active, until = _in_maintenance()
+    return jsonify({"windows": list_maintenance(), "active": active, "until": until})
+
+@app.route("/api/alerts/maintenance/<mid>", methods=["PATCH", "DELETE"])
+def api_maintenance_one(mid):
+    if request.method == "DELETE":
+        ok = delete_maintenance(mid)
+        return jsonify({"ok": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    ok, err = update_maintenance(mid, body)
     if not ok:
         code = 404 if err == "not found" else 400
         return jsonify({"ok": False, "error": err}), code
