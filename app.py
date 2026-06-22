@@ -5371,35 +5371,84 @@ def build_mcp_status():
 def api_mcp_status():
     return jsonify(build_mcp_status())
 
+LAB_NAME = os.environ.get("LAB_NAME", "My HomeLab")
+LAB_EMOJI = os.environ.get("LAB_EMOJI", "🛰️")
+
+
 @app.route("/api/health")
 def api_health():
     """Current state of the status monitors (Docker + systemd) plus a light GPU/host
     snapshot. Cheap and DB-free, so the dashboard can poll it often."""
-    gpu_avail = LATEST.get("gpu_avail")
-    now = {"gpu": {"util": LATEST["util"], "mem_used": LATEST["mem_used"],
-                   "mem_total": (LATEST["mem_total"] or 24576) if gpu_avail else 0,
-                   "power": LATEST["power"], "temp": LATEST["temp"],
-                   "available": bool(gpu_avail),
-                   "gpus": LATEST.get("gpus") or [],    # per-card detail (issue #95)
-                   "extra": LATEST.get("gpu_extra") or {}},  # mem-bw/clocks/throttle (telemetry)
-           "host": enrich_os_upgrade(LATEST["host"])}
-    docker  = HEALTH["docker"]  or {"available": False, "reason": "warming up…",
-                                    "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
-    systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
-                                    "services": [], "summary": {}}
-    update  = dict(HEALTH["update"] or {"available": False, "current": VERSION})
-    # Let the frontend decide whether to show the one-click "Update now" button.
-    # Set here (not baked into the cached collect_update payload) so toggling the
-    # env flag takes effect on restart without waiting for the update cache.
-    update["self_update_enabled"] = ALLOW_SELF_UPDATE
-    return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
-                    "docker": docker, "systemd": systemd, "update": update,
-                    "processes": HEALTH["processes"],
-                    "os_updates": os_updates_summary(),
-                    "diagnostics": local_diagnostics(),
-                    "mcp": {"enabled": _mcp_enabled(), "port": _mcp_port()},
-                    "overview": build_overview(now, docker, systemd)})
 
+    gpu_avail = LATEST.get("gpu_avail")
+
+    now = {
+        "gpu": {
+            "util": LATEST["util"],
+            "mem_used": LATEST["mem_used"],
+            "mem_total": (LATEST["mem_total"] or 24576) if gpu_avail else 0,
+            "power": LATEST["power"],
+            "temp": LATEST["temp"],
+            "available": bool(gpu_avail),
+            "gpus": LATEST.get("gpus") or [],
+            "extra": LATEST.get("gpu_extra") or {},
+        },
+        "host": enrich_os_upgrade(LATEST["host"]),
+    }
+
+    docker = HEALTH["docker"] or {
+        "available": False,
+        "reason": "warming up…",
+        "containers": [],
+        "summary": {
+            "total": 0,
+            "running": 0,
+            "problems": 0,
+        },
+    }
+
+    systemd = HEALTH["systemd"] or {
+        "available": False,
+        "reason": "warming up…",
+        "services": [],
+        "summary": {},
+    }
+
+    update = dict(
+        HEALTH["update"] or {
+            "available": False,
+            "current": VERSION,
+        }
+    )
+
+    update["self_update_enabled"] = ALLOW_SELF_UPDATE
+
+    return jsonify({
+        "version": VERSION,
+        "updated": HEALTH["at"],
+        "meta": {
+            "lab_name": LAB_NAME,
+            "lab_emoji": LAB_EMOJI
+        },
+        "now": now,
+        "docker": docker,
+        "systemd": systemd,
+        "update": update,
+        "processes": HEALTH["processes"],
+        "os_updates": os_updates_summary(),
+        "diagnostics": local_diagnostics(),
+        "mcp": {
+            "enabled": _mcp_enabled(),
+            "port": _mcp_port(),
+        },
+        "overview": build_overview(now, docker, systemd),
+    })
+
+
+@app.route("/public")
+def public_status():
+    """Serves the read-only dashboard for public sharing."""
+    return app.send_static_file("public.html")
 @app.route("/metrics")
 def metrics():
     """Prometheus text-format scrape endpoint.
