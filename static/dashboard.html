@@ -191,6 +191,42 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hero-kpi .l{color:var(--mut);font-size:11.5px;margin-top:3px;text-transform:uppercase;letter-spacing:.03em}
 .hero-kpi .s{color:var(--mut);font-size:11.5px;margin-top:2px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ── Anomaly-aware arc gauges: live GPU dials whose ring colour is driven by the
+   z-score anomaly state (normal=ok, |z|≥3 amber, |z|≥6 red). Pure inline SVG. */
+.hero-gauges{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;align-items:stretch;
+  padding:16px 18px;border-top:1px solid var(--bd);
+  background:radial-gradient(120% 160% at 50% -20%,var(--gghuebg,transparent),transparent 60%)}
+.hero-gauges[hidden]{display:none}
+.gg{--gh:var(--ok);--ghbg:var(--okbg);position:relative;flex:1 1 150px;max-width:200px;min-width:128px;
+  display:flex;flex-direction:column;align-items:center;gap:6px;padding:6px 4px}
+.gg.warn{--gh:var(--warn);--ghbg:var(--warnbg)}
+.gg.crit{--gh:var(--crit);--ghbg:var(--critbg)}
+.gg.idle{--gh:var(--mut);--ghbg:transparent}
+.gg-svg{display:block;width:128px;height:104px;overflow:visible}
+.gg-track{fill:none;stroke:var(--bd);stroke-width:11;stroke-linecap:round;opacity:.65}
+.gg-arc{fill:none;stroke:var(--gh);stroke-width:11;stroke-linecap:round;
+  transition:stroke-dashoffset .85s cubic-bezier(.22,.61,.36,1),stroke .35s ease;
+  filter:drop-shadow(0 0 0 transparent)}
+.gg.live .gg-arc{animation:gg-glow 1.9s ease-in-out infinite}
+@keyframes gg-glow{0%,100%{filter:drop-shadow(0 0 1px color-mix(in srgb,var(--gh) 55%,transparent))}
+  50%{filter:drop-shadow(0 0 7px color-mix(in srgb,var(--gh) 80%,transparent))}}
+.gg-val{position:absolute;top:30px;left:0;right:0;text-align:center;pointer-events:none}
+.gg-val .n{font-size:27px;font-weight:800;line-height:1;letter-spacing:-.02em;color:var(--tx);
+  font-variant-numeric:tabular-nums}
+.gg-val .n .u{font-size:13px;font-weight:700;color:var(--mut);margin-left:1px}
+.gg-cap{font-size:11.5px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;
+  text-align:center;line-height:1.3}
+.gg-state{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
+  padding:2px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--gh) 45%,var(--bd));
+  color:var(--gh);background:var(--ghbg);white-space:nowrap;max-width:100%}
+.gg.idle .gg-state{color:var(--mut);border-color:var(--bd);background:transparent}
+.gg-state .si{font-size:11px;line-height:1;flex:none}
+.gg-state .st{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gg.live .gg-state .si{animation:hero-blink 1.4s steps(2,start) infinite}
+@media(max-width:560px){.gg{flex-basis:128px}.gg-svg{width:112px;height:92px}.gg-val{top:24px}.gg-val .n{font-size:23px}}
+@media(prefers-reduced-motion:reduce){.gg-arc{transition:none}.gg.live .gg-arc{animation:none;
+  filter:drop-shadow(0 0 4px color-mix(in srgb,var(--gh) 70%,transparent))}
+  .gg.live .gg-state .si{animation:none}}
 /* footer row: incident chip / all-clear + optional teaser */
 .hero-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   padding:12px 18px;border-top:1px solid var(--bd);background:var(--inset)}
@@ -1222,6 +1258,7 @@ h2 .hic{ opacity:.9 }
       </div>
       <span class="chip hero-status-chip" id="hero-chip" role="status"></span>
     </div>
+    <div class="hero-gauges" id="hero-gauges" hidden></div>
     <div class="hero-kpis" id="hero-kpis"></div>
     <div class="hero-foot" id="hero-foot">
       <button type="button" class="hero-priority" id="hero-priority" hidden></button>
@@ -4922,6 +4959,138 @@ function _heroKpi(v, unit, label, sub, tone){
     +`<div class="l">${esc(label)}</div>`
     +(sub?`<div class="s">${esc(sub)}</div>`:'')+`</div>`;
 }
+// ── Anomaly-aware arc gauges ──────────────────────────────────────────────────
+// A 270° SVG arc (stroke-dasharray sweep) per series. The *value* rides the
+// already-polled /api/health gpu snapshot; the *ring colour* rides the cheap
+// /api/forecast z-score anomalies (same data the Anomalies card uses) — so the
+// gauge doubles as a live anomaly indicator the human's static gauge can't match.
+// No new timer, no LLM: render-only on the existing poll. State is conveyed by
+// the centre number + a labelled state pill (icon+text), never colour alone.
+const GG_R=52, GG_CX=64, GG_CY=60, GG_SWEEP=270;            // geometry (deg)
+const GG_LEN=2*Math.PI*GG_R*(GG_SWEEP/360);                 // arc length for dasharray
+// z-score → severity tier for the ring (matches the Anomalies card semantics):
+//   |z| ≥ 6 → crit (red), |z| ≥ 3 → warn (amber), else normal (ok/brand).
+function _ggTier(z){ const a=Math.abs(+z||0); return a>=6?'crit':(a>=3?'warn':'ok'); }
+function _ggAnom(fc, key){
+  const items=((fc&&fc.anomalies&&fc.anomalies.items)||[]);
+  // most-extreme first already (backend sorts by |z| desc); take this series' worst
+  let best=null;
+  for(const it of items){ if(it&&it.key===key){ if(!best||Math.abs(it.z)>Math.abs(best.z)) best=it; } }
+  return best;
+}
+function _ggArcPath(){
+  // describe the 270° track once (start bottom-left, sweep clockwise to bottom-right)
+  const start=135, a0=start*Math.PI/180, a1=(start+GG_SWEEP)*Math.PI/180;
+  const x0=GG_CX+GG_R*Math.cos(a0), y0=GG_CY+GG_R*Math.sin(a0);
+  const x1=GG_CX+GG_R*Math.cos(a1), y1=GG_CY+GG_R*Math.sin(a1);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${GG_R} ${GG_R} 0 1 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+const _GG_PATH=_ggArcPath();
+let _GG_PREV={};   // remember last pct per gauge id so we animate the count-up smoothly
+function _ggReduceMotion(){ try{ return matchMedia('(prefers-reduced-motion:reduce)').matches; }catch(_){ return false; } }
+// Build/refresh one gauge. cfg: {id, key, label, pct(0..100), valTxt, unitTxt, available}
+function _ggRender(cfg, fc){
+  const pct=Math.max(0,Math.min(100,+cfg.pct||0));
+  const anom=cfg.available?_ggAnom(fc,cfg.key):null;
+  const tier=anom?_ggTier(anom.z):'ok';
+  const live=cfg.available && !!anom;                       // anomaly firing on this series
+  const cls = !cfg.available ? 'idle' : (tier==='crit'?'crit':tier==='warn'?'warn':'ok');
+  // state pill: icon + short word (non-colour signal for a11y)
+  let stIcon, stTxt;
+  if(!cfg.available){ stIcon='—'; stTxt=I18N.t('gg.nodata','No data'); }
+  else if(!anom){ stIcon='✓'; stTxt=I18N.t('gg.normal','Normal'); }
+  else{
+    const dir = anom.direction==='dip'
+      ? I18N.t('gg.dip','dip') : I18N.t('gg.spike','spike');
+    stIcon = anom.direction==='dip' ? '▼' : '▲';
+    stTxt = I18N.tf('gg.anom','{dir} {z}σ',{dir:dir,z:(anom.z>0?'+':'')+anom.z});
+  }
+  // aria: value + state, never colour-only
+  let aria;
+  if(!cfg.available) aria=I18N.tf('gg.aria_nodata','{label}: no data',{label:cfg.label});
+  else if(!anom) aria=I18N.tf('gg.aria_normal','{label} {v}{u}, normal',
+      {label:cfg.label,v:cfg.valTxt,u:cfg.unitTxt});
+  else aria=I18N.tf('gg.aria_anom','{label} {v}{u}, anomaly: {dir} {z}σ',
+      {label:cfg.label,v:cfg.valTxt,u:cfg.unitTxt,
+       dir:(anom.direction==='dip'?I18N.t('gg.dip','dip'):I18N.t('gg.spike','spike')),
+       z:(anom.z>0?'+':'')+anom.z});
+  const wrap=document.getElementById(cfg.id);
+  if(!wrap) return;
+  wrap.className='gg '+cls+(live?' live':'');
+  wrap.setAttribute('role','img');
+  wrap.setAttribute('aria-label',aria);
+  const offset = GG_LEN*(1-(cfg.available?pct/100:0));      // empty arc when no data
+  wrap.querySelector('.gg-arc').setAttribute('stroke-dashoffset', offset.toFixed(2));
+  // centre number: count-up from previous (skipped under reduced-motion)
+  const nEl=wrap.querySelector('.gg-num');
+  const target = cfg.available ? Math.round(+cfg.valTxt||0) : null;
+  const uTxt = cfg.available ? cfg.unitTxt : '';
+  if(target==null){ nEl.innerHTML='—'; }
+  else{
+    const prev=_GG_PREV[cfg.id]; _GG_PREV[cfg.id]=target;
+    if(_ggReduceMotion() || prev==null || prev===target){
+      nEl.innerHTML=esc(String(target))+(uTxt?`<span class="u">${esc(uTxt)}</span>`:'');
+    }else{
+      _ggCountUp(nEl, prev, target, uTxt);
+    }
+  }
+  wrap.querySelector('.gg-state .si').textContent=stIcon;
+  wrap.querySelector('.gg-state .st').textContent=stTxt;
+}
+function _ggCountUp(el, from, to, unit){
+  const dur=650, t0=performance.now(), span=to-from;
+  function step(t){
+    const k=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-k,3);    // easeOutCubic
+    const v=Math.round(from+span*e);
+    el.innerHTML=esc(String(v))+(unit?`<span class="u">${esc(unit)}</span>`:'');
+    if(k<1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function _ggSkeleton(id, cap){
+  return `<div class="gg idle" id="${id}" role="img" aria-label="${esc(cap)}">`
+    +`<svg class="gg-svg" viewBox="0 0 128 104" aria-hidden="true">`
+    +`<path class="gg-track" d="${_GG_PATH}"/>`
+    +`<path class="gg-arc" d="${_GG_PATH}" stroke-dasharray="${GG_LEN.toFixed(2)}" stroke-dashoffset="${GG_LEN.toFixed(2)}"/>`
+    +`</svg>`
+    +`<div class="gg-val"><div class="n gg-num">—</div></div>`
+    +`<div class="gg-cap">${esc(cap)}</div>`
+    +`<span class="gg-state"><span class="si" aria-hidden="true">—</span><span class="st"></span></span>`
+    +`</div>`;
+}
+function renderHeroGauges(g, fc){
+  const host=document.getElementById('hero-gauges'); if(!host) return;
+  const avail=!!(g&&g.available);
+  // Build the gauge configs. GPU-util gauge keys off the gpu_util anomaly;
+  // GPU-power gauge keys off gpu_power (a sane max from the card's enforced
+  // power limit when known, else 350W). Both ride already-polled data.
+  const util=Math.max(0,Math.min(100,Math.round((g&&g.util)||0)));
+  const pwW=Math.round((g&&g.power)||0);
+  // sane power max: enforced limit (extra/per-card), else a 350W default
+  let pmax=(g&&g.extra&&+g.extra.power_limit)||0;
+  if(!pmax && g&&Array.isArray(g.gpus)) pmax=g.gpus.reduce((s,c)=>s+(+c.power_limit||0),0);
+  if(!pmax||pmax<50) pmax=350;
+  const pwPct=Math.max(0,Math.min(100,Math.round(pwW/pmax*100)));
+  const hasPower = avail && (pwW>0 || (g&&g.power!=null));
+  const cfgs=[{id:'gg-util',key:'gpu_util',label:I18N.t('gg.gpu_util','GPU util'),
+               cap:I18N.t('gg.gpu_util','GPU util'),pct:util,valTxt:util,unitTxt:'%',available:avail}];
+  if(hasPower) cfgs.push({id:'gg-power',key:'gpu_power',label:I18N.t('gg.gpu_power','GPU power'),
+               cap:I18N.t('gg.gpu_power','GPU power'),pct:pwPct,valTxt:pwW,unitTxt:'W',available:avail});
+  if(!avail){ host.hidden=true; host.innerHTML=''; return; }
+  host.hidden=false;
+  // (re)build skeletons only when the set of gauges changes (id list), else reuse
+  // the existing nodes so the arc/number transitions animate from their old state.
+  const want=cfgs.map(c=>c.id).join(',');
+  if(host.dataset.set!==want){
+    host.innerHTML=cfgs.map(c=>_ggSkeleton(c.id,c.cap)).join('');
+    host.dataset.set=want;
+  }
+  // tint the panel glow with the worst active tier across gauges
+  let worst='ok';
+  for(const c of cfgs){ const a=_ggAnom(fc,c.key); if(a){ const t=_ggTier(a.z); if(t==='crit')worst='crit'; else if(t==='warn'&&worst!=='crit')worst='warn'; } }
+  host.style.setProperty('--gghuebg', worst==='crit'?'var(--critbg)':worst==='warn'?'var(--warnbg)':'transparent');
+  cfgs.forEach(c=>_ggRender(c,fc));
+}
 function renderHero(){
   const hero=document.getElementById('hero'); if(!hero) return;
   if(TAB!=='overview') return;
@@ -4990,6 +5159,9 @@ function renderHero(){
     kpis.push(_heroKpi('—','',I18N.t('hero.disk_eta','Disk fills in'),I18N.t('forecast.stable','stable')));
   }
   document.getElementById('hero-kpis').innerHTML = kpis.join('');
+
+  // anomaly-aware arc gauges (live GPU dials; ring colour = z-score anomaly state)
+  renderHeroGauges(g, fc);
 
   // "needs attention" rollup — one scannable command-center signal, driven by the
   // CHEAP /api/forecast counts (reco{crit,warn,total} + incidents.open + uptime.down).
