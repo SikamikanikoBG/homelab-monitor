@@ -80,7 +80,7 @@ class TestPublicStatus(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         j = r.get_json()
         for k in ("status", "updated", "now", "demo", "tiles", "gpu",
-                  "anomaly_active", "counts"):
+                  "anomaly_active", "counts", "daily", "uptime_90d"):
             self.assertIn(k, j, "missing top-level key %r" % k)
         self.assertIn(j["status"], ("operational", "degraded", "down"))
         self.assertIsInstance(j["tiles"], list)
@@ -136,6 +136,50 @@ class TestPublicStatus(unittest.TestCase):
                        "immich_server", "sshd", "nginx", "ollama", "Leap"):
             self.assertNotIn(needle, blob,
                              "public status leaked sensitive value %r" % needle)
+
+    # ── PRIVACY: the 90-day daily ribbon must be aggregated rank/up-frac + date ─
+    def test_privacy_daily_ribbon(self):
+        # Seed daily 'overall' samples carrying sensitive-looking neighbours in the
+        # table (other keys) to prove the ribbon emits only {d, s, up}.
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            for i in range(5):
+                bt = now - i * 86400
+                app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                               (bt, "overall", 0))
+            app.DB.commit()
+        j = self.c.get("/api/status").get_json()
+        self.assertIn("daily", j)
+        self.assertIn("uptime_90d", j)
+        daily = j["daily"]
+        self.assertIsInstance(daily, list)
+        self.assertLessEqual(len(daily), 90)
+        for cell in daily:
+            # ONLY these three keys, with the expected value types.
+            self.assertEqual(set(cell.keys()), {"d", "s", "up"})
+            self.assertIsInstance(cell["d"], str)              # 'YYYY-MM-DD'
+            self.assertRegex(cell["d"], r"^\d{4}-\d{2}-\d{2}$")
+            self.assertIsInstance(cell["s"], int)
+            self.assertIn(cell["s"], (-1, 0, 1, 2, 3))
+            self.assertTrue(cell["up"] is None or isinstance(cell["up"], (int, float)))
+            if cell["up"] is not None:
+                self.assertGreaterEqual(cell["up"], 0.0)
+                self.assertLessEqual(cell["up"], 1.0)
+        # uptime_90d is a percentage float (or None when no data).
+        self.assertTrue(j["uptime_90d"] is None or isinstance(j["uptime_90d"], (int, float)))
+        # No forbidden keys / seeded secret values appear in the ribbon payload.
+        leaves = list(_walk_strings(j))
+        forbidden = {"hostname", "host", "ip", "mount", "os", "model", "name",
+                     "image", "path", "secret", "token", "webhook_url"}
+        present = {k for (_p, kind, k) in leaves if kind == "key"}
+        self.assertFalse(forbidden & present,
+                         "daily ribbon leaked sensitive key(s): %s" % sorted(forbidden & present))
+        blob = json.dumps(j)
+        for needle in ("secret-ardi-box", "192.168.1.50", "/data", "opensuse",
+                       "immich_server", "sshd", "nginx", "ollama", "Leap"):
+            self.assertNotIn(needle, blob,
+                             "daily ribbon leaked sensitive value %r" % needle)
 
     # ── PRIVACY: heartbeat history must be aggregated up/down ONLY ────────────
     def test_privacy_heartbeat_history(self):
@@ -349,6 +393,98 @@ class TestHeartbeatHistory(unittest.TestCase):
         r = self.c.get("/api/status")
         self.assertEqual(r.status_code, 200)
         self.assertIn("history", r.get_json())
+
+
+class TestDailyRibbon(unittest.TestCase):
+    """The 90-day uptime ribbon rollup: worst-rank-per-local-day, honest no-data
+    for days without samples (no fake green), and uptime% over days WITH data."""
+
+    def setUp(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            app.DB.commit()
+
+    def tearDown(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM status_history")
+            app.DB.commit()
+
+    def _local_day(self, ts):
+        return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+    # ── span + oldest→newest ordering, today is the last cell ────────────────
+    def test_span_and_ordering(self):
+        now = int(time.time())
+        r = app._status_daily(now)
+        self.assertEqual(r["span"], app._DAILY_RIBBON_DAYS)
+        self.assertEqual(len(r["days"]), app._DAILY_RIBBON_DAYS)
+        ds = [c["d"] for c in r["days"]]
+        self.assertEqual(ds, sorted(ds))                         # oldest → newest
+        self.assertEqual(r["days"][-1]["d"], self._local_day(now))  # today last
+
+    # ── empty DB → all no-data, no fake green, uptime None ───────────────────
+    def test_empty_is_nodata_not_green(self):
+        now = int(time.time())
+        r = app._status_daily(now)
+        self.assertTrue(all(c["s"] == -1 and c["up"] is None for c in r["days"]))
+        self.assertEqual(r["total_days"], 0)
+        self.assertIsNone(r["uptime"])
+
+    # ── worst rank wins within a calendar day ────────────────────────────────
+    def test_worst_rank_per_day(self):
+        now = int(time.time())
+        # today at local-noon-ish: mix ok(0), degraded(2), down(3) in one day.
+        mid = time.mktime(time.strptime(self._local_day(now), "%Y-%m-%d"))
+        with app.LOCK:
+            for off, st in ((3600, 0), (7200, 0), (10800, 2), (14400, 3)):
+                app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                               (int(mid + off), "overall", st))
+            app.DB.commit()
+        r = app._status_daily(now)
+        today = r["days"][-1]
+        self.assertEqual(today["s"], 3)                 # WORST wins
+        # up-fraction = up buckets / total buckets that day = 2/4 = 0.5
+        self.assertAlmostEqual(today["up"], 0.5, places=4)
+
+    # ── partial history (< span days) stays honest: only seeded days have data ─
+    def test_partial_history_honest(self):
+        now = int(time.time())
+        # seed exactly 3 distinct local days, all fully up
+        with app.LOCK:
+            for i in range(3):
+                mid = time.mktime(time.strptime(
+                    self._local_day(now - i * 86400), "%Y-%m-%d"))
+                app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                               (int(mid + 3600), "overall", 0))
+            app.DB.commit()
+        r = app._status_daily(now)
+        self.assertEqual(r["total_days"], 3)
+        self.assertEqual(r["up_days"], 3)
+        self.assertEqual(r["uptime"], 100.0)            # over days WITH data
+        nodata = [c for c in r["days"] if c["s"] == -1]
+        self.assertEqual(len(nodata), app._DAILY_RIBBON_DAYS - 3)
+
+    # ── uptime% math: up_days / days-with-data, no-data excluded ──────────────
+    def test_uptime_pct_math(self):
+        now = int(time.time())
+        # 4 days: 3 fully-up (rank 0), 1 with a down (rank 3) → 3/4 = 75.0%
+        states = [0, 0, 0, 3]
+        with app.LOCK:
+            for i, st in enumerate(states):
+                mid = time.mktime(time.strptime(
+                    self._local_day(now - i * 86400), "%Y-%m-%d"))
+                app.DB.execute("INSERT INTO status_history(ts,key,state) VALUES(?,?,?)",
+                               (int(mid + 3600), "overall", st))
+            app.DB.commit()
+        r = app._status_daily(now)
+        self.assertEqual(r["total_days"], 4)
+        self.assertEqual(r["up_days"], 3)
+        self.assertEqual(r["uptime"], 75.0)
+
+    # ── retention is wide enough for the 90d view ────────────────────────────
+    def test_retention_covers_span(self):
+        self.assertGreaterEqual(app._STATHIST_RETENTION,
+                                app._DAILY_RIBBON_DAYS * 86400)
 
 
 if __name__ == "__main__":

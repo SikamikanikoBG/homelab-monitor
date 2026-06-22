@@ -96,6 +96,22 @@ body.demo .demo-pill{display:inline-flex}
 .hb .hbsum b{color:var(--tx);font-weight:700}
 .hb .hbsum.collecting{color:var(--mut);font-style:italic}
 @media(prefers-reduced-motion:reduce){ .hb .cell{transition:none} .hb .cell:hover{transform:none} }
+/* 90-day uptime ribbon (StatusPage.io-style daily cells) */
+.ribbon{margin:0 0 22px}
+.ribbon .rbhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:9px;flex-wrap:wrap}
+.ribbon .rbpct{font-size:15px;font-weight:700;color:var(--tx);font-variant-numeric:tabular-nums}
+.ribbon .rbpct small{font-weight:600;color:var(--mut);font-size:12px}
+.ribbon .rbnote{color:var(--mut);font-size:12px;font-style:italic}
+.ribbon .rbbar{display:flex;gap:2px;align-items:stretch;height:34px;overflow-x:auto;scrollbar-width:thin}
+.ribbon .day{flex:1 0 4px;min-width:4px;border-radius:2px;background:var(--bd);transition:transform .12s}
+.ribbon .day.ok{background:var(--ok)}
+.ribbon .day.warn{background:var(--warn)}
+.ribbon .day.crit{background:var(--crit)}
+.ribbon .day.nodata{background:var(--bd);opacity:.4}
+.ribbon .day:hover{transform:scaleY(1.08)}
+.ribbon .rbaxis{display:flex;justify-content:space-between;margin-top:6px;color:var(--mut);font-size:11px}
+@media(max-width:520px){ .ribbon .day{flex:0 0 5px} .ribbon .rbbar{height:30px} }
+@media(prefers-reduced-motion:reduce){ .ribbon .day{transition:none} .ribbon .day:hover{transform:none} }
 /* footer */
 .foot{margin-top:30px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12.5px}
 .foot .spacer{flex:1}
@@ -148,6 +164,8 @@ body.offline-state .offline{display:block}
   </section>
 
   <div class="kpis" id="kpis" aria-label="Headline stats"></div>
+
+  <div class="ribbon" id="ribbon" hidden></div>
 
   <div class="sect" data-i18n="status.title">Lab status</div>
   <div class="tiles" id="tiles"></div>
@@ -248,9 +266,63 @@ function render(d){
   else { gv=I18N.t('status.gpu.idle','Idle'); gl=I18N.t('status.metric.gpu'); gc='idle'; }
   kp.appendChild(kpi(gv,'',gl,gc));
 
+  // 90-day uptime ribbon
+  ribbon(d);
+
   // tiles
   const tl=document.getElementById('tiles'); tl.innerHTML='';
   (d.tiles||[]).forEach(t=>tl.appendChild(tile(t)));
+}
+// Daily ribbon: oldest left → today right, cell colored by the worst state that
+// day. State rank → class (HB_CLS); -1 = no data (neutral). a11y: a real text
+// summary, not purely the colored bar.
+function ribbon(d){
+  const box=document.getElementById('ribbon');
+  const days=d.daily||[]; const span=d.uptime_span||days.length||90;
+  if(!days.length){ box.hidden=true; box.innerHTML=''; return; }
+  box.hidden=false; box.innerHTML='';
+  const withData=d.uptime_days||0;
+  const pct=d.uptime_90d;
+  const head=document.createElement('div'); head.className='rbhead';
+  const left=document.createElement('div');
+  if(pct==null){
+    left.className='rbnote';
+    left.textContent=I18N.t('status.ribbon.collecting','Collecting daily uptime history…');
+  }else{
+    left.className='rbpct';
+    left.innerHTML=esc(pct)+'% <small>'+esc(I18N.tf('status.ribbon.over','uptime over the last {n} days',{n:span}))+'</small>';
+  }
+  head.appendChild(left);
+  if(pct!=null && withData<span){
+    const note=document.createElement('span'); note.className='rbnote';
+    note.textContent=I18N.tf('status.ribbon.partial','{n} days of data so far',{n:withData});
+    head.appendChild(note);
+  }
+  box.appendChild(head);
+  const bar=document.createElement('div'); bar.className='rbbar'; bar.setAttribute('aria-hidden','true');
+  days.forEach(c=>{
+    const s=(c.s==null?-1:c.s);
+    const el=document.createElement('span');
+    el.className='day '+(s<0?'nodata':HB_CLS[Math.max(0,Math.min(3,s))]);
+    const st = s<0 ? I18N.t('status.hb.nodata','No data') : I18N.t(HB_LBL[Math.max(0,Math.min(3,s))]);
+    let up=''; if(c.up!=null) up=' · '+Math.round(c.up*1000)/10+'% '+I18N.t('status.hb.uptime','uptime');
+    el.title=esc(c.d||'')+' · '+st+up;
+    bar.appendChild(el);
+  });
+  box.appendChild(bar);
+  // axis labels: oldest date (left) / today (right)
+  const axis=document.createElement('div'); axis.className='rbaxis';
+  const a=document.createElement('span'); a.textContent=I18N.tf('status.ribbon.daysago','{n} days ago',{n:span});
+  const b=document.createElement('span'); b.textContent=I18N.t('status.ribbon.today','Today');
+  axis.appendChild(a); axis.appendChild(b); box.appendChild(axis);
+  // a11y text summary (not purely visual)
+  if(pct!=null){
+    box.setAttribute('role','img');
+    box.setAttribute('aria-label', I18N.tf('status.ribbon.a11y','{pct}% uptime over the last {n} days, {days} days with data',{pct:pct,n:span,days:withData}));
+  }else{
+    box.setAttribute('role','status');
+    box.setAttribute('aria-label', I18N.t('status.ribbon.collecting','Collecting daily uptime history…'));
+  }
 }
 function kpi(v,suffix,label,cls){
   const el=document.createElement('div'); el.className='kpi '+(cls||'');

@@ -7898,7 +7898,12 @@ _STATUS_BANNER = {3: "down", 2: "degraded", 1: "operational", 0: "operational"}
 _STATHIST_KEYS   = ("overall", "gpu", "host", "containers", "services")
 _STATHIST_BUCKET = 300        # seconds per heartbeat cell (~5 min)
 _STATHIST_CELLS  = 30         # cells rendered per subsystem strip
-_STATHIST_RETENTION = 30 * 86400   # keep ~30 days of coarse status samples
+# Retention extended 30→90d so the StatusPage.io-style daily ribbon below has up
+# to 90 calendar days to roll up. The per-bucket heartbeat (last _STATHIST_CELLS)
+# is unaffected — it only reads a recent slice. ~90d × 288 buckets/day × 5 keys
+# of {ts,key,state} ints stays tiny.
+_STATHIST_RETENTION = 90 * 86400   # keep ~90 days of coarse status samples
+_DAILY_RIBBON_DAYS = 90       # calendar days the public uptime ribbon spans
 
 def _status_states():
     """Derive the current per-subsystem status RANK (0 ok .. 3 down) + overall,
@@ -7982,6 +7987,63 @@ def _status_history(now):
         out[key] = {"cells": cells, "up": up, "total": total,
                     "uptime": round(100.0 * up / total, 1) if total else None}
     return out
+
+def _status_daily(now):
+    """Roll status_history's 'overall' samples up into a per-CALENDAR-DAY ribbon
+    (StatusPage.io style). For each of the last _DAILY_RIBBON_DAYS local days emit
+    {d: 'YYYY-MM-DD', s: worst-rank-seen-that-day (0..3), up: up-fraction 0..1}.
+    Days with no sample get s=-1 / up=None (honest 'no data' — never fake green).
+
+    Returns {"days": [...oldest→newest...], "uptime": <pct over days WITH data>,
+    "up_days": int, "total_days": int (days with ≥1 sample), "span": N}.
+
+    Read-only; a single pass over the retained 'overall' rows. The caller invokes
+    this OUTSIDE any held LOCK (it takes LOCK briefly itself, like _status_history)."""
+    span = _DAILY_RIBBON_DAYS
+    # Pull the window a touch wider than span days so a sample right at the edge of
+    # the oldest local day is still captured regardless of tz offset.
+    span_start_ts = now - span * 86400 - 86400
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts,state FROM status_history WHERE ts>=? AND key='overall'",
+                (span_start_ts,)).fetchall()
+    except Exception:
+        rows = []
+    # Aggregate per local calendar day: worst rank + (up-bucket count, total count).
+    agg = {}   # 'YYYY-MM-DD' -> [worst_rank, up_count, total_count]
+    for ts, state in rows:
+        st = int(state)
+        if st < 0:
+            continue
+        day = time.strftime("%Y-%m-%d", time.localtime(ts))
+        a = agg.get(day)
+        if a is None:
+            agg[day] = [st, 1 if st == 0 else 0, 1]
+        else:
+            a[0] = max(a[0], st)
+            a[2] += 1
+            if st == 0:
+                a[1] += 1
+    # Walk the last `span` local days oldest→newest off today's local midnight.
+    today_mid = time.mktime(time.strptime(
+        time.strftime("%Y-%m-%d", time.localtime(now)), "%Y-%m-%d"))
+    days, up_days, total_days = [], 0, 0
+    for i in range(span - 1, -1, -1):
+        day = time.strftime("%Y-%m-%d", time.localtime(today_mid - i * 86400))
+        a = agg.get(day)
+        if a is None:
+            days.append({"d": day, "s": -1, "up": None})
+        else:
+            worst, upc, tot = a
+            frac = round(upc / tot, 4) if tot else None
+            days.append({"d": day, "s": worst, "up": frac})
+            total_days += 1
+            if worst == 0:
+                up_days += 1
+    uptime = round(100.0 * up_days / total_days, 2) if total_days else None
+    return {"days": days, "uptime": uptime, "up_days": up_days,
+            "total_days": total_days, "span": span}
 
 # ── External uptime checks (HTTP/TCP) ───────────────────────────────────────
 # User-defined endpoint monitors (à la Uptime-Kuma). Read-only outbound: an HTTP
@@ -8407,6 +8469,10 @@ def build_public_status():
         if h:
             tile["history"] = h
 
+    # 90-day uptime ribbon — per-calendar-day worst overall rank + up-fraction.
+    # Aggregated ints/floats + a date string ONLY (no names/topology/secrets).
+    daily = _status_daily(now)
+
     return {
         "status": _STATUS_BANNER.get(worst, "operational"),
         "updated": HEALTH["at"] or now,
@@ -8419,6 +8485,10 @@ def build_public_status():
                    "monitored": n_services + n_containers, "problems": n_problems},
         "history": hist.get("overall"),
         "history_bucket": _STATHIST_BUCKET,
+        "daily": daily["days"],
+        "uptime_90d": daily["uptime"],
+        "uptime_days": daily["total_days"],
+        "uptime_span": daily["span"],
     }
 
 @app.route("/api/status")
@@ -8434,7 +8504,9 @@ def api_status():
                         "now": int(time.time()), "demo": DEMO_MODE, "tiles": [],
                         "gpu": {"available": False}, "anomaly_active": False,
                         "counts": {"services": 0, "containers": 0,
-                                   "monitored": 0, "problems": 0}})
+                                   "monitored": 0, "problems": 0},
+                        "daily": [], "uptime_90d": None,
+                        "uptime_days": 0, "uptime_span": _DAILY_RIBBON_DAYS})
 
 @app.route("/status")
 def status_page():
