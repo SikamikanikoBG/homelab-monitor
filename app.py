@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
+import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -192,6 +192,19 @@ CREATE INDEX IF NOT EXISTS idx_llm_ts ON llm_samples(ts);
 -- overall), `state` is the 0..3 status rank (0 ok → 3 down). NO names/topology.
 CREATE TABLE IF NOT EXISTS status_history(ts INTEGER NOT NULL, key TEXT NOT NULL, state INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_stathist_ts ON status_history(ts);
+-- External uptime checks (Uptime-Kuma-style): the user's OWN configured HTTP/TCP
+-- endpoint monitors. `target` is a URL (http) or host:port (tcp) — treated like
+-- webhook_url (may carry credentials): persisted for the user, never logged.
+-- These are PRIVATE (LAN dashboard + authed API only); they never reach /status.
+CREATE TABLE IF NOT EXISTS uptime_checks(
+  id TEXT PRIMARY KEY, label TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'http',
+  target TEXT NOT NULL, interval_sec INTEGER NOT NULL DEFAULT 60,
+  timeout_sec INTEGER NOT NULL DEFAULT 10, expected_status INTEGER,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS uptime_results(
+  check_id TEXT NOT NULL, ts INTEGER NOT NULL, up INTEGER NOT NULL,
+  latency_ms REAL, code INTEGER, err TEXT);
+CREATE INDEX IF NOT EXISTS idx_uptime_results ON uptime_results(check_id, ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -7897,6 +7910,348 @@ def _status_history(now):
                     "uptime": round(100.0 * up / total, 1) if total else None}
     return out
 
+# ── External uptime checks (HTTP/TCP) ───────────────────────────────────────
+# User-defined endpoint monitors (à la Uptime-Kuma). Read-only outbound: an HTTP
+# GET/HEAD or a TCP connect to the user's OWN configured target — never mutates the
+# host or the target. Each probe is bounded by its own timeout so a slow/hanging
+# endpoint can never stall the metrics sampler or other checks. PRIVATE surface:
+# targets/labels/errors live on the authed dashboard + API only, never on /status.
+_UPTIME_MIN_INTERVAL = 20      # floor on per-check cadence (don't hammer targets)
+_UPTIME_MAX_INTERVAL = 86400
+_UPTIME_MAX_TIMEOUT  = 30      # hard cap so a probe can't pin a worker forever
+_UPTIME_MAX_REDIRECTS = 3
+_UPTIME_RESULT_CAP   = 5000    # per-check ring-buffer of results
+_UPTIME_UA = "HomeLab-Monitor uptime check"
+_uptime_due = {}               # check_id -> next monotonic due time (scheduler state)
+
+def _uptime_row_to_dict(r):
+    cols = ("id", "label", "type", "target", "interval_sec", "timeout_sec",
+            "expected_status", "enabled", "created_at")
+    d = dict(zip(cols, r))
+    d["enabled"] = bool(d["enabled"])
+    return d
+
+_CRED_RE = re.compile(r"(://)[^/\s:@]+:[^/\s@]+@")
+
+def _redact_target(s):
+    """Strip any `scheme://user:pass@` credentials from a string so a check target
+    is safe to log/echo in an error. Storing the full target (with creds) is fine —
+    like webhook_url — but we never want it in a log line or surfaced error. Works on
+    bare URLs AND on error messages that merely embed a URL. host:port targets and
+    credential-free URLs pass through unchanged."""
+    return _CRED_RE.sub(r"\1***:***@", s or "")
+
+def list_uptime_checks():
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,enabled,created_at "
+            "FROM uptime_checks ORDER BY created_at").fetchall()
+    return [_uptime_row_to_dict(r) for r in rows]
+
+def _validate_uptime_check(body):
+    """Return (clean_dict, None) or (None, error_string). Rejects garbage targets,
+    bad URL schemes, unparseable host:port, and out-of-range interval/timeout."""
+    label = (body.get("label") or "").strip()
+    if not label:
+        return None, "A label is required."
+    if len(label) > 120:
+        return None, "Label is too long (max 120 characters)."
+    ctype = (body.get("type") or "http").strip().lower()
+    if ctype not in ("http", "tcp"):
+        return None, "Type must be 'http' or 'tcp'."
+    target = (body.get("target") or "").strip()
+    if not target:
+        return None, "A target is required."
+    if len(target) > 2048:
+        return None, "Target is too long."
+    expected = None
+    if ctype == "http":
+        u = urllib.parse.urlsplit(target)
+        if u.scheme not in ("http", "https"):
+            return None, "HTTP checks need an http:// or https:// URL."
+        if not u.hostname:
+            return None, "HTTP check URL is missing a host."
+        es = body.get("expected_status")
+        if es not in (None, ""):
+            try:
+                expected = int(es)
+            except (TypeError, ValueError):
+                return None, "Expected status must be a number (e.g. 200)."
+            if not (100 <= expected <= 599):
+                return None, "Expected status must be a valid HTTP status code (100-599)."
+    else:  # tcp
+        host, port = _parse_host_port(target)
+        if host is None:
+            return None, "TCP checks need a host:port target (e.g. db.lan:5432)."
+    try:
+        interval = int(body.get("interval_sec", 60))
+    except (TypeError, ValueError):
+        return None, "Interval must be a whole number of seconds."
+    if interval < _UPTIME_MIN_INTERVAL:
+        return None, f"Interval must be at least {_UPTIME_MIN_INTERVAL} seconds."
+    if interval > _UPTIME_MAX_INTERVAL:
+        return None, f"Interval must be at most {_UPTIME_MAX_INTERVAL} seconds."
+    try:
+        timeout = int(body.get("timeout_sec", 10))
+    except (TypeError, ValueError):
+        return None, "Timeout must be a whole number of seconds."
+    if timeout < 1:
+        return None, "Timeout must be at least 1 second."
+    if timeout > _UPTIME_MAX_TIMEOUT:
+        return None, f"Timeout must be at most {_UPTIME_MAX_TIMEOUT} seconds."
+    return {"label": label, "type": ctype, "target": target,
+            "interval_sec": interval, "timeout_sec": timeout,
+            "expected_status": expected,
+            "enabled": 1 if body.get("enabled", True) else 0}, None
+
+def _parse_host_port(target):
+    """Parse 'host:port' (the tcp check target). Returns (host, port) or (None, None).
+    Accepts a leading tcp:// scheme and bracketed IPv6 literals."""
+    t = target.strip()
+    if "://" in t:
+        u = urllib.parse.urlsplit(t)
+        host, port = u.hostname, u.port
+        if host and port:
+            return host, port
+        return None, None
+    if t.startswith("[") and "]" in t:          # [ipv6]:port
+        host, _, rest = t[1:].partition("]")
+        if not rest.startswith(":"):
+            return None, None
+        portstr = rest[1:]
+    else:
+        host, sep, portstr = t.rpartition(":")
+        if not sep:
+            return None, None
+    host = host.strip()
+    if not host:
+        return None, None
+    try:
+        port = int(portstr)
+    except (TypeError, ValueError):
+        return None, None
+    if not (1 <= port <= 65535):
+        return None, None
+    return host, port
+
+def create_uptime_check(body):
+    clean, err = _validate_uptime_check(body)
+    if err:
+        return None, err
+    cid = uuid.uuid4().hex
+    with LOCK:
+        DB.execute(
+            "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
+            "expected_status,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (cid, clean["label"], clean["type"], clean["target"], clean["interval_sec"],
+             clean["timeout_sec"], clean["expected_status"], clean["enabled"], int(time.time())))
+        DB.commit()
+    _uptime_due.pop(cid, None)   # probe promptly on next scheduler pass
+    return cid, None
+
+def update_uptime_check(cid, body):
+    with LOCK:
+        exists = DB.execute("SELECT 1 FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+    if not exists:
+        return False, "not found"
+    if not body:
+        return False, "empty update"
+    # Quick enable/disable toggle without full revalidation.
+    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+        with LOCK:
+            DB.execute("UPDATE uptime_checks SET enabled=? WHERE id=?",
+                       (1 if body.get("enabled") else 0, cid))
+            DB.commit()
+        return True, None
+    clean, err = _validate_uptime_check(body)
+    if err:
+        return False, err
+    with LOCK:
+        DB.execute(
+            "UPDATE uptime_checks SET label=?,type=?,target=?,interval_sec=?,timeout_sec=?,"
+            "expected_status=?,enabled=? WHERE id=?",
+            (clean["label"], clean["type"], clean["target"], clean["interval_sec"],
+             clean["timeout_sec"], clean["expected_status"], clean["enabled"], cid))
+        DB.commit()
+    _uptime_due.pop(cid, None)   # re-probe with new config promptly
+    return True, None
+
+def delete_uptime_check(cid):
+    with LOCK:
+        cur = DB.execute("DELETE FROM uptime_checks WHERE id=?", (cid,))
+        DB.execute("DELETE FROM uptime_results WHERE check_id=?", (cid,))
+        DB.commit()
+    _uptime_due.pop(cid, None)
+    return cur.rowcount > 0
+
+def probe_http(target, timeout, expected=None):
+    """GET (HEAD fallback) the URL, following ≤ _UPTIME_MAX_REDIRECTS redirects.
+    Returns (up, latency_ms, code, err). up = connected AND status matches expected
+    (or any 2xx/3xx if expected unset). Never raises; bounded by `timeout`. The
+    error string is redacted of any embedded credentials before it leaves here."""
+    start = time.monotonic()
+    try:
+        try:
+            code = _http_probe_once(target, timeout, "GET")
+        except urllib.error.HTTPError as he:
+            code = he.code            # a 4xx/5xx still answered — that's a real status
+        latency = round((time.monotonic() - start) * 1000, 1)
+        if expected is not None:
+            up = (code == expected)
+        else:
+            up = (200 <= code < 400)
+        return up, latency, code, (None if up else f"HTTP {code}")
+    except Exception as e:
+        latency = round((time.monotonic() - start) * 1000, 1)
+        return False, latency, None, _redact_target(str(e))[:200]
+
+def _http_probe_once(target, timeout, method):
+    """One bounded HTTP request following a couple redirects manually (so we never
+    auto-follow into a different scheme/host without counting it). Returns the final
+    status code or raises. Uses stdlib urllib only."""
+    url = target
+    last_code = 0
+    for _ in range(_UPTIME_MAX_REDIRECTS + 1):
+        req = urllib.request.Request(url, method=method, headers={"User-Agent": _UPTIME_UA})
+        opener = urllib.request.build_opener(_NoRedirect())
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                return r.status
+        except urllib.error.HTTPError as he:
+            if he.code in (301, 302, 303, 307, 308):
+                loc = he.headers.get("Location")
+                if not loc:
+                    return he.code
+                url = urllib.parse.urljoin(url, loc)
+                last_code = he.code
+                he.close()
+                continue
+            raise
+    return last_code
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface redirects as HTTPError so probe_http counts/bounds them itself."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def probe_tcp(target, timeout):
+    """socket.create_connection to host:port, bounded by `timeout`. up = connects.
+    Returns (up, latency_ms, None, err). Never raises."""
+    start = time.monotonic()
+    host, port = _parse_host_port(target)
+    if host is None:
+        return False, None, None, "bad host:port"
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            latency = round((time.monotonic() - start) * 1000, 1)
+            return True, latency, None, None
+    except Exception as e:
+        latency = round((time.monotonic() - start) * 1000, 1)
+        return False, latency, None, str(e)[:200]
+
+def run_uptime_check(check):
+    """Execute one check (dict) and persist its result. Returns the result dict.
+    The probe itself is bounded by the check's timeout; the DB write is the only
+    LOCK held, and it's brief. Called from the dedicated uptime worker thread."""
+    ctype = check["type"]
+    timeout = min(int(check.get("timeout_sec") or 10), _UPTIME_MAX_TIMEOUT)
+    if ctype == "tcp":
+        up, latency, code, err = probe_tcp(check["target"], timeout)
+    else:
+        up, latency, code, err = probe_http(check["target"], timeout, check.get("expected_status"))
+    ts = int(time.time())
+    if not _DB_MAINTENANCE:
+        try:
+            with LOCK:
+                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                           "VALUES(?,?,?,?,?,?)",
+                           (check["id"], ts, 1 if up else 0, latency, code, err))
+                # Per-check ring buffer: keep only the newest CAP rows. Trim by rowid
+                # (monotonic + unique) so it's exact even when many results share a
+                # second — a ts-based MIN() would under-trim on timestamp collisions.
+                DB.execute(
+                    "DELETE FROM uptime_results WHERE check_id=? AND rowid NOT IN "
+                    "(SELECT rowid FROM uptime_results WHERE check_id=? "
+                    "ORDER BY rowid DESC LIMIT ?)",
+                    (check["id"], check["id"], _UPTIME_RESULT_CAP))
+                DB.commit()
+        except Exception as e:
+            print("uptime persist error:", e, flush=True)
+    return {"ts": ts, "up": up, "latency_ms": latency, "code": code, "err": err}
+
+def _uptime_state(check_id, now, window=86400):
+    """Read-only summary for one check over `window` seconds: current state
+    (up/down/unknown), last latency, uptime%, last_checked, last_err, and a coarse
+    heartbeat strip. Caller must NOT hold LOCK (this takes it briefly)."""
+    since = now - window
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? AND ts>=? "
+            "ORDER BY ts", (check_id, since)).fetchall()
+        last = DB.execute(
+            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? "
+            "ORDER BY ts DESC LIMIT 1", (check_id,)).fetchone()
+    total = len(rows)
+    up_n = sum(1 for r in rows if r[1])
+    uptime = round(100.0 * up_n / total, 2) if total else None
+    state = "unknown"
+    last_latency = last_checked = last_err = last_code = None
+    if last:
+        state = "up" if last[1] else "down"
+        last_checked = last[0]
+        last_latency = last[2]
+        last_code = last[3]
+        last_err = last[4]
+    # Heartbeat strip: most recent up-to-_STATHIST_CELLS results, oldest→newest,
+    # carrying only {up, ts} — same visual language as the /status bars.
+    strip = [{"up": bool(r[1]), "t": r[0]} for r in rows[-_STATHIST_CELLS:]]
+    return {"state": state, "uptime": uptime, "window_total": total,
+            "last_latency_ms": last_latency, "last_checked": last_checked,
+            "last_code": last_code, "last_err": last_err, "strip": strip}
+
+def uptime_overview(window=86400):
+    """All checks + their current state. The user-facing private payload."""
+    now = int(time.time())
+    out = []
+    for c in list_uptime_checks():
+        st = _uptime_state(c["id"], now, window)
+        out.append({**c, **st})
+    return {"checks": out, "now": now, "window": window,
+            "min_interval": _UPTIME_MIN_INTERVAL, "max_timeout": _UPTIME_MAX_TIMEOUT}
+
+def _uptime_tick(now=None):
+    """One scheduler pass: probe every ENABLED check whose interval is due. Each
+    probe is bounded by its own timeout, so a hanging endpoint can't stall the rest
+    — and this runs on a DEDICATED thread, never the metrics sampler. Returns the
+    list of check ids probed this pass (handy for tests)."""
+    now = time.monotonic() if now is None else now
+    probed = []
+    for c in list_uptime_checks():
+        if not c["enabled"]:
+            _uptime_due.pop(c["id"], None)
+            continue
+        due = _uptime_due.get(c["id"], 0)
+        if now < due:
+            continue
+        try:
+            run_uptime_check(c)
+        except Exception as e:
+            print("uptime check error:", e, flush=True)
+        _uptime_due[c["id"]] = now + max(_UPTIME_MIN_INTERVAL, int(c["interval_sec"]))
+        probed.append(c["id"])
+    return probed
+
+def uptime_worker():
+    """Dedicated daemon loop: wakes every few seconds, probes due checks. Kept off
+    the collector thread so a slow/hanging probe never delays metric sampling. Inert
+    (zero outbound) when no checks are configured/enabled."""
+    while True:
+        try:
+            _uptime_tick()
+        except Exception as e:
+            print("uptime_worker error:", e, flush=True)
+        time.sleep(5)
+
 def build_public_status():
     """Aggregate, privacy-safe health snapshot for the public /status page.
     Read-only; derives from the same cached signals the Overview tab uses but
@@ -8667,6 +9022,33 @@ def api_alert_ack(hid):
     ok = ack_alert(hid)
     return jsonify({"ok": ok}), (200 if ok else 404)
 
+# ── External uptime checks API (private; never exposed on /status) ────────────
+@app.route("/api/uptime", methods=["GET", "POST"])
+def api_uptime():
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        cid, err = create_uptime_check(body)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "id": cid}), 201
+    try:
+        window = min(2592000, max(3600, int(request.args.get("window", 86400))))
+    except (TypeError, ValueError):
+        window = 86400
+    return jsonify(uptime_overview(window))
+
+@app.route("/api/uptime/<cid>", methods=["PATCH", "DELETE"])
+def api_uptime_one(cid):
+    if request.method == "DELETE":
+        ok = delete_uptime_check(cid)
+        return jsonify({"ok": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    ok, err = update_uptime_check(cid, body)
+    if not ok:
+        code = 404 if err == "not found" else 400
+        return jsonify({"ok": False, "error": err}), code
+    return jsonify({"ok": True})
+
 @app.route("/api/update/app", methods=["POST"])
 def api_update_app():
     """Start the opt-in one-click self-update (detached docker:cli helper).
@@ -8702,6 +9084,7 @@ _seed_demo_data()    # no-op unless DEMO_MODE is on and the DB is fresh
 if "pytest" not in sys.modules:
     threading.Thread(target=collector, daemon=True).start()
     threading.Thread(target=host_poller, daemon=True).start()
+    threading.Thread(target=uptime_worker, daemon=True).start()
 
 if __name__ == "__main__":
     print(

@@ -771,6 +771,29 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
 .btn-mini.danger:hover{border-color:var(--crit)}
+/* ── Uptime checks ── */
+.upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:13px}
+.upcard{background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:10px;padding:13px 14px;display:flex;flex-direction:column;gap:9px}
+.upcard.up{border-left-color:var(--ok)}
+.upcard.down{border-left-color:var(--crit)}
+.upcard.unknown{border-left-color:var(--mut)}
+.upcard .uphead{display:flex;align-items:flex-start;gap:8px}
+.upcard .uplabel{font-weight:700;font-size:15px;word-break:break-word;flex:1;min-width:0}
+.upcard .uptarget{font-size:11.5px;color:var(--mut);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
+.upcard .upmeta{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
+.upcard .upmeta b{color:var(--tx);font-weight:700}
+.upcard .uperr{font-size:11.5px;color:var(--crit);word-break:break-word}
+.upcard .upactions{display:flex;gap:7px;margin-top:2px}
+.upcard .upactions{margin-top:auto}
+.uphb{display:flex;gap:2px;align-items:flex-end;height:22px}
+.uphb .cell{flex:1 1 0;min-width:0;height:100%;border-radius:2px;background:var(--bd);transition:transform .12s}
+.uphb .cell.ok{background:var(--ok)}
+.uphb .cell.down{background:var(--crit)}
+.upform input,.upform select{background:var(--card);border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:7px 9px;font:inherit;font-size:13px}
+.upadd>summary{cursor:pointer;font-weight:600;color:var(--accent);width:fit-content}
+button.btn{background:var(--inset);border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:7px 14px;cursor:pointer;font:inherit;font-size:13px}
+button.btn:hover{border-color:var(--mut)}
+@media(prefers-reduced-motion:reduce){ .uphb .cell{transition:none} }
 .hostrow .tg-edit{background:#161b22;color:var(--tx);border:1px solid var(--accent);border-radius:6px;padding:2px 7px;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;min-width:220px}
 .lansug{background:var(--inset);border:1px solid var(--bd);border-radius:9px;padding:10px 12px;margin-top:8px}
 .lansug .row{display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px dashed var(--bd)}
@@ -1451,6 +1474,59 @@ h2 .hic{ opacity:.9 }
 <section data-tab="services" hidden>
   <div class="card"><h2 id="svctitle">🧩 systemd services</h2>
     <div id="svcbody"></div>
+  </div>
+</section>
+
+<!-- ───────── Uptime (external HTTP/TCP checks) ───────── -->
+<section data-tab="uptime" hidden>
+  <div class="card">
+    <h2 data-i18n="uptime.title">🛰️ Uptime checks</h2>
+    <p class="cap" style="margin:2px 0 12px" data-i18n="uptime.intro">
+      Monitor any HTTP endpoint or TCP port — your own services, a NAS, a remote site —
+      straight from this container. One box replaces your monitor and Uptime-Kuma. Checks are
+      private to this dashboard and never appear on the public status page.</p>
+    <div id="uptimestatus" class="ins info" style="display:none"></div>
+    <div id="uptimegrid" class="upgrid"></div>
+    <div id="uptimeempty" class="cap" style="display:none;margin:10px 0" data-i18n="uptime.empty">
+      No checks yet. Add one below — until then nothing is probed (zero outbound traffic).</div>
+    <details class="upadd" id="upaddbox" style="margin-top:16px">
+      <summary data-i18n="uptime.add">➕ Add a check</summary>
+      <div class="upform" style="margin-top:12px;display:grid;gap:10px;max-width:560px">
+        <div>
+          <div class="flabel" data-i18n="uptime.f_label">Label</div>
+          <input type="text" id="up_label" maxlength="120" autocomplete="off" placeholder="My NAS" style="width:100%">
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div>
+            <div class="flabel" data-i18n="uptime.f_type">Type</div>
+            <select id="up_type">
+              <option value="http" data-i18n="uptime.type_http">HTTP(S)</option>
+              <option value="tcp" data-i18n="uptime.type_tcp">TCP port</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <div class="flabel"><span id="up_target_label" data-i18n="uptime.f_target_http">URL</span></div>
+            <input type="text" id="up_target" autocomplete="off" spellcheck="false" placeholder="https://example.com" style="width:100%">
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div>
+            <div class="flabel" data-i18n="uptime.f_interval">Interval (s)</div>
+            <input type="number" id="up_interval" value="60" min="20" max="86400" style="width:110px">
+          </div>
+          <div>
+            <div class="flabel" data-i18n="uptime.f_timeout">Timeout (s)</div>
+            <input type="number" id="up_timeout" value="10" min="1" max="30" style="width:110px">
+          </div>
+          <div id="up_expected_wrap">
+            <div class="flabel" data-i18n="uptime.f_expected">Expected status (optional)</div>
+            <input type="number" id="up_expected" min="100" max="599" placeholder="2xx/3xx" style="width:130px">
+          </div>
+        </div>
+        <div id="up_form_err" class="ins crit" style="display:none"></div>
+        <div><button type="button" class="btn" id="up_add_btn" data-i18n="uptime.add_btn">Add check</button></div>
+      </div>
+    </details>
   </div>
 </section>
 
@@ -2236,6 +2312,7 @@ const TABS = [
   {id:'costs',      label:'Costs',      charts:true,  zone:'monitoring'},
   {id:'containers', label:'Containers', charts:false, zone:'monitoring'},
   {id:'services',   label:'Services',   charts:false, zone:'monitoring'},
+  {id:'uptime',     label:'Uptime',     charts:false, zone:'monitoring'},
   {id:'host',       label:'System',     charts:true,  zone:'monitoring'},
   {id:'disks',      label:'Disks',      charts:false, zone:'monitoring'},
   {id:'network',    label:'Network',    charts:false, zone:'monitoring'},
@@ -2477,6 +2554,7 @@ function showTab(id){
   document.getElementById('controls').hidden = false;
   buildCharts();   // charts can only size on a visible canvas, so build on show
   if(id==='alerts') loadAlerts();
+  if(id==='uptime') loadUptime();
   if(id==='hosts')  loadHosts();
   // Multi-host: scope notice on tabs that are still local-only, plus
   // host-aware renderers on the ones that already speak per-host.
@@ -3707,6 +3785,108 @@ function applyCountryPrefill(){
 
 // ── Alerts (settings) tab ─────────────────────────────────────────────────────
 let ALERTS_LOADED=false;
+// ── Uptime checks (external HTTP/TCP monitors) ───────────────────────────────
+let UPTIME_TIMER=null;
+function upStateLabel(st){
+  return st==='up' ? I18N.t('uptime.st_up','Up')
+       : st==='down' ? I18N.t('uptime.st_down','Down')
+       : I18N.t('uptime.st_unknown','Unknown');
+}
+function upHeartbeat(strip){
+  if(!strip||!strip.length) return '';
+  const cells = strip.map(c=>`<div class="cell ${c.up?'ok':'down'}"></div>`).join('');
+  return `<div class="uphb" aria-hidden="true">${cells}</div>`;
+}
+function upCard(c){
+  const st = c.state||'unknown';
+  const up = c.uptime!=null ? c.uptime+'%' : '—';
+  const lat = c.last_latency_ms!=null ? Math.round(c.last_latency_ms)+' ms' : '—';
+  const tgt = c.type==='http' ? c.target : (I18N.t('uptime.tcp_prefix','TCP')+' '+c.target);
+  const badge = `<span class="badge ${st==='up'?'ok':st==='down'?'crit':'info'}">${esc(upStateLabel(st))}</span>`;
+  let err='';
+  if(st==='down' && c.last_err) err = `<div class="uperr">${esc(c.last_err)}</div>`;
+  return `<div class="upcard ${st}" data-id="${esc(c.id)}">
+    <div class="uphead">
+      <div class="uplabel">${esc(c.label)}${c.enabled?'':' <span class="cap">('+esc(I18N.t('uptime.disabled','disabled'))+')</span>'}</div>
+      ${badge}
+    </div>
+    <div class="uptarget">${esc(tgt)}</div>
+    ${upHeartbeat(c.strip)}
+    <div class="upmeta">
+      <span>${esc(I18N.t('uptime.uptime24','24h uptime'))}: <b>${up}</b></span>
+      <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
+      <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>
+    </div>
+    ${err}
+    <div class="upactions">
+      <button type="button" class="btn-mini" data-act="toggle" data-id="${esc(c.id)}" data-en="${c.enabled?1:0}">${esc(c.enabled?I18N.t('uptime.pause','Pause'):I18N.t('uptime.resume','Resume'))}</button>
+      <button type="button" class="btn-mini danger" data-act="del" data-id="${esc(c.id)}" data-label="${esc(c.label)}">${esc(I18N.t('uptime.delete','Delete'))}</button>
+    </div>
+  </div>`;
+}
+async function loadUptime(){
+  let j; try{ j=await(await fetch('/api/uptime')).json(); }catch(e){ return; }
+  const grid=document.getElementById('uptimegrid'); const empty=document.getElementById('uptimeempty');
+  if(!grid) return;
+  const checks=j.checks||[];
+  grid.innerHTML = checks.map(upCard).join('');
+  empty.style.display = checks.length ? 'none' : 'block';
+  grid.querySelectorAll('button[data-act]').forEach(b=>{
+    b.onclick = ()=>{
+      const id=b.dataset.id, act=b.dataset.act;
+      if(act==='del'){
+        if(!confirm(I18N.tf('uptime.confirm_del','Delete check "{n}"?',{n:b.dataset.label}))) return;
+        upDelete(id);
+      } else {
+        upToggle(id, b.dataset.en!=='1');
+      }
+    };
+  });
+  // Live refresh while the tab is open.
+  if(UPTIME_TIMER) clearTimeout(UPTIME_TIMER);
+  UPTIME_TIMER = setTimeout(()=>{ if(TAB==='uptime') loadUptime(); }, 10000);
+}
+async function upDelete(id){
+  try{ await fetch('/api/uptime/'+encodeURIComponent(id),{method:'DELETE'}); }catch(e){}
+  loadUptime();
+}
+async function upToggle(id, enabled){
+  try{ await fetch('/api/uptime/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}); }catch(e){}
+  loadUptime();
+}
+function upSyncTypeUI(){
+  const t=document.getElementById('up_type').value;
+  const tl=document.getElementById('up_target_label');
+  const inp=document.getElementById('up_target');
+  const exp=document.getElementById('up_expected_wrap');
+  if(t==='tcp'){ tl.textContent=I18N.t('uptime.f_target_tcp','Host:port'); inp.placeholder='db.lan:5432'; exp.style.display='none'; }
+  else{ tl.textContent=I18N.t('uptime.f_target_http','URL'); inp.placeholder='https://example.com'; exp.style.display=''; }
+}
+async function upAdd(){
+  const errEl=document.getElementById('up_form_err'); errEl.style.display='none';
+  const body={
+    label: document.getElementById('up_label').value,
+    type: document.getElementById('up_type').value,
+    target: document.getElementById('up_target').value,
+    interval_sec: document.getElementById('up_interval').value,
+    timeout_sec: document.getElementById('up_timeout').value,
+  };
+  const ev=document.getElementById('up_expected').value;
+  if(body.type==='http' && ev) body.expected_status=ev;
+  let r; try{ r=await fetch('/api/uptime',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+  catch(e){ errEl.textContent=I18N.t('uptime.err_network','Could not reach the server.'); errEl.style.display='block'; return; }
+  const jj=await r.json().catch(()=>({}));
+  if(!r.ok){ errEl.textContent=jj.error||I18N.t('uptime.err_generic','Could not add the check.'); errEl.style.display='block'; return; }
+  document.getElementById('up_label').value=''; document.getElementById('up_target').value='';
+  document.getElementById('up_expected').value='';
+  document.getElementById('upaddbox').open=false;
+  loadUptime();
+}
+function wireUptime(){
+  const ts=document.getElementById('up_type'); if(ts){ ts.onchange=upSyncTypeUI; upSyncTypeUI(); }
+  const ab=document.getElementById('up_add_btn'); if(ab) ab.onclick=upAdd;
+}
+
 async function loadAlerts(){
   let j; try{ j=await(await fetch('/api/settings')).json(); }catch(e){ return; }
   const s=j.settings||{};
@@ -6348,6 +6528,7 @@ function refreshLocalOnlyNotices(){
 // ── Wire-up ───────────────────────────────────────────────────────────────────
 mountShell();
 buildNav();
+wireUptime();
 I18N.captureDefaults();  // record English (incl. heading emoji) before applyIcons strips it
 applyIcons();        // swap heading emoji for the SVG icon family (static markup + brand logo)
 initTheme();
