@@ -1888,6 +1888,55 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
         <button class="rb" id="intg_mlflow_sync" data-i18n="btn.sync_now">Sync now</button>
       </div>
       <div id="intg_status" class="cap" style="margin-top:6px"></div>
+
+      <!-- ── Home Assistant / MQTT (push) ── -->
+      <div class="card-sub" style="font-weight:600;margin-top:20px" data-i18n="mqtt.title">🏠 Home Assistant / MQTT (push)</div>
+      <p class="cap" style="margin:4px 0" data-i18n="mqtt.cap">Publish your key metrics to an MQTT broker with Home Assistant auto-discovery — the lab shows up as native HA sensors (GPU util/VRAM/power/temp, total power, cost MTD/projected, anomaly, uptime) grouped under one device. Publish-only: the monitor never subscribes and never controls anything. Off by default.</p>
+
+      <label style="display:flex;align-items:center;gap:9px;margin:8px 0">
+        <input type="checkbox" id="mqtt_enabled">
+        <span data-i18n-html="mqtt.enable"><b>Enable MQTT publishing</b> — off until a broker host is filled in below.</span>
+      </label>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;max-width:680px">
+        <div>
+          <div class="flabel" data-i18n="mqtt.host">Broker host</div>
+          <input type="text" id="mqtt_host" placeholder="homeassistant.lan" autocomplete="off" spellcheck="false" class="field">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="mqtt.port">Port</div>
+          <input type="number" id="mqtt_port" placeholder="1883" min="1" max="65535" class="field">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="mqtt.user">Username (optional)</div>
+          <input type="text" id="mqtt_user" placeholder="mqtt-user" autocomplete="off" spellcheck="false" class="field">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="mqtt.pass">Password (optional)</div>
+          <input type="password" id="mqtt_pass" autocomplete="new-password" class="field">
+          <div class="cap" id="mqtt_pass_state" style="margin-top:4px"></div>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="mqtt.prefix">Discovery prefix</div>
+          <input type="text" id="mqtt_prefix" placeholder="homeassistant" autocomplete="off" spellcheck="false" class="field">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="mqtt.interval">Publish interval (s)</div>
+          <input type="number" id="mqtt_interval" placeholder="30" min="10" max="3600" class="field">
+        </div>
+        <div>
+          <label style="display:flex;align-items:center;gap:9px;margin-top:22px">
+            <input type="checkbox" id="mqtt_tls">
+            <span data-i18n="mqtt.tls">Use TLS</span>
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="rb on" id="mqtt_save" data-i18n="btn.save">Save</button>
+        <button class="rb" id="mqtt_test" data-i18n="mqtt.test">Test connection &amp; publish now</button>
+      </div>
+      <div id="mqtt_state" class="cap" style="margin-top:8px" aria-live="polite"></div>
     </div><!-- /set-pane-integrations -->
   </div>
 </section>
@@ -3910,6 +3959,20 @@ async function loadAlerts(){
   const mu=document.getElementById('al_mlflow_uri'); if(mu) mu.value = s.mlflow_uri||'';
   const mts=document.getElementById('al_mlflow_token_state');
   if(mts) mts.textContent = s.mlflow_token_set ? 'A token is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.' : 'No token saved.';
+  // ── Home Assistant / MQTT fields (password is a secret: *_set + CLEAR pattern) ──
+  const mqEn=document.getElementById('mqtt_enabled'); if(mqEn) mqEn.checked = s.mqtt_enabled==='1';
+  const setV=(id,v)=>{const el=document.getElementById(id); if(el) el.value=v;};
+  setV('mqtt_host', s.mqtt_host||''); setV('mqtt_port', s.mqtt_port||'1883');
+  setV('mqtt_user', s.mqtt_user||''); setV('mqtt_prefix', s.mqtt_prefix||'homeassistant');
+  setV('mqtt_interval', s.mqtt_interval_sec||'30');
+  const mqTls=document.getElementById('mqtt_tls'); if(mqTls) mqTls.checked = s.mqtt_tls==='1';
+  const mqp=document.getElementById('mqtt_pass');
+  if(!ALERTS_LOADED && mqp){ mqp.value=''; mqp.placeholder = s.mqtt_pass_set ? '•••••• saved — type to replace' : ''; }
+  const mqps=document.getElementById('mqtt_pass_state');
+  if(mqps) mqps.textContent = s.mqtt_pass_set
+    ? I18N.t('mqtt.pass_saved','A password is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.')
+    : I18N.t('mqtt.pass_none','No password saved.');
+  refreshMqttStatus();
   buildCountrySelect().then(()=>{ document.getElementById('al_country').value = s.country||''; });
   setTariffMode(s.tariff_mode==='dual');
   // The webhook is a secret — server only returns whether one is set.
@@ -6997,7 +7060,58 @@ function intgStatus(level,msg){
     if(j.ok){ intgStatus('ok','Synced '+(j.synced||0)+' run(s) from MLflow.'); if(TAB==='experiments') renderRuns(); } else intgStatus('err','Sync failed: '+(j.error||'')); };
   const rs=document.getElementById('runs-status');
   if(rs) rs.onchange=()=>renderRuns();
+  const mqs=document.getElementById('mqtt_save'); if(mqs) mqs.onclick=saveMqtt;
+  const mqt=document.getElementById('mqtt_test'); if(mqt) mqt.onclick=testMqtt;
 })();
+
+function _mqttBodyFromForm(){
+  const v=id=>(document.getElementById(id)||{}).value;
+  const body={
+    mqtt_enabled:  document.getElementById('mqtt_enabled').checked?'1':'0',
+    mqtt_host:     (v('mqtt_host')||'').trim(),
+    mqtt_port:     String(parseInt(v('mqtt_port')||'1883',10)||1883),
+    mqtt_user:     (v('mqtt_user')||'').trim(),
+    mqtt_tls:      document.getElementById('mqtt_tls').checked?'1':'0',
+    mqtt_prefix:   (v('mqtt_prefix')||'homeassistant').trim()||'homeassistant',
+    mqtt_interval_sec: String(Math.max(10,parseInt(v('mqtt_interval')||'30',10)||30)),
+  };
+  // Password is a secret — only send if the user typed something; CLEAR removes.
+  const pw=v('mqtt_pass');
+  if(pw==='CLEAR'){ body.mqtt_pass=''; }
+  else if(pw && pw.trim()){ body.mqtt_pass=pw; }
+  return body;
+}
+async function saveMqtt(){
+  const body=_mqttBodyFromForm();
+  try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+  catch(e){ intgStatus('err','Could not save: '+e); return; }
+  const mqp=document.getElementById('mqtt_pass'); if(mqp) mqp.value='';
+  ALERTS_LOADED=false; await loadAlerts();
+  intgStatus('ok',I18N.t('toast.settings_saved','Settings saved.'));
+}
+async function testMqtt(){
+  const ms=document.getElementById('mqtt_state');
+  if(ms) ms.textContent=I18N.t('mqtt.testing','Testing broker connection…');
+  // Reuse the live form values (incl. a freshly-typed password) so the user can
+  // test before saving. CLEAR / blank means "use the saved password".
+  const body=_mqttBodyFromForm(); delete body.mqtt_enabled;
+  let j; try{ j=await(await fetch('/api/mqtt/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
+  catch(e){ if(ms) ms.textContent=I18N.t('mqtt.test_fail','Test failed: ')+e; return; }
+  if(j.ok){ intgStatus('ok', j.message||'Connected ✓');
+    if(ms) ms.textContent='✓ '+(j.message||I18N.t('mqtt.test_ok','Connected and published.')); }
+  else { intgStatus('err', j.error||'failed');
+    if(ms) ms.textContent='✕ '+I18N.t('mqtt.test_fail','Test failed: ')+(j.error||''); }
+  refreshMqttStatus();
+}
+async function refreshMqttStatus(){
+  const ms=document.getElementById('mqtt_state'); if(!ms) return;
+  let j; try{ j=await(await fetch('/api/mqtt/status')).json(); }catch(e){ return; }
+  if(!j.enabled){ ms.textContent=I18N.t('mqtt.status_off','Publisher is off.'); return; }
+  if(!j.configured){ ms.textContent=I18N.t('mqtt.status_unconf','Enabled but no broker host set.'); return; }
+  const when=j.last_publish?new Date(j.last_publish*1000).toLocaleTimeString():'—';
+  if(j.connected) ms.textContent=I18N.t('mqtt.status_conn','Connected.')+' '+I18N.t('mqtt.status_last','Last publish: ')+when;
+  else ms.textContent=I18N.t('mqtt.status_disc','Not connected.')+(j.last_error?' '+esc(j.last_error):'');
+}
 
 document.getElementById('bk_download').onclick = downloadBackup;
 document.getElementById('bk_restore_btn').onclick = () => document.getElementById('bk_file').click();

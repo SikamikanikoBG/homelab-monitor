@@ -3761,8 +3761,22 @@ SETTING_DEFAULTS = {
     "digest_time":         "08:00",    # local time-of-day "HH:MM" to push the daily digest
     "digest_channel":      "all",      # which configured channel: all/discord/ntfy/telegram/webhook
     "digest_last_sent":    "",         # internal: "YYYY-MM-DD" of the last send (edge-trigger guard)
+    # ── Home Assistant / MQTT auto-discovery (E4) — OFF by default, inert until enabled ─
+    # PUBLISH-ONLY: the monitor pushes its key metrics out to an MQTT broker with
+    # HA discovery payloads so the lab shows up as native HA sensors. It NEVER
+    # subscribes (no inbound command path = no remote-control attack surface) and
+    # NEVER mutates the host. Pure-stdlib socket/ssl client. When mqtt_enabled=0
+    # or no host: the publisher thread idles — ZERO connections, ZERO new behaviour.
+    "mqtt_enabled":        "0",        # "0" / "1" — master switch
+    "mqtt_host":           "",         # broker hostname/IP (blank => off, even if enabled)
+    "mqtt_port":           "1883",     # broker TCP port (8883 typical for TLS)
+    "mqtt_user":           "",         # optional username (not a secret on its own)
+    "mqtt_pass":           "",         # SECRET — broker password; redacted like other secrets
+    "mqtt_tls":            "0",        # "0" / "1" — wrap the socket in TLS
+    "mqtt_prefix":         "homeassistant",  # HA discovery topic prefix
+    "mqtt_interval_sec":   "30",       # seconds between state publishes (min ~10)
 }
-SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
+SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
 def get_settings():
     """Return the full settings dict (defaults + persisted overrides)."""
@@ -8597,6 +8611,352 @@ def _extra_metrics_text():
 
     return "\n".join(out) + ("\n" if out else "")
 
+# ── Home Assistant / MQTT auto-discovery publisher (E4) ──────────────────────
+# A pure-stdlib (socket/ssl/struct) MQTT 3.1.1 PUBLISH-ONLY client. When enabled
+# + configured, a dedicated daemon thread publishes retained HA discovery configs
+# and then periodic JSON state, so the lab shows up as native Home Assistant
+# sensors under one "HomeLab Monitor" device.
+#
+# ISOLATION MODEL (critical): the publisher runs on its OWN daemon thread, fully
+# isolated. Every network op is wrapped — ALL exceptions are caught and turned
+# into a recorded last_error + backoff. Metric values are read OUTSIDE any held
+# lock (we snapshot them, then send). It never holds LOCK across a socket op.
+# A missing / wrong / unreachable broker can therefore NEVER raise into, stall,
+# or slow the sampler, the dashboard, or any request — worst case the thread
+# sleeps and retries. When disabled / unconfigured it makes ZERO connections.
+#
+# SAFE-BY-DESIGN: this client only ever sends CONNECT / PUBLISH / PINGREQ /
+# DISCONNECT. It NEVER sends SUBSCRIBE and never reads application messages, so
+# there is no inbound command path — the broker cannot drive any action here.
+
+# Each metric we expose as an HA sensor: (sensor key, friendly name,
+# device_class|None, unit|None, json key in the shared state payload, icon|None).
+_MQTT_SENSORS = (
+    ("gpu_util",        "GPU Utilisation",   None,          "%",   "gpu_util",        "mdi:expansion-card"),
+    ("gpu_vram_used",   "GPU VRAM Used",     "data_size",   "MB",  "gpu_vram_used",   "mdi:memory"),
+    ("gpu_power",       "GPU Power",         "power",        "W",   "gpu_power",       "mdi:flash"),
+    ("gpu_temp",        "GPU Temperature",   "temperature", "°C",  "gpu_temp",        "mdi:thermometer"),
+    ("power_total",     "Total Power",       "power",        "W",   "power_total",     "mdi:flash"),
+    ("cost_mtd",        "Energy Cost MTD",   "monetary",     None,  "cost_mtd",        "mdi:cash"),
+    ("cost_projected",  "Energy Cost Projected", "monetary", None,  "cost_projected",  "mdi:cash-clock"),
+    ("anomaly_active",  "Anomaly Active",    None,           None,  "anomaly_active",  "mdi:alert-decagram"),
+    ("uptime_up",       "Uptime Checks Up",  None,           None,  "uptime_up",       "mdi:check-network"),
+    ("uptime_total",    "Uptime Checks Total", None,         None,  "uptime_total",    "mdi:format-list-numbered"),
+)
+
+def _mqtt_collect_state():
+    """Snapshot the SAME already-computed metric values the /metrics endpoint
+    exposes, as a flat dict for the JSON state topic. Never raises; a failing
+    block simply leaves that key absent. Reads outside any held lock except the
+    brief, bounded LOCK the cost/anomaly helpers take internally (same as the
+    Prometheus path) — never held across a socket op."""
+    now = int(time.time())
+    state, attrs = {}, {}
+    try:
+        state["gpu_util"]      = round(float(LATEST.get("util") or 0), 1)
+        state["gpu_vram_used"] = int(LATEST.get("mem_used") or 0)
+        state["gpu_vram_total"] = int(LATEST.get("mem_total") or 0)
+        state["gpu_power"]     = round(float(LATEST.get("power") or 0), 1)
+        state["gpu_temp"]      = round(float(LATEST.get("temp") or 0), 1)
+    except Exception:
+        pass
+    try:
+        state["power_total"] = round((LATEST.get("power") or 0)
+                                     + (LATEST.get("cpu_power") or 0)
+                                     + (LATEST.get("dram_power") or 0), 1)
+    except Exception:
+        pass
+    # Per-disk fill % as a JSON-attributes blob (one sensor would be noisy; the
+    # disks ride along as attributes on the state topic for HA templating).
+    try:
+        disks = {}
+        for d in ((LATEST.get("host") or {}).get("disks") or []):
+            mp = d.get("mount")
+            if mp and d.get("pct") is not None:
+                disks[mp] = d["pct"]
+        if disks:
+            attrs["disk_fill_pct"] = disks
+    except Exception:
+        pass
+    try:
+        ctx = _cost_ctx()
+        with LOCK:
+            cm = _cost_projection(DB.cursor(), ctx, now)
+        if cm.get("enabled"):
+            state["cost_mtd"]       = cm.get("month_to_date")
+            state["cost_projected"] = cm.get("projected_month")
+            attrs["currency"]       = cm.get("currency", "")
+    except Exception:
+        pass
+    try:
+        with LOCK:
+            anom = _zscore_anomalies(DB.cursor(), now)
+        items = anom.get("items") or []
+        state["anomaly_active"] = "on" if items else "off"
+        if items:
+            attrs["anomaly_series"] = [it.get("key") for it in items]
+    except Exception:
+        pass
+    try:
+        ov = uptime_overview()
+        checks = ov.get("checks") or []
+        up = sum(1 for c in checks if (c.get("state") or c.get("status")) == "up")
+        state["uptime_total"] = len(checks)
+        state["uptime_up"]    = up
+    except Exception:
+        pass
+    if attrs:
+        state["_attributes"] = attrs
+    return state
+
+# ── Minimal MQTT 3.1.1 packet encoders (publish-only) ────────────────────────
+def _mqtt_remaining_length(n):
+    """Encode an MQTT 'Remaining Length' as a 1–4 byte varint (MQTT 3.1.1 §2.2.3)."""
+    if n < 0 or n > 268435455:
+        raise ValueError("remaining length out of range")
+    out = bytearray()
+    while True:
+        digit = n % 128
+        n //= 128
+        if n > 0:
+            digit |= 0x80
+        out.append(digit)
+        if n <= 0:
+            break
+    return bytes(out)
+
+def _mqtt_str(s):
+    """Encode a UTF-8 string with a 2-byte big-endian length prefix (§1.5.3)."""
+    b = s.encode("utf-8")
+    if len(b) > 0xFFFF:
+        raise ValueError("mqtt string too long")
+    return struct.pack(">H", len(b)) + b
+
+def _mqtt_connect_packet(client_id, username=None, password=None, keepalive=60):
+    """Build a CONNECT packet (protocol level 4 / MQTT 3.1.1, clean session)."""
+    var = _mqtt_str("MQTT") + bytes([0x04])     # protocol name + level
+    flags = 0x02                                # clean session
+    if username:
+        flags |= 0x80
+        if password is not None:
+            flags |= 0x40
+    var += bytes([flags]) + struct.pack(">H", int(keepalive))
+    payload = _mqtt_str(client_id)
+    if username:
+        payload += _mqtt_str(username)
+        if password is not None:
+            payload += _mqtt_str(password)
+    body = var + payload
+    return bytes([0x10]) + _mqtt_remaining_length(len(body)) + body
+
+def _mqtt_publish_packet(topic, payload, retain=False, qos=0):
+    """Build a PUBLISH packet. QoS 0 only (no packet id) — fine for sensor
+    state; retain=True is used for discovery configs so HA keeps them."""
+    if qos != 0:
+        raise ValueError("only QoS 0 supported (publish-only client)")
+    header = 0x30 | (0x01 if retain else 0x00)
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    body = _mqtt_str(topic) + payload
+    return bytes([header]) + _mqtt_remaining_length(len(body)) + body
+
+def _mqtt_disconnect_packet():
+    return bytes([0xE0, 0x00])
+
+def _mqtt_pingreq_packet():
+    return bytes([0xC0, 0x00])
+
+def _mqtt_device_block():
+    """Shared HA `device` block so all sensors group under one device."""
+    return {"identifiers": ["homelab_monitor"], "name": "HomeLab Monitor",
+            "manufacturer": "HomeLab Monitor", "model": "GPU/host monitor",
+            "sw_version": VERSION}
+
+def _mqtt_discovery_messages(prefix):
+    """Return a list of (topic, payload_json, retain) for the retained HA
+    discovery config topics — one per sensor, plus the shared device block."""
+    prefix = (prefix or "homeassistant").strip().strip("/") or "homeassistant"
+    state_topic = "homelab/monitor/state"
+    dev = _mqtt_device_block()
+    msgs = []
+    for key, name, dclass, unit, jkey, icon in _MQTT_SENSORS:
+        cfg = {
+            "name": name,
+            "unique_id": "homelab_" + key,
+            "object_id": "homelab_" + key,
+            "state_topic": state_topic,
+            "value_template": "{{ value_json.%s }}" % jkey,
+            "json_attributes_topic": state_topic,
+            "json_attributes_template": "{{ value_json._attributes | default({}) | tojson }}",
+            "availability_topic": "homelab/monitor/availability",
+            "device": dev,
+        }
+        if dclass:
+            cfg["device_class"] = dclass
+        if unit:
+            cfg["unit_of_measurement"] = unit
+        if icon:
+            cfg["icon"] = icon
+        topic = "%s/sensor/homelab_%s/config" % (prefix, key)
+        msgs.append((topic, json.dumps(cfg, separators=(",", ":")), True))
+    return msgs
+
+# Live status surfaced in the UI (no secrets). Updated only by the publisher
+# thread + the test endpoint; read under _MQTT_LOCK.
+_MQTT_LOCK = threading.Lock()
+_MQTT_STATUS = {"connected": False, "last_publish": None, "last_error": None,
+                "last_attempt": None, "publishes": 0}
+
+def _mqtt_set_status(**kw):
+    with _MQTT_LOCK:
+        _MQTT_STATUS.update(kw)
+
+def _mqtt_sanitize_err(exc):
+    """Human-safe error text that never echoes broker creds. We control every
+    message we raise; for socket/ssl errors we map to a coarse, safe string."""
+    if isinstance(exc, socket.timeout):
+        return "connection timed out"
+    if isinstance(exc, socket.gaierror):
+        return "host not found"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection refused"
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+        return "connection reset by broker"
+    if isinstance(exc, OSError):
+        # errno-based, no host/cred content
+        return "network error" + (f" (errno {exc.errno})" if getattr(exc, "errno", None) else "")
+    msg = str(exc)
+    return msg if msg else exc.__class__.__name__
+
+_MQTT_CONNACK_CODES = {
+    0: "accepted", 1: "unacceptable protocol version", 2: "client id rejected",
+    3: "broker unavailable", 4: "bad username or password", 5: "not authorised",
+}
+
+def _mqtt_open(host, port, tls, timeout=4.0):
+    """Open a (optionally TLS) TCP socket to the broker with a short timeout.
+    Caller is responsible for closing. Raises on failure (caught upstream)."""
+    sock = socket.create_connection((host, int(port)), timeout=timeout)
+    sock.settimeout(timeout)
+    if tls:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+    return sock
+
+def _mqtt_read_connack(sock):
+    """Read a CONNACK (4 bytes: 0x20 0x02 flags rc). Returns the return code.
+    Raises on a malformed/short response or a non-zero code."""
+    hdr = b""
+    while len(hdr) < 4:
+        chunk = sock.recv(4 - len(hdr))
+        if not chunk:
+            raise OSError("broker closed connection before CONNACK")
+        hdr += chunk
+    if hdr[0] != 0x20 or hdr[1] != 0x02:
+        raise OSError("unexpected CONNACK from broker")
+    rc = hdr[3]
+    if rc != 0:
+        raise OSError("broker rejected connection: " + _MQTT_CONNACK_CODES.get(rc, f"code {rc}"))
+    return rc
+
+def _mqtt_session_publish(cfg, publish_discovery=True):
+    """Open ONE connection, CONNECT, optionally publish retained discovery
+    configs, publish the availability=online + current state, DISCONNECT, close.
+    Returns the number of messages published. Raises on any failure (callers
+    wrap this). NEVER subscribes. cfg is a plain dict (no shared mutable state)."""
+    sock = _mqtt_open(cfg["host"], cfg["port"], cfg["tls"])
+    published = 0
+    try:
+        cid = "homelab-monitor-" + uuid.uuid4().hex[:8]
+        sock.sendall(_mqtt_connect_packet(cid, cfg.get("user") or None,
+                                          cfg.get("pass") if cfg.get("user") else None,
+                                          keepalive=60))
+        _mqtt_read_connack(sock)
+        prefix = cfg.get("prefix") or "homeassistant"
+        if publish_discovery:
+            for topic, payload, retain in _mqtt_discovery_messages(prefix):
+                sock.sendall(_mqtt_publish_packet(topic, payload, retain=retain))
+                published += 1
+        # availability (retained) + current state
+        sock.sendall(_mqtt_publish_packet("homelab/monitor/availability", "online", retain=True))
+        published += 1
+        st = _mqtt_collect_state()
+        sock.sendall(_mqtt_publish_packet("homelab/monitor/state",
+                                          json.dumps(st, separators=(",", ":")), retain=True))
+        published += 1
+        try:
+            sock.sendall(_mqtt_disconnect_packet())
+        except Exception:
+            pass
+        return published
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+def _mqtt_cfg_from_settings(s):
+    """Extract a publisher config dict from settings, or None if not
+    enabled/configured (so the thread stays inert). Validates the interval."""
+    if (s.get("mqtt_enabled") or "0") != "1":
+        return None
+    host = (s.get("mqtt_host") or "").strip()
+    if not host:
+        return None
+    try:
+        port = int(s.get("mqtt_port") or 1883)
+    except (TypeError, ValueError):
+        port = 1883
+    try:
+        interval = max(10, int(s.get("mqtt_interval_sec") or 30))
+    except (TypeError, ValueError):
+        interval = 30
+    return {"host": host, "port": port, "tls": (s.get("mqtt_tls") or "0") == "1",
+            "user": (s.get("mqtt_user") or "").strip(),
+            "pass": s.get("mqtt_pass") or "",
+            "prefix": (s.get("mqtt_prefix") or "homeassistant").strip() or "homeassistant",
+            "interval": interval}
+
+def mqtt_worker():
+    """Dedicated daemon loop. Idles (zero connections) while disabled/unconfigured.
+    When enabled: connects, publishes discovery once per (re)connect, then state
+    every interval. ALL exceptions are caught, recorded as last_error, and met
+    with a capped backoff so a bad broker can never crash or stall anything."""
+    backoff = 5
+    discovery_sent = False
+    while True:
+        try:
+            cfg = _mqtt_cfg_from_settings(get_settings())
+        except Exception:
+            cfg = None
+        if not cfg:
+            # Disabled / unconfigured: stay completely inert.
+            with _MQTT_LOCK:
+                if _MQTT_STATUS["connected"]:
+                    _MQTT_STATUS["connected"] = False
+            discovery_sent = False
+            time.sleep(5)
+            continue
+        try:
+            _mqtt_set_status(last_attempt=int(time.time()))
+            n = _mqtt_session_publish(cfg, publish_discovery=not discovery_sent)
+            discovery_sent = True
+            backoff = 5
+            with _MQTT_LOCK:
+                _MQTT_STATUS["connected"] = True
+                _MQTT_STATUS["last_publish"] = int(time.time())
+                _MQTT_STATUS["last_error"] = None
+                _MQTT_STATUS["publishes"] += n
+            time.sleep(cfg["interval"])
+        except Exception as e:
+            discovery_sent = False     # re-send discovery after a reconnect
+            with _MQTT_LOCK:
+                _MQTT_STATUS["connected"] = False
+                _MQTT_STATUS["last_error"] = _mqtt_sanitize_err(e)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 120)
+
 @app.route("/metrics")
 def metrics():
     """Prometheus text-format scrape endpoint.
@@ -8984,6 +9344,47 @@ def api_settings():
         save_settings(updates)
     return jsonify({"version": VERSION, "settings": _public_settings()})
 
+@app.route("/api/mqtt/status")
+def api_mqtt_status():
+    """Live publisher status (no secrets) for the Settings UI."""
+    s = get_settings()
+    with _MQTT_LOCK:
+        st = dict(_MQTT_STATUS)
+    st["enabled"] = (s.get("mqtt_enabled") or "0") == "1"
+    st["configured"] = bool((s.get("mqtt_host") or "").strip())
+    return jsonify(st)
+
+@app.route("/api/mqtt/test", methods=["POST"])
+def api_mqtt_test():
+    """Attempt ONE connect + discovery + state publish using the body's settings
+    (falling back to the saved ones), WITHOUT enabling the integration. Returns a
+    clean ok/error — never a 500, never echoes broker credentials. Body may carry
+    a fresh mqtt_pass; the literal 'CLEAR' and the masked placeholder are treated
+    as 'use the saved password'."""
+    body = request.get_json(silent=True) or {}
+    s = get_settings()
+    host = (body.get("mqtt_host") if body.get("mqtt_host") is not None else s.get("mqtt_host")) or ""
+    host = host.strip()
+    if not host:
+        return jsonify({"ok": False, "error": "not configured — set a broker host first"}), 200
+    pw = body.get("mqtt_pass")
+    if pw is None or pw == "" or pw == "CLEAR":
+        pw = s.get("mqtt_pass") or ""     # keep the saved one
+    cfg = {
+        "host": host,
+        "port": int(body.get("mqtt_port") or s.get("mqtt_port") or 1883) if str(body.get("mqtt_port") or s.get("mqtt_port") or "1883").isdigit() else 1883,
+        "tls": (str(body.get("mqtt_tls") if body.get("mqtt_tls") is not None else s.get("mqtt_tls")) == "1"),
+        "user": ((body.get("mqtt_user") if body.get("mqtt_user") is not None else s.get("mqtt_user")) or "").strip(),
+        "pass": pw,
+        "prefix": ((body.get("mqtt_prefix") if body.get("mqtt_prefix") is not None else s.get("mqtt_prefix")) or "homeassistant").strip() or "homeassistant",
+    }
+    try:
+        n = _mqtt_session_publish(cfg, publish_discovery=True)
+        return jsonify({"ok": True, "published": n,
+                        "message": f"Connected and published {n} message(s)."}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": _mqtt_sanitize_err(e)}), 200
+
 @app.route("/api/notify/test", methods=["POST"])
 def api_notify_test():
     """Send a one-shot test alert using the currently saved settings."""
@@ -9144,6 +9545,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=collector, daemon=True).start()
     threading.Thread(target=host_poller, daemon=True).start()
     threading.Thread(target=uptime_worker, daemon=True).start()
+    threading.Thread(target=mqtt_worker, daemon=True).start()
 
 if __name__ == "__main__":
     print(
