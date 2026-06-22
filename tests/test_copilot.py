@@ -214,5 +214,202 @@ class TestExplainEndpointGraceful(unittest.TestCase):
         self.assertTrue(r.get_json()["facts"])
 
 
+class TestAskRouting(unittest.TestCase):
+    """The ask-box's deterministic retrieval/routing: entity detection, topic
+    keyword routing, targeted retrieval, sources, bounds, fallback + degrade,
+    and the no-secret-leak guarantee. Uses synthetic HEALTH + DB rows; ollama is
+    forced off so the LLM path is deterministic (we assert on the routed facts)."""
+
+    def setUp(self):
+        self._latest = dict(app.LATEST)
+        self._health = dict(app.HEALTH)
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = False
+        # A small, realistic live fleet.
+        app.HEALTH["docker"] = {"available": True, "containers": [
+            {"name": "chroma", "state": "running", "status": "ok", "label": "Up 3 hours",
+             "mem_bytes": 1500 * 1048576, "vram_bytes": None, "uptime_s": 10800},
+            {"name": "ollama", "state": "running", "status": "ok", "label": "Up 1 day",
+             "mem_bytes": 800 * 1048576, "vram_bytes": 4000 * 1048576, "uptime_s": 86400},
+            {"name": "grafana", "state": "running", "status": "warn", "label": "unhealthy",
+             "mem_bytes": 120 * 1048576, "vram_bytes": None, "uptime_s": 200},
+        ], "summary": {"total": 3, "running": 3, "problems": 1}}
+        app.HEALTH["systemd"] = {"available": True, "services": [
+            {"name": "sshd.service", "active": "active", "status": "ok", "label": "running"},
+        ], "summary": {"loaded": 1, "running": 1, "failed": 0, "admin": 0}}
+        app.LATEST.update({"gpu_avail": True, "util": 60, "mem_used": 8000,
+                           "mem_total": 24000, "power": 200, "temp": 65,
+                           "models": [{"service": "ollama", "model": "gemma3:1b", "vram": 1500}]})
+        self.now = int(time.time())
+        with app.LOCK:
+            app.DB.execute("DELETE FROM power_proc")
+            app.DB.execute("DELETE FROM proc")
+            app.DB.execute("DELETE FROM events")
+            app.DB.execute("DELETE FROM disk_samples")
+            # cost rows: chroma is the priciest, then ollama
+            for k in range(50):
+                ts = self.now - k * 600
+                app.DB.execute("INSERT INTO power_proc VALUES(?,?,?,?)", (ts, "container", "chroma", 120))
+                app.DB.execute("INSERT INTO power_proc VALUES(?,?,?,?)", (ts, "container", "ollama", 40))
+                app.DB.execute("INSERT INTO power_proc VALUES(?,?,?,?)", (ts, "service", "sshd.service", 2))
+            # memory rows (last 10 min)
+            app.DB.execute("INSERT INTO proc VALUES(?,?,?)", (self.now - 60, "chroma", 1500))
+            app.DB.execute("INSERT INTO proc VALUES(?,?,?)", (self.now - 60, "ollama", 800))
+            # an OOM touching chroma
+            app.DB.execute("INSERT INTO events VALUES(?,?,?,?)",
+                           (self.now - 3600, "chroma", "oom", "killed chroma"))
+            # a filling disk
+            for k in range(8):
+                ts = self.now - (7 - k) * 86400
+                app.DB.execute("INSERT INTO disk_samples VALUES(?,?,?,?)",
+                               (ts, "/backup", 800 + k * 20, 1000))
+            # tariff so cost numbers render
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('kwh_price','0.30')")
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('currency','€')")
+            app.DB.commit()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app.LATEST.clear(); app.LATEST.update(self._latest)
+        app.HEALTH.clear(); app.HEALTH.update(self._health)
+        # Clean up the synthetic rows/settings so we don't leak into other tests'
+        # shared DB (e.g. a planted webhook_url would make digest tests see a
+        # configured channel).
+        with app.LOCK:
+            app.DB.execute("DELETE FROM power_proc")
+            app.DB.execute("DELETE FROM proc")
+            app.DB.execute("DELETE FROM events")
+            app.DB.execute("DELETE FROM disk_samples")
+            for k in ("kwh_price", "currency", "webhook_url", "telegram_token"):
+                app.DB.execute("DELETE FROM settings WHERE key=?", (k,))
+            app.DB.commit()
+
+    # ── entity detection ──────────────────────────────────────────────
+    def test_entity_match_real_container(self):
+        ents = app._ask_live_entities()
+        hits = app._ask_match_entities("why is chroma using so much ram?", ents)
+        self.assertIn(("chroma", "container"), [(h["name"], h["kind"]) for h in hits])
+
+    def test_entity_match_ignores_noise(self):
+        # 'grafanas' / substring must not falsely match 'grafana' (word boundary)
+        hits = app._ask_match_entities("how are things going generally today?")
+        self.assertEqual(hits, [])
+        # substring guard: 'ollamatron' should not match 'ollama'
+        hits2 = app._ask_match_entities("what is ollamatron?")
+        self.assertNotIn("ollama", [h["name"] for h in hits2])
+
+    def test_entity_match_model_name(self):
+        hits = app._ask_match_entities("how big is gemma3:1b right now?")
+        self.assertIn(("gemma3:1b", "model"), [(h["name"], h["kind"]) for h in hits])
+
+    # ── topic keyword routing ─────────────────────────────────────────
+    def test_topic_gpu(self):
+        self.assertIn("gpu", app._ask_detect_topics("is the gpu healthy?"))
+
+    def test_topic_disk(self):
+        self.assertIn("disk", app._ask_detect_topics("which disk is filling fastest?"))
+
+    def test_topic_cost(self):
+        self.assertIn("cost", app._ask_detect_topics("what's my most expensive container?"))
+
+    def test_topic_memory(self):
+        self.assertIn("memory", app._ask_detect_topics("which container uses the most ram?"))
+
+    def test_topic_uptime(self):
+        self.assertIn("uptime", app._ask_detect_topics("is anything down right now?"))
+
+    def test_topic_multiple(self):
+        t = app._ask_detect_topics("is the gpu hot and which disk is full?")
+        self.assertIn("gpu", t); self.assertIn("disk", t)
+
+    # ── targeted retrieval ────────────────────────────────────────────
+    def test_named_container_pulls_health_cost_oom(self):
+        facts, used, _ = app._ask_route("why is chroma using so much memory?", self.now)
+        joined = "\n".join(facts).lower()
+        self.assertIn("chroma", joined)
+        self.assertIn("container:chroma", used)
+        self.assertTrue(any("ram" in f.lower() or "1500" in f for f in facts))
+        self.assertIn("cost", used)      # per-entity MTD cost pulled
+        self.assertIn("events", used)    # OOM pulled
+
+    def test_most_expensive_pulls_top_entities(self):
+        facts, used, _ = app._ask_route("what's my most expensive container this month?", self.now)
+        joined = "\n".join(facts).lower()
+        self.assertIn("cost", used)
+        # chroma (120W) should rank above ollama (40W)
+        self.assertIn("chroma", joined)
+        ci, oi = joined.find("chroma"), joined.find("ollama")
+        self.assertTrue(ci != -1 and (oi == -1 or ci < oi))
+
+    def test_gpu_health_pulls_gpu_and_headroom(self):
+        facts, used, _ = app._ask_route("is the gpu healthy?", self.now)
+        self.assertIn("gpu", used)
+        self.assertTrue(any("GPU now" in f for f in facts))
+
+    def test_disk_pulls_fill_eta(self):
+        facts, used, _ = app._ask_route("which disk is filling fastest?", self.now)
+        self.assertIn("disk", used)
+        self.assertTrue(any("/backup" in f for f in facts))
+
+    # ── fallback + bounds + degrade ───────────────────────────────────
+    def test_no_match_returns_empty_for_generic_fallback(self):
+        facts, used, _ = app._ask_route("tell me a joke about the weather", self.now)
+        self.assertEqual(facts, [])
+        self.assertEqual(used, [])
+
+    def test_context_size_bounded(self):
+        big = ["fact number %d that is reasonably long " % i * 4 for i in range(100)]
+        bounded = app._ask_bound_facts(big)
+        self.assertLessEqual(len(bounded), app._ASK_MAX_FACTS)
+        self.assertLessEqual(sum(len(f) for f in bounded), app._ASK_MAX_CHARS)
+        self.assertTrue(all(len(f) <= app._ASK_MAX_LINE for f in bounded))
+
+    def test_endpoint_routes_and_returns_sources(self):
+        c = app.app.test_client()
+        r = c.post("/api/copilot/ask", json={"question": "is the gpu healthy?"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["routing"], "live")
+        self.assertIn("gpu", j["sources"])
+
+    def test_endpoint_generic_fallback_when_no_match(self):
+        c = app.app.test_client()
+        r = c.post("/api/copilot/ask", json={"question": "hello there friend"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["routing"], "generic")
+        self.assertTrue(j["facts"])  # generic digest facts, never empty
+
+    def test_llm_unreachable_returns_facts_summary_not_500(self):
+        # COPILOT_ENABLED is False (setUp) → _ollama_generate returns 'disabled'
+        c = app.app.test_client()
+        r = c.post("/api/copilot/ask", json={"question": "why is chroma using ram?"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")
+        self.assertEqual(j["llm_status"], "disabled")
+        self.assertTrue(j["facts_summary"])      # routed facts handed back, useful
+        self.assertIn("container:chroma", j["sources"])
+
+    def test_always_200_on_garbage(self):
+        c = app.app.test_client()
+        r = c.post("/api/copilot/ask", data="not json", content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+
+    def test_no_secret_leak_in_facts(self):
+        # Plant a secret-looking setting; the routed facts must never carry it.
+        with app.LOCK:
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('webhook_url','https://hooks.example/SECRETTOKEN')")
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('telegram_token','BOTSECRET123')")
+            app.DB.commit()
+        for q in ("is the gpu healthy?", "most expensive container?",
+                  "why is chroma using ram?", "which disk is filling?"):
+            facts, _, _ = app._ask_route(q, self.now)
+            blob = "\n".join(facts)
+            self.assertNotIn("SECRETTOKEN", blob)
+            self.assertNotIn("BOTSECRET123", blob)
+            self.assertNotIn("hooks.example", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

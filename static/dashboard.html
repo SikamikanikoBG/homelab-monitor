@@ -5955,12 +5955,25 @@ async function copilotAsk(){
   COPILOT_BUSY=true; out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
   let j; try{ j=await(await fetch('/api/copilot/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})).json(); }
   catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; COPILOT_BUSY=false; return; }
+  const srcLine=_copilotSourcesLine(j.sources);
   if(j.source==='llm' && j.answer){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div><div class="d" style="font-size:14px">'+esc(j.answer)+'</div></div></div>';
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+'</div>'+srcLine+'</div></div>';
+  }else if(j.facts_summary){
+    // LLM unavailable but routing still pulled live facts — show them (never a dead end).
+    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">📊</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.facts_summary)+'</div>'
+      +'<div class="muted" style="font-size:12px;margin-top:4px">'+esc(_copilotStatusNote(j.llm_status))+'</div>'+srcLine+'</div></div>';
   }else{
     out.innerHTML='<div class="muted">'+esc(_copilotStatusNote(j.llm_status))+'</div>';
   }
   COPILOT_BUSY=false;
+}
+// "based on: <chips>" transparency line under an answer. sources is a small list
+// like ['container:chroma','cost','anomalies']; all text XSS-escaped.
+function _copilotSourcesLine(sources){
+  if(!Array.isArray(sources) || !sources.length) return '';
+  if(sources.length===1 && sources[0]==='digest') return '';
+  const chips=sources.map(s=>'<span class="chip" style="font-size:11px;padding:1px 7px;margin:0 4px 0 0">'+esc(s)+'</span>').join('');
+  return '<div class="muted" style="font-size:11px;margin-top:6px">'+esc(I18N.t('copilot.based_on','based on'))+': '+chips+'</div>';
 }
 
 // ── LLM engine panel (GPU tab) — the AI Lab Cockpit's throughput surface ───────

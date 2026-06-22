@@ -6829,32 +6829,494 @@ def api_copilot_digest_send():
     return jsonify(out)
 
 
+# ── Copilot ask-box: live-data retrieval / routing ────────────────────────────
+# Upgrade the ask-box from "answers off a fixed digest bundle" to "answers off
+# the lab's OWN live data, routed to the question". A deterministic, LLM-free
+# routing step (cheap, no second round-trip) reads the question, detects (a) any
+# KNOWN entity name it mentions (matched against the live container/service/model
+# lists) and (b) topic intent via keyword sets, then pulls a COMPACT, relevant
+# fact slice from the SAME accessors that power the API/MCP layer. The routed
+# facts (clearly labelled) + the question go to the existing _ollama_generate.
+# A `sources` list names what data informed the answer (transparency). On no
+# match it falls back to the generic digest context (never worse than before);
+# on an LLM-down it returns the routed facts themselves as a readable summary.
+#
+# HARD bounds keep the prompt small for a local model: at most _ASK_MAX_FACTS
+# fact lines, each clipped to _ASK_MAX_LINE chars, total clipped to _ASK_MAX_CHARS.
+# READ-ONLY: pure telemetry reads, no host mutation, no new external calls. No
+# secrets/settings ever enter the fact set — only telemetry. Facts are assembled
+# OUTSIDE any held LOCK (the accessors take the non-reentrant LOCK themselves).
+
+_ASK_MAX_FACTS = 14       # cap injected fact lines
+_ASK_MAX_LINE  = 240      # cap chars per fact line
+_ASK_MAX_CHARS = 2200     # cap total injected fact chars (prompt stays small)
+
+# Topic intent keyword sets. A topic fires when any of its keywords appears as a
+# word-ish token in the (lower-cased) question. Multiple topics can fire.
+_ASK_TOPICS = {
+    "gpu":      ("gpu", "vram", "graphics", "cuda", "nvidia", "temperature", "temp",
+                 "hot", "overheat", "overheating", "power", "watt", "watts", "utilisation",
+                 "utilization", "util", "healthy", "health"),
+    "disk":     ("disk", "disks", "storage", "drive", "mount", "filesystem", "fill",
+                 "filling", "full", "space", "free", "/backup", "/data"),
+    "cost":     ("cost", "costs", "expensive", "cheap", "cheapest", "price", "pricey",
+                 "budget", "spend", "spending", "money", "bill", "energy", "kwh",
+                 "electricity", "eur", "euro", "euros", "dollar", "dollars"),
+    "memory":   ("memory", "ram", "mem", "oom", "killed", "leak", "leaking", "swap"),
+    "uptime":   ("uptime", "down", "downtime", "availability", "available", "offline",
+                 "online", "reachable", "outage"),
+    "incident": ("incident", "incidents", "anomaly", "anomalies", "anomalous", "spike",
+                 "spikes", "alert", "alerts", "weird", "wrong", "unusual"),
+    "container": ("container", "containers", "docker", "service", "services", "systemd",
+                  "restart", "restarts", "restarting", "crash", "crashing", "unhealthy"),
+}
+# Cost/expensive intent that should rank entities (top-N by cost).
+_ASK_RANK_HINTS = ("expensive", "cheap", "cheapest", "most", "biggest", "highest",
+                   "top", "largest", "priciest", "costly")
+
+
+def _ask_tokens(q):
+    """Lower-cased word-ish tokens from the question (letters/digits/_/-/./:/€/$),
+    for deterministic keyword + entity matching with sane boundaries."""
+    return set(re.findall(r"[a-z0-9_./:€$-]+", (q or "").lower()))
+
+
+def _ask_detect_topics(q):
+    """Return the set of topic keys whose keyword set intersects the question."""
+    toks = _ask_tokens(q)
+    if not toks:
+        return set()
+    out = set()
+    for topic, kws in _ASK_TOPICS.items():
+        if toks & set(kws):
+            out.add(topic)
+    return out
+
+
+def _ask_live_entities():
+    """Snapshot the live entity-name → kind map the question can match against:
+    container names, systemd service names, and currently-loaded model names.
+    Read-only over HEALTH / LATEST. Never raises. Names are returned verbatim
+    (the prompt escapes nothing — these are telemetry identifiers, no secrets)."""
+    ents = {}   # lower-name -> {"name": original, "kind": "container|service|model"}
+    try:
+        dock = (HEALTH.get("docker") or {})
+        for c in (dock.get("containers") or []):
+            nm = (c.get("name") or "").strip()
+            if nm:
+                ents.setdefault(nm.lower(), {"name": nm, "kind": "container"})
+    except Exception:
+        pass
+    try:
+        sysd = (HEALTH.get("systemd") or {})
+        for s in (sysd.get("services") or []):
+            nm = (s.get("name") or "").strip()
+            # systemd unit names carry a .service suffix; index both forms
+            if nm:
+                ents.setdefault(nm.lower(), {"name": nm, "kind": "service"})
+                base = re.sub(r"\.service$", "", nm)
+                if base and base.lower() not in ents:
+                    ents.setdefault(base.lower(), {"name": nm, "kind": "service"})
+    except Exception:
+        pass
+    try:
+        for m in (LATEST.get("models") or []):
+            nm = (m.get("model") or "").strip()
+            if nm:
+                ents.setdefault(nm.lower(), {"name": nm, "kind": "model"})
+    except Exception:
+        pass
+    return ents
+
+
+def _ask_match_entities(q, ents=None):
+    """Detect KNOWN entity names mentioned in the question. Matches against the
+    live name list (case-insensitive) with word-ish boundaries to avoid silly
+    substring false-hits (e.g. 'cat' must not match 'concatd'). Returns a list of
+    {"name","kind"} (de-duplicated, longest names first so 'stable-diffusion'
+    wins over a stray 'stable'). Bounded to a handful."""
+    if ents is None:
+        ents = _ask_live_entities()
+    if not ents:
+        return []
+    ql = " " + (q or "").lower() + " "
+    hits = []
+    seen = set()
+    # longest first: prefer the most specific name when several would match
+    for low in sorted(ents.keys(), key=len, reverse=True):
+        if len(low) < 2:
+            continue
+        # word-ish boundary: the name must be flanked by a non [a-z0-9] char.
+        pat = r"(?<![a-z0-9])" + re.escape(low) + r"(?![a-z0-9])"
+        if re.search(pat, ql):
+            e = ents[low]
+            key = (e["name"], e["kind"])
+            if key not in seen:
+                seen.add(key)
+                hits.append(e)
+        if len(hits) >= 4:
+            break
+    return hits
+
+
+def _ask_entity_facts(name, kind, now):
+    """Compact fact slice for one named entity: its live health/cpu/mem/restarts
+    (container/service), month-to-date energy cost via the per-entity power_proc
+    path, plus any recent OOM event or anomaly touching it. Returns (lines, srcs).
+    Read-only; assembled OUTSIDE the LOCK except for the bounded DB reads here."""
+    lines, srcs = [], []
+    cur_kind = kind
+    # live health from HEALTH snapshot
+    try:
+        if kind == "container":
+            for c in ((HEALTH.get("docker") or {}).get("containers") or []):
+                if (c.get("name") or "").lower() == name.lower():
+                    mem = c.get("mem_bytes")
+                    vram = c.get("vram_bytes")
+                    parts = ["state {}".format(c.get("state") or "?"),
+                             c.get("label") or c.get("status") or "?"]
+                    if mem:
+                        parts.append("RAM {} MB".format(round(mem / 1048576)))
+                    if vram:
+                        parts.append("VRAM {} MB".format(round(vram / 1048576)))
+                    if c.get("uptime_s"):
+                        parts.append("up {}h".format(round(c["uptime_s"] / 3600)))
+                    lines.append("Container {n}: {p}.".format(n=name, p=", ".join(parts)))
+                    srcs.append("container:" + name)
+                    break
+        elif kind == "service":
+            for s in ((HEALTH.get("systemd") or {}).get("services") or []):
+                if (s.get("name") or "").lower() == name.lower():
+                    parts = ["active {}".format(s.get("active") or s.get("sub") or "?")]
+                    if s.get("status"):
+                        parts.append(s.get("label") or s["status"])
+                    if s.get("mem_bytes"):
+                        parts.append("RAM {} MB".format(round(s["mem_bytes"] / 1048576)))
+                    if s.get("exit_status") is not None:
+                        parts.append("last exit {}".format(s["exit_status"]))
+                    lines.append("Service {n}: {p}.".format(n=name, p=", ".join(parts)))
+                    srcs.append("service:" + name)
+                    break
+        elif kind == "model":
+            for m in (LATEST.get("models") or []):
+                if (m.get("model") or "").lower() == name.lower():
+                    lines.append("Model {n}: {v} MB VRAM resident, served by {s}.".format(
+                        n=name, v=round(m.get("vram") or 0), s=m.get("service") or "?"))
+                    srcs.append("model:" + name)
+                    break
+    except Exception:
+        pass
+    # per-entity month-to-date energy cost from power_proc (the get_entity_cost path)
+    try:
+        ctx = _cost_ctx()
+        kwh_per = INTERVAL / 3_600_000.0
+        lt = time.localtime(now)
+        mstart = int(time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+        with LOCK:
+            cur = DB.cursor()
+            rows = cur.execute(
+                "SELECT ts, watts FROM power_proc WHERE name=? AND ts>=?",
+                (name, mstart)).fetchall()
+        if rows:
+            cost = 0.0
+            for ts, w in rows:
+                cost += (w or 0) * kwh_per * _price_at(ctx, ts)
+            if ctx.get("day", 0) > 0 and cost > 0:
+                lines.append("{n} cost month-to-date: {c}{v}.".format(
+                    n=name, c=ctx["currency"], v=round(cost, 2)))
+                if "cost" not in srcs:
+                    srcs.append("cost")
+    except Exception:
+        pass
+    # recent OOM event naming this entity
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            row = cur.execute(
+                "SELECT ts, detail FROM events WHERE service=? AND kind='oom' "
+                "AND ts>=? ORDER BY ts DESC LIMIT 1",
+                (name, now - 7 * 86400)).fetchone()
+        if row:
+            lines.append("Recent OOM kill touching {n}: {w}.".format(
+                n=name, w=time.strftime("%Y-%m-%d %H:%M", time.localtime(row[0]))))
+            if "events" not in srcs:
+                srcs.append("events")
+    except Exception:
+        pass
+    if not lines:
+        lines.append("No live detail found for '{n}' right now.".format(n=name))
+    return lines, srcs
+
+
+def _ask_topic_facts(topics, q, ctx, now):
+    """Compact fact slices for the detected topics, drawn from the same accessors
+    powering the API/MCP layer (and the already-assembled generic `ctx`). Returns
+    (lines, srcs). 'cost'+a rank hint pulls top-N entities by cost; 'gpu' pulls
+    util/temp/power/VRAM + headroom; 'disk' pulls per-mount fill% + ETA; etc."""
+    lines, srcs = [], []
+    toks = _ask_tokens(q)
+    wants_rank = bool(toks & set(_ASK_RANK_HINTS))
+
+    if "gpu" in topics:
+        g = ctx.get("gpu") or {}
+        if g.get("available") is False:
+            lines.append("No GPU detected on this host.")
+        else:
+            vt = g.get("vram_total_mb") or 0
+            vpct = round(100 * (g.get("vram_used_mb") or 0) / vt) if vt else None
+            lines.append("GPU now: {u}% util, {p} W, {t}°C, VRAM {vu}/{vt} MB{vp}.".format(
+                u=g.get("util_pct", 0), p=g.get("power_w", 0), t=g.get("temp_c", 0),
+                vu=g.get("vram_used_mb", 0), vt=vt,
+                vp=(" (%d%%)" % vpct) if vpct is not None else ""))
+            try:
+                with LOCK:
+                    vf = _vram_forecast(DB.cursor(), now)
+                if vf.get("free_gb") is not None:
+                    lines.append("GPU VRAM headroom: {f} GB free of {t} GB; trend {s}.".format(
+                        f=vf["free_gb"], t=vf.get("total_gb"), s=vf.get("status")))
+            except Exception:
+                pass
+        srcs.append("gpu")
+
+    if "disk" in topics:
+        try:
+            with LOCK:
+                disks = _disk_forecasts(DB.cursor(), now)
+            filling = sorted(
+                [d for d in disks if d.get("status") == "filling" and d.get("eta_days") is not None],
+                key=lambda d: d["eta_days"])
+            for d in filling[:3]:
+                lines.append("Disk {m} is {p}% full; fills in ~{n} days ({f} GB free).".format(
+                    m=d["mount"], p=d.get("pct"), n=d["eta_days"], f=d.get("free_gb")))
+            if not filling:
+                worst = sorted([d for d in disks if d.get("pct") is not None],
+                               key=lambda d: -d["pct"])[:2]
+                for d in worst:
+                    lines.append("Disk {m} is {p}% full ({f} GB free); not currently filling.".format(
+                        m=d["mount"], p=d.get("pct"), f=d.get("free_gb")))
+            srcs.append("disk")
+        except Exception:
+            pass
+
+    if "cost" in topics:
+        cm = ctx.get("cost_month") or {}
+        if cm.get("enabled"):
+            cur = cm.get("currency") or "$"
+            lines.append("Energy cost month-to-date {c}{m}; projected month {c}{p}.".format(
+                c=cur, m=cm.get("month_to_date"), p=cm.get("projected_month")))
+        # top-N entities by cost when the question asks who's most expensive
+        if wants_rank:
+            try:
+                top = _ask_top_cost_entities(now, n=5)
+                for e in top:
+                    lines.append("{k} {n}: {c}{v} over the last 30 days (~{w} W avg).".format(
+                        k=e["kind"], n=e["name"], c=e["currency"], v=e["cost"], w=e["avg_w"]))
+            except Exception:
+                pass
+        srcs.append("cost")
+
+    if "memory" in topics:
+        try:
+            with LOCK:
+                cur = DB.cursor()
+                rows = cur.execute(
+                    "SELECT service, MAX(mem) m FROM proc WHERE ts>=? "
+                    "GROUP BY service ORDER BY m DESC LIMIT 3", (now - 600,)).fetchall()
+                ooms = cur.execute(
+                    "SELECT ts, service FROM events WHERE kind='oom' AND ts>=? "
+                    "ORDER BY ts DESC LIMIT 2", (now - 7 * 86400,)).fetchall()
+            if rows:
+                top = ", ".join("{s} ({m} MB)".format(s=r[0], m=round(r[1] or 0)) for r in rows)
+                lines.append("Top memory consumers now: " + top + ".")
+            for ts, svc in ooms:
+                lines.append("OOM kill: {s} at {w}.".format(
+                    s=svc, w=time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))))
+            srcs.append("memory")
+        except Exception:
+            pass
+
+    if "incident" in topics:
+        anoms = ctx.get("anomalies") or []
+        for a in anoms[:2]:
+            lines.append("Anomaly: {k} {d} — {v}{u} vs ~{b}{u} baseline ({z}σ).".format(
+                k=a.get("key"), d=a.get("direction"), v=a.get("value"),
+                u=a.get("unit"), b=a.get("baseline"), z=a.get("z")))
+        if not anoms and ctx.get("anomaly_status") == "quiet":
+            lines.append("No anomalies: all monitored series are within normal range.")
+        srcs.append("anomalies")
+
+    if "uptime" in topics:
+        try:
+            dock = (HEALTH.get("docker") or {})
+            sysd = (HEALTH.get("systemd") or {})
+            dsum = dock.get("summary") or {}
+            ssum = sysd.get("summary") or {}
+            bits = []
+            if dock.get("available"):
+                bits.append("{r}/{t} containers running".format(
+                    r=dsum.get("running", 0), t=dsum.get("total", 0)))
+            if sysd.get("available"):
+                bits.append("{r} services running, {f} failed".format(
+                    r=ssum.get("running", 0), f=ssum.get("failed", 0)))
+            if bits:
+                lines.append("Availability: " + "; ".join(bits) + ".")
+                srcs.append("uptime")
+        except Exception:
+            pass
+
+    if "container" in topics:
+        try:
+            probs = []
+            for c in ((HEALTH.get("docker") or {}).get("containers") or []):
+                if c.get("status") in ("crit", "warn"):
+                    probs.append("{n} ({l})".format(n=c.get("name"), l=c.get("label") or c.get("status")))
+            for s in ((HEALTH.get("systemd") or {}).get("services") or []):
+                if s.get("status") in ("crit", "warn"):
+                    probs.append("{n} ({l})".format(n=s.get("name"), l=s.get("label") or s.get("status")))
+            if probs:
+                lines.append("Containers/services needing attention: " + ", ".join(probs[:4]) + ".")
+            else:
+                lines.append("All containers and services are healthy.")
+            srcs.append("health")
+        except Exception:
+            pass
+
+    return lines, srcs
+
+
+def _ask_top_cost_entities(now, n=5):
+    """Top-N power-attributed entities by energy cost over the last 30 days, from
+    power_proc (the same table get_costs ranks). Read-only. Returns a list of
+    {kind,name,cost,avg_w,currency}. Never raises (empty list on any error)."""
+    out = []
+    try:
+        ctx = _cost_ctx()
+        kwh_per = INTERVAL / 3_600_000.0
+        since = now - 30 * 86400
+        acc = {}
+        with LOCK:
+            cur = DB.cursor()
+            for ts, kind, name, watts in cur.execute(
+                    "SELECT ts,kind,name,watts FROM power_proc WHERE ts>=?", (since,)):
+                a = acc.setdefault((kind, name), [0.0, 0])
+                a[0] += (watts or 0) * kwh_per * _price_at(ctx, ts)
+                a[1] += 1
+        ranked = sorted(acc.items(), key=lambda kv: -kv[1][0])[:n]
+        for (kind, name), (cost, cnt) in ranked:
+            if cost <= 0:
+                continue
+            out.append({"kind": kind, "name": name, "cost": round(cost, 2),
+                        "avg_w": 0, "currency": ctx["currency"]})
+        # second pass for an honest avg-watts per ranked entity
+        if out:
+            with LOCK:
+                cur = DB.cursor()
+                for e in out:
+                    r = cur.execute(
+                        "SELECT AVG(watts) FROM power_proc WHERE kind=? AND name=? AND ts>=?",
+                        (e["kind"], e["name"], since)).fetchone()
+                    e["avg_w"] = round(r[0] or 0) if r else 0
+    except Exception:
+        return []
+    return out
+
+
+def _ask_route(question, now=None):
+    """Deterministic retrieval/routing for the ask-box. Detects entities + topics
+    in the question, pulls a compact relevant fact slice from the live accessors,
+    and bounds the result. Returns (facts, sources, used) where `used` is a small
+    transparency list (e.g. ['container:chroma','cost','anomalies']). On no match,
+    returns ([], [], []) so the caller falls back to the generic digest context.
+    Pure reads; the heavy `ctx` is built once and shared. Never raises."""
+    now = now or int(time.time())
+    facts, srcs = [], []
+    try:
+        ents = _ask_live_entities()
+        matched = _ask_match_entities(question, ents)
+        topics = _ask_detect_topics(question)
+        # generic ctx is reused by several topic slices (gpu/cost/anomalies)
+        ctx = _copilot_context(now)
+        for e in matched:
+            ef, es = _ask_entity_facts(e["name"], e["kind"], now)
+            facts.extend(ef)
+            srcs.extend(es)
+        if topics:
+            tf, ts_ = _ask_topic_facts(topics, question, ctx, now)
+            facts.extend(tf)
+            srcs.extend(ts_)
+    except Exception as e:
+        print("copilot ask route error:", e, flush=True)
+        return [], [], []
+    # de-dup sources preserving order
+    used, seen = [], set()
+    for s in srcs:
+        if s and s not in seen:
+            seen.add(s)
+            used.append(s)
+    facts = _ask_bound_facts(facts)
+    return facts, used, used
+
+
+def _ask_bound_facts(facts):
+    """Enforce the hard prompt-size bounds: clip each line, cap line count, and
+    cap the total character budget so a big lab can't make the prompt huge."""
+    out, total = [], 0
+    for f in facts:
+        if not f:
+            continue
+        f = f if len(f) <= _ASK_MAX_LINE else (f[:_ASK_MAX_LINE - 1] + "…")
+        if len(out) >= _ASK_MAX_FACTS:
+            break
+        if total + len(f) > _ASK_MAX_CHARS:
+            break
+        out.append(f)
+        total += len(f)
+    return out
+
+
 @app.route("/api/copilot/ask", methods=["POST"])
 def api_copilot_ask():
-    """Free-text question answered by the local LLM over the same assembled
-    context. Always 200; graceful `llm_status` when the LLM can't answer."""
+    """Free-text question answered by the local LLM over the lab's OWN live data,
+    routed to the question. A deterministic (LLM-free) routing step pulls the
+    relevant fact slice from the live accessors; on no match it falls back to the
+    generic digest context (never worse than before). Always 200; graceful
+    `llm_status` + the routed facts when the LLM can't answer. `sources` names
+    what data informed the answer."""
     try:
         payload = request.get_json(force=True, silent=True) or {}
     except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
         payload = {}
     question = (payload.get("question") or "").strip()
     now = int(time.time())
     if not question:
         return jsonify({"now": now, "answer": "", "source": "none",
-                        "llm_status": "no_question", "model": COPILOT_MODEL})
+                        "llm_status": "no_question", "model": COPILOT_MODEL,
+                        "sources": []})
     if len(question) > 500:
         question = question[:500]
-    ctx = _copilot_context(now)
-    facts = _copilot_facts(ctx)
+    # Deterministic retrieval: route the question to the relevant live facts.
+    routed, sources, used = _ask_route(question, now)
+    if routed:
+        facts = routed
+        routing = "live"
+    else:
+        # No specific entity/topic detected → generic digest context (fallback).
+        facts = _copilot_facts(_copilot_context(now))
+        sources = used = ["digest"]
+        routing = "generic"
     out = {"now": now, "model": COPILOT_MODEL, "question": question,
-           "facts": facts, "enabled": COPILOT_ENABLED}
+           "facts": facts, "sources": used, "routing": routing,
+           "enabled": COPILOT_ENABLED}
     text, err = _ollama_generate(_copilot_ask_prompt(facts, question))
     if text is not None:
         out.update({"answer": text, "source": "llm", "llm_status": "ok"})
     else:
-        # No LLM: we can't reason over free text, but we can hand back the facts
-        # so the box is never a dead end.
-        out.update({"answer": "", "source": "facts", "llm_status": err})
+        # No LLM: hand back the routed facts as a readable summary so the box is
+        # still useful (never a dead end), with the same sources.
+        out.update({"answer": "", "facts_summary": " ".join(facts),
+                    "source": "facts", "llm_status": err})
     return jsonify(out)
 
 

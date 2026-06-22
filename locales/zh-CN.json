@@ -948,6 +948,7 @@
   "copilot.st_unreachable": "无法连接本地大模型——请在本机启动 ollama 以启用实时摘要。",
   "copilot.st_bad": "本地大模型未返回文本；改为显示原始数据。",
   "copilot.st_generic": "本地大模型不可用——改为显示原始指标。",
+  "copilot.based_on": "依据",
   "digest.title": "📬 定时摘要",
   "digest.desc": "每天一次将这份通俗易懂的概要推送到你的告警通道。默认关闭——需先在「告警」中配置一个通知通道。",
   "digest.enable": "每日发送摘要",

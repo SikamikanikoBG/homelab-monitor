@@ -921,6 +921,7 @@
   "copilot.st_unreachable": "Local LLM not reachable — start ollama on this host to enable live summaries.",
   "copilot.st_bad": "The local LLM returned no text; showing the raw facts instead.",
   "copilot.st_generic": "Local LLM unavailable — showing the raw metrics instead.",
+  "copilot.based_on": "based on",
   "digest.title": "📬 Scheduled digest",
   "digest.desc": "Push this plain-English summary to your alert channels once a day. Off by default — needs a notification channel configured under Alerts.",
   "digest.enable": "Send a daily digest",
