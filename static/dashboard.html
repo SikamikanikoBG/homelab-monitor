@@ -4968,9 +4968,9 @@ function _heroKpi(v, unit, label, sub, tone){
 // the centre number + a labelled state pill (icon+text), never colour alone.
 const GG_R=52, GG_CX=64, GG_CY=60, GG_SWEEP=270;            // geometry (deg)
 const GG_LEN=2*Math.PI*GG_R*(GG_SWEEP/360);                 // arc length for dasharray
-// z-score → severity tier for the ring (matches the Anomalies card semantics):
-//   |z| ≥ 6 → crit (red), |z| ≥ 3 → warn (amber), else normal (ok/brand).
-function _ggTier(z){ const a=Math.abs(+z||0); return a>=6?'crit':(a>=3?'warn':'ok'); }
+// z-score → severity tier for the ring, aligned with the Anomalies card/ribbon:
+//   |z| ≥ 4 → crit (red), |z| ≥ 3 → warn (amber), else normal (ok/brand).
+function _ggTier(z){ const a=Math.abs(+z||0); return a>=4?'crit':(a>=3?'warn':'ok'); }
 function _ggAnom(fc, key){
   const items=((fc&&fc.anomalies&&fc.anomalies.items)||[]);
   // most-extreme first already (backend sorts by |z| desc); take this series' worst
