@@ -352,6 +352,14 @@ class TestAskRouting(unittest.TestCase):
         self.assertIn("kwh", joined)        # ranked by energy use
         self.assertIn("chroma", joined)     # still the heaviest
 
+    def test_cost_topic_without_fact_does_not_claim_cost_source(self):
+        # A named entity with no cost data + a "cost" keyword must NOT surface a
+        # phantom "based on: cost" chip — sources reflect only injected facts.
+        ctx = {"cost_month": {"enabled": False}, "gpu": {}, "anomalies": []}
+        lines, srcs = app._ask_topic_facts({"cost"}, "what does it cost", ctx, self.now)
+        self.assertEqual(lines, [])
+        self.assertNotIn("cost", srcs)
+
     def test_gpu_health_pulls_gpu_and_headroom(self):
         facts, used, _ = app._ask_route("is the gpu healthy?", self.now)
         self.assertIn("gpu", used)

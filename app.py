@@ -7099,6 +7099,7 @@ def _ask_topic_facts(topics, q, ctx, now):
             pass
 
     if "cost" in topics:
+        n_before = len(lines)
         cm = ctx.get("cost_month") or {}
         if cm.get("enabled"):
             cur = cm.get("currency") or "$"
@@ -7121,7 +7122,10 @@ def _ask_topic_facts(topics, q, ctx, now):
                             k=e["kind"], n=e["name"], e=e["energy_kwh"], w=e["avg_w"]))
             except Exception:
                 pass
-        srcs.append("cost")
+        # only claim "cost" as a source if we actually injected a cost fact —
+        # an empty cost topic must not surface a phantom "based on: cost" chip.
+        if len(lines) > n_before:
+            srcs.append("cost")
 
     if "memory" in topics:
         try:
