@@ -37,6 +37,16 @@ def _timeout():
         return 10.0
 
 
+def _ask_timeout():
+    """Longer budget for the LLM-backed ask_lab — kept above the server's own
+    COPILOT_TIMEOUT (default 30s) so we wait for the answer (or the server's
+    graceful fact-fallback) instead of raising a spurious 'unreachable'."""
+    try:
+        return float(os.environ.get("HOMELAB_ASK_TIMEOUT", "35"))
+    except ValueError:
+        return 35.0
+
+
 class MonitorError(RuntimeError):
     """Raised when the monitor can't be reached or returns a non-2xx / bad body.
 
@@ -65,8 +75,14 @@ def _get(path):
         raise MonitorError("monitor returned a non-JSON body for %s" % path)
 
 
-def _post(path, body):
-    """POST a JSON body to an endpoint and return the decoded JSON object."""
+def _post(path, body, timeout=None):
+    """POST a JSON body to an endpoint and return the decoded JSON object.
+
+    `timeout` overrides the default — used by LLM-backed calls (ask_lab) which
+    can take longer than a normal request, so a slow-but-successful answer (or
+    the server's own graceful fallback) isn't turned into a spurious
+    "monitor unreachable" error.
+    """
     url = base_url() + path
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -74,7 +90,7 @@ def _post(path, body):
         headers={"Accept": "application/json", "Content-Type": "application/json",
                  "User-Agent": "homelab-monitor-mcp"})
     try:
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        with urllib.request.urlopen(req, timeout=(timeout or _timeout())) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         raise MonitorError("monitor returned HTTP %s for %s" % (e.code, path))
@@ -563,7 +579,7 @@ def ask_lab(question):
     `llm_status` ("ok" or the reason it was skipped), and the `facts` it used.
     """
     q = (question or "").strip()
-    d = _post("/api/copilot/ask", {"question": q})
+    d = _post("/api/copilot/ask", {"question": q}, timeout=_ask_timeout())
     return {
         "question": d.get("question", q),
         "answer": d.get("answer", ""),
