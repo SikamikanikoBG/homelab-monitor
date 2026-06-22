@@ -464,12 +464,11 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
 .btn-mini.danger:hover{border-color:var(--crit)}
-/* Uptime checks — mirror the app's own "monitored thing" cards (.hostrow/.gpucard):
-   --inset surface, 9px radius, a 3px status left-rail, no extra shadow. */
-.upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
-.upcard{background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);
-  border-radius:9px;padding:11px 13px;display:flex;flex-direction:column;gap:8px}
-.upcard.up{border-left-color:var(--ok)} .upcard.down{border-left-color:var(--crit)} .upcard.unknown{border-left-color:var(--mut)}
+/* Uptime checks — each check IS a cockpit .mc-panel (same glass surface, radius and
+   soft depth as the GPU/Cost cards on the Overview). State is shown the cockpit way:
+   an .mc-sdot status dot + an .mc-pill, not a bespoke rail/badge. */
+.upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.upcard{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
 .upcard.paused{opacity:.6}
 .upcard .uphead{display:flex;align-items:center;gap:9px}
 .upcard .uplabel{font-weight:600;font-size:14px;word-break:break-word;flex:1;min-width:0}
@@ -480,11 +479,11 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .upcard .upbell{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .upcard .upbell .down-for{color:var(--crit);font-weight:600;font-variant-numeric:tabular-nums}
 .upcard .upactions{display:flex;gap:6px;margin-top:2px;flex-wrap:wrap}
-/* slim Uptime-Kuma-style strip — kept thin like the app's other bars (.gpucard-bar) */
+/* slim heartbeat — thin like the app's other bars (.gpucard-bar) */
 .uphb{display:flex;gap:2px;align-items:stretch;height:10px}
 .uphb .cell{flex:1;min-width:3px;border-radius:2px;background:var(--bd)}
 .uphb .cell.ok{background:var(--ok);opacity:.7} .uphb .cell.down{background:var(--crit)}
-.upform{margin-top:12px;border:1px solid var(--bd);border-radius:9px;padding:14px;background:var(--inset);display:grid;gap:14px;max-width:580px}
+.upform{margin-top:14px;border:1px solid var(--bd);border-radius:12px;padding:15px;background:var(--inset);display:grid;gap:14px;max-width:580px}
 .upform[hidden]{display:none}
 .upform-grid{display:grid;gap:11px}
 .upalertbox{border-top:1px solid var(--bd);padding-top:13px;display:grid;gap:12px}
@@ -3574,8 +3573,10 @@ function upCard(c){
   const up7=c.uptime7!=null?c.uptime7+'%':'—';
   const lat=c.last_latency_ms!=null?Math.round(c.last_latency_ms)+' ms':'—';
   const tgt=c.type==='http'?c.target:(I18N.t('uptime.tcp_prefix','TCP')+' '+c.target);
-  const sev=st==='up'?'ok':st==='down'?'crit':'info';
-  const badge=`<span class="badge ${sev}">${esc(upStateLabel(st))}</span>`;
+  const dotcls=st==='up'?'mc-on':st==='down'?'mc-offdot':'';
+  const pill=st==='up'?`<span class="mc-pill mc-pill-ok">${esc(upStateLabel(st))}</span>`
+           :st==='down'?`<span class="mc-pill mc-pill-crit">${esc(upStateLabel(st))}</span>`
+           :`<span class="mc-pill" style="color:var(--mut);border-color:var(--bd)">${esc(upStateLabel(st))}</span>`;
   let err='';
   if(st==='down' && c.last_err) err=`<div class="uperr">${esc(c.last_err)}</div>`;
   // alert line: bell state + (if down) how long it's been down (from the heartbeat)
@@ -3587,10 +3588,11 @@ function upCard(c){
   const bell=c.alerts_enabled
     ? `<span class="upbell">🔔 ${esc(I18N.t('uptime.alerts_on','alerts on'))}${downFor}</span>`
     : `<span class="upbell">🔕 ${esc(I18N.t('uptime.alerts_off','alerts off'))}</span>`;
-  return `<div class="upcard ${st}${c.enabled?'':' paused'}" data-id="${esc(c.id)}">
+  return `<div class="mc-panel upcard ${st}${c.enabled?'':' paused'}" data-id="${esc(c.id)}">
     <div class="uphead">
+      <span class="mc-sdot ${dotcls}"></span>
       <div class="uplabel">${esc(c.label)}${c.enabled?'':' <span class="cap">('+esc(I18N.t('uptime.disabled','paused'))+')</span>'}</div>
-      ${badge}
+      ${pill}
     </div>
     <div class="uptarget">${esc(tgt)}</div>
     ${upHeartbeat(c.strip)}
