@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
+import os, re, glob, time, json, socket, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.17.3"
+VERSION      = "0.18.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -113,6 +113,22 @@ CREATE TABLE IF NOT EXISTS hosts(
   last_check_json TEXT
 );
 CREATE TABLE IF NOT EXISTS power_proc(ts INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, watts REAL NOT NULL);
+-- External uptime checks (HTTP/TCP endpoint monitors): the user's OWN configured HTTP/TCP
+-- endpoint monitors. `target` is a URL (http) or host:port (tcp) — treated like
+-- webhook_url (may carry credentials): persisted for the user, never logged.
+-- These are PRIVATE (LAN dashboard + authed API only); they never reach /status.
+-- alerts_enabled/fail_threshold/latency_warn_ms drive the per-check smart alerting.
+CREATE TABLE IF NOT EXISTS uptime_checks(
+  id TEXT PRIMARY KEY, label TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'http',
+  target TEXT NOT NULL, interval_sec INTEGER NOT NULL DEFAULT 60,
+  timeout_sec INTEGER NOT NULL DEFAULT 10, expected_status INTEGER,
+  alerts_enabled INTEGER NOT NULL DEFAULT 1, fail_threshold INTEGER NOT NULL DEFAULT 2,
+  latency_warn_ms INTEGER,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS uptime_results(
+  check_id TEXT NOT NULL, ts INTEGER NOT NULL, up INTEGER NOT NULL,
+  latency_ms REAL, code INTEGER, err TEXT);
+CREATE INDEX IF NOT EXISTS idx_uptime_results ON uptime_results(check_id, ts);
 CREATE INDEX IF NOT EXISTS idx_gpus_ts   ON gpu_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_net_ts    ON net_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
@@ -3770,6 +3786,404 @@ def save_settings(updates):
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
 
+# ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
+# User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
+# DEDICATED worker thread (never the metrics sampler). Each check carries its own
+# smart-alerting config (down/recovery/slow) which notify_scan() acts on, reusing
+# the same edge-triggered notifier as every other alert. Targets stay private to
+# this dashboard — they never reach the public /status payload.
+_UPTIME_MIN_INTERVAL = 20      # floor on per-check cadence (don't hammer targets)
+_UPTIME_MAX_INTERVAL = 86400
+_UPTIME_MAX_TIMEOUT  = 30      # hard cap so a probe can't pin a worker forever
+_UPTIME_MAX_REDIRECTS = 3
+_UPTIME_RESULT_CAP   = 5000    # per-check ring-buffer of results
+_UPTIME_STRIP_CELLS  = 40      # heartbeat cells shown on a card
+_UPTIME_FAIL_MAX     = 10      # cap on the confirm-after threshold
+_UPTIME_UA = "HomeLab-Monitor uptime check"
+_uptime_due = {}               # check_id -> next monotonic due time (scheduler state)
+_uptime_down_since = {}        # check_id -> wall-clock ts the current DOWN streak began
+
+def _uptime_row_to_dict(r):
+    cols = ("id", "label", "type", "target", "interval_sec", "timeout_sec",
+            "expected_status", "alerts_enabled", "fail_threshold", "latency_warn_ms",
+            "enabled", "created_at")
+    d = dict(zip(cols, r))
+    d["enabled"] = bool(d["enabled"])
+    d["alerts_enabled"] = bool(d["alerts_enabled"])
+    return d
+
+_CRED_RE = re.compile(r"(://)[^/\s:@]+:[^/\s@]+@")
+
+def _redact_target(s):
+    """Strip any `scheme://user:pass@` credentials from a string so a check target
+    is safe to log/echo in an error. Storing the full target (with creds) is fine —
+    like webhook_url — but we never want it in a log line or surfaced error."""
+    return _CRED_RE.sub(r"\1***:***@", s or "")
+
+def list_uptime_checks():
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,"
+            "alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at "
+            "FROM uptime_checks ORDER BY created_at").fetchall()
+    return [_uptime_row_to_dict(r) for r in rows]
+
+def _parse_host_port(target):
+    """Parse 'host:port' (the tcp check target). Returns (host, port) or (None, None).
+    Accepts a leading tcp:// scheme and bracketed IPv6 literals."""
+    t = (target or "").strip()
+    if "://" in t:
+        u = urllib.parse.urlsplit(t)
+        host, port = u.hostname, u.port
+        if host and port:
+            return host, port
+        return None, None
+    if t.startswith("[") and "]" in t:          # [ipv6]:port
+        host, _, rest = t[1:].partition("]")
+        if not rest.startswith(":"):
+            return None, None
+        portstr = rest[1:]
+    else:
+        host, sep, portstr = t.rpartition(":")
+        if not sep:
+            return None, None
+    host = host.strip()
+    if not host:
+        return None, None
+    try:
+        port = int(portstr)
+    except (TypeError, ValueError):
+        return None, None
+    if not (1 <= port <= 65535):
+        return None, None
+    return host, port
+
+def _validate_uptime_check(body):
+    """Return (clean_dict, None) or (None, error_string). Rejects garbage targets,
+    bad URL schemes, unparseable host:port, and out-of-range interval/timeout."""
+    label = (body.get("label") or "").strip()
+    if not label:
+        return None, "A label is required."
+    if len(label) > 120:
+        return None, "Label is too long (max 120 characters)."
+    ctype = (body.get("type") or "http").strip().lower()
+    if ctype not in ("http", "tcp"):
+        return None, "Type must be 'http' or 'tcp'."
+    target = (body.get("target") or "").strip()
+    if not target:
+        return None, "A target is required."
+    if len(target) > 2048:
+        return None, "Target is too long."
+    expected = None
+    if ctype == "http":
+        u = urllib.parse.urlsplit(target)
+        if u.scheme not in ("http", "https"):
+            return None, "HTTP checks need an http:// or https:// URL."
+        if not u.hostname:
+            return None, "HTTP check URL is missing a host."
+        es = body.get("expected_status")
+        if es not in (None, ""):
+            try:
+                expected = int(es)
+            except (TypeError, ValueError):
+                return None, "Expected status must be a number (e.g. 200)."
+            if not (100 <= expected <= 599):
+                return None, "Expected status must be a valid HTTP status code (100-599)."
+    else:  # tcp
+        host, port = _parse_host_port(target)
+        if host is None:
+            return None, "TCP checks need a host:port target (e.g. db.lan:5432)."
+    try:
+        interval = int(body.get("interval_sec", 60))
+    except (TypeError, ValueError):
+        return None, "Interval must be a whole number of seconds."
+    if interval < _UPTIME_MIN_INTERVAL:
+        return None, f"Interval must be at least {_UPTIME_MIN_INTERVAL} seconds."
+    if interval > _UPTIME_MAX_INTERVAL:
+        return None, f"Interval must be at most {_UPTIME_MAX_INTERVAL} seconds."
+    try:
+        timeout = int(body.get("timeout_sec", 10))
+    except (TypeError, ValueError):
+        return None, "Timeout must be a whole number of seconds."
+    if timeout < 1:
+        return None, "Timeout must be at least 1 second."
+    if timeout > _UPTIME_MAX_TIMEOUT:
+        return None, f"Timeout must be at most {_UPTIME_MAX_TIMEOUT} seconds."
+    # ── smart-alert config ────────────────────────────────────────────────
+    try:
+        fail_threshold = int(body.get("fail_threshold", 2))
+    except (TypeError, ValueError):
+        return None, "Confirm-after must be a whole number of checks."
+    fail_threshold = max(1, min(_UPTIME_FAIL_MAX, fail_threshold))
+    latency_warn = body.get("latency_warn_ms")
+    if latency_warn in (None, ""):
+        latency_warn = None
+    else:
+        try:
+            latency_warn = int(latency_warn)
+        except (TypeError, ValueError):
+            return None, "Latency warning threshold must be a number of milliseconds."
+        if latency_warn < 1:
+            return None, "Latency warning threshold must be at least 1 ms."
+        if latency_warn > 600000:
+            return None, "Latency warning threshold is too large."
+    return {"label": label, "type": ctype, "target": target,
+            "interval_sec": interval, "timeout_sec": timeout,
+            "expected_status": expected,
+            "alerts_enabled": 1 if body.get("alerts_enabled", True) else 0,
+            "fail_threshold": fail_threshold, "latency_warn_ms": latency_warn,
+            "enabled": 1 if body.get("enabled", True) else 0}, None
+
+def create_uptime_check(body):
+    clean, err = _validate_uptime_check(body)
+    if err:
+        return None, err
+    cid = uuid.uuid4().hex
+    with LOCK:
+        DB.execute(
+            "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
+            "expected_status,alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cid, clean["label"], clean["type"], clean["target"], clean["interval_sec"],
+             clean["timeout_sec"], clean["expected_status"], clean["alerts_enabled"],
+             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], int(time.time())))
+        DB.commit()
+    _uptime_due.pop(cid, None)   # probe promptly on next scheduler pass
+    return cid, None
+
+def update_uptime_check(cid, body):
+    with LOCK:
+        exists = DB.execute("SELECT 1 FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+    if not exists:
+        return False, "not found"
+    if not body:
+        return False, "empty update"
+    # Quick enable/disable toggle without full revalidation.
+    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+        with LOCK:
+            DB.execute("UPDATE uptime_checks SET enabled=? WHERE id=?",
+                       (1 if body.get("enabled") else 0, cid))
+            DB.commit()
+        return True, None
+    clean, err = _validate_uptime_check(body)
+    if err:
+        return False, err
+    with LOCK:
+        DB.execute(
+            "UPDATE uptime_checks SET label=?,type=?,target=?,interval_sec=?,timeout_sec=?,"
+            "expected_status=?,alerts_enabled=?,fail_threshold=?,latency_warn_ms=?,enabled=? WHERE id=?",
+            (clean["label"], clean["type"], clean["target"], clean["interval_sec"],
+             clean["timeout_sec"], clean["expected_status"], clean["alerts_enabled"],
+             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], cid))
+        DB.commit()
+    _uptime_due.pop(cid, None)   # re-probe with new config promptly
+    return True, None
+
+def delete_uptime_check(cid):
+    with LOCK:
+        cur = DB.execute("DELETE FROM uptime_checks WHERE id=?", (cid,))
+        DB.execute("DELETE FROM uptime_results WHERE check_id=?", (cid,))
+        DB.commit()
+    _uptime_due.pop(cid, None)
+    _uptime_down_since.pop(cid, None)
+    return cur.rowcount > 0
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface redirects as HTTPError so probe_http counts/bounds them itself."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def _http_probe_once(target, timeout, method):
+    """One bounded HTTP request, manually following a few redirects (so we never
+    auto-follow into a different scheme/host without counting it). Returns the final
+    status code or raises. Uses stdlib urllib only."""
+    url = target
+    last_code = 0
+    for _ in range(_UPTIME_MAX_REDIRECTS + 1):
+        req = urllib.request.Request(url, method=method, headers={"User-Agent": _UPTIME_UA})
+        opener = urllib.request.build_opener(_NoRedirect())
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                return r.status
+        except urllib.error.HTTPError as he:
+            if he.code in (301, 302, 303, 307, 308):
+                loc = he.headers.get("Location")
+                if not loc:
+                    return he.code
+                url = urllib.parse.urljoin(url, loc)
+                last_code = he.code
+                he.close()
+                continue
+            raise
+    return last_code
+
+def probe_http(target, timeout, expected=None):
+    """GET the URL, following ≤ _UPTIME_MAX_REDIRECTS redirects. Returns
+    (up, latency_ms, code, err). up = connected AND status matches expected (or any
+    2xx/3xx if expected unset). Never raises; bounded by `timeout`. The error string
+    is redacted of any embedded credentials before it leaves here."""
+    start = time.monotonic()
+    try:
+        try:
+            code = _http_probe_once(target, timeout, "GET")
+        except urllib.error.HTTPError as he:
+            code = he.code            # a 4xx/5xx still answered — that's a real status
+        latency = round((time.monotonic() - start) * 1000, 1)
+        if expected is not None:
+            up = (code == expected)
+        else:
+            up = (200 <= code < 400)
+        return up, latency, code, (None if up else f"HTTP {code}")
+    except Exception as e:
+        latency = round((time.monotonic() - start) * 1000, 1)
+        return False, latency, None, _redact_target(str(e))[:200]
+
+def probe_tcp(target, timeout):
+    """socket.create_connection to host:port, bounded by `timeout`. up = connects.
+    Returns (up, latency_ms, None, err). Never raises."""
+    start = time.monotonic()
+    host, port = _parse_host_port(target)
+    if host is None:
+        return False, None, None, "bad host:port"
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            latency = round((time.monotonic() - start) * 1000, 1)
+            return True, latency, None, None
+    except Exception as e:
+        latency = round((time.monotonic() - start) * 1000, 1)
+        return False, latency, None, _redact_target(str(e))[:200]
+
+def run_uptime_check(check):
+    """Execute one check (dict) and persist its result. The probe is bounded by the
+    check's timeout; the only LOCK held is the brief DB write. Called from the
+    dedicated uptime worker thread. Returns the result dict."""
+    ctype = check["type"]
+    timeout = min(int(check.get("timeout_sec") or 10), _UPTIME_MAX_TIMEOUT)
+    if ctype == "tcp":
+        up, latency, code, err = probe_tcp(check["target"], timeout)
+    else:
+        up, latency, code, err = probe_http(check["target"], timeout, check.get("expected_status"))
+    ts = int(time.time())
+    if not _DB_MAINTENANCE:
+        try:
+            with LOCK:
+                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                           "VALUES(?,?,?,?,?,?)",
+                           (check["id"], ts, 1 if up else 0, latency, code, err))
+                # Per-check ring buffer: keep only the newest CAP rows. Trim by rowid
+                # (monotonic + unique) so it's exact even when many results share a
+                # second — a ts-based MIN() would under-trim on timestamp collisions.
+                DB.execute(
+                    "DELETE FROM uptime_results WHERE check_id=? AND rowid NOT IN "
+                    "(SELECT rowid FROM uptime_results WHERE check_id=? "
+                    "ORDER BY rowid DESC LIMIT ?)",
+                    (check["id"], check["id"], _UPTIME_RESULT_CAP))
+                DB.commit()
+        except Exception as e:
+            print("uptime persist error:", e, flush=True)
+    return {"ts": ts, "up": up, "latency_ms": latency, "code": code, "err": err}
+
+def _uptime_state(check_id, now, window=86400, window2=604800):
+    """Read-only summary for one check: current state (up/down/unknown), last latency,
+    uptime% over `window` (24h) and `window2` (7d), last_checked, last_err, and a
+    coarse heartbeat strip. Caller must NOT hold LOCK (this takes it briefly)."""
+    since, since2 = now - window, now - window2
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? AND ts>=? "
+            "ORDER BY ts", (check_id, since)).fetchall()
+        agg2 = DB.execute(
+            "SELECT COUNT(*), SUM(up) FROM uptime_results WHERE check_id=? AND ts>=?",
+            (check_id, since2)).fetchone()
+        last = DB.execute(
+            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? "
+            "ORDER BY ts DESC LIMIT 1", (check_id,)).fetchone()
+    total = len(rows)
+    up_n = sum(1 for r in rows if r[1])
+    uptime = round(100.0 * up_n / total, 2) if total else None
+    tot2 = (agg2[0] or 0) if agg2 else 0
+    uptime7 = round(100.0 * (agg2[1] or 0) / tot2, 2) if tot2 else None
+    state = "unknown"
+    last_latency = last_checked = last_err = last_code = None
+    if last:
+        state = "up" if last[1] else "down"
+        last_checked, last_latency, last_code, last_err = last[0], last[2], last[3], last[4]
+    # Heartbeat strip: most recent up-to-N results, oldest→newest, carrying {up, t}.
+    strip = [{"up": bool(r[1]), "t": r[0]} for r in rows[-_UPTIME_STRIP_CELLS:]]
+    return {"state": state, "uptime": uptime, "uptime7": uptime7, "window_total": total,
+            "last_latency_ms": last_latency, "last_checked": last_checked,
+            "last_code": last_code, "last_err": last_err, "strip": strip}
+
+def uptime_overview(window=86400):
+    """All checks + their current state. The user-facing private payload."""
+    now = int(time.time())
+    out = [{**c, **_uptime_state(c["id"], now, window)} for c in list_uptime_checks()]
+    return {"checks": out, "now": now, "window": window,
+            "min_interval": _UPTIME_MIN_INTERVAL, "max_timeout": _UPTIME_MAX_TIMEOUT}
+
+def uptime_summary():
+    """Compact rollup for the Overview cockpit: how many ENABLED checks exist and
+    how many are up/down, plus the worst current check. None of it sensitive — it's
+    counts + a label — so it can ride the always-visible fleet rollup bar."""
+    checks = [c for c in uptime_overview().get("checks", []) if c.get("enabled")]
+    up = sum(1 for c in checks if c.get("state") == "up")
+    down = sum(1 for c in checks if c.get("state") == "down")
+    worst = next((c["label"] for c in checks if c.get("state") == "down"), None)
+    return {"total": len(checks), "up": up, "down": down,
+            "unknown": len(checks) - up - down, "worst_down": worst}
+
+def uptime_insights():
+    """Insight-feed rows for the cockpit: currently-DOWN checks (critical) and
+    up-but-slow checks (warning). Uptime rides the SAME Insight Feed as disk/RAM/
+    containers instead of a bespoke tile — that's how `next`'s overview surfaces
+    everything, so nothing is duplicated. Caller must NOT hold LOCK."""
+    out = []
+    for c in uptime_overview().get("checks", []):
+        if not c.get("enabled"):
+            continue
+        if c.get("state") == "down":
+            out.append({"level": "critical", "title": f"{c['label']} is down",
+                        "detail": f"{_redact_target(c['target'])} — {_uptime_down_reason(c)}.",
+                        "goto": "uptime"})
+        elif c.get("state") == "up":
+            lw, lat = c.get("latency_warn_ms"), c.get("last_latency_ms")
+            if lw and lat is not None and lat > lw:
+                out.append({"level": "warning", "title": f"{c['label']} is slow",
+                            "detail": f"{round(lat)} ms (warns above {lw} ms).",
+                            "goto": "uptime"})
+    return out
+
+def _uptime_tick(now=None):
+    """One scheduler pass: probe every ENABLED check whose interval is due. Each probe
+    is bounded by its own timeout, so a hanging endpoint can't stall the rest — and
+    this runs on a DEDICATED thread, never the metrics sampler. Returns the ids probed."""
+    now = time.monotonic() if now is None else now
+    probed = []
+    for c in list_uptime_checks():
+        if not c["enabled"]:
+            _uptime_due.pop(c["id"], None)
+            continue
+        if now < _uptime_due.get(c["id"], 0):
+            continue
+        try:
+            run_uptime_check(c)
+        except Exception as e:
+            print("uptime check error:", e, flush=True)
+        _uptime_due[c["id"]] = now + max(_UPTIME_MIN_INTERVAL, int(c["interval_sec"]))
+        probed.append(c["id"])
+    return probed
+
+def uptime_worker():
+    """Dedicated daemon loop: wakes every few seconds, probes due checks. Kept off the
+    collector thread so a slow/hanging probe never delays metric sampling. Inert (zero
+    outbound) when no checks are configured/enabled."""
+    while True:
+        try:
+            _uptime_tick()
+        except Exception as e:
+            print("uptime_worker error:", e, flush=True)
+        time.sleep(5)
+
 # ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
 # doesn't spam the channel. A key clears when the underlying condition recovers
@@ -3972,6 +4386,101 @@ def notify_scan():
                 if not ok: print(f"notifier {ch} error:", err, flush=True)
     except Exception as e:
         print("notify_scan oom error:", e, flush=True)
+
+    # ── Uptime checks: per-check smart alerting (down / recovery / slow) ──────
+    try:
+        notify_uptime(s)
+    except Exception as e:
+        print("notify_scan uptime error:", e, flush=True)
+
+def _uptime_down_reason(st):
+    """Short, credential-safe reason for a DOWN check, taken from its last result."""
+    if st.get("last_err"):
+        return _redact_target(str(st["last_err"]))[:160]
+    if st.get("last_code"):
+        return f"HTTP {st['last_code']}"
+    return "no response"
+
+def _uptime_confirmed_down(cid, threshold):
+    """True once the most recent `threshold` results are ALL failures (and we have at
+    least that many). This is the anti-flap gate — one dropped packet never pages."""
+    with LOCK:
+        rows = DB.execute("SELECT up FROM uptime_results WHERE check_id=? ORDER BY ts DESC LIMIT ?",
+                          (cid, threshold)).fetchall()
+    return len(rows) >= threshold and all(r[0] == 0 for r in rows)
+
+def _uptime_streak_start(cid, now):
+    """Wall-clock ts the current DOWN streak began (walk recent results back while
+    they're failures), so a recovery message can quote the real downtime."""
+    with LOCK:
+        rows = DB.execute("SELECT ts,up FROM uptime_results WHERE check_id=? ORDER BY ts DESC LIMIT 500",
+                          (cid,)).fetchall()
+    start = None
+    for ts, up in rows:
+        if up == 0:
+            start = ts
+        else:
+            break
+    return start if start is not None else now
+
+def _fmt_dur(secs):
+    secs = max(0, int(secs))
+    if secs < 60:
+        return f"{secs}s"
+    m = secs // 60
+    if m < 60:
+        return f"{m}m {secs % 60}s"
+    h = m // 60
+    if h < 24:
+        return f"{h}h {m % 60}m"
+    d = h // 24
+    return f"{d}d {h % 24}h"
+
+def notify_uptime(s):
+    """Per-check smart alerting, reusing the edge-triggered notifier:
+      • DOWN      — fired once after `fail_threshold` consecutive failures (anti-flap).
+      • RECOVERED — fired once when it comes back, quoting the downtime duration.
+      • SLOW      — optional warning when an up endpoint exceeds latency_warn_ms.
+    Honours per-check alerts_enabled plus the global min-level/channel gating in _emit."""
+    now = int(time.time())
+    for c in list_uptime_checks():
+        cid = c["id"]
+        down_key, slow_key, rec_key = f"uptime:down:{cid}", f"uptime:slow:{cid}", f"uptime:rec:{cid}"
+        if not c["enabled"] or not c["alerts_enabled"]:
+            _clear(down_key); _clear(slow_key); _uptime_down_since.pop(cid, None)
+            continue
+        thr = max(1, int(c.get("fail_threshold") or 2))
+        st = _uptime_state(cid, now)
+        tgt = c["target"] if c["type"] == "http" else f"TCP {c['target']}"
+        if _uptime_confirmed_down(cid, thr):
+            with _NOTIFIER_LOCK:
+                first = down_key not in _NOTIFIED
+            if first:
+                _uptime_down_since[cid] = _uptime_streak_start(cid, now)
+            _clear(rec_key)   # re-arm recovery so the eventual comeback fires once
+            _emit(s, down_key, "critical", f"🔴 {c['label']} is DOWN",
+                  f"{tgt} — {_uptime_down_reason(st)}")
+            _clear(slow_key)
+        elif st["state"] == "up":
+            with _NOTIFIER_LOCK:
+                was_down = down_key in _NOTIFIED
+            if was_down:
+                since = _uptime_down_since.pop(cid, None)
+                dur = _fmt_dur(now - since) if since else "?"
+                _clear(down_key)
+                # Recovery is good news → emitted at "warning" so it survives the
+                # default min-level (a recovery the user never sees is worse than a
+                # slightly louder one). It clears the moment the check drops again.
+                _emit(s, rec_key, "warning", f"🟢 {c['label']} recovered",
+                      f"{tgt} — back up after {dur} down.")
+            else:
+                _clear(rec_key)
+            lw, lat = c.get("latency_warn_ms"), st.get("last_latency_ms")
+            if lw and lat is not None and lat > lw:
+                _emit(s, slow_key, "warning", f"🐢 {c['label']} is slow",
+                      f"{tgt} — {round(lat)} ms (warns above {lw} ms).")
+            else:
+                _clear(slow_key)
 
 # ── Sampling ────────────────────────────────────────────────────────────────
 def smi(args):
@@ -4465,9 +4974,18 @@ def api_data():
         mem_total = LATEST["mem_total"] or 24576
         peak = max(total["mempk"]) if total["mempk"] else 0
         insights = build_insights(total, services, mem_total, evs, LATEST["host"])
+    # Uptime rows ride the same Insight Feed (computed outside LOCK — uptime_overview
+    # takes it itself). DOWN/slow endpoints surface on the cockpit with no new tile.
+    try:
+        insights = insights + uptime_insights()
+        up_summary = uptime_summary()
+    except Exception as e:
+        print("uptime overview error:", e, flush=True)
+        up_summary = {"total": 0, "up": 0, "down": 0, "unknown": 0, "worst_down": None}
     return jsonify({"version": VERSION, "range": rng, "bucket_sec": bk, "labels": labels, "total": total,
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "callers": callers, "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
+                    "uptime_summary": up_summary,
                     "mem_total": mem_total, "peak_mem": peak, "now": LATEST})
 
 def _hhmm_to_min(s, default):
@@ -5910,6 +6428,31 @@ def api_notify_test():
     return jsonify({"ok": all(ok for _, ok, _ in results),
                     "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results]})
 
+@app.route("/api/uptime", methods=["GET", "POST"])
+def api_uptime():
+    """List uptime checks with their live state (GET) or create one (POST).
+    GET is always 200 (an empty list before any are added); POST returns a clean
+    400 with a human error on invalid input."""
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        cid, err = create_uptime_check(body)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "id": cid}), 201
+    return jsonify(uptime_overview())
+
+@app.route("/api/uptime/<cid>", methods=["PATCH", "DELETE"])
+def api_uptime_one(cid):
+    """Update (full edit or a quick enabled toggle) or delete one check."""
+    if request.method == "DELETE":
+        return (jsonify({"ok": True}) if delete_uptime_check(cid)
+                else (jsonify({"ok": False, "error": "not found"}), 404))
+    body = request.get_json(silent=True) or {}
+    ok, err = update_uptime_check(cid, body)
+    if ok:
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": err}), (404 if err == "not found" else 400)
+
 @app.route("/api/update/app", methods=["POST"])
 def api_update_app():
     """Start the opt-in one-click self-update (detached docker:cli helper).
@@ -5939,6 +6482,7 @@ def index():
 
 threading.Thread(target=collector, daemon=True).start()
 threading.Thread(target=host_poller, daemon=True).start()
+threading.Thread(target=uptime_worker, daemon=True).start()
 
 if __name__ == "__main__":
     print(
