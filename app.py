@@ -4036,7 +4036,7 @@ def notify_scan():
 # re-arms cleanly once the condition clears (last_state). Snooze suppresses a rule
 # until snoozed_until. Every fire (and every test) appends to alert_history (capped
 # at the last ~200 rows). This only sends data OUT — it never touches the host.
-_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident"}
+_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident", "uptime_down"}
 _ALERT_HISTORY_CAP = 200
 # Rule ids that already have a "suppressed (maintenance)" history row for their
 # CURRENT contiguous suppressed-fire span. Edge-trigger so a long window with an
@@ -4102,6 +4102,20 @@ def _validate_rule(body):
         if sev not in ("warning", "critical"):
             return None, "Incident severity threshold must be 'warning' or 'critical'."
         params = {**params, "severity": sev}
+    elif ctype == "uptime_down":
+        # Target a specific uptime check by id, or "any"/none to fire when ANY
+        # enabled check is down. A given check_id must exist (reject garbage).
+        cid = params.get("check_id")
+        if cid in (None, "", "any"):
+            params = {**params, "check_id": "any"}
+        else:
+            if not isinstance(cid, str):
+                return None, "check_id must be a check id string or 'any'."
+            with LOCK:
+                row = DB.execute("SELECT 1 FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+            if not row:
+                return None, "Unknown uptime check. Pick an existing check or 'any'."
+            params = {**params, "check_id": cid}
     return {"name": name, "ctype": ctype, "channel": channel, "level": level,
             "cooldown_min": cooldown, "params": params,
             "enabled": 1 if body.get("enabled") else 0}, None
@@ -4433,7 +4447,49 @@ def _eval_rule(rule, signals):
             detail = f"{n} correlated anomal{'y' if n == 1 else 'ies'}: " + ", ".join(parts) + more + "."
             return True, title, detail
         return False, None, None
+    if ct == "uptime_down":
+        # Fires when the targeted uptime check (or, in "any" mode, ANY enabled
+        # check) is currently DOWN per uptime_overview's per-check state. A check
+        # with NO results yet reads as "unknown" and does NOT fire — we never
+        # alarm before the first probe has actually observed the endpoint.
+        # Reads the already-computed uptime states from the shared signal bundle;
+        # the redaction (_redact_target) already applied upstream covers target/err.
+        want = (p.get("check_id") or "any")
+        checks = signals.get("uptime") or []
+        if want == "any":
+            down = [c for c in checks if c.get("enabled") and c.get("state") == "down"]
+            if not down:
+                return False, None, None
+            labels = [str(c.get("label") or c.get("id") or "?") for c in down]
+            n = len(labels)
+            head = ", ".join(labels[:4]) + (f" +{n - 4} more" if n > 4 else "")
+            first = down[0]
+            tail = _uptime_down_reason(first)
+            title = f"Uptime — {n} check{'s' if n != 1 else ''} DOWN"
+            detail = f"{n} uptime check{'s' if n != 1 else ''} down: {head}." + (f" {first.get('label')}: {tail}" if tail else "")
+            return True, title, detail
+        match = next((c for c in checks if c.get("id") == want), None)
+        if not match or match.get("state") != "down":
+            return False, None, None
+        label = str(match.get("label") or match.get("id") or "check")
+        tail = _uptime_down_reason(match)
+        title = f"Uptime DOWN — {label}"
+        detail = f"Uptime check '{label}' is DOWN." + (f" {tail}" if tail else "")
+        return True, title, detail
     return False, None, None
+
+def _uptime_down_reason(c):
+    """Short, credential-safe reason for an uptime-down notice: last error and/or
+    HTTP status code. _uptime_state already stored a _redact_target'd err; we
+    redact again defensively before it leaves in a notification."""
+    bits = []
+    code = c.get("last_code")
+    if code is not None:
+        bits.append(f"status {code}")
+    err = c.get("last_err")
+    if err:
+        bits.append(_redact_target(str(err))[:200])
+    return " — ".join(bits) if bits else ""
 
 def evaluate_rules(signals=None):
     """Evaluate every enabled rule and fire those whose condition is true and whose
@@ -4463,6 +4519,9 @@ def evaluate_rules(signals=None):
             # list_incidents() takes LOCK itself — read it OUTSIDE the block above so
             # we never nest the non-reentrant lock.
             signals["incidents"] = list_incidents()
+            # uptime_overview() takes LOCK itself (via _uptime_state) — read it
+            # OUTSIDE the block above so we never nest the non-reentrant lock.
+            signals["uptime"] = uptime_overview().get("checks", [])
         except Exception as e:
             print("evaluate_rules signal error:", e, flush=True)
             return 0

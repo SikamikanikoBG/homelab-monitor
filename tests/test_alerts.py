@@ -538,5 +538,177 @@ class TestMaintenanceMutesAlerting(unittest.TestCase):
         self.assertTrue(any(h["status"] == "recovered" for h in app.list_alert_history()))
 
 
+def _clean_uptime():
+    with app.LOCK:
+        app.DB.execute("DELETE FROM uptime_checks")
+        app.DB.execute("DELETE FROM uptime_results")
+        app.DB.commit()
+
+
+# Uptime-state signal shapes (mirror uptime_overview().checks rows).
+def SIG_UP(cid="c1", state="down", enabled=True, label="API", code=503, err="HTTP 503"):
+    return {"uptime": [{"id": cid, "label": label, "enabled": enabled, "state": state,
+                        "last_code": code, "last_err": err}]}
+
+
+class TestUptimeDownValidation(unittest.TestCase):
+    def setUp(self):
+        _clean_db(); _clean_uptime()
+
+    def tearDown(self):
+        _clean_db(); _clean_uptime()
+
+    def test_any_mode_default(self):
+        clean, err = app._validate_rule({"name": "u", "ctype": "uptime_down", "params": {}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], "any")
+
+    def test_any_literal(self):
+        clean, err = app._validate_rule({"name": "u", "ctype": "uptime_down",
+                                         "params": {"check_id": "any"}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], "any")
+
+    def test_existing_check_id_ok(self):
+        cid, _ = app.create_uptime_check({"label": "x", "type": "tcp", "target": "h:1"})
+        clean, err = app._validate_rule({"name": "u", "ctype": "uptime_down",
+                                         "params": {"check_id": cid}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], cid)
+
+    def test_unknown_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "u", "ctype": "uptime_down",
+                                     "params": {"check_id": "nope"}})
+        self.assertIsNotNone(err)
+
+    def test_garbage_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "u", "ctype": "uptime_down",
+                                     "params": {"check_id": 123}})
+        self.assertIsNotNone(err)
+
+
+class TestUptimeDownEval(unittest.TestCase):
+    def _rule(self, **kw):
+        base = {"id": "r1", "name": "U", "enabled": True, "ctype": "uptime_down",
+                "params": {"check_id": "any"}, "channel": "all", "level": "warning",
+                "cooldown_min": 60, "last_fired_at": None, "last_state": None,
+                "snoozed_until": None}
+        base.update(kw)
+        return base
+
+    def test_targeted_down_fires(self):
+        fired, title, detail = app._eval_rule(
+            self._rule(params={"check_id": "c1"}), SIG_UP(cid="c1", state="down"))
+        self.assertTrue(fired)
+        self.assertIn("API", title)
+        self.assertIn("503", detail)
+
+    def test_targeted_up_no_fire(self):
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "c1"}), SIG_UP(cid="c1", state="up"))
+        self.assertFalse(fired)
+
+    def test_targeted_unknown_no_fire(self):
+        # check with no results yet -> state "unknown" -> must NOT alarm
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "c1"}), SIG_UP(cid="c1", state="unknown"))
+        self.assertFalse(fired)
+
+    def test_targeted_missing_check_no_fire(self):
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "gone"}), SIG_UP(cid="c1", state="down"))
+        self.assertFalse(fired)
+
+    def test_any_mode_fires_when_any_down(self):
+        sig = {"uptime": [
+            {"id": "a", "label": "A", "enabled": True, "state": "up"},
+            {"id": "b", "label": "B", "enabled": True, "state": "down", "last_code": 500}]}
+        fired, title, detail = app._eval_rule(self._rule(), sig)
+        self.assertTrue(fired)
+        self.assertIn("B", detail)
+
+    def test_any_mode_quiet_when_all_up(self):
+        sig = {"uptime": [{"id": "a", "label": "A", "enabled": True, "state": "up"}]}
+        fired, *_ = app._eval_rule(self._rule(), sig)
+        self.assertFalse(fired)
+
+    def test_any_mode_ignores_disabled_check(self):
+        sig = {"uptime": [{"id": "a", "label": "A", "enabled": False, "state": "down"}]}
+        fired, *_ = app._eval_rule(self._rule(), sig)
+        self.assertFalse(fired)
+
+    def test_detail_redacts_creds_in_error(self):
+        sig = SIG_UP(cid="c1", state="down", code=None,
+                     err="connect to https://user:secret@host failed")
+        fired, _, detail = app._eval_rule(self._rule(params={"check_id": "c1"}), sig)
+        self.assertTrue(fired)
+        self.assertNotIn("secret", detail)
+
+
+class TestUptimeDownEngineIntegration(unittest.TestCase):
+    """Reuses the shared engine: cooldown, recovery edge, maintenance suppression.
+    Channel send + maintenance state mocked; uptime state supplied via signals."""
+    def setUp(self):
+        _clean_db(); _clean_uptime()
+        app._MAINT_SUPPRESS_LOGGED.clear()
+        app.save_settings({"discord_webhook_url": "", "telegram_token": "",
+                           "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
+        # a real check so check_id validation in create_rule passes
+        self.cid, _ = app.create_uptime_check({"label": "API", "type": "tcp", "target": "h:1"})
+
+    def tearDown(self):
+        app.save_settings({"ntfy_topic": ""})
+        _clean_db(); _clean_uptime()
+
+    def _state(self, rid):
+        with app.LOCK:
+            return app.DB.execute("SELECT last_state FROM alert_rules WHERE id=?", (rid,)).fetchone()[0]
+
+    def test_off_when_no_channel(self):
+        app.save_settings({"ntfy_topic": ""})
+        app.create_rule({"name": "u", "ctype": "uptime_down", "params": {"check_id": "any"},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text") as pt:
+            self.assertEqual(app.evaluate_rules(SIG_UP(cid=self.cid, state="down")), 0)
+        pt.assert_not_called()
+
+    def test_fires_on_down(self):
+        app.create_rule({"name": "u", "ctype": "uptime_down", "params": {"check_id": self.cid},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_UP(cid=self.cid, state="down")), 1)
+        pt.assert_called()
+
+    def test_no_fire_when_up_or_unknown(self):
+        app.create_rule({"name": "u", "ctype": "uptime_down", "params": {"check_id": self.cid},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_UP(cid=self.cid, state="unknown")), 0)
+            self.assertEqual(app.evaluate_rules(SIG_UP(cid=self.cid, state="up")), 0)
+        pt.assert_not_called()
+
+    def test_recovery_sent_once_on_back_up(self):
+        rid, _ = app.create_rule({"name": "u", "ctype": "uptime_down",
+                                  "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")):
+            app.evaluate_rules(SIG_UP(cid=self.cid, state="down"))   # fire
+        self.assertEqual(self._state(rid), "active")
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(SIG_UP(cid=self.cid, state="up"))     # recovery
+        self.assertEqual(pt.call_count, 1)
+        self.assertEqual(self._state(rid), "clear")
+        self.assertTrue(any(h["status"] == "recovered" for h in app.list_alert_history()))
+
+    def test_suppressed_during_maintenance(self):
+        rid, _ = app.create_rule({"name": "u", "ctype": "uptime_down",
+                                  "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 60})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_UP(cid=self.cid, state="down")), 0)
+        pt.assert_not_called()
+        self.assertIsNone(self._state(rid))
+        self.assertEqual(app.list_alert_history()[0]["status"], "suppressed")
+
+
 if __name__ == "__main__":
     unittest.main()
