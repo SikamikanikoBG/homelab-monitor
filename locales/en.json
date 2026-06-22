@@ -629,6 +629,8 @@
   "hero.down_aria": "{n} uptime checks down — open Uptime",
   "hero.attn_need": "{n} need attention",
   "hero.attn_clear": "✓ All clear",
+  "hero.priority_lbl": "Tackle first:",
+  "hero.priority_aria": "open Recommendations",
   "nav.attn.overview": "{n} items need attention",
   "nav.attn.uptime": "{n} uptime checks down",
   "hero.teaser_anom": "An anomaly is currently firing — see Anomalies on the GPU tab.",

@@ -656,6 +656,8 @@
   "hero.down_aria": "{n} 项可用性检查中断 — 打开可用性",
   "hero.attn_need": "{n} 项需要关注",
   "hero.attn_clear": "✓ 一切正常",
+  "hero.priority_lbl": "优先处理：",
+  "hero.priority_aria": "打开建议列表",
   "nav.attn.overview": "{n} 项需要关注",
   "nav.attn.uptime": "{n} 项可用性检查中断",
   "hero.teaser_anom": "当前有异常正在触发 — 请查看 GPU 标签页的异常。",

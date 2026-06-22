@@ -216,6 +216,15 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hero-attn-lead.warn{color:var(--warn)}
 .hero-attn-lead.crit{color:var(--crit)}
 .hero-chip[hidden]{display:none}
+/* lazy "tackle first" line — sourced from the reco LLM priority, never on the poll loop */
+.hero-priority{display:flex;align-items:center;gap:7px;max-width:100%;min-width:0;margin:0 0 2px;padding:6px 11px;border:1px solid var(--bdr);border-radius:9px;background:var(--card2,var(--card));color:var(--fg);font:inherit;font-size:12.5px;text-align:left;cursor:pointer;transition:transform .12s ease,border-color .12s ease}
+.hero-priority[hidden]{display:none}
+.hero-priority .ic{flex:none;font-size:13px;line-height:1}
+.hero-priority .lbl{flex:none;font-weight:700;color:var(--mut)}
+.hero-priority .txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-priority:hover{transform:translateY(-1px);border-color:var(--info)}
+.hero-priority:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){.hero-priority{transition:none}.hero-priority:hover{transform:none}}
 .hero-skel{padding:18px 20px}
 @media(max-width:640px){
   .hero-top{padding:15px 16px;gap:12px}
@@ -1215,6 +1224,7 @@ h2 .hic{ opacity:.9 }
     </div>
     <div class="hero-kpis" id="hero-kpis"></div>
     <div class="hero-foot" id="hero-foot">
+      <button type="button" class="hero-priority" id="hero-priority" hidden></button>
       <div class="hero-attn" id="hero-attn" role="group" aria-label="Needs attention">
         <span class="hero-attn-lead" id="hero-attn-lead"></span>
         <button type="button" class="hero-inc hero-chip" id="hero-reco"><span class="dot"></span><span id="hero-reco-txt"></span></button>
@@ -5036,6 +5046,9 @@ function renderHero(){
     lead.textContent = I18N.t('hero.attn_clear','✓ All clear');
   }
 
+  // "tackle first" line — reads the cached RECO (no fetch here; never on the poll loop)
+  if(typeof renderHeroPriority==='function') renderHeroPriority();
+
   // optional one-line teaser: anomaly state, else the freshest copilot digest line
   const teaser=document.getElementById('hero-teaser');
   let tt='';
@@ -6171,6 +6184,25 @@ function renderReco(){
   body.querySelectorAll('[data-reco-link]').forEach(b=>{
     b.onclick=()=>_recoGo(b.getAttribute('data-reco-link'));
   });
+  renderHeroPriority();   // same RECO cache feeds the hero "tackle first" line — no 2nd LLM fetch
+}
+// Hero "tackle first" line — reuses the RECO cache (loadReco). Hidden unless the LLM
+// actually framed a priority AND there are open items; click scrolls to the reco card.
+function renderHeroPriority(){
+  const el=document.getElementById('hero-priority'); if(!el) return;
+  const j=RECO||{}; const items=j.items||[];
+  if(!(j.llm_used && j.priority && items.length)){ el.hidden=true; el.innerHTML=''; el.removeAttribute('title'); return; }
+  el.hidden=false;
+  el.title=j.priority;
+  el.setAttribute('aria-label', I18N.t('hero.priority_lbl','Tackle first:')+' '+j.priority+' — '+I18N.t('hero.priority_aria','open Recommendations'));
+  el.innerHTML='<span class="ic" aria-hidden="true">🎯</span><span class="lbl">'
+    +esc(I18N.t('hero.priority_lbl','Tackle first:'))+'</span><span class="txt"></span>';
+  el.querySelector('.txt').textContent=j.priority;   // XSS-safe: priority via textContent
+  el.onclick=()=>{
+    const c=document.getElementById('recocard');
+    if(c){ try{ c.scrollIntoView({behavior:(matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'),block:'start'}); }catch(_){ c.scrollIntoView(); }
+      const b=document.getElementById('reco-body'); if(b) b.setAttribute('tabindex','-1'),b.focus({preventScroll:true}); }
+  };
 }
 async function loadReco(force){
   if(CURRENT_HOST!=='local'){ const c=document.getElementById('recocard'); if(c) c.hidden=true; return; }
