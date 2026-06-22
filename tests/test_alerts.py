@@ -436,6 +436,7 @@ class TestMaintenanceMutesAlerting(unittest.TestCase):
     def setUp(self):
         _clean_db()
         _clean_maint()
+        app._MAINT_SUPPRESS_LOGGED.clear()
         app.save_settings({"discord_webhook_url": "", "telegram_token": "",
                            "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
 
@@ -494,6 +495,25 @@ class TestMaintenanceMutesAlerting(unittest.TestCase):
             self.assertEqual(app.evaluate_rules(SIG_ANOMALY), 1)  # window ended -> fires
         pt.assert_called()
         self.assertEqual(self._state(rid), "active")
+
+    def test_suppressed_history_logged_once_per_span_not_per_pass(self):
+        # A long window with a persistently-active alarm must record ONE suppressed
+        # row, not one per sampler pass (which would evict real alert history).
+        app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                         "enabled": True, "cooldown_min": 0})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")):
+            for _ in range(5):
+                app.evaluate_rules(SIG_ANOMALY)   # active, every pass, inside window
+        sup = [h for h in app.list_alert_history() if h["status"] == "suppressed"]
+        self.assertEqual(len(sup), 1)
+        # New suppressed span after the alarm clears → logs once more.
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")):
+            app.evaluate_rules(SIG_QUIET)         # clears → span ends, re-arms logging
+            app.evaluate_rules(SIG_ANOMALY)       # active again → one new suppressed row
+        sup = [h for h in app.list_alert_history() if h["status"] == "suppressed"]
+        self.assertEqual(len(sup), 2)
 
     def test_recovery_deferred_until_window_ends_then_sends_once(self):
         rid, _ = app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},

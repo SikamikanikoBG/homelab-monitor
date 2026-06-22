@@ -4025,6 +4025,11 @@ def notify_scan():
 # at the last ~200 rows). This only sends data OUT — it never touches the host.
 _RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident"}
 _ALERT_HISTORY_CAP = 200
+# Rule ids that already have a "suppressed (maintenance)" history row for their
+# CURRENT contiguous suppressed-fire span. Edge-trigger so a long window with an
+# active alarm logs ONE suppressed row, not one per sampler pass (which would
+# otherwise evict real alert history). In-process; resets on restart (harmless).
+_MAINT_SUPPRESS_LOGGED = set()
 
 def _rule_row_to_dict(r):
     cols = ("id", "name", "enabled", "ctype", "params", "channel", "level",
@@ -4465,14 +4470,20 @@ def evaluate_rules(signals=None):
         # regardless of cooldown. (Threshold rules still re-fire after cooldown.)
         already_armed = rule["ctype"] == "incident" and rule.get("last_state") == "active"
         should_fire = active and not snoozed and cooled and not already_armed
+        if not (should_fire and in_maint):
+            # Span ended (alarm cleared or window closed) → re-arm one-shot logging.
+            _MAINT_SUPPRESS_LOGGED.discard(rule["id"])
         if should_fire and in_maint:
             # Engine paused by a maintenance window: do NOT send and do NOT arm
             # (no last_state/last_fired_at mutation), so an alarm that begins and
             # ends entirely inside the window never sends a fire — and therefore
-            # never owes a spurious recovery. Record-only, flagged, never sent.
-            full_title = f"{rule['name']}: {title}"
-            record_alert(rule["id"], rule["name"], rule["level"], rule["channel"],
-                         "suppressed", full_title, "suppressed (maintenance)")
+            # never owes a spurious recovery. Record ONE suppressed row per span
+            # (edge-triggered) so a long window can't flood/evict alert history.
+            if rule["id"] not in _MAINT_SUPPRESS_LOGGED:
+                full_title = f"{rule['name']}: {title}"
+                record_alert(rule["id"], rule["name"], rule["level"], rule["channel"],
+                             "suppressed", full_title, "suppressed (maintenance)")
+                _MAINT_SUPPRESS_LOGGED.add(rule["id"])
             continue
         if should_fire:
             level = rule["level"]
