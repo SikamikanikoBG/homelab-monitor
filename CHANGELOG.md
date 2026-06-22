@@ -5,6 +5,43 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.18.0-ai](CHANGELOG.md) — 2026-06-22 · **The AI-native HomeLab cockpit** _(next_ai preview)_
+*A forward-branch identity that turns the monitor into an AI-native cockpit: a local-LLM Lab Copilot, statistical forecasting + correlated incidents, real-time inference telemetry, full alerting + uptime, and Home Assistant / Prometheus / MCP integrations — all still single-image, pure-Python, read-only by default.*
+
+> This is the `next_ai` preview line (versioned `-ai` so it's never mistaken for the stable release). Everything below is shipped and live. The DNA is unchanged: **one container, pure Python + Flask, no heavy deps, read-only by default, every outbound/integration opt-in and OFF by default.**
+
+**🧠 Lab Copilot — local LLM, no cloud**
+- **Daily NL digest + ask-box** (`/api/copilot/digest`, `/api/copilot/ask`) — the on-box ollama phrases your real metrics (GPU, biggest model, disk-fill ETA, cost projection, top anomaly) in plain English. Graceful when no LLM is present (never 500s).
+- **"Explain this spike"** (`/api/copilot/explain`) — click any anomaly/incident member and the Copilot reads the surrounding samples/models/power to give a 1–2 sentence cause.
+- **"What's broken?" one-keystroke triage** (⌘K) — scores every container by badness, opens the worst one's log drawer, and auto-fires the LLM log summary.
+- **Container log tail + "Summarize errors"** — Dozzle-style log viewing over the read-only Docker socket plus one-click local-LLM triage of error/warn lines.
+- **Scheduled NL digest push** — once a day at a chosen time the digest goes out through your existing alert channel; edge-triggered exactly once/day, fails safe.
+
+**🔮 Forecasting, anomalies & incidents (pure stats, no deps)**
+- **Disk-fill ETA per mount**, **cost-this-month projection** (tariff-aware, vs last month), **VRAM-exhaustion ETA + headroom** — R²-gated least-squares (`_linfit`) on real history; `/api/forecast`.
+- **Z-score anomaly flags** on GPU util / VRAM / power / temp + total power draw, with per-series floors so idle/noise never false-alarms; anomaly heat-ribbon under the charts.
+- **Correlated incidents** — co-firing anomaly series are grouped into one life-cycled Incident (open → cleared) with a detail drawer, lifecycle timeline, per-member σ, a recovery notification, and an MCP `get_incidents` tool.
+
+**⚡ Live LLM inference telemetry**
+- **Live tokens/sec · TTFT · resident models** (`/api/llm`) — measured honestly from our own Copilot generations (ollama's ns timing fields), never fabricated; plus a resident-model list from ollama `/api/ps`.
+- **LLM throughput history** — a persisted sparkline on the GPU card and `homelab_llm_tokens_per_second` / `homelab_llm_ttft_ms` / `homelab_llm_resident_models` on `/metrics`.
+
+**🔔 Alerting, recovery & uptime**
+- **Opt-in alert engine** — SQLite rules (anomaly / disk-ETA / VRAM-ETA / cost-budget / incident / uptime-down) × channels (**Discord / ntfy / Telegram / generic webhook**), with dedupe + cooldown + snooze + ack + history, and one-shot ✅ recovery notifications.
+- **Maintenance / alert-silence windows** — one-off or recurring-daily windows that pause outbound notifications (and defer recoveries) without touching the host.
+- **External uptime checks (HTTP/TCP)** — user-defined endpoint monitors probed from inside the container: up/down + latency + 24h uptime% + heartbeat strips, on their own daemon thread; with an `uptime_down` alert rule.
+
+**🔌 Integrations**
+- **Prometheus / OpenMetrics `/metrics`** — pure-stdlib `homelab_*` block (GPU/power/disk/cost/anomaly/LLM gauges + build_info); works with or without `prometheus_client`. Grafana-ready.
+- **Home Assistant / MQTT auto-discovery** — optional, **publish-only** stdlib MQTT 3.1.1 client (never subscribes → no inbound attack surface) that surfaces the lab as native HA sensors under one device. OFF until configured.
+- **Read-only MCP server** — the lab is legible to AI agents over one URL, including `get_incidents`. Read-only by design.
+
+**✨ UX & onboarding**
+- **Premium Overview hero** (status orb + KPI strip + active-incident chip), **⌘K command palette** (Linear/Raycast-style fast-nav + actions), **busy-vs-quiet cost heatmap**, **time-range control** (1h/6h/24h/7d/30d/All) across all charts.
+- **Public read-only `/status` page** with **uptime heartbeat bars** — Uptime-Kuma's shareable "is my lab up?" surface, privacy-first (no names/IPs/secrets).
+- **Demo mode (`DEMO_MODE=1`)** — seeds ~7 days of believable synthetic history on a fresh DB so the whole feature set lights up in seconds.
+- Dark / light / system, mobile reflow, a11y throughout, **i18n (English + Simplified Chinese)** for every new string.
+
 ## [0.17.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.17.0) — 2026-06-18 · **Ask Your Homelab — over MCP**
 *Costs and experiments are now MCP tools, so Claude (or any AI) can tell you what last night cost. Bonus: it speaks Chinese now, and updates itself.*
 
