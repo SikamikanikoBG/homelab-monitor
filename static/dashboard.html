@@ -209,6 +209,13 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hero-inc.live.crit .dot{animation:hero-blink 1.4s steps(2,start) infinite}
 @keyframes hero-blink{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.hero-inc.live.crit .dot{animation:none}}
+/* "needs attention" rollup: a scannable cluster of severity chips */
+.hero-attn{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.hero-attn-lead{font-size:12.5px;font-weight:600;color:var(--mut);white-space:nowrap}
+.hero-attn-lead.ok{color:var(--ok)}
+.hero-attn-lead.warn{color:var(--warn)}
+.hero-attn-lead.crit{color:var(--crit)}
+.hero-chip[hidden]{display:none}
 .hero-skel{padding:18px 20px}
 @media(max-width:640px){
   .hero-top{padding:15px 16px;gap:12px}
@@ -871,6 +878,13 @@ body{background:var(--canvas)}
 .nrow:hover{background:var(--hover);color:var(--tx)}
 .nrow.on{background:var(--sel);color:var(--tx);font-weight:600}
 .nrow .tdot{width:7px;height:7px;border-radius:2px;margin-left:auto}
+/* nav attention badge: a small count pill (crit/warn) for the relevant tab */
+.nrow .nbadge{margin-left:auto;min-width:16px;height:16px;padding:0 5px;border-radius:8px;
+  font-size:10.5px;font-weight:700;line-height:16px;text-align:center;color:#fff;
+  font-variant-numeric:tabular-nums;background:var(--mut);display:inline-block}
+.nrow .nbadge.crit{background:var(--crit)}
+.nrow .nbadge.warn{background:var(--warn);color:#3a2a00}
+.nrow .nbadge[hidden]{display:none}
 .foot{border-top:1px solid var(--bd);padding:10px;display:flex;flex-direction:column;gap:9px}
 .foot .ghstar{align-self:flex-start}
 .footrow{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap}
@@ -1201,7 +1215,12 @@ h2 .hic{ opacity:.9 }
     </div>
     <div class="hero-kpis" id="hero-kpis"></div>
     <div class="hero-foot" id="hero-foot">
-      <button type="button" class="hero-inc" id="hero-inc"><span class="dot"></span><span id="hero-inc-txt"></span></button>
+      <div class="hero-attn" id="hero-attn" role="group" aria-label="Needs attention">
+        <span class="hero-attn-lead" id="hero-attn-lead"></span>
+        <button type="button" class="hero-inc hero-chip" id="hero-reco"><span class="dot"></span><span id="hero-reco-txt"></span></button>
+        <button type="button" class="hero-inc hero-chip" id="hero-inc"><span class="dot"></span><span id="hero-inc-txt"></span></button>
+        <button type="button" class="hero-inc hero-chip" id="hero-uptime"><span class="dot"></span><span id="hero-uptime-txt"></span></button>
+      </div>
       <span class="teaser" id="hero-teaser"></span>
     </div>
   </section>
@@ -2512,7 +2531,7 @@ function fmtLabels(L){ if(!L.length)return[]; const md=(L[L.length-1]-L[0])>2*86
 // ── Tab navigation ────────────────────────────────────────────────────────────
 // rev6: nav rows live in a grouped sidebar (Monitoring / AI / Settings), always
 // visible — no gear drawer. tdot = per-section attention square (set in renderHealth).
-const tabBtn = t => `<button class="nrow" data-t="${t.id}"><span>${I18N.t('nav.'+t.id, t.label)}</span><span class="tdot" id="ndot-${t.id}" style="display:none"></span></button>`;
+const tabBtn = t => `<button class="nrow" data-t="${t.id}"><span>${I18N.t('nav.'+t.id, t.label)}</span><span class="nbadge" id="nbadge-${t.id}" hidden></span><span class="tdot" id="ndot-${t.id}" style="display:none"></span></button>`;
 const isSettingsTab = id => !!(TABS.find(t=>t.id===id)||{}).settings;
 function buildNav(){
   const nl = document.getElementById('navlist'); if(!nl) return;
@@ -4962,22 +4981,59 @@ function renderHero(){
   }
   document.getElementById('hero-kpis').innerHTML = kpis.join('');
 
-  // active-incident chip — driven by /api/forecast incidents summary
+  // "needs attention" rollup — one scannable command-center signal, driven by the
+  // CHEAP /api/forecast counts (reco{crit,warn,total} + incidents.open + uptime.down).
+  // No LLM ever touched here: /api/recommendations is poll-free, this rides the 15s loop.
   const inc=fc.incidents||{open:0,top:null};
   const open=inc.open||0;
+  const reco=fc.reco||{crit:0,warn:0,total:0};
+  const down=(fc.uptime||{}).down||0;
+  const total = (reco.total||0) + open + down;
+  const lead=document.getElementById('hero-attn-lead');
+
+  // reco chip
+  const recoBtn=document.getElementById('hero-reco');
+  const recoTxt=document.getElementById('hero-reco-txt');
+  recoBtn.classList.remove('ok','live','warn','crit');
+  if((reco.total||0)>0){
+    const rc=(reco.crit||0)>0;
+    recoBtn.classList.add('live', rc?'crit':'warn'); recoBtn.hidden=false;
+    recoTxt.textContent = reco.total===1?I18N.t('hero.reco_one','1 recommendation')
+                                        :I18N.tf('hero.reco_n','{n} recommendations',{n:reco.total});
+    recoBtn.setAttribute('aria-label', I18N.tf('hero.reco_aria','{n} open recommendations — open the Recommendations list',{n:reco.total}));
+  }else{ recoBtn.hidden=true; }
+
+  // active-incident chip
   const incBtn=document.getElementById('hero-inc');
   const incTxt=document.getElementById('hero-inc-txt');
   incBtn.classList.remove('ok','live','warn','crit');
   if(open>0){
     const crit=!!(inc.top&&inc.top.severity==='critical');
-    incBtn.classList.add('live', crit?'crit':'warn');
+    incBtn.classList.add('live', crit?'crit':'warn'); incBtn.hidden=false;
     incTxt.textContent = open===1?I18N.t('hero.inc_one','1 active incident')
                                  :I18N.tf('hero.inc_n','{n} active incidents',{n:open});
-    incBtn.setAttribute('aria-label', I18N.t('hero.inc_aria','Open the active incident'));
+    incBtn.setAttribute('aria-label', I18N.tf('hero.inc_aria_n','{n} open incidents — open the incident',{n:open}));
+  }else{ incBtn.hidden=true; }
+
+  // checks-down chip
+  const upBtn=document.getElementById('hero-uptime');
+  const upTxt=document.getElementById('hero-uptime-txt');
+  upBtn.classList.remove('ok','live','warn','crit');
+  if(down>0){
+    upBtn.classList.add('live','crit'); upBtn.hidden=false;
+    upTxt.textContent = down===1?I18N.t('hero.down_one','1 check down')
+                                :I18N.tf('hero.down_n','{n} checks down',{n:down});
+    upBtn.setAttribute('aria-label', I18N.tf('hero.down_aria','{n} uptime checks down — open Uptime',{n:down}));
+  }else{ upBtn.hidden=true; }
+
+  // calm "all clear" when nothing needs attention (no chips, no alarming empty state)
+  if(total>0){
+    const anyCrit=(reco.crit||0)>0 || down>0 || (inc.top&&inc.top.severity==='critical');
+    lead.className='hero-attn-lead '+(anyCrit?'crit':'warn');
+    lead.textContent = (anyCrit?'⚠ ':'• ')+I18N.tf('hero.attn_need','{n} need attention',{n:total});
   }else{
-    incBtn.classList.add('ok');
-    incTxt.textContent=I18N.t('hero.all_clear','All clear — no active incidents');
-    incBtn.removeAttribute('aria-label');
+    lead.className='hero-attn-lead ok';
+    lead.textContent = I18N.t('hero.attn_clear','✓ All clear');
   }
 
   // optional one-line teaser: anomaly state, else the freshest copilot digest line
@@ -4987,19 +5043,61 @@ function renderHero(){
   else if(typeof COPILOT_DIGEST_FIRST==='string' && COPILOT_DIGEST_FIRST){ tt=COPILOT_DIGEST_FIRST; }
   teaser.textContent=tt;
   teaser.hidden=!tt;
+
+  renderNavAttention();   // same cheap counts also drive the sidebar badges
 }
-// hero incident chip → jump to the Incidents card on the GPU tab (reuse drawer flow)
-document.addEventListener('click',e=>{
-  const b=e.target.closest && e.target.closest('#hero-inc.live'); if(!b) return;
-  if(typeof showTab==='function') showTab('gpu'); else location.hash='#gpu';
-  loadIncidents(true);
-  setTimeout(()=>{ const c=document.getElementById('inc-card');
+// Sidebar nav badges: surface where there's something to attend to. Driven by the
+// SAME cheap /api/forecast counts as the hero rollup — never the LLM endpoint.
+// Overview badge = open recommendations + incidents; Uptime badge = checks down.
+function renderNavAttention(){
+  const fc=FORECAST||{};
+  const local = CURRENT_HOST==='local';
+  const reco=fc.reco||{crit:0,warn:0,total:0};
+  const open=(fc.incidents||{}).open||0;
+  const down=(fc.uptime||{}).down||0;
+  const set=(tab,count,crit,aria)=>{
+    const el=document.getElementById('nbadge-'+tab); if(!el) return;
+    if(!local || !count){ el.hidden=true; el.removeAttribute('aria-label'); return; }
+    el.hidden=false;
+    el.textContent = count>99?'99+':String(count);
+    el.className='nbadge '+(crit?'crit':'warn');
+    el.setAttribute('aria-label', aria);
+  };
+  const ovTotal=(reco.total||0)+open;
+  const ovCrit=(reco.crit||0)>0 || (fc.incidents&&fc.incidents.top&&fc.incidents.top.severity==='critical');
+  set('overview', ovTotal, ovCrit,
+      I18N.tf('nav.attn.overview','{n} items need attention',{n:ovTotal}));
+  set('uptime', down, down>0,
+      I18N.tf('nav.attn.uptime','{n} uptime checks down',{n:down}));
+}
+// hero "needs attention" chips → jump to the right surface.
+function _heroScroll(id){
+  setTimeout(()=>{ const c=document.getElementById(id);
     if(c && !c.hidden) c.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth', block:'start'}); }, 120);
+}
+function _heroChipGo(b){
+  if(b.id==='hero-inc'){
+    if(typeof showTab==='function') showTab('gpu'); else location.hash='#gpu';
+    if(typeof loadIncidents==='function') loadIncidents(true);
+    _heroScroll('inc-card');
+  }else if(b.id==='hero-reco'){
+    if(typeof showTab==='function') showTab('overview'); else location.hash='#overview';
+    if(typeof loadReco==='function') loadReco();   // cached; never forces the LLM on click
+    _heroScroll('recocard');
+  }else if(b.id==='hero-uptime'){
+    if(typeof showTab==='function') showTab('uptime'); else location.hash='#uptime';
+  }
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest && e.target.closest('#hero-attn .hero-inc.live'); if(!b) return;
+  _heroChipGo(b);
 });
 document.addEventListener('keydown',e=>{
-  if((e.key==='Enter'||e.key===' ')){ const b=e.target.closest && e.target.closest('#hero-inc.live');
+  if((e.key==='Enter'||e.key===' ')){ const b=e.target.closest && e.target.closest('#hero-attn .hero-inc.live');
     if(b){ e.preventDefault(); b.click(); } }
 });
+// Sidebar attention badge click is already handled by the nrow showTab() binding —
+// the badge is inside the button, so a click on it navigates to that tab.
 
 // ── Runs (pushed from notebooks / MLflow) — the primary Experiments view ──────
 // Source → colour dot (srcDot) and status → stroke icon+colour (stIcon) live in the
@@ -5384,6 +5482,7 @@ function _etaText(d){
 }
 function renderForecast(){
   const j=FORECAST||{};
+  if(typeof renderNavAttention==='function') renderNavAttention();   // cheap counts → sidebar badges (every tab)
   // Disk-fill card (Disks tab)
   const dc=document.getElementById('diskfc-card'), dt=document.getElementById('diskfc-tbl');
   const disks=(j.disk||[]);
@@ -7299,6 +7398,10 @@ loadData(); loadHealth(); loadFleet();
 setInterval(()=>{
   if(!document.getElementById('auto').checked) return;
   loadData(); loadHealth(); loadFleet();
+  // Keep the sidebar attention badges live on every tab. loadForecast() has its own
+  // 60s cache (so this only actually fetches the CHEAP /api/forecast once a minute),
+  // and renderForecast() drives renderNavAttention(). Never touches the LLM endpoint.
+  if(CURRENT_HOST==='local') loadForecast();
   // Re-render host-scoped tabs so cached remote data refreshes too.
   if(TAB==='host')     renderHostTab();
   if(TAB==='network')  renderNetwork();

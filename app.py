@@ -6313,6 +6313,7 @@ def api_forecast():
     or 'stable' rather than guessing — never a 500."""
     now = int(time.time())
     ctx = _cost_ctx()
+    ooms = []
     try:
         with LOCK:
             cur = DB.cursor()
@@ -6320,15 +6321,47 @@ def api_forecast():
             cost_month = _cost_projection(cur, ctx, now)
             anomalies = _zscore_anomalies(cur, now)
             vram = _vram_forecast(cur, now)
+            # Recurring-OOM signal, read in the SAME LOCK pass (mirrors _reco_signals)
+            # so the cheap reco tally below reuses these forecasts without recompute.
+            try:
+                cutoff = int(now - RECO_OOM_WINDOW_DAYS * 86400)
+                rows = cur.execute(
+                    "SELECT service, COUNT(*) n, MAX(ts) last FROM events "
+                    "WHERE kind='oom' AND ts>=? GROUP BY service ORDER BY n DESC, last DESC",
+                    (cutoff,)).fetchall()
+                ooms = [{"service": r[0], "count": r[1], "last_ts": r[2]} for r in rows]
+            except Exception:
+                ooms = []
     except Exception as e:
         print("forecast error:", e, flush=True)
         return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False},
                         "anomalies": {"status": "collecting", "checked": 0, "items": []},
                         "vram": {"status": "collecting"},
                         "error": "forecast_unavailable"})
+    # incidents_summary()/uptime_overview() take LOCK themselves — call OUTSIDE the
+    # block above so the non-reentrant lock is never nested.
+    incidents = incidents_summary()
+    try:
+        uptime_checks = uptime_overview().get("checks", []) or []
+    except Exception as e:
+        print("forecast uptime error:", e, flush=True)
+        uptime_checks = []
+    down = sum(1 for c in uptime_checks
+               if c.get("enabled") and c.get("state") == "down")
+    # CHEAP, LLM-FREE "needs attention" tally for the cockpit hero rollup + nav
+    # badges: reuse the forecasts just computed (no second heavy pass) and run ONLY
+    # the deterministic detectors. /api/forecast already rides the 15s poll, so the
+    # badge never has to touch the LLM-backed /api/recommendations on a timer.
+    reco = _reco_counts({"disk": disks, "vram": vram, "cost_month": cost_month,
+                         "anomalies": anomalies, "incidents": incidents,
+                         "uptime": uptime_checks, "ooms": ooms})
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
                     "anomalies": anomalies, "vram": vram,
-                    "incidents": incidents_summary()})
+                    "incidents": incidents,
+                    "uptime": {"down": down, "total": len(uptime_checks)},
+                    "reco": reco,
+                    "attention": {"reco": reco, "incidents_open": incidents.get("open", 0),
+                                  "uptime_down": down}})
 
 @app.route("/api/incidents")
 def api_incidents():
@@ -7756,6 +7789,23 @@ def _reco_detect(sig, now=None):
         it.get("ts") or 0,
     ), reverse=True)
     return items
+
+
+def _reco_counts(sig):
+    """CHEAP, LLM-FREE recommendation tally for the cockpit badge/hero rollup.
+
+    Runs ONLY the deterministic detectors (`_reco_detect`) over an already-assembled
+    signal bundle and returns compact counts by severity — it NEVER calls
+    `_ollama_generate`. This is what the frequently-polled hero/nav badge rides on,
+    so the LLM is never hit on a timer. Returns {crit, warn, total}; never raises."""
+    try:
+        items = _reco_detect(sig)[:RECO_MAX_ITEMS]
+    except Exception as e:
+        print("reco counts error:", e, flush=True)
+        items = []
+    crit = sum(1 for it in items if it.get("severity") == "crit")
+    warn = sum(1 for it in items if it.get("severity") == "warn")
+    return {"crit": crit, "warn": warn, "total": len(items)}
 
 
 def _reco_num(x):
