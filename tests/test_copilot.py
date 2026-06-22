@@ -341,6 +341,17 @@ class TestAskRouting(unittest.TestCase):
         ci, oi = joined.find("chroma"), joined.find("ollama")
         self.assertTrue(ci != -1 and (oi == -1 or ci < oi))
 
+    def test_most_expensive_falls_back_to_energy_without_tariff(self):
+        # Drop the tariff → "most expensive" must still rank, by energy (kWh).
+        with app.LOCK:
+            app.DB.execute("DELETE FROM settings WHERE key='kwh_price'")
+            app.DB.commit()
+        facts, used, _ = app._ask_route("most expensive container this month?", self.now)
+        joined = "\n".join(facts).lower()
+        self.assertIn("cost", used)
+        self.assertIn("kwh", joined)        # ranked by energy use
+        self.assertIn("chroma", joined)     # still the heaviest
+
     def test_gpu_health_pulls_gpu_and_headroom(self):
         facts, used, _ = app._ask_route("is the gpu healthy?", self.now)
         self.assertIn("gpu", used)

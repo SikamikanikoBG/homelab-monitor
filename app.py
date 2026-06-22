@@ -7104,13 +7104,21 @@ def _ask_topic_facts(topics, q, ctx, now):
             cur = cm.get("currency") or "$"
             lines.append("Energy cost month-to-date {c}{m}; projected month {c}{p}.".format(
                 c=cur, m=cm.get("month_to_date"), p=cm.get("projected_month")))
-        # top-N entities by cost when the question asks who's most expensive
+        # top-N entities by cost when the question asks who's most expensive.
+        # When no tariff is set we rank by energy (kWh) — an honest proxy so the
+        # "most expensive" question still gets a grounded ranking answer.
         if wants_rank:
             try:
                 top = _ask_top_cost_entities(now, n=5)
+                if top and not top[0].get("priced"):
+                    lines.append("No energy tariff is configured, so ranking by ENERGY USE (kWh) over the last 30 days:")
                 for e in top:
-                    lines.append("{k} {n}: {c}{v} over the last 30 days (~{w} W avg).".format(
-                        k=e["kind"], n=e["name"], c=e["currency"], v=e["cost"], w=e["avg_w"]))
+                    if e.get("priced"):
+                        lines.append("{k} {n}: {c}{v} over the last 30 days (~{w} W avg).".format(
+                            k=e["kind"], n=e["name"], c=e["currency"], v=e["cost"], w=e["avg_w"]))
+                    else:
+                        lines.append("{k} {n}: {e} kWh over the last 30 days (~{w} W avg).".format(
+                            k=e["kind"], n=e["name"], e=e["energy_kwh"], w=e["avg_w"]))
             except Exception:
                 pass
         srcs.append("cost")
@@ -7185,37 +7193,38 @@ def _ask_topic_facts(topics, q, ctx, now):
 
 
 def _ask_top_cost_entities(now, n=5):
-    """Top-N power-attributed entities by energy cost over the last 30 days, from
-    power_proc (the same table get_costs ranks). Read-only. Returns a list of
-    {kind,name,cost,avg_w,currency}. Never raises (empty list on any error)."""
+    """Top-N power-attributed entities over the last 30 days from power_proc (the
+    same table get_costs ranks). When a tariff is configured we rank by money;
+    otherwise we rank by ENERGY (kWh) so 'most expensive' still gets an honest
+    proxy answer on labs with no price set. Read-only. Returns a list of
+    {kind,name,cost,energy_kwh,avg_w,currency,priced}. Never raises (empty on
+    any error)."""
     out = []
     try:
         ctx = _cost_ctx()
+        priced = ctx.get("day", 0) > 0
         kwh_per = INTERVAL / 3_600_000.0
         since = now - 30 * 86400
-        acc = {}
+        acc = {}   # (kind,name) -> [cost, energy_kwh, watt_sum, cnt]
         with LOCK:
             cur = DB.cursor()
             for ts, kind, name, watts in cur.execute(
                     "SELECT ts,kind,name,watts FROM power_proc WHERE ts>=?", (since,)):
-                a = acc.setdefault((kind, name), [0.0, 0])
-                a[0] += (watts or 0) * kwh_per * _price_at(ctx, ts)
-                a[1] += 1
-        ranked = sorted(acc.items(), key=lambda kv: -kv[1][0])[:n]
-        for (kind, name), (cost, cnt) in ranked:
-            if cost <= 0:
+                a = acc.setdefault((kind, name), [0.0, 0.0, 0.0, 0])
+                w = watts or 0
+                a[0] += w * kwh_per * _price_at(ctx, ts)
+                a[1] += w * kwh_per
+                a[2] += w
+                a[3] += 1
+        rank_idx = 0 if priced else 1     # by cost when priced, else by energy
+        ranked = sorted(acc.items(), key=lambda kv: -kv[1][rank_idx])[:n]
+        for (kind, name), (cost, energy, wsum, cnt) in ranked:
+            if (cost if priced else energy) <= 0:
                 continue
             out.append({"kind": kind, "name": name, "cost": round(cost, 2),
-                        "avg_w": 0, "currency": ctx["currency"]})
-        # second pass for an honest avg-watts per ranked entity
-        if out:
-            with LOCK:
-                cur = DB.cursor()
-                for e in out:
-                    r = cur.execute(
-                        "SELECT AVG(watts) FROM power_proc WHERE kind=? AND name=? AND ts>=?",
-                        (e["kind"], e["name"], since)).fetchone()
-                    e["avg_w"] = round(r[0] or 0) if r else 0
+                        "energy_kwh": round(energy, 3),
+                        "avg_w": round(wsum / max(1, cnt)),
+                        "currency": ctx["currency"], "priced": priced})
     except Exception:
         return []
     return out
