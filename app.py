@@ -4121,6 +4121,17 @@ def uptime_overview(window=86400):
     return {"checks": out, "now": now, "window": window,
             "min_interval": _UPTIME_MIN_INTERVAL, "max_timeout": _UPTIME_MAX_TIMEOUT}
 
+def uptime_summary():
+    """Compact rollup for the Overview cockpit: how many ENABLED checks exist and
+    how many are up/down, plus the worst current check. None of it sensitive — it's
+    counts + a label — so it can ride the always-visible fleet rollup bar."""
+    checks = [c for c in uptime_overview().get("checks", []) if c.get("enabled")]
+    up = sum(1 for c in checks if c.get("state") == "up")
+    down = sum(1 for c in checks if c.get("state") == "down")
+    worst = next((c["label"] for c in checks if c.get("state") == "down"), None)
+    return {"total": len(checks), "up": up, "down": down,
+            "unknown": len(checks) - up - down, "worst_down": worst}
+
 def uptime_insights():
     """Insight-feed rows for the cockpit: currently-DOWN checks (critical) and
     up-but-slow checks (warning). Uptime rides the SAME Insight Feed as disk/RAM/
@@ -4967,11 +4978,14 @@ def api_data():
     # takes it itself). DOWN/slow endpoints surface on the cockpit with no new tile.
     try:
         insights = insights + uptime_insights()
+        up_summary = uptime_summary()
     except Exception as e:
-        print("uptime_insights error:", e, flush=True)
+        print("uptime overview error:", e, flush=True)
+        up_summary = {"total": 0, "up": 0, "down": 0, "unknown": 0, "worst_down": None}
     return jsonify({"version": VERSION, "range": rng, "bucket_sec": bk, "labels": labels, "total": total,
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "callers": callers, "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
+                    "uptime_summary": up_summary,
                     "mem_total": mem_total, "peak_mem": peak, "now": LATEST})
 
 def _hhmm_to_min(s, default):

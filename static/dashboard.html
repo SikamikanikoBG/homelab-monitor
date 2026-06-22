@@ -464,26 +464,28 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
 .btn-mini.danger:hover{border-color:var(--crit)}
-/* Uptime checks — built on the same inset/glass tokens as .kpi/.mc-panel so it
-   reads as part of the cockpit, not a bolted-on widget. */
-.upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
-.upcard{position:relative;background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);
-  border-radius:10px;padding:14px 15px;display:flex;flex-direction:column;gap:10px;box-shadow:inset 0 1px 0 var(--mc-stroke)}
+/* Uptime checks — mirror the app's own "monitored thing" cards (.hostrow/.gpucard):
+   --inset surface, 9px radius, a 3px status left-rail, no extra shadow. */
+.upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+.upcard{background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);
+  border-radius:9px;padding:11px 13px;display:flex;flex-direction:column;gap:8px}
 .upcard.up{border-left-color:var(--ok)} .upcard.down{border-left-color:var(--crit)} .upcard.unknown{border-left-color:var(--mut)}
-.upcard.paused{opacity:.62}
-.upcard .uphead{display:flex;align-items:flex-start;gap:8px}
-.upcard .uplabel{font-weight:700;font-size:15px;word-break:break-word;flex:1;min-width:0;letter-spacing:-.2px}
-.upcard .uptarget{font-size:11.5px;color:var(--mut);font-family:var(--mono);word-break:break-all}
-.upcard .upmeta{display:flex;gap:7px 14px;flex-wrap:wrap;font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
-.upcard .upmeta b{color:var(--tx);font-weight:700}
-.upcard .uperr{font-size:11.5px;color:var(--crit);word-break:break-word;font-variant-numeric:tabular-nums}
-.upcard .upbell{font-size:11.5px;color:var(--mut);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.upcard.paused{opacity:.6}
+.upcard .uphead{display:flex;align-items:center;gap:9px}
+.upcard .uplabel{font-weight:600;font-size:14px;word-break:break-word;flex:1;min-width:0}
+.upcard .uptarget{font-size:12px;color:var(--mut);font-family:var(--mono);word-break:break-all}
+.upcard .upmeta{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
+.upcard .upmeta b{color:var(--tx);font-weight:600}
+.upcard .uperr{font-size:12px;color:var(--crit);word-break:break-word;font-variant-numeric:tabular-nums}
+.upcard .upbell{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .upcard .upbell .down-for{color:var(--crit);font-weight:600;font-variant-numeric:tabular-nums}
-.upcard .upactions{display:flex;gap:7px;margin-top:auto;padding-top:2px}
-.uphb{display:flex;gap:2px;align-items:flex-end;height:22px}
-.uphb .cell{flex:1;min-width:2px;height:100%;border-radius:2px;background:var(--bd)}
-.uphb .cell.ok{background:var(--ok);opacity:.85} .uphb .cell.down{background:var(--crit)}
-.upform{margin-top:14px;border:1px solid var(--bd);border-radius:10px;padding:15px;background:var(--mc-glass2);display:grid;gap:14px;max-width:580px}
+.upcard .upactions{display:flex;gap:6px;margin-top:2px;flex-wrap:wrap}
+/* slim Uptime-Kuma-style strip — kept thin like the app's other bars (.gpucard-bar) */
+.uphb{display:flex;gap:2px;align-items:stretch;height:10px}
+.uphb .cell{flex:1;min-width:3px;border-radius:2px;background:var(--bd)}
+.uphb .cell.ok{background:var(--ok);opacity:.7} .uphb .cell.down{background:var(--crit)}
+.upform{margin-top:12px;border:1px solid var(--bd);border-radius:9px;padding:14px;background:var(--inset);display:grid;gap:14px;max-width:580px}
+.upform[hidden]{display:none}
 .upform-grid{display:grid;gap:11px}
 .upalertbox{border-top:1px solid var(--bd);padding-top:13px;display:grid;gap:12px}
 .upalert-sub{display:flex;gap:18px;flex-wrap:wrap;padding-left:27px}
@@ -5275,6 +5277,15 @@ function mcPaintFleetBar($){
   const chips=[ att>0
     ? `<span class="mc-fb-chip ${off.length?'mc-crit':'mc-warn'}" data-go="attention">⚠ ${att} ${I18N.t('mc.need_attn','need attention')}</span>`
     : `<span class="mc-fb-chip mc-ok">✓ ${I18N.t('mc.all_healthy_lc','all healthy')}</span>` ];
+  // Uptime rollup — always present once any check exists, so the Overview shows the
+  // health of your endpoints at a glance (red the moment one is down).
+  const us=(D&&D.uptime_summary)||null;
+  if(us && us.total>0){
+    const txt = us.down>0
+      ? `🛰 ${us.down} ${I18N.t('mc.uptime_down','down')}${us.worst_down?' · '+esc(us.worst_down):''}`
+      : `🛰 ${us.up}/${us.total} ${I18N.t('mc.uptime_up','checks up')}`;
+    chips.push(`<span class="mc-fb-chip ${us.down>0?'mc-crit':'mc-ok'}" data-go="uptime" style="cursor:pointer">${txt}</span>`);
+  }
   bar.innerHTML =
       `<div class="mc-fb-seg"><span class="mc-fb-dot ${sev}"></span><span class="mc-fb-title">${I18N.t('mc.fleet','Fleet')}</span>`
     + `<span class="mc-fb-big">${online}<span class="mc-fb-tot">/${total} ${I18N.t('mc.online','online')}</span></span></div>`
@@ -5284,6 +5295,7 @@ function mcPaintFleetBar($){
   bar.querySelectorAll('[data-go="attention"]').forEach(el=>el.onclick=()=>{
     const w=document.getElementById('mc-feed'); if(w) w.scrollIntoView({behavior:'smooth',block:'center'});
   });
+  bar.querySelectorAll('[data-go="uptime"]').forEach(el=>el.onclick=()=>{ if(typeof showTab==='function') showTab('uptime'); });
 }
 function mcPaintFleet($){
   const wrap=$('mc-fleet');
