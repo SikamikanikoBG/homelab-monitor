@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Public Status</title>
+</head>
+<body>
+<h1>HomeLab Monitor Status</h1>
+
+<pre id="out">Loading...</pre>
+
+<script>
+fetch("/api/public-status")
+.then(r => r.json())
+.then(data => {
+document.getElementById("out").textContent =
+JSON.stringify(data, null, 2);
+});
+</script>
+
+</body>
+</html>
