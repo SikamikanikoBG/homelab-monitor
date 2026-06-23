@@ -294,7 +294,9 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .heat-callout.busy{border-color:var(--crit)}.heat-callout.busy .l{color:var(--crit)}
 .heat-callout.quiet{border-color:var(--ok)}.heat-callout.quiet .l{color:var(--ok)}
 .heat-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.heat-grid{border-collapse:separate;border-spacing:2px;font-size:11px;width:100%;min-width:560px}
+.heat-grid{border-collapse:separate;border-spacing:2px;font-size:11px;table-layout:fixed;width:auto;min-width:560px}
+.heat-grid th:first-child,.heat-grid td.day{width:38px}
+.heat-grid th.hr,.heat-grid td.cell{width:20px}
 .heat-grid th{color:var(--mut);font-weight:500;text-transform:none;letter-spacing:0;font-size:10px;padding:0;text-align:center}
 .heat-grid th.hr{font-variant-numeric:tabular-nums}
 .heat-grid td.day{color:var(--mut);font-weight:600;text-align:right;padding-right:6px;white-space:nowrap;font-size:11px}
@@ -2526,6 +2528,7 @@ const ICONS={
   '🟢':'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
   '🔔':'<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
   '🛰':'<path d="M4 10a7.31 7.31 0 0 0 10 10Z"/><path d="m9 15 3-3"/><path d="M17 13a6 6 0 0 0-6-6"/><path d="M21 13A10 10 0 0 0 11 3"/>',
+  '🗓':'<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M3 10h18M8 2v4M16 2v4"/><circle cx="17.5" cy="17.5" r="4.5"/><path d="M17.5 15.5v2l1.3 1.3"/>',
 };
 function svgIc(d){ return `<svg class="hic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`; }
 // Inline status icons (same stroke family, em-sized) for dynamic content — so the
@@ -2548,6 +2551,9 @@ const SIC={
   ray:'<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
   link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   trash:'<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>',
+  trendUp:'<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+  trendDown:'<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
+  scale:'<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10M12 3v18M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>',
 };
 function sic(name){ const d=SIC[name]; return d ? `<svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>` : ''; }
 const RUN_SRC_COLOR={jupyter:'#a371f7',colab:'#f59e0b',kaggle:'#4dabf7',mlflow:'#3fb950',api:'#8b949e',cli:'#6b7280'};
@@ -3017,15 +3023,15 @@ async function renderHeatmap(force){
   const co=document.getElementById('heat-callouts'); co.innerHTML='';
   const fmtSlot=s=>`${days[s.day]} ${String(s.hour).padStart(2,'0')}:00`;
   if(j.busiest){ const b=j.busiest;
-    co.insertAdjacentHTML('beforeend',`<div class="heat-callout busy"><div class="l">🔺 ${I18N.t('heat.busiest','Busiest slot')}</div>`+
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout busy"><div class="l">${sic('trendUp')}${I18N.t('heat.busiest','Busiest slot')}</div>`+
       `<div class="v">${esc(fmtSlot(b))}</div><div class="s">${W(b.avg_w)}${byCost?' ≈ '+money(b.cost_h)+'/h':''}</div></div>`);
   }
   if(j.quietest){ const q=j.quietest;
-    co.insertAdjacentHTML('beforeend',`<div class="heat-callout quiet"><div class="l">🔻 ${I18N.t('heat.quietest','Quietest slot')}</div>`+
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout quiet"><div class="l">${sic('trendDown')}${I18N.t('heat.quietest','Quietest slot')}</div>`+
       `<div class="v">${esc(fmtSlot(q))}</div><div class="s">${W(q.avg_w)}${byCost?' ≈ '+money(q.cost_h)+'/h':''}</div></div>`);
   }
   if(j.bands && byCost){
-    co.insertAdjacentHTML('beforeend',`<div class="heat-callout"><div class="l">⚖️ ${I18N.t('heat.bands','Busy vs quiet bands')}</div>`+
+    co.insertAdjacentHTML('beforeend',`<div class="heat-callout"><div class="l">${sic('scale')}${I18N.t('heat.bands','Busy vs quiet bands')}</div>`+
       `<div class="v">${money(j.bands.busy.avg_cost_h)}/h ${I18N.t('heat.vs','vs')} ${money(j.bands.quiet.avg_cost_h)}/h</div>`+
       `<div class="s">${I18N.t('heat.bands_sub','busiest quarter vs quietest quarter of hours')}</div></div>`);
   }
