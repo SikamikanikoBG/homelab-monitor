@@ -8,7 +8,7 @@
 ![docker](https://img.shields.io/badge/deploy-docker--compose-2496ED?logo=docker&logoColor=white)
 [![docs](https://img.shields.io/badge/docs-website-d29922?logo=readthedocs&logoColor=white)](https://sikamikanikobg.github.io/homelab-monitor/)
 
-**One page for your whole home lab & AI rig — GPU truth, tokens/sec, power cost, training runs, containers, disks. No agents, no Prometheus/Grafana, no cloud.**
+**One page for your whole home lab & AI rig — GPU truth (any vendor), tokens/sec, power cost by the hour, uptime, training runs, containers, disks. No agents, no separate metrics stack, no cloud.**
 
 <img src="docs/screenshots/tour.gif" alt="HomeLab Monitor — a tour of the dashboard: Overview, GPU truth, Costs, AI Models and Experiments" width="860">
 
@@ -24,19 +24,19 @@ docker compose up -d
 
 Open `http://<your-host>:9800` and you're done. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
 
-> 🆕 **v0.16 — the AI Lab Cockpit.** GPU throttle truth, live **tokens/sec**, a per-process **Costs** page, and **push your training runs** from Jupyter/Colab/MLflow — each one priced with the real GPU energy it burned. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
+> 🆕 **v0.21 — see your power bill by the hour, and which GPU is burning it.** A 7×24 **busy-hours cost heatmap** that shows *when* your lab actually costs you money, **any-vendor GPU** support (AMD on Linux with no ROCm; AMD/Intel on Windows — no vendor tools), and **built-in uptime monitoring** for any HTTP/TCP endpoint. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
 
 ## What you get
 
 ![The Overview — a mission-control cockpit: every host in the fleet at a glance, GPU/CPU/RAM gauges for any box (or the whole homelab), live power-to-money costs and an insight feed](docs/screenshots/overview.png)
 
-One page, every box, the questions you actually have. The classics are all here — and 0.16 builds a whole **AI cockpit** on top of them.
+One page, every box, the questions you actually have. The classics are all here — and a whole **AI cockpit** builds on top of them.
 
-**Your GPU, demystified — and honest about it.** A card pinned at "100% util" can still be throttling, memory-bandwidth-bound, or quietly drooping its clocks. The GPU tab decodes `nvidia-smi`'s throttle reasons (a red banner the moment it's power-capped or too hot), and shows memory-bandwidth util, core/mem clocks, power-vs-limit and p-state — plus *which container is holding the card*.
+**Your GPU, demystified — and honest about it.** A card pinned at "100% util" can still be throttling, memory-bandwidth-bound, or quietly drooping its clocks. The GPU tab decodes `nvidia-smi`'s throttle reasons (a red banner the moment it's power-capped or too hot), and shows memory-bandwidth util, core/mem clocks, power-vs-limit and p-state — plus *which container is holding the card*. And it's no longer NVIDIA-only: **AMD** GPUs are read on Linux straight from the kernel's `amdgpu` interface (no ROCm), and **AMD and Intel** GPUs on Windows hosts — so your card shows up with its name, utilisation and VRAM, no vendor tools required.
 
 ![The GPU tab — throttle reasons, memory-bandwidth, clocks and power headroom](docs/screenshots/gpu.png)
 
-**What it costs — down to the process.** Power becomes money: per machine, then per component (GPU measured via `nvidia-smi`, CPU/DRAM via RAPL), then **per process, container or model** — click any row to see what it drew and what it cost over any window. Day & night tariffs (Economy 7, Heures Creuses, …), or just pick your country for a sensible estimate. Every watt is measured or a baseline you set; wall power is never guessed.
+**What it costs — down to the process.** Power becomes money: per machine, then per component (GPU measured via `nvidia-smi`, CPU/DRAM via RAPL), then **per process, container or model** — click any row to see what it drew and what it cost over any window. Day & night tariffs (Economy 7, Heures Creuses, …), or just pick your country for a sensible estimate. Every watt is measured or a baseline you set; wall power is never guessed. And a **busy-hours heatmap** turns months of samples into one picture of *when* your lab costs you money — a 7×24 day-of-week × hour grid that shows which hour of the week is priciest at a glance.
 
 ![The Costs page — per-component and per-process power & money](docs/screenshots/costs.png)
 
@@ -84,7 +84,7 @@ History lives in `./data/gpu.db` (a bind mount), so it survives restarts and upg
 The hub stitches `nvidia-smi` (plus AMD GPUs via the in-kernel `amdgpu` sysfs interface, and AMD/Intel on Windows hosts via the built-in GPU perf counters), the Docker API, model-server APIs (Ollama, vLLM, llama.cpp, A1111, …), systemd D-Bus, and `/proc` + `/sys` into one sampled view, persisted to SQLite and downsampled on read so a six-month range loads as fast as the last hour. Single page, vendored Chart.js, no build step.
 
 - **30+ recognised model servers** → [Model servers](https://sikamikanikobg.github.io/homelab-monitor/model-servers/)
-- **`/metrics` Prometheus endpoint + Grafana dashboard** → [Prometheus & Grafana](https://sikamikanikobg.github.io/homelab-monitor/prometheus/)
+- **Standard `/metrics` endpoint** to scrape into whatever dashboards you already run → [Metrics export](https://sikamikanikobg.github.io/homelab-monitor/prometheus/)
 - **The full data pipeline + caller attribution** → [How it works](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/)
 
 ## Connect an AI agent (MCP)

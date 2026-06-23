@@ -5,6 +5,19 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.21.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.21.0) — 2026-06-23 · **See your power bill by the hour — and which GPU is burning it**
+*Three new questions answered at a glance: when is your lab most expensive, which GPU is doing the work (whoever made it), and is anything down?*
+
+**Added**
+- **Busy-hours cost heatmap on the Costs tab.** A 7×24 grid — local day-of-week × hour — of your lab's typical total draw, **shaded by cost per hour** once a tariff is set (by power otherwise). It turns months of history into one picture of *when* your rig actually costs you money, with the busiest and quietest slots called out and a busy-vs-quiet spread. No setup; it fills in after about a day of samples.
+- **Any-vendor GPU support — the panel is no longer NVIDIA-only.** **AMD** GPUs are read on Linux straight from the kernel's `amdgpu` interface — **no ROCm, no vendor tools** — and **AMD and Intel** GPUs (including integrated) are read on Windows hosts, so the card finally shows up with its name, utilisation and VRAM. Strictly additive: NVIDIA and GPU-less hosts behave exactly as before.
+- **Built-in uptime monitoring.** Watch any **HTTP endpoint or TCP port** from the same container — know the moment anything stops responding, with a heartbeat strip, **24h/7d uptime %**, latency, and **smart per-check alerts** (anti-flap confirm, recovery quoting the downtime, optional slow-response warning). Nothing else to self-host.
+
+**Polish**
+- The busy-hours heatmap uses the dashboard's SVG icon family and a fixed-width day column; accessibility and layout passes throughout.
+
+_Rolls up the work shipped through `next` since 0.17.3 into one release. Still pure Python + Flask — no new runtime dependencies._
+
 ## [0.20.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.20.1) — 2026-06-23 · _patch_
 _Silent patch — polish on the new busy-hours heatmap._
 
