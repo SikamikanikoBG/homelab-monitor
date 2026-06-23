@@ -5,6 +5,12 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.20.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.20.0) — 2026-06-23 · **Busy hours — see when your lab burns power**
+*A 7×24 day-of-week × hour heatmap on the Costs tab shows the rhythm of your lab at a glance — when it's busy, when it's idle, and (with a tariff set) when it's expensive.*
+
+**Added**
+- **Busy-hours heatmap on the Costs tab.** Every history sample is bucketed by its **local weekday and hour** and averaged, giving a 7×24 grid of typical total draw (GPU + CPU + DRAM). Colour scales by **cost-per-hour** once you've set a tariff, or by **power** otherwise — so it's useful even before you add a price. Callouts surface the **busiest** and **quietest** slots and, when priced, the spread between your busiest and quietest quarter of hours. Served from a new pure-Python `/api/cost/heatmap` endpoint (own 30-day window, aggregated outside the DB lock), reusing the same tariff machinery as the rest of the Costs page so the €/kWh maths never diverges. The grid is a real `<table>` with per-cell `aria-label`s, sparse cells are dimmed by sample count (honest about coverage), and it fills in after about a day of history.
+
 ## [0.19.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.19.0) — 2026-06-23 · **AMD & Intel GPUs join the party**
 *The GPU panel is no longer NVIDIA-only — AMD and Intel cards now show up too, with no vendor tools to install.*
 

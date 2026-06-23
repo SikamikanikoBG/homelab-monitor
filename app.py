@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.19.0"
+VERSION      = "0.20.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -5306,6 +5306,143 @@ def api_costs():
         "tariff": {"mode": ctx["mode"], "price_day": ctx["day"], "price_night": ctx["night"],
                    "night_start": ctx["night_start"], "night_end": ctx["night_end"]},
         "machines": [machine], "components": series, "breakdown": breakdown[:40],
+    })
+
+@app.route("/api/cost/heatmap")
+def api_cost_heatmap():
+    """Busy-vs-quiet rhythm of the lab as a 7×24 grid (local day-of-week × hour).
+
+    Each historical `samples` row is the machine's total draw (GPU+CPU+DRAM) for
+    one INTERVAL tick. We bucket every tick by its LOCAL weekday/hour and average
+    the watts in each cell, then derive a cost-rate (€/h) for that cell at the
+    tariff's price for that hour band — reusing the same `_cost_ctx`/`_price_at`
+    machinery as the Costs page, so the €/kWh math never diverges. Sparse cells
+    carry their own sample count so the UI can be honest about coverage.
+
+    Pure-Python aggregation, read outside any held lock, always 200. When cost is
+    disabled (no tariff) we still return the power grid and `enabled:false` so the
+    card can render watts and prompt for a price.
+    """
+    ctx = _cost_ctx()
+    cur = ctx["currency"]
+    # window: last N days, sane default 30, capped at a year so a huge DB can't stall
+    try:
+        days = int(request.args.get("days", "30"))
+    except (TypeError, ValueError):
+        days = 30
+    days = max(1, min(days, 365))
+    now = int(time.time())
+    since = now - days * 86400
+
+    # 7×24 accumulators: summed watts and tick count per local day/hour cell
+    sum_w = [[0.0] * 24 for _ in range(7)]
+    cnt   = [[0]   * 24 for _ in range(7)]
+    span_min = span_max = None
+    try:
+        with LOCK:
+            c = DB.cursor()
+            rows = c.execute(
+                f"SELECT ts, {_TOTAL_W_EXPR} w FROM samples WHERE ts>=? ORDER BY ts",
+                (since,)).fetchall()
+        # aggregate OUTSIDE the lock — pure Python, no DB calls below
+        for ts, w in rows:
+            lt = time.localtime(ts)
+            # Python weekday(): Mon=0..Sun=6 — matches our locale day labels
+            d = lt.tm_wday
+            h = lt.tm_hour
+            sum_w[d][h] += (w or 0)
+            cnt[d][h] += 1
+            if span_min is None or ts < span_min:
+                span_min = ts
+            if span_max is None or ts > span_max:
+                span_max = ts
+    except Exception:
+        rows = []
+
+    # build the grids; price each cell at the tariff for a representative ts in it
+    rep_ts = span_max or now
+    rep_lt = time.localtime(rep_ts)
+    # anchor to local midnight of the most recent observed day so is_night() lands
+    # in the right band per (day,hour); the date component is irrelevant to the band
+    anchor = int(time.mktime((rep_lt.tm_year, rep_lt.tm_mon, rep_lt.tm_mday,
+                              0, 0, 0, 0, 0, -1)))
+    avg_w  = [[None] * 24 for _ in range(7)]
+    cost_h = [[None] * 24 for _ in range(7)]   # cost per HOUR at this cell's mean draw
+    max_w = max_cost = 0.0
+    busiest = quietest = None                  # by avg watts
+    total_ticks = 0
+    for d in range(7):
+        for h in range(24):
+            n = cnt[d][h]
+            total_ticks += n
+            if n == 0:
+                continue
+            aw = sum_w[d][h] / n
+            avg_w[d][h] = round(aw)
+            # price for this hour band: a ts at hour h on the anchor day
+            cell_ts = anchor + h * 3600
+            price = _price_at(ctx, cell_ts)
+            ch = aw / 1000.0 * price           # W -> kW * €/kWh = €/h
+            cost_h[d][h] = round(ch, 4)
+            max_w = max(max_w, aw)
+            max_cost = max(max_cost, ch)
+            if busiest is None or aw > busiest["avg_w"]:
+                busiest = {"day": d, "hour": h, "avg_w": round(aw),
+                           "cost_h": round(ch, 4), "samples": n}
+            if quietest is None or aw < quietest["avg_w"]:
+                quietest = {"day": d, "hour": h, "avg_w": round(aw),
+                            "cost_h": round(ch, 4), "samples": n}
+
+    # busy vs quiet bands: top/bottom quartile of populated cells by avg watts
+    populated = [(avg_w[d][h], cost_h[d][h])
+                 for d in range(7) for h in range(24) if avg_w[d][h] is not None]
+    bands = None
+    if len(populated) >= 4:
+        ordered = sorted(populated, key=lambda x: x[0])
+        q = max(1, len(ordered) // 4)
+        quiet_band = ordered[:q]
+        busy_band = ordered[-q:]
+        def band_stats(b):
+            return {"avg_w": round(sum(x[0] for x in b) / len(b)),
+                    "avg_cost_h": round(sum((x[1] or 0) for x in b) / len(b), 4),
+                    "cells": len(b)}
+        bands = {"busy": band_stats(busy_band), "quiet": band_stats(quiet_band)}
+
+    # per-day rollups (busiest / quietest day by mean watts across populated hours)
+    day_avg = [None] * 7
+    for d in range(7):
+        vals = [avg_w[d][h] for h in range(24) if avg_w[d][h] is not None]
+        if vals:
+            day_avg[d] = round(sum(vals) / len(vals))
+
+    coverage = round(total_ticks / max(1, days * 24 * 3600 / INTERVAL), 4)
+    # "ready" once we have at least a day's worth of ticks spread across cells
+    populated_cells = len(populated)
+    ready = total_ticks >= (86400 / INTERVAL) and populated_cells >= 6
+
+    return jsonify({
+        "ok": True,
+        "enabled": ctx["day"] > 0,
+        "currency": cur,
+        "days": days,
+        "interval_sec": INTERVAL,
+        "ready": ready,
+        "rows": 7, "cols": 24,
+        "avg_w": avg_w,
+        "cost_h": cost_h,
+        "samples": cnt,
+        "day_avg_w": day_avg,
+        "max_w": round(max_w),
+        "max_cost_h": round(max_cost, 4),
+        "busiest": busiest,
+        "quietest": quietest,
+        "bands": bands,
+        "total_ticks": total_ticks,
+        "populated_cells": populated_cells,
+        "coverage": coverage,
+        "span": {"min": span_min, "max": span_max},
+        "tariff": {"mode": ctx["mode"], "price_day": ctx["day"], "price_night": ctx["night"],
+                   "night_start": ctx["night_start"], "night_end": ctx["night_end"]},
     })
 
 @app.route("/api/costs/entity")
