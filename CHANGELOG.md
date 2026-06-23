@@ -5,6 +5,13 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.20.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.20.1) — 2026-06-23 · _patch_
+_Silent patch — polish on the new busy-hours heatmap._
+
+**Fixed**
+- **Heatmap icons** now use the dashboard's SVG icon family — a calendar glyph in the heading and trending-up / trending-down / balance icons on the callouts — instead of raw emoji, so the card matches every other panel.
+- **Heatmap layout** — the day-of-week label column is pinned to a fixed width (`table-layout:fixed`); on wide screens it could previously stretch to roughly half the card and squash the 24 hour cells.
+
 ## [0.20.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.20.0) — 2026-06-23 · **Busy hours — see when your lab burns power**
 *A 7×24 day-of-week × hour heatmap on the Costs tab shows the rhythm of your lab at a glance — when it's busy, when it's idle, and (with a tariff set) when it's expensive.*
 
