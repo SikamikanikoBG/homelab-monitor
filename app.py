@@ -25,7 +25,7 @@ try:
 except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, Response, send_file, send_from_directory, after_this_request, g
+from flask import Flask, request, abort , jsonify, Response, send_file, send_from_directory, after_this_request, g
 import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
@@ -6183,6 +6183,7 @@ def api_mcp_status():
 
 LAB_NAME = os.environ.get("LAB_NAME", "My HomeLab")
 LAB_EMOJI = os.environ.get("LAB_EMOJI", "🛰️")
+PUBLIC_STATUS = os.getenv("PUBLIC_STATUS", "0") == "1"
 
 
 @app.route("/api/health")
@@ -6253,12 +6254,35 @@ def api_health():
         },
         "overview": build_overview(now, docker, systemd),
     })
+@app.route("/api/public-status")
+def api_public_status():
+    if not PUBLIC_STATUS:
+        abort(404)
 
+    health = HEALTH or {}
+    gpu = LATEST or {}
 
-@app.route("/public")
-def public_status():
-    """Serves the read-only dashboard for public sharing."""
-    return app.send_static_file("public.html")
+    return jsonify({
+        "overview": health.get("overview", {}),
+        "gpu": {
+            "available": bool(gpu.get("gpu_avail")),
+            "util_pct": gpu.get("util"),
+            "vram_used_mb": gpu.get("mem_used"),
+            "vram_total_mb": gpu.get("mem_total"),
+            "name": gpu.get("gpu_name"),
+        },
+        "containers": {
+            "items": (health.get("docker") or {}).get("containers", [])
+        },
+        "services": {
+            "items": (health.get("systemd") or {}).get("services", [])
+        },
+        "meta": {
+            "lab_name": LAB_NAME,
+            "lab_emoji": LAB_EMOJI
+        },
+        "hosts": health.get("hosts", [])
+    })
 @app.route("/metrics")
 def metrics():
     """Prometheus text-format scrape endpoint.
@@ -6700,6 +6724,10 @@ def api_update_app_status():
 @app.route("/")
 def index():
     return app.send_static_file("dashboard.html")
+
+@app.route("/status")
+def public_status_page():
+    return app.send_static_file("status.html")
 
 threading.Thread(target=collector, daemon=True).start()
 threading.Thread(target=host_poller, daemon=True).start()
