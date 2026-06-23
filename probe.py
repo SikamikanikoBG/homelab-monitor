@@ -370,10 +370,8 @@ def _smi_int(v):
         return 0
 
 
-def read_gpu():
-    """First NVIDIA GPU's snapshot via nvidia-smi. Returns {} if no driver or
-    no GPU. We treat the first GPU as the 'representative' for the table; the
-    detailed per-GPU view lives in the future GPU tab."""
+def _nvidia_gpu():
+    """First NVIDIA GPU's snapshot via nvidia-smi, or {} if no driver / no GPU."""
     try:
         r = subprocess.run(
             ["nvidia-smi",
@@ -399,6 +397,71 @@ def read_gpu():
         }}
     except Exception:
         return {}
+
+
+def _amd_gpu_sysfs(drm_root="/sys/class/drm"):
+    """First AMD GPU's snapshot from the in-kernel amdgpu sysfs interface — present
+    on any host with the open `amdgpu` driver, no ROCm tools required. Same shape
+    as _nvidia_gpu(); {} when no AMD card is present or sysfs is unreadable.
+    `drm_root` is injectable for tests."""
+    def _int(path):
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+    try:
+        entries = sorted(os.listdir(drm_root))
+    except OSError:
+        return {}
+    cards = []
+    for nm in entries:
+        m = re.fullmatch(r"card(\d+)", nm or "")
+        if not m:
+            continue
+        dev = os.path.join(drm_root, nm, "device")
+        try:
+            with open(os.path.join(dev, "vendor")) as f:
+                if f.read().strip().lower() != "0x1002":   # PCI vendor id 0x1002 = AMD/ATI
+                    continue
+        except OSError:
+            continue
+        total = _int(os.path.join(dev, "mem_info_vram_total"))   # bytes
+        used  = _int(os.path.join(dev, "mem_info_vram_used"))    # bytes
+        busy  = _int(os.path.join(dev, "gpu_busy_percent"))      # %
+        temp = 0
+        try:
+            hwroot = os.path.join(dev, "hwmon")
+            for h in sorted(os.listdir(hwroot)):
+                t = _int(os.path.join(hwroot, h, "temp1_input"))  # millidegrees C
+                if t is not None:
+                    temp = int(round(t / 1000.0))
+                    break
+        except OSError:
+            pass
+        name = None
+        try:
+            with open(os.path.join(dev, "product_name")) as f:   # newer kernels only
+                name = f.read().strip() or None
+        except OSError:
+            pass
+        cards.append({
+            "name":      name or "AMD GPU %s" % m.group(1),
+            "mem_used":  int(round(used / 1048576.0)) if used is not None else 0,
+            "mem_total": int(round(total / 1048576.0)) if total is not None else 0,
+            "util":      busy if busy is not None else 0,
+            "temp":      temp,
+        })
+    if not cards:
+        return {}
+    return {"gpu": dict(cards[0], count=len(cards))}
+
+
+def read_gpu():
+    """First GPU's snapshot for the All-hosts table. NVIDIA via nvidia-smi; when
+    that's unavailable, AMD via the amdgpu sysfs interface (no ROCm needed). {} on
+    a host with neither — the GPU panel is simply hidden."""
+    return _nvidia_gpu() or _amd_gpu_sysfs()
 
 
 # ── System / Hardware / Network / Security inventory ──────────────────────────

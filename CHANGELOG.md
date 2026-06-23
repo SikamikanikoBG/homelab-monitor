@@ -5,6 +5,16 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
+## [0.19.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.19.0) — 2026-06-23 · **AMD & Intel GPUs join the party**
+*The GPU panel is no longer NVIDIA-only — AMD and Intel cards now show up too, with no vendor tools to install.*
+
+**Added**
+- **AMD GPU support on Linux — no ROCm required.** Both the hub's own collector and every monitored Linux host now read AMD cards through the in-kernel `amdgpu` sysfs interface (`gpu_busy_percent`, `mem_info_vram_total`/`used`, and hwmon temperature/power) — so an AMD box shows the GPU panel (name, utilisation, VRAM, temp, power) with zero configuration. (#1)
+- **AMD & Intel GPU support on Windows hosts.** The Windows probe now falls back to Windows' built-in GPU performance counters + WMI when `nvidia-smi` is absent, surfacing AMD and Intel GPUs — including **integrated** graphics — with name, utilisation and VRAM.
+
+**Changed**
+- The GPU back-end is now vendor-aware: NVIDIA continues through `nvidia-smi`, and the AMD/Intel paths are consulted **only** when `nvidia-smi` reports nothing — so NVIDIA and GPU-less hosts behave exactly as before. Per-card clock/throttle enrichment and per-process VRAM attribution remain NVIDIA-only for now (AMD per-process attribution is tracked as a follow-up).
+
 ## [0.18.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.18.0) — 2026-06-22 · **Is my lab up? — Uptime monitoring built in**
 *Point it at any URL or port and it watches them for you — heartbeat, uptime %, and alerts that page once (not on every dropped packet) and tell you when it's back.*
 

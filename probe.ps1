@@ -61,23 +61,97 @@ function Read-Temp {
     return @{}
 }
 
-# ── GPU via nvidia-smi (identical query to probe.py) ──────────────────────────
+# ── GPU: nvidia-smi first, then a vendor-agnostic Windows fallback ─────────────
+# NVIDIA cards report through nvidia-smi (same query probe.py uses). When that's
+# absent we fall back to Windows' built-in GPU perf counters + WMI, which cover
+# AMD and Intel GPUs (incl. integrated) with no vendor tool installed. The
+# returned shape is identical either way, so the hub renders all three the same.
+# Temperature/power aren't exposed by Windows for AMD/Intel without a vendor
+# library, so they come back as 0 (the UI already tolerates missing fields).
 function Read-Gpu {
     try {
-        if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return @{} }
-        $raw = & nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,name --format=csv,noheader,nounits 2>$null
-        $lines = @($raw | Where-Object { $_ -and $_.Trim() })
-        if ($lines.Count -eq 0) { return @{} }
-        $p = $lines[0].Split(',') | ForEach-Object { $_.Trim() }
-        if ($p.Count -lt 5) { return @{} }
-        function I($v) { try { return [int][double]$v } catch { return 0 } }
+        if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+            $raw = & nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,name --format=csv,noheader,nounits 2>$null
+            $lines = @($raw | Where-Object { $_ -and $_.Trim() })
+            if ($lines.Count -ge 1) {
+                $p = $lines[0].Split(',') | ForEach-Object { $_.Trim() }
+                if ($p.Count -ge 5) {
+                    function I($v) { try { return [int][double]$v } catch { return 0 } }
+                    return @{ gpu = [ordered]@{
+                        count     = $lines.Count
+                        name      = $p[4]
+                        mem_used  = (I $p[0])
+                        mem_total = (I $p[1])
+                        util      = (I $p[2])
+                        temp      = (I $p[3])
+                        vendor    = 'nvidia'
+                    } }
+                }
+            }
+        }
+    } catch {}
+    # ── Fallback: AMD / Intel (and NVIDIA if nvidia-smi is missing) via Windows ──
+    try {
+        # Only surface a real, recognised display GPU — skip Basic Display, virtual,
+        # RDP and USB display adapters so headless servers don't show a phantom card.
+        $cards = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'NVIDIA|GeForce|Quadro|Tesla|RTX|GTX|AMD|Radeon|Intel|Arc|Iris|UHD|HD Graphics' })
+        if ($cards.Count -eq 0) { return @{} }
+        $card = $cards | Sort-Object { [int64]($_.AdapterRAM) } -Descending | Select-Object -First 1
+        $name = $card.Name
+
+        # Utilisation: sum the engines within each engine type, take the busiest
+        # type (this is what Task Manager shows as overall GPU %). 0 if unreadable.
+        $util = 0
+        try {
+            $s = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples
+            $perType = $s | Group-Object { ($_.InstanceName -replace '.*(engtype_[a-z0-9]+).*', '$1') } |
+                ForEach-Object { ($_.Group | Measure-Object CookedValue -Sum).Sum }
+            if ($perType) {
+                $util = [int][math]::Round(($perType | Measure-Object -Maximum).Maximum)
+                if ($util -lt 0) { $util = 0 } elseif ($util -gt 100) { $util = 100 }
+            }
+        } catch {}
+
+        # VRAM used: dedicated GPU memory in use (MB). Shared memory is host RAM and
+        # is already counted in the memory panel, so we don't fold it into "VRAM".
+        $mem_used = 0
+        try {
+            $d = (Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction Stop).CounterSamples
+            $mem_used = [int][math]::Round((($d | Measure-Object CookedValue -Sum).Sum) / 1MB)
+        } catch {}
+
+        # VRAM total: the adapter's dedicated memory size from the driver registry
+        # (qwMemorySize is accurate where Win32_VideoController.AdapterRAM caps at 4 GB).
+        $mem_total = 0
+        try {
+            $reg = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*' -ErrorAction SilentlyContinue |
+                Where-Object { $_.DriverDesc -and $_.'HardwareInformation.qwMemorySize' -and ($_.DriverDesc -eq $name) } |
+                Select-Object -First 1
+            if (-not $reg) {
+                $reg = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.'HardwareInformation.qwMemorySize' } |
+                    Sort-Object { [int64]$_.'HardwareInformation.qwMemorySize' } -Descending | Select-Object -First 1
+            }
+            if ($reg) { $mem_total = [int]([int64]$reg.'HardwareInformation.qwMemorySize' / 1MB) }
+        } catch {}
+        if ($mem_total -eq 0 -and $card.AdapterRAM) {
+            try { $mem_total = [int]([int64]$card.AdapterRAM / 1MB) } catch {}
+        }
+
+        $vendor = if ($name -match 'NVIDIA|GeForce|Quadro|Tesla|RTX|GTX') { 'nvidia' }
+                  elseif ($name -match 'AMD|Radeon') { 'amd' }
+                  elseif ($name -match 'Intel|Arc|Iris|UHD|HD Graphics') { 'intel' }
+                  else { 'unknown' }
+
         return @{ gpu = [ordered]@{
-            count     = $lines.Count
-            name      = $p[4]
-            mem_used  = (I $p[0])
-            mem_total = (I $p[1])
-            util      = (I $p[2])
-            temp      = (I $p[3])
+            count     = $cards.Count
+            name      = $name
+            mem_used  = $mem_used
+            mem_total = $mem_total
+            util      = $util
+            temp      = 0
+            vendor    = $vendor
         } }
     } catch { return @{} }
 }

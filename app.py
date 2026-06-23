@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.18.0"
+VERSION      = "0.19.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -4499,6 +4499,77 @@ def _gpu_num(x):
     except ValueError:
         return 0.0
 
+# ── AMD GPU back-end (issue #1) ───────────────────────────────────────────────
+# NVIDIA goes through nvidia-smi (above); AMD has no universally-present CLI, so we
+# read the kernel's amdgpu sysfs directly — available on any host with the in-tree
+# `amdgpu` driver, ROCm NOT required. The hub reads the host's sysfs through the
+# read-only HOST_ROOT mount via _hp(); the remote Linux probe (probe.py) reads /sys
+# in place. Strictly additive: consulted only when nvidia-smi reports no card, so
+# NVIDIA and GPU-less hosts behave exactly as before.
+def _amd_read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+def _amd_hwmon(dev, fname):
+    """Read a hwmon scalar (e.g. temp1_input in millidegrees C, power1_average in
+    microwatts) from the card's hwmon node. None if absent/unreadable."""
+    try:
+        for h in sorted(os.listdir(os.path.join(dev, "hwmon"))):
+            v = _amd_read_int(os.path.join(dev, "hwmon", h, fname))
+            if v is not None:
+                return v
+    except OSError:
+        pass
+    return None
+
+def amd_gpus(drm_root=None):
+    """Per-card AMD snapshot from amdgpu sysfs, matching the dict shape sample_once()
+    builds for NVIDIA cards (idx/name/util/mem_used/mem_total/power/temp; MB, %, W,
+    °C). Empty list when no AMD GPU is present. `drm_root` is injectable for tests;
+    in production it points at the host's /sys/class/drm through HOST_ROOT."""
+    if drm_root is None:
+        drm_root = _hp("/sys/class/drm")
+    try:
+        entries = sorted(os.listdir(drm_root))
+    except OSError:
+        return []
+    gpus = []
+    for nm in entries:
+        m = re.fullmatch(r"card(\d+)", nm or "")
+        if not m:
+            continue
+        dev = os.path.join(drm_root, nm, "device")
+        try:
+            with open(os.path.join(dev, "vendor")) as f:
+                if f.read().strip().lower() != "0x1002":   # 0x1002 = AMD/ATI
+                    continue
+        except OSError:
+            continue
+        total  = _amd_read_int(os.path.join(dev, "mem_info_vram_total"))   # bytes
+        used   = _amd_read_int(os.path.join(dev, "mem_info_vram_used"))    # bytes
+        busy   = _amd_read_int(os.path.join(dev, "gpu_busy_percent"))      # %
+        temp_m = _amd_hwmon(dev, "temp1_input")     # millidegrees C
+        powr_u = _amd_hwmon(dev, "power1_average")  # microwatts
+        name = None
+        try:
+            with open(os.path.join(dev, "product_name")) as f:   # newer kernels only
+                name = f.read().strip() or None
+        except OSError:
+            pass
+        gpus.append({
+            "idx": int(m.group(1)),
+            "name": name or "AMD GPU %s" % m.group(1),
+            "util": float(busy) if busy is not None else 0.0,
+            "mem_used":  round(used / 1048576.0) if used is not None else 0.0,
+            "mem_total": round(total / 1048576.0) if total is not None else 0.0,
+            "power": round(powr_u / 1e6, 1) if powr_u is not None else 0.0,
+            "temp":  round(temp_m / 1000.0, 1) if temp_m is not None else 0.0,
+        })
+    return gpus
+
 # Extra per-card telemetry the AI/DS crowd actually debugs with: memory-bandwidth
 # utilisation (mem-bound vs compute-bound), core/memory clocks, power limit (for
 # headroom), performance state, memory-junction temp, and the *throttle reasons*
@@ -4699,27 +4770,40 @@ def sample_once():
             u, mu, mt, pw, tp = (_gpu_num(x) for x in p[2:7])
             gpus.append({"idx": int(_gpu_num(p[0])), "name": p[1] or f"GPU {p[0]}",
                          "util": u, "mem_used": mu, "mem_total": mt, "power": pw, "temp": tp})
+        amd = False
         if not gpus:
-            raise ValueError("nvidia-smi returned no GPU rows")
+            # No NVIDIA card (or no nvidia-smi) — fall back to the AMD amdgpu sysfs
+            # back-end (issue #1). Additive: an NVIDIA host never reaches this.
+            gpus = amd_gpus()
+            amd = bool(gpus)
+            if not gpus:
+                raise ValueError("no NVIDIA or AMD GPU detected")
         gpu_avail = True
         # Aggregate across cards for the existing single-GPU views: VRAM + power are
-        # the pool, utilisation is averaged, temperature is the hottest card.
+        # the pool, utilisation is averaged, temperature is the hottest card. AMD
+        # cards expose the same keys, so this aggregation is vendor-agnostic.
         mem_used  = sum(g["mem_used"] for g in gpus)
         mem_total = sum(g["mem_total"] for g in gpus)
         power     = sum(g["power"] for g in gpus)
         util      = round(sum(g["util"] for g in gpus) / len(gpus))
         temp      = max(g["temp"] for g in gpus)
-        _enrich_gpus(gpus)                 # mem-bw util, clocks, power limit, throttle reasons (best-effort)
-        gpu_extra = _gpu_extra(gpus)
-        for line in smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).splitlines():
-            if line.strip():
-                pid, mem = (p.strip() for p in line.split(","))
-                svc = service_for_pid(pid, nm)
-                procs[svc] = procs.get(svc, 0) + _gpu_num(mem)
-                try:
-                    gpu_pids[int(pid)] = gpu_pids.get(int(pid), 0) + _gpu_num(mem)
-                except ValueError:
-                    pass
+        if amd:
+            # Per-card enrichment (clocks/throttle) and per-process VRAM attribution
+            # are nvidia-smi-specific; AMD shows the core panel (util/VRAM/temp/power)
+            # without them. Per-process AMD attribution is a follow-up (issue #1).
+            gpu_extra = {}
+        else:
+            _enrich_gpus(gpus)                 # mem-bw util, clocks, power limit, throttle reasons (best-effort)
+            gpu_extra = _gpu_extra(gpus)
+            for line in smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).splitlines():
+                if line.strip():
+                    pid, mem = (p.strip() for p in line.split(","))
+                    svc = service_for_pid(pid, nm)
+                    procs[svc] = procs.get(svc, 0) + _gpu_num(mem)
+                    try:
+                        gpu_pids[int(pid)] = gpu_pids.get(int(pid), 0) + _gpu_num(mem)
+                    except ValueError:
+                        pass
     except Exception as e:
         # Log only on the ok→fail edge so a permanently GPU-less host doesn't spam.
         if LATEST.get("gpu_avail"):
