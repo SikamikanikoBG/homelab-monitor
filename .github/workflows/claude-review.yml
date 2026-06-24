@@ -73,5 +73,9 @@ jobs:
             `confirmed: true`) for specific code issues.
             Only post GitHub comments — don't return review text as a message.
 
+          # Read/Grep/Glob let the reviewer open files in the checkout for
+          # cross-file context (the diff alone misses surrounding-code checks);
+          # the gh tools are for posting feedback. id-token:write above is used
+          # by the action to exchange OIDC for a GitHub App token — keep it.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
