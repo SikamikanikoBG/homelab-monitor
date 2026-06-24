@@ -13,6 +13,9 @@ release notes.
 **Changed**
 - Wired the new Alerts form labels to the locale files so translated dashboards automatically pick up the email/Slack/webhook copy.
 
+**Fixed**
+- **GPU went undetected on hosts where nvidia isn't Docker's default runtime** (stock Ubuntu/Debian/Mint, where GPU containers normally opt in per-container with `--gpus all`). The monitor exposed the card only through the `NVIDIA_*` env vars, which the toolkit honours only for the default runtime — so the card worked everywhere else but the dashboard reported "no GPU detected" (#203). Added a **`docker-compose.gpu.yml` override** that requests the nvidia runtime for just this container (no global-default change, still starts on GPU-less hosts), and corrected the Setup-tab remedy + compose comments to include the **`--force-recreate`** step a plain restart was silently skipping.
+
 ## [0.21.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.21.0) — 2026-06-23 · **See your power bill by the hour — and which GPU is burning it**
 *Three new questions answered at a glance: when is your lab most expensive, which GPU is doing the work (whoever made it), and is anything down?*
 

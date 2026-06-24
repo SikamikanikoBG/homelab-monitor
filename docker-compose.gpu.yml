@@ -1,0 +1,24 @@
+# GPU override — opt in WITHOUT changing Docker's global default runtime.
+#
+# Why this exists: the main docker-compose.yml exposes the GPU purely through
+# the NVIDIA_* env vars, which the NVIDIA Container Toolkit only honours when
+# nvidia is Docker's *default* runtime. On stock Ubuntu/Debian/Mint the default
+# is `runc`, so GPU containers usually opt in per-container with `--gpus all`.
+# This monitor doesn't — so on those hosts nvidia-smi never gets injected and the
+# dashboard reports "no GPU detected", even though the card works for everything
+# else. (Same trap as deploy/docker-compose.mc.yml on the project's own hub.)
+#
+# Layer this file on top to request the nvidia runtime for just this container,
+# leaving every other container on the host untouched:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requires the NVIDIA Container Toolkit installed on the host (`nvidia-ctk
+# runtime configure --runtime=docker` registers the runtime; you do NOT need
+# --set-as-default when you use this override). If the toolkit isn't installed,
+# `runtime: nvidia` is unknown and the stack won't start — which is exactly why
+# this lives in an opt-in override and not in the default compose.
+
+services:
+  homelab-monitor:
+    runtime: nvidia

@@ -32,10 +32,21 @@ services:
       # container runtime inject nvidia-smi *when it's present*; on a host with no
       # GPU (or no nvidia runtime) they're simply inert and the dashboard runs
       # without the GPU panels. This is why there's no hard `deploy.devices`
-      # reservation below — that would refuse to start on a GPU-less host. If you
-      # have a GPU but the dashboard's Setup tab says it isn't detected, run:
-      #   sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
-      #   sudo systemctl restart docker
+      # reservation below — that would refuse to start on a GPU-less host.
+      #
+      # IMPORTANT: these env vars only take effect when nvidia is Docker's
+      # *default* runtime. On stock Ubuntu/Debian/Mint the default is `runc`, so
+      # GPU containers normally opt in per-container with `--gpus all` — this one
+      # doesn't, so on those hosts the GPU goes undetected until you do ONE of:
+      #
+      #   A) Don't change the global default — bring it up with the GPU override:
+      #        docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+      #
+      #   B) Make nvidia the default runtime, then RECREATE this container
+      #      (a plain restart keeps the old runtime, so the change "does nothing"):
+      #        sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+      #        sudo systemctl restart docker
+      #        docker compose up -d --force-recreate
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: utility   # injects nvidia-smi into the container
       PORT: "9800"                          # dashboard served on 0.0.0.0:9800 (LAN/VPN reachable)

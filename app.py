@@ -34,7 +34,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.21.0"
+VERSION      = "0.21.1"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -2500,9 +2500,15 @@ def local_diagnostics():
     else:
         _diag(checks, "nvidia", "NVIDIA GPU", "info",
               "no GPU detected — GPU panels are hidden (everything else works)",
-              {"where": "on the host — only if it actually has an NVIDIA GPU",
+              {"where": "on the host — only if it actually has an NVIDIA GPU. "
+                        "GPU containers use the env vars below only when nvidia is "
+                        "Docker's DEFAULT runtime; the recreate step is what was "
+                        "missing if a previous attempt 'did nothing'.",
                "cmd": "sudo nvidia-ctk runtime configure --runtime=docker --set-as-default\n"
-                      "sudo systemctl restart docker"})
+                      "sudo systemctl restart docker\n"
+                      "docker compose up -d --force-recreate   # recreate — restart keeps the old runtime\n"
+                      "# don't want nvidia as the global default? instead of the two lines above:\n"
+                      "#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d"})
     # Docker socket — powers Containers + Services + model APIs.
     try:
         json.loads(_docker("/version"))
