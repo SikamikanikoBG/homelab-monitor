@@ -142,5 +142,3 @@ Issues and PRs are very welcome — especially new model-server probes, new moni
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-<!-- ci: throwaway change to verify the Claude review workflow posts; will be reverted -->
