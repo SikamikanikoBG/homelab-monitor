@@ -2507,7 +2507,7 @@ def local_diagnostics():
                "cmd": "sudo nvidia-ctk runtime configure --runtime=docker --set-as-default\n"
                       "sudo systemctl restart docker\n"
                       "docker compose up -d --force-recreate   # recreate — restart keeps the old runtime\n"
-                      "# don't want nvidia as the global default? instead of the two lines above:\n"
+                      "# don't want nvidia as the global default? skip all three lines above and instead run:\n"
                       "#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d"})
     # Docker socket — powers Containers + Services + model APIs.
     try:
