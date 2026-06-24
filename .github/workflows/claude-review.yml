@@ -1,0 +1,77 @@
+name: Claude Code Review
+
+# Automated AI code review on pull requests. Runs the official Claude Code
+# Action (https://github.com/anthropics/claude-code-action) against the PR
+# diff and posts findings back as inline + summary comments — a second pair
+# of eyes on every change before it lands on `next` / `main`.
+#
+# Auth: uses a Claude subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN),
+# generated locally with `claude setup-token` and stored as a repo secret.
+# This bills against the Claude plan rather than the metered Anthropic API.
+#
+# Triggers: PRs targeting `next` (the integration branch) or `main`, on open
+# and on every new push to the PR (synchronize). Forked-PR runs get no secret
+# access from GitHub by design, so the review simply no-ops there (guarded
+# below) instead of failing red.
+
+on:
+  pull_request:
+    branches: [next, main]
+    types: [opened, synchronize]
+
+# Least-privilege: read the code, write PR comments, and mint the OIDC token
+# the action uses. No contents:write — the reviewer never pushes.
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+# One review per PR; a new push cancels an in-flight review of the old commit.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Skip when the secret is absent (e.g. PRs from forks) so those runs stay
+    # green instead of erroring on missing auth.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. The PR branch is already checked out in
+            the current working directory. This is a self-hosted homelab
+            monitoring app: a Python Flask backend (app.py), an SSH/Docker probe
+            (probe.py), and a single-page dashboard (static/dashboard.html).
+
+            Focus on, in priority order:
+            - Correctness bugs and regressions (probe parsing, SQLite access,
+              concurrency, error handling).
+            - Security: leaked secrets/credentials, SSH/command injection,
+              unsafe subprocess or shell usage, SSRF in outbound requests.
+            - Dashboard changes: reuse of existing component classes
+              (mc-panel, mc-sdot/mc-pill, .rb/.btn-mini, ICONS/sic() icons)
+              rather than new ad-hoc styles or raw-emoji icons.
+            - Performance and obvious simplifications.
+
+            Be concise and concrete. Skip nitpicks and style-only comments.
+            If the change looks clean, say so briefly rather than inventing
+            findings.
+
+            Use `gh pr comment` for a short top-level summary.
+            Use `mcp__github_inline_comment__create_inline_comment` (with
+            `confirmed: true`) for specific code issues.
+            Only post GitHub comments — don't return review text as a message.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
