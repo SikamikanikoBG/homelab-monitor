@@ -284,12 +284,19 @@ def get_ai_models(range="6h"):
     `family`/`param_size`/`quant`/`modified` plus `loaded`/`vram_mb` (resident right
     now) and the per-model usage rollup `runs`/`avg_tps`/`last_tps`/`avg_ttft_ms`/
     `last_used`. A model with `runs:0` is never-used dead weight. `registry_totals`
-    gives count/loaded/total_gb. `registry_reachable` is False when ollama is
-    unreachable (the rest still degrades gracefully).
+    gives count/loaded/total_gb. `registry_reachable` is False when ollama (or the
+    `/api/models` endpoint itself) is unreachable — in which case `registry` is empty
+    but the loaded/vram_summary/callers payload from `/api/data` still comes back.
     """
     data = _get("/api/data?range=" + urllib.parse.quote(str(range)))
     now = data.get("now") or {}
-    reg = _get("/api/models")
+    # The registry enrichment is best-effort: a blip on /api/models must not sink the
+    # primary loaded/vram/callers payload from /api/data. Degrade to an empty,
+    # unreachable registry instead (matches this tool's documented contract).
+    try:
+        reg = _get("/api/models")
+    except MonitorError:
+        reg = {}
     return {
         "range": data.get("range", range),
         "loaded": now.get("models") or [],

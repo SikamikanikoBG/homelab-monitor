@@ -460,6 +460,23 @@ def run():
         check(r["registry_totals"]["total_gb"] == 38.65, "registry total disk")
         check(r["registry_reachable"] is True, "ollama reachability surfaced")
 
+        # A blip on the secondary /api/models must not sink the whole tool: the
+        # primary /api/data payload (loaded/vram/callers) still comes back, the
+        # registry just degrades to empty + unreachable.
+        _orig_get = hc._get
+        def _fail_models(path):
+            if path == "/api/models":
+                raise hc.MonitorError("simulated /api/models outage")
+            return _orig_get(path)
+        hc._get = _fail_models
+        try:
+            r = hc.get_ai_models("24h")
+        finally:
+            hc._get = _orig_get
+        check(r["loaded"][0]["model"] == "llama3:70b", "loaded survives /api/models outage")
+        check(r["registry"] == [] and r["registry_totals"] == {}, "registry degrades to empty")
+        check(r["registry_reachable"] is False, "registry_reachable False on /api/models outage")
+
         print("get_events / get_alerts")
         r = hc.get_events()
         check(r["events"][0]["kind"] == "oom", "events surfaced")
