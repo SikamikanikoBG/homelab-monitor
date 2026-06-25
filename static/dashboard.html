@@ -227,6 +227,21 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 @media(prefers-reduced-motion:reduce){.gg-arc{transition:none}.gg.live .gg-arc{animation:none;
   filter:drop-shadow(0 0 4px color-mix(in srgb,var(--gh) 70%,transparent))}
   .gg.live .gg-state .si{animation:none}}
+/* recent-trend sparkline under each dial: thin tinted polyline, last point emphasised,
+   anomaly point dotted in tier colour. Decorative-augmenting → aria-hidden. */
+.gg-spark{display:block;width:104px;height:22px;margin-top:-2px;overflow:visible}
+.gg-spark .sp-area{fill:color-mix(in srgb,var(--gh) 13%,transparent);stroke:none}
+.gg-spark .sp-line{fill:none;stroke:var(--gh);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;
+  opacity:.92;transition:stroke .35s ease}
+.gg-spark .sp-last{fill:var(--gh);stroke:var(--card);stroke-width:1.5}
+.gg-spark .sp-anom{fill:var(--gh);stroke:var(--card);stroke-width:1.5}
+.gg.live .gg-spark .sp-anom{animation:gg-spk 1.9s ease-in-out infinite}
+@keyframes gg-spk{0%,100%{filter:drop-shadow(0 0 0 transparent)}
+  50%{filter:drop-shadow(0 0 4px color-mix(in srgb,var(--gh) 85%,transparent))}}
+.gg-spark .sp-flat{stroke:var(--bd);stroke-width:1.5;stroke-linecap:round;opacity:.7}
+@media(max-width:560px){.gg-spark{width:92px}}
+@media(max-width:380px){.gg-spark{display:none}}
+@media(prefers-reduced-motion:reduce){.gg.live .gg-spark .sp-anom{animation:none}}
 /* footer row: incident chip / all-clear + optional teaser */
 .hero-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   padding:12px 18px;border-top:1px solid var(--bd);background:var(--inset)}
@@ -4997,6 +5012,8 @@ function _heroKpi(v, unit, label, sub, tone){
 // the centre number + a labelled state pill (icon+text), never colour alone.
 const GG_R=52, GG_CX=64, GG_CY=60, GG_SWEEP=270;            // geometry (deg)
 const GG_LEN=2*Math.PI*GG_R*(GG_SWEEP/360);                 // arc length for dasharray
+const GG_SPK_W=104, GG_SPK_H=22, GG_SPK_PAD=2.5;           // trend-sparkline viewBox + vertical inset
+const GG_SPK_MAX=48;                                        // cap trailing points so the line stays readable
 // z-score → severity tier for the ring, aligned with the Anomalies card/ribbon:
 //   |z| ≥ 4 → crit (red), |z| ≥ 3 → warn (amber), else normal (ok/brand).
 function _ggTier(z){ const a=Math.abs(+z||0); return a>=4?'crit':(a>=3?'warn':'ok'); }
@@ -5017,6 +5034,51 @@ function _ggArcPath(){
 const _GG_PATH=_ggArcPath();
 let _GG_PREV={};   // remember last pct per gauge id so we animate the count-up smoothly
 function _ggReduceMotion(){ try{ return matchMedia('(prefers-reduced-motion:reduce)').matches; }catch(_){ return false; } }
+// Pull the gauge's recent series straight from the already-fetched chart data (D.total):
+//   gpu_util → D.total.util (%),  gpu_power → D.total.power (W).  No new fetch — rides loadData().
+// Returns a numeric array (last GG_SPK_MAX samples) or [] when history isn't loaded yet.
+function _ggSeries(key){
+  const t = (typeof D!=='undefined' && D && D.total) ? D.total : null;
+  if(!t) return [];
+  const src = key==='gpu_util' ? t.util : key==='gpu_power' ? t.power : null;
+  if(!Array.isArray(src) || !src.length) return [];
+  const arr = src.slice(-GG_SPK_MAX).map(v=>Number(v)).filter(v=>Number.isFinite(v));
+  return arr;
+}
+// Render the trailing-trend sparkline into the gauge's <svg.gg-spark>. Pure numeric → XSS-safe.
+// anom: the active anomaly object for this series (or null) — its point is marked on the line.
+function _ggSparkline(wrap, cfg, anom){
+  const svg = wrap.querySelector('.gg-spark'); if(!svg) return;
+  const W=GG_SPK_W, H=GG_SPK_H, pad=GG_SPK_PAD;
+  const data = cfg.available ? _ggSeries(cfg.key) : [];
+  // Empty / single-sample → calm flat baseline, never a broken path.
+  if(data.length<2){
+    const y=(H/2).toFixed(2);
+    svg.innerHTML=`<line class="sp-flat" x1="${pad}" y1="${y}" x2="${(W-pad).toFixed(2)}" y2="${y}"/>`;
+    return;
+  }
+  let mn=Math.min(...data), mx=Math.max(...data);
+  const span=(mx-mn)||1;                                   // flat series → mid-line, no divide-by-zero
+  const innerH=H-pad*2, n=data.length;
+  const X=i=> n===1 ? W/2 : pad+(W-pad*2)*(i/(n-1));
+  const Y=v=> (mx===mn) ? H/2 : (H-pad)-((v-mn)/span)*innerH;   // higher value → higher on screen
+  let line='', area='M'+pad.toFixed(2)+' '+(H-pad).toFixed(2);
+  for(let i=0;i<n;i++){ const x=X(i).toFixed(2), y=Y(data[i]).toFixed(2);
+    line+=(i?'L':'M')+x+' '+y+' '; area+=' L'+x+' '+y; }
+  area+=' L'+(W-pad).toFixed(2)+' '+(H-pad).toFixed(2)+' Z';
+  let out=`<path class="sp-area" d="${area}"/><path class="sp-line" d="${line.trim()}"/>`;
+  // last point emphasised
+  out+=`<circle class="sp-last" cx="${X(n-1).toFixed(2)}" cy="${Y(data[n-1]).toFixed(2)}" r="2.1"/>`;
+  // anomaly point: mark the most-extreme sample in the visible window (matching the spike/dip
+  // direction the ring already reflects). Falls back to the latest point if direction is unclear.
+  if(anom){
+    let ai=n-1;
+    if(anom.direction==='dip'){ let m=Infinity; for(let i=0;i<n;i++) if(data[i]<m){m=data[i];ai=i;} }
+    else { let m=-Infinity; for(let i=0;i<n;i++) if(data[i]>m){m=data[i];ai=i;} }
+    out+=`<circle class="sp-anom" cx="${X(ai).toFixed(2)}" cy="${Y(data[ai]).toFixed(2)}" r="2.7"/>`;
+  }
+  svg.innerHTML=out;
+}
 // Build/refresh one gauge. cfg: {id, key, label, pct(0..100), valTxt, unitTxt, available}
 function _ggRender(cfg, fc){
   const pct=Math.max(0,Math.min(100,+cfg.pct||0));
@@ -5065,6 +5127,10 @@ function _ggRender(cfg, fc){
   }
   wrap.querySelector('.gg-state .si').textContent=stIcon;
   wrap.querySelector('.gg-state .st').textContent=stTxt;
+  // recent-trend sparkline — rides the same already-fetched D.total history, tinted by tier.
+  // It's decorative-augmenting (the gauge's aria-label already carries value+state), so the
+  // <svg.gg-spark> stays aria-hidden; a screen reader hears the dial, not a noisy path.
+  _ggSparkline(wrap, cfg, anom);
 }
 function _ggCountUp(el, from, to, unit){
   const dur=650, t0=performance.now(), span=to-from;
@@ -5084,6 +5150,7 @@ function _ggSkeleton(id, cap){
     +`</svg>`
     +`<div class="gg-val"><div class="n gg-num">—</div></div>`
     +`<div class="gg-cap">${esc(cap)}</div>`
+    +`<svg class="gg-spark" viewBox="0 0 ${GG_SPK_W} ${GG_SPK_H}" preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>`
     +`<span class="gg-state"><span class="si" aria-hidden="true">—</span><span class="st"></span></span>`
     +`</div>`;
 }
