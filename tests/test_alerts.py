@@ -649,7 +649,12 @@ class TestUptimeDownEngineIntegration(unittest.TestCase):
     """Reuses the shared engine: cooldown, recovery edge, maintenance suppression.
     Channel send + maintenance state mocked; uptime state supplied via signals."""
     def setUp(self):
-        _clean_db(); _clean_uptime()
+        # _clean_maint(): the no-args evaluate_rules() path reads maintenance state
+        # from the real DB; a maintenance window left enabled by a prior test (whose
+        # recurring/one-off span happens to cover the current wall-clock) would put
+        # the engine in the suppression branch and make a down check return 0 fires
+        # instead of 1 — an intermittent, time-of-day-correlated cross-test leak.
+        _clean_db(); _clean_uptime(); _clean_maint()
         app._MAINT_SUPPRESS_LOGGED.clear()
         app.save_settings({"discord_webhook_url": "", "telegram_token": "",
                            "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
@@ -658,7 +663,7 @@ class TestUptimeDownEngineIntegration(unittest.TestCase):
 
     def tearDown(self):
         app.save_settings({"ntfy_topic": ""})
-        _clean_db(); _clean_uptime()
+        _clean_db(); _clean_uptime(); _clean_maint()
 
     def _state(self, rid):
         with app.LOCK:
