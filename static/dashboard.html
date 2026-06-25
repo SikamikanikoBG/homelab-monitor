@@ -133,6 +133,20 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
 .chip.info{color:var(--info);border-color:var(--info)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* Per-container "Check now" — on-demand, awareness-only image re-check. */
+.imgck{display:inline-flex;align-items:center;font-size:10px;font-weight:600;line-height:1.4;
+  padding:1px 7px;margin-left:7px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;
+  transition:border-color .12s,color .12s}
+.imgck:hover:not(:disabled){color:var(--info);border-color:var(--info)}
+.imgck:focus-visible{outline:2px solid var(--info);outline-offset:1px}
+.imgck:disabled{opacity:.6;cursor:progress}
+.imgck.busy{cursor:progress}
+.imgck-res{font-size:10px;font-weight:600;white-space:nowrap;color:var(--mut)}
+.imgck-res.ok{color:var(--ok)} .imgck-res.info{color:var(--info)}
+.imgck-res.warn{color:var(--warn)} .imgck-res.err{color:var(--crit)}
+.imgck-res.busy{color:var(--mut)} .imgck-res.unknown{color:var(--mut)}
+@media(prefers-reduced-motion:reduce){.imgck{transition:none}}
 .reco-act b{color:var(--tx);font-weight:600}
 /* Recommendations panel: ranked, actionable to-do rows (reuses .ins severity borders). */
 .reco-item{flex-direction:column;gap:7px}
@@ -3764,9 +3778,16 @@ function renderHealth(){
       updChip = ` <span class="chip info" title="${esc(I18N.t('ct.update_available_hint','A newer upstream image exists for this tag. Awareness only — nothing is pulled or restarted.'))}">⬆ ${esc(I18N.t('ct.update_available','update'))}</span>`;
     else if(c.image_update === 'up_to_date')
       updChip = ` <span class="chip ok" title="${esc(I18N.t('ct.up_to_date_hint','Deployed image matches the upstream tag.'))}">✓</span>`;
+    // "Check now" — explicit, awareness-only on-demand re-check (no pull/restart).
+    // Only offered for running containers (a stopped one has no live image to
+    // inspect). The result span is filled in-place by checkImageNow().
+    const ckBtn = c.state==='running'
+      ? ` <button type="button" class="imgck" data-ctcheck="${esc(c.name)}" title="${esc(I18N.tf('ct.check_now_aria','Check {name} for image update',{name:c.name}))}" aria-label="${esc(I18N.tf('ct.check_now_aria','Check {name} for image update',{name:c.name}))}">${esc(I18N.t('ct.check_now','Check now'))}</button>`
+      + `<span class="imgck-res" data-ctckres="${esc(c.name)}" role="status" aria-live="polite"></span>`
+      : '';
     return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.name)}</td>
      <td><span class="badge ${c.status}">${esc(c.label)}</span></td>
-     <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}${updChip}</td>
+     <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}${updChip}${ckBtn}</td>
      <td>${renderPorts(c.ports)}</td>
      <td class="muted">${c.state==='running'?fmtUpShort(c.uptime_s):'—'}</td>
      <td class="muted">${fmtBytes(c.mem_bytes)}</td>
@@ -3783,7 +3804,10 @@ function renderHealth(){
         <td></td></tr>` : '')
     || (dk.available?'<tr><td colspan="9" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
   // Click any container row to tail its logs in the side drawer (issue #28).
+  // The per-row "Check now" button is handled first (and stops the row click).
   document.getElementById('cttbl').onclick = e => {
+    const ck = e.target.closest('.imgck');
+    if(ck && ck.dataset.ctcheck){ e.stopPropagation(); checkImageNow(ck.dataset.ctcheck, ck); return; }
     const tr = e.target.closest('.ctrow'); if(tr && tr.dataset.ct) openLogDrawer(tr.dataset.ct);
   };
 
@@ -8308,6 +8332,42 @@ function openLogDrawer(name){
   document.getElementById('logdrawer').hidden=false;
   hideLogSummary();
   startLogStream(name, true);
+}
+// "Check now" — POST a single bounded, on-demand upstream image re-check for one
+// container and render the fresh result in-place. AWARENESS ONLY (the endpoint
+// never pulls/restarts). Works even if the background poll is OFF.
+function checkImageNow(name, btn){
+  const res = document.querySelector('.imgck-res[data-ctckres="'+(window.CSS&&CSS.escape?CSS.escape(name):name)+'"]')
+    || (btn && btn.parentElement && btn.parentElement.querySelector('.imgck-res'));
+  if(btn){ btn.disabled=true; btn.classList.add('busy'); }
+  if(res){ res.className='imgck-res busy'; res.textContent=' '+I18N.t('ct.checking','checking…'); }
+  fetch('/api/images/updates/check',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({container:name})})
+    .then(r=>r.json().then(j=>({ok:r.ok,j})))
+    .then(({ok,j})=>{
+      if(btn){ btn.disabled=false; btn.classList.remove('busy'); }
+      if(!res) return;
+      if(!ok || (j&&j.error==='no_such_container')){
+        res.className='imgck-res err'; res.textContent=' '+I18N.t('ct.check_gone','container not found'); return;
+      }
+      if(j && j.rate_limited){
+        res.className='imgck-res warn';
+        res.textContent=' ⏳ '+I18N.t('ct.check_ratelimited','rate-limited — try later'); return;
+      }
+      const st=(j&&j.status)||'unknown';
+      let cls='imgck-res unknown', icon='?', label=I18N.t('ct.check_unknown','unknown');
+      if(st==='update_available'){ cls='imgck-res info'; icon='⬆'; label=I18N.t('ct.update_available','update'); }
+      else if(st==='up_to_date'){ cls='imgck-res ok'; icon='✓'; label=I18N.t('ct.up_to_date','up to date'); }
+      else if(j&&j.reason==='digest-pinned'){ label=I18N.t('ct.check_pinned','digest-pinned'); }
+      const when=(j&&j.checked_at)?' · '+relTime(j.checked_at):'';
+      res.className=cls;
+      res.textContent=' '+icon+' '+label+when;
+      if(j&&j.reason==='error'){ res.title=I18N.t('ct.check_error','could not reach the registry'); }
+    })
+    .catch(()=>{
+      if(btn){ btn.disabled=false; btn.classList.remove('busy'); }
+      if(res){ res.className='imgck-res err'; res.textContent=' '+I18N.t('ct.check_error','could not reach the registry'); }
+    });
 }
 function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; } }
 function closeLogDrawer(){ stopLogStream(); document.getElementById('logdrawer').hidden=true; LOG_NAME=null; hideLogSummary(); }

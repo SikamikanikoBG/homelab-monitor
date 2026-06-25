@@ -608,10 +608,12 @@ def _container_deployed_digest(cid):
                 digest = dg.strip()
     return (digest, image_ref)
 
-def _check_one_image(cid, image_ref, interval):
+def _check_one_image(cid, image_ref, interval, force=False):
     """Resolve the update status for a single container. Uses the per-image
     upstream-digest cache so repeated/same-image checks are free within the
-    interval. Returns a result dict. Never raises."""
+    interval. `force` skips the READ side of that cache (always re-queries the
+    registry) for an explicit user-triggered check, but still WRITES the result
+    back so the background view stays warm. Returns a result dict. Never raises."""
     reg, repo, tag, pinned = _parse_image_ref(image_ref)
     base = {"id": cid, "image": image_ref or "", "registry": reg,
             "repository": repo, "tag": tag, "status": "unknown",
@@ -633,7 +635,7 @@ def _check_one_image(cid, image_ref, interval):
     ck = (reg, repo, tag)
     now = time.time()
     cached = _IMG_DIGEST_CACHE.get(ck)
-    if cached and (now - cached["at"]) < interval:
+    if cached and not force and (now - cached["at"]) < interval:
         latest, status = cached["digest"], cached["status"]
     else:
         latest, status = _upstream_manifest_digest(reg, repo, tag)
@@ -728,6 +730,53 @@ def image_updates_snapshot():
     return {"enabled": enabled, "interval_sec": interval, "checked_at": checked_at,
             "count": count, "by_status": by_status, "results": results,
             "rate_limited": time.time() < rl_until, "last_error": last_error}
+
+def image_update_check_one(cid, cname, image_ref):
+    """On-demand image-update re-check for ONE already-resolved container. This is
+    an explicit user action (like 'test notification'): it runs even when the
+    background poll is OFF, because it's a single bounded outbound query the user
+    asked for. AWARENESS ONLY — registry GET/HEAD for the upstream manifest digest
+    + a local docker-socket GET for the deployed digest; NO pull/run/restart/exec/
+    delete, no host mutation. Bounded (one image, short per-request timeouts via
+    the probe), never hangs, never raises. Respects the rate-limit backoff (returns
+    rate_limited rather than hammering Docker Hub). The probe runs OUTSIDE the lock;
+    the lock is held only briefly to read the backoff and to write the cache.
+
+    Returns {status, deployed_digest, upstream_digest, checked_at, reason?,
+    rate_limited}."""
+    now = time.time()
+    with _IMG_LOCK:
+        rl_until = _IMG_STATE["rate_limited_until"]
+    if now < rl_until:
+        return {"status": "unknown", "reason": "rate_limited", "rate_limited": True,
+                "deployed_digest": None, "upstream_digest": None,
+                "checked_at": int(now)}
+    # force=True → bypass the long interval cache so the user gets a genuinely
+    # fresh answer; the probe itself still has short bounded timeouts.
+    _, interval = _img_settings()
+    try:
+        res = _check_one_image(cid, image_ref, interval, force=True)
+    except Exception as e:
+        print("on-demand image check error (%s): %s" % (cid, e), flush=True)
+        res = {"id": cid, "image": image_ref or "", "status": "unknown",
+               "reason": "error", "current_digest": None, "latest_digest": None,
+               "checked_at": int(time.time())}
+    rate_limited = res.get("reason") == "rate_limited"
+    # Warm the shared view: write this one result into the background cache so the
+    # Containers tab / /api/images/updates reflect the fresh status immediately.
+    with _IMG_LOCK:
+        _IMG_STATE["results"][cid] = res
+        _IMG_STATE["count"] = sum(
+            1 for r in _IMG_STATE["results"].values()
+            if r.get("status") == "update_available")
+        if rate_limited:
+            _IMG_STATE["rate_limited_until"] = time.time() + IMG_CHECK_RATELIMIT_BACKOFF
+    return {"status": res.get("status", "unknown"),
+            "reason": res.get("reason"),
+            "deployed_digest": res.get("current_digest"),
+            "upstream_digest": res.get("latest_digest"),
+            "checked_at": res.get("checked_at", int(time.time())),
+            "rate_limited": rate_limited}
 
 # ── Model-server probes (agnostic: append to PROBES to support a new server) ───
 def _http_json(ip, port, path, timeout=2):
@@ -9104,6 +9153,55 @@ def api_image_updates():
         snap = {"enabled": False, "count": 0, "results": [],
                 "by_status": {"up_to_date": 0, "update_available": 0, "unknown": 0}}
     return jsonify(snap)
+
+
+@app.route("/api/images/updates/check", methods=["POST"])
+def api_image_update_check_one():
+    """On-demand 'Check now' for ONE container. Body: {container:"<name-or-id>"}.
+
+    Runs a SINGLE bounded upstream digest re-check for that container's image and
+    returns the fresh status instantly — so the user doesn't wait for the ~6h
+    background cycle. This is an explicit user action, so it runs even when the
+    background image-update poll is OFF.
+
+    AWARENESS ONLY: registry GET/HEAD (manifest digest) + a local docker-socket
+    GET (deployed digest). It NEVER pulls/runs/restarts/exec/deletes anything.
+
+    The container is validated against the LIVE container set (the same injection
+    gate as the log-tail feature) — unknown/invalid → clean 404, never a 500,
+    never a hang. Respects the rate-limit backoff (rate_limited:true instead of
+    hammering). Always 200 with a clean shape, or clean 4xx.
+
+    Response: {ok, container, status, deployed_digest, upstream_digest,
+    checked_at, reason?, rate_limited}"""
+    body = request.get_json(silent=True) or {}
+    name = body.get("container")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"ok": False, "error": "container_required"}), 400
+    cid, cname = _resolve_container(name.strip())
+    if not cid:
+        return jsonify({"ok": False, "container": name, "status": "unknown",
+                        "error": "no_such_container"}), 404
+    # Resolve the deployed image ref from the live set (read-only docker socket).
+    image_ref = ""
+    try:
+        for ct in containers():
+            if ct["id"] == cid:
+                image_ref = ct.get("image", "") or ""
+                break
+    except Exception:
+        image_ref = ""
+    try:
+        res = image_update_check_one(cid, cname, image_ref)
+    except Exception as e:
+        print("image check-now endpoint error:", e, flush=True)
+        res = {"status": "unknown", "reason": "error", "deployed_digest": None,
+               "upstream_digest": None, "checked_at": int(time.time()),
+               "rate_limited": False}
+    res["ok"] = res.get("status") != "unknown" or res.get("reason") in (None, "digest-pinned")
+    res["container"] = cname
+    res["image"] = image_ref
+    return jsonify(res)
 
 
 @app.route("/api/sessions")

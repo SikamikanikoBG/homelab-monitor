@@ -353,5 +353,159 @@ class Endpoint(unittest.TestCase):
         self.assertFalse(r.get_json()["enabled"])
 
 
+class CheckNowEndpoint(unittest.TestCase):
+    """On-demand 'Check now' (POST /api/images/updates/check). Explicit user
+    action: runs ONE bounded re-check even when the background poll is OFF,
+    awareness-only, container validated against the live set, never 500/hang."""
+
+    def setUp(self):
+        self.c = app.app.test_client()
+        app._IMG_DIGEST_CACHE.clear()
+        with app._IMG_LOCK:
+            app._IMG_STATE.update(results={}, checked_at=0, count=0,
+                                  rate_limited_until=0, last_error=None, enabled=False)
+
+    _LIVE = [{"id": "aaaaaaaaaaaa", "name": "web", "image": "nginx:latest",
+              "state": "running", "ports": []}]
+
+    def test_missing_body_is_clean_400(self):
+        r = self.c.post("/api/images/updates/check", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.get_json()["ok"])
+
+    def test_unknown_container_is_404(self):
+        with patch.object(app, "containers", return_value=self._LIVE):
+            r = self.c.post("/api/images/updates/check", json={"container": "ghost"})
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(r.get_json()["error"], "no_such_container")
+
+    def test_injectiony_name_is_404_no_shellout(self):
+        # An injection-y value never matches _CT_NAME_RE / the live set → 404,
+        # and no probe/network/socket call is ever made for it.
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "_check_one_image") as probe, \
+             patch.object(app, "_docker_req") as dreq, \
+             patch("app.urllib.request.urlopen") as net:
+            for bad in ["web; rm -rf /", "$(id)", "../etc", "web && curl evil",
+                        "a" * 200]:
+                r = self.c.post("/api/images/updates/check", json={"container": bad})
+                self.assertEqual(r.status_code, 404, bad)
+        probe.assert_not_called()
+        dreq.assert_not_called()
+        net.assert_not_called()
+
+    def test_runs_one_probe_updates_cache_returns_fresh(self):
+        dig_old, dig_new = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_container_deployed_digest",
+                          return_value=(dig_old, "nginx:latest")) as dep, \
+             patch.object(app, "_upstream_manifest_digest",
+                          return_value=(dig_new, "ok")) as up:
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["status"], "update_available")
+        self.assertEqual(j["deployed_digest"], dig_old)
+        self.assertEqual(j["upstream_digest"], dig_new)
+        self.assertEqual(j["container"], "web")
+        self.assertTrue(j["checked_at"] > 0)
+        # exactly one upstream + one deployed probe (single image per call).
+        self.assertEqual(up.call_count, 1)
+        self.assertEqual(dep.call_count, 1)
+        # cache warmed for the shared view.
+        with app._IMG_LOCK:
+            self.assertIn("aaaaaaaaaaaa", app._IMG_STATE["results"])
+            self.assertEqual(app._IMG_STATE["count"], 1)
+
+    def test_works_when_background_poll_off(self):
+        # SETTING_DEFAULTS has image_update_check == "0" (background OFF). The
+        # explicit check must still run and return a real status.
+        self.assertEqual(dict(app.SETTING_DEFAULTS).get("image_update_check"), "0")
+        dig = "sha256:" + "3" * 64
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_container_deployed_digest", return_value=(dig, "nginx:latest")), \
+             patch.object(app, "_upstream_manifest_digest", return_value=(dig, "ok")):
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "up_to_date")
+
+    def test_429_returns_rate_limited_not_crash(self):
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_container_deployed_digest",
+                          return_value=("sha256:x", "nginx:latest")), \
+             patch.object(app, "_upstream_manifest_digest",
+                          return_value=(None, "rate_limited")):
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertTrue(j["rate_limited"])
+        self.assertEqual(j["status"], "unknown")
+        # backoff is now armed in shared state.
+        with app._IMG_LOCK:
+            self.assertGreater(app._IMG_STATE["rate_limited_until"], time.time())
+
+    def test_existing_backoff_short_circuits_without_probe(self):
+        # If already rate-limited, the explicit check returns rate_limited WITHOUT
+        # hitting the registry again (no hammering Docker Hub).
+        with app._IMG_LOCK:
+            app._IMG_STATE["rate_limited_until"] = time.time() + 999
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_upstream_manifest_digest") as up:
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["rate_limited"])
+        up.assert_not_called()
+
+    def test_force_bypasses_interval_cache(self):
+        # A warm per-image cache must NOT short-circuit the explicit check — the
+        # user asked for a fresh answer (force=True re-queries upstream).
+        ck = ("docker.io", "library/nginx", "latest")
+        app._IMG_DIGEST_CACHE[ck] = {"digest": "sha256:stale", "status": "ok",
+                                     "at": time.time()}
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_container_deployed_digest",
+                          return_value=("sha256:dep", "nginx:latest")), \
+             patch.object(app, "_upstream_manifest_digest",
+                          return_value=("sha256:fresh", "ok")) as up:
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        up.assert_called_once()
+        self.assertEqual(r.get_json()["upstream_digest"], "sha256:fresh")
+
+    def test_awareness_only_no_mutation_calls(self):
+        # The check must use ONLY read verbs on the docker socket (GET) — never a
+        # POST/DELETE (pull/run/restart/exec/delete) for the on-demand path.
+        seen = {"methods": set()}
+
+        def fake_docker_req(method, path, *a, **k):
+            seen["methods"].add(method.upper())
+            if "/json" in path and "/images/" not in path:
+                return 200, json.dumps({"Image": "imgid",
+                                        "Config": {"Image": "nginx:latest"}}).encode()
+            if "/images/" in path:
+                return 200, json.dumps({"RepoDigests": ["library/nginx@sha256:dep"]}).encode()
+            return 404, b"{}"
+
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_docker_req", side_effect=fake_docker_req), \
+             patch.object(app, "_upstream_manifest_digest", return_value=("sha256:up", "ok")):
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(seen["methods"], {"GET"})  # read-only — no POST/DELETE/PUT
+
+    def test_never_500_when_probe_raises(self):
+        with patch.object(app, "containers", return_value=self._LIVE), \
+             patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)), \
+             patch.object(app, "_check_one_image", side_effect=RuntimeError("boom")):
+            r = self.c.post("/api/images/updates/check", json={"container": "web"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
