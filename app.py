@@ -4964,6 +4964,143 @@ def _gpu_extra(gpus):
         "throttle":  sorted({r for g in gpus for r in g.get("throttle", [])}),
     }
 
+# ── AMD GPU (Linux amdgpu via sysfs) ─────────────────────────────────────────
+# Pure-stdlib counterpart to the nvidia-smi path: on boxes with no NVIDIA driver
+# (or alongside one) we enumerate AMD cards straight from /sys/class/drm and emit
+# the SAME per-card dict shape {idx,name,util,mem_used,mem_total,power,temp,...}
+# so every downstream consumer (GPU tab, VRAM-ETA, anomalies, gauges, /metrics,
+# MQTT, Copilot) lights up unchanged. No ROCm, no extra deps — just file reads,
+# each guarded so a missing sysfs attribute degrades that field to None/0 rather
+# than dropping the card or crashing the sample. Works the same in a container as
+# long as /sys is visible (it is, by default).
+AMD_DRM_GLOB = "/sys/class/drm/card*/device"   # patched in tests to a fake tree
+
+def _read_sysfs(path):
+    """Stripped contents of a sysfs file, or None if absent/unreadable. Never raises."""
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+def _sysfs_int(path, scale=1.0):
+    """sysfs integer (optionally scaled, e.g. bytes→MB, µW→W, m°C→°C). None on miss."""
+    v = _read_sysfs(path)
+    if v is None:
+        return None
+    try:
+        return int(float(v) / scale)
+    except (TypeError, ValueError):
+        return None
+
+# A few well-known AMD device-id → marketing-name hints. Best-effort only: the
+# reader never depends on this — an unknown id just falls back to "AMD GPU".
+_AMD_NAMES = {
+    "0x73bf": "AMD Radeon RX 6900 XT", "0x73a5": "AMD Radeon RX 6950 XT",
+    "0x73df": "AMD Radeon RX 6700 XT", "0x744c": "AMD Radeon RX 7900 XTX",
+    "0x747e": "AMD Radeon RX 7800 XT", "0x164e": "AMD Raphael (iGPU)",
+    "0x15bf": "AMD Phoenix (iGPU)",    "0x1638": "AMD Cezanne (iGPU)",
+    "0x740c": "AMD Instinct MI250X",   "0x74a1": "AMD Instinct MI300X",
+}
+
+def _amd_card_name(dev):
+    """Best-effort marketing name for an AMD card dir. Tries a product marker file,
+    then a device-id lookup, then a neutral fallback — never crashes, never None."""
+    for marker in ("product_name", "serial_number"):
+        v = _read_sysfs(os.path.join(dev, marker))
+        if v and not v.lower().startswith("0x"):
+            return v
+    did = (_read_sysfs(os.path.join(dev, "device")) or "").lower()
+    if did in _AMD_NAMES:
+        return _AMD_NAMES[did]
+    return f"AMD GPU ({did})" if did else "AMD GPU"
+
+def _amd_hwmon(dev):
+    """Temp(°C) + power(W) + power_limit(W) from a card's hwmon subdir. Each field is
+    independent: a card may expose temp but not power (common on iGPUs). Returns a
+    dict with None for anything unreadable so the merge keeps the card regardless."""
+    temp = power = plimit = None
+    hwmon_root = os.path.join(dev, "hwmon")
+    try:
+        subdirs = sorted(os.listdir(hwmon_root))
+    except Exception:
+        subdirs = []
+    for sub in subdirs:
+        hp = os.path.join(hwmon_root, sub)
+        if temp is None:
+            # Prefer the 'edge'/first temp sensor; m°C → °C.
+            for t in ("temp1_input", "temp2_input", "temp3_input"):
+                temp = _sysfs_int(os.path.join(hp, t), scale=1000.0)
+                if temp is not None:
+                    break
+        if power is None:
+            for pw in ("power1_average", "power1_input", "power2_average"):
+                power = _sysfs_int(os.path.join(hp, pw), scale=1_000_000.0)  # µW → W
+                if power is not None:
+                    break
+        if plimit is None:
+            for pc in ("power1_cap", "power1_cap_max", "power2_cap"):
+                plimit = _sysfs_int(os.path.join(hp, pc), scale=1_000_000.0)
+                if plimit is not None:
+                    break
+        if temp is not None and power is not None and plimit is not None:
+            break
+    return {"temp": temp, "power": power, "power_limit": plimit}
+
+def read_amd_gpus():
+    """Enumerate AMD (vendor 0x1002) GPUs from /sys/class/drm via pure file reads.
+    Returns a list of per-card dicts matching the nvidia-smi shape so the rest of
+    the app consumes them unchanged. Empty list if no amdgpu cards / no sysfs.
+
+    Per card: idx,name,vendor='amd',util(%),mem_used(MB),mem_total(MB),power(W),
+    temp(°C),power_limit(W). Unreadable numeric fields degrade to 0 (consistent
+    with the nvidia path's _gpu_num) so a present card is never dropped."""
+    out = []
+    try:
+        devs = sorted(glob.glob(AMD_DRM_GLOB))
+    except Exception:
+        return out
+    idx = 0
+    for dev in devs:
+        try:
+            vendor = (_read_sysfs(os.path.join(dev, "vendor")) or "").lower()
+            if vendor != "0x1002":
+                continue   # not AMD (NVIDIA=0x10de, Intel=0x8086) — skip
+            # gpu_busy_percent is the amdgpu utilisation counter; absent on some
+            # very old kernels / fully virtualised cards → treat as 0, keep card.
+            util = _sysfs_int(os.path.join(dev, "gpu_busy_percent"))
+            mem_used  = _sysfs_int(os.path.join(dev, "mem_info_vram_used"),  scale=1024 * 1024)
+            mem_total = _sysfs_int(os.path.join(dev, "mem_info_vram_total"), scale=1024 * 1024)
+            if util is None and mem_total is None:
+                # No amdgpu metric nodes at all (e.g. a display-only / vfio-bound
+                # card) — nothing useful to report, so skip rather than emit zeros.
+                continue
+            hw = _amd_hwmon(dev)
+            out.append({
+                "idx":         idx,
+                "name":        _amd_card_name(dev),
+                "vendor":      "amd",
+                "util":        float(util if util is not None else 0),
+                "mem_used":    float(mem_used if mem_used is not None else 0),
+                "mem_total":   float(mem_total if mem_total is not None else 0),
+                "power":       float(hw["power"] if hw["power"] is not None else 0),
+                "temp":        float(hw["temp"] if hw["temp"] is not None else 0),
+                "power_limit": float(hw["power_limit"] if hw["power_limit"] is not None else 0),
+            })
+            idx += 1
+        except Exception:
+            continue   # one bad card never aborts enumeration of the rest
+    return out
+
+def _amd_gpu_extra(gpus):
+    """AMD analogue of _gpu_extra: aggregate the per-card power_limit (and whatever
+    else AMD exposes) into the single 'GPU right now' panel dict. AMD sysfs doesn't
+    surface mem-bw util / clocks / pstate / throttle the way nvidia-smi does, so
+    those stay absent (the UI already tolerates missing telemetry fields)."""
+    if not gpus:
+        return {}
+    return {"power_limit": round(sum(g.get("power_limit", 0) for g in gpus)), "vendor": "amd"}
+
 def service_for_pid(pid, nm):
     try:
         with open(f"/proc/{pid}/cgroup") as f:
@@ -5106,6 +5243,35 @@ def sample_once():
         # Log only on the ok→fail edge so a permanently GPU-less host doesn't spam.
         if LATEST.get("gpu_avail"):
             print("GPU sample failed (continuing without GPU):", e, flush=True)
+
+    # ── AMD GPU half ────────────────────────────────────────────────────────────
+    # Hardware-agnostic fallback/extension: when nvidia-smi found no cards (no NVIDIA
+    # driver, or a pure-AMD/mixed box) enumerate AMD cards from sysfs and APPEND them
+    # so they flow through the identical aggregate + per-card pipeline below. Mixed
+    # NVIDIA+AMD rigs get both — AMD cards are re-indexed after the NVIDIA ones so the
+    # `idx` space stays unique. Per-model VRAM attribution (nvidia-smi compute-apps)
+    # stays NVIDIA-only by design; AMD just contributes util/VRAM/power/temp. Fully
+    # isolated so a sysfs quirk can never wedge host metrics.
+    try:
+        amd = read_amd_gpus()
+        if amd:
+            base = len(gpus)
+            for g in amd:
+                g["idx"] = base + g["idx"]
+                gpus.append(g)
+            gpu_avail = True
+            # Recompute the aggregates the single-GPU views read, now spanning both
+            # vendors: VRAM + power pool, util averaged, temperature = hottest card.
+            mem_used  = sum(g["mem_used"] for g in gpus)
+            mem_total = sum(g["mem_total"] for g in gpus)
+            power     = sum(g["power"] for g in gpus)
+            util      = round(sum(g["util"] for g in gpus) / len(gpus))
+            temp      = max(g["temp"] for g in gpus)
+            if not gpu_extra:                       # NVIDIA enrichment wins if present
+                gpu_extra = _amd_gpu_extra(amd)
+    except Exception as e:
+        if LATEST.get("gpu_avail"):
+            print("AMD GPU sample failed (continuing):", e, flush=True)
 
     # Detect models from EVERY recognised AI server, not just the ones holding the GPU
     # right now — so a server that has unloaded its model (e.g. OLLAMA_KEEP_ALIVE

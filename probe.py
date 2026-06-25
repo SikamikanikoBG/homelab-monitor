@@ -370,10 +370,93 @@ def _smi_int(v):
         return 0
 
 
+# Patched in tests to a fake sysfs tree; the live default is the real path.
+AMD_DRM_GLOB = "/sys/class/drm/card*/device"
+
+def _amd_sysfs_int(path, scale=1.0):
+    """sysfs integer (optionally scaled: bytes→MB, µW→W, m°C→°C). None on miss/parse
+    error so one unreadable attribute degrades that field rather than the whole card."""
+    try:
+        with open(path) as f:
+            return int(float(f.read().strip()) / scale)
+    except Exception:
+        return None
+
+def _amd_hwmon_temp_power(dev):
+    """(temp °C, power W) from a card's hwmon subdir, each best-effort/None."""
+    temp = power = None
+    try:
+        subdirs = sorted(os.listdir(os.path.join(dev, "hwmon")))
+    except Exception:
+        subdirs = []
+    for sub in subdirs:
+        hp = os.path.join(dev, "hwmon", sub)
+        if temp is None:
+            for t in ("temp1_input", "temp2_input", "temp3_input"):
+                temp = _amd_sysfs_int(os.path.join(hp, t), scale=1000.0)
+                if temp is not None:
+                    break
+        if power is None:
+            for pw in ("power1_average", "power1_input", "power2_average"):
+                power = _amd_sysfs_int(os.path.join(hp, pw), scale=1_000_000.0)
+                if power is not None:
+                    break
+        if temp is not None and power is not None:
+            break
+    return temp, power
+
+def read_amd_gpus():
+    """AMD (vendor 0x1002) GPUs from /sys/class/drm via pure file reads — no ROCm.
+    Returns a list of per-card dicts {name,util,mem_used(MB),mem_total(MB),temp,power}
+    so the hub treats AMD remotes exactly like NVIDIA ones. Empty if none / no sysfs."""
+    out = []
+    try:
+        devs = sorted(glob.glob(AMD_DRM_GLOB))
+    except Exception:
+        return out
+    for dev in devs:
+        try:
+            vendor = ""
+            try:
+                with open(os.path.join(dev, "vendor")) as f:
+                    vendor = f.read().strip().lower()
+            except Exception:
+                pass
+            if vendor != "0x1002":
+                continue
+            util      = _amd_sysfs_int(os.path.join(dev, "gpu_busy_percent"))
+            mem_used  = _amd_sysfs_int(os.path.join(dev, "mem_info_vram_used"),  scale=1024 * 1024)
+            mem_total = _amd_sysfs_int(os.path.join(dev, "mem_info_vram_total"), scale=1024 * 1024)
+            if util is None and mem_total is None:
+                continue
+            name = "AMD GPU"
+            for marker in ("product_name", "device"):
+                try:
+                    with open(os.path.join(dev, marker)) as f:
+                        v = f.read().strip()
+                    if v:
+                        name = ("AMD GPU " + v) if v.lower().startswith("0x") else v
+                        break
+                except Exception:
+                    pass
+            temp, power = _amd_hwmon_temp_power(dev)
+            out.append({
+                "name":      name,
+                "util":      util or 0,
+                "mem_used":  mem_used or 0,
+                "mem_total": mem_total or 0,
+                "temp":      temp or 0,
+                "power":     power or 0,
+            })
+        except Exception:
+            continue
+    return out
+
 def read_gpu():
-    """First NVIDIA GPU's snapshot via nvidia-smi. Returns {} if no driver or
-    no GPU. We treat the first GPU as the 'representative' for the table; the
-    detailed per-GPU view lives in the future GPU tab."""
+    """Representative GPU snapshot for the remote's report. Tries NVIDIA via
+    nvidia-smi first; if there's no NVIDIA driver/GPU, falls back to AMD cards read
+    straight from sysfs (pure stdlib, no ROCm). Returns {} when neither is present.
+    The first card is the 'representative' for the table; `count` covers all cards."""
     try:
         r = subprocess.run(
             ["nvidia-smi",
@@ -381,24 +464,37 @@ def read_gpu():
              "--format=csv,noheader,nounits"],
             capture_output=True, timeout=3,
         )
-        if r.returncode != 0:
-            return {}
-        lines = [l for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
-        if not lines:
-            return {}
-        parts = [p.strip() for p in lines[0].split(",")]
-        if len(parts) < 5:
-            return {}
-        return {"gpu": {
-            "count":     len(lines),
-            "name":      parts[4],
-            "mem_used":  _smi_int(parts[0]),   # MB
-            "mem_total": _smi_int(parts[1]),   # MB
-            "util":      _smi_int(parts[2]),   # %
-            "temp":      _smi_int(parts[3]),   # °C
-        }}
+        if r.returncode == 0:
+            lines = [l for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
+            if lines:
+                parts = [p.strip() for p in lines[0].split(",")]
+                if len(parts) >= 5:
+                    return {"gpu": {
+                        "count":     len(lines),
+                        "name":      parts[4],
+                        "mem_used":  _smi_int(parts[0]),   # MB
+                        "mem_total": _smi_int(parts[1]),   # MB
+                        "util":      _smi_int(parts[2]),   # %
+                        "temp":      _smi_int(parts[3]),   # °C
+                    }}
     except Exception:
-        return {}
+        pass
+    # No NVIDIA — try AMD via sysfs (Linux amdgpu).
+    try:
+        amd = read_amd_gpus()
+        if amd:
+            g0 = amd[0]
+            return {"gpu": {
+                "count":     len(amd),
+                "name":      g0["name"],
+                "mem_used":  sum(g["mem_used"] for g in amd),
+                "mem_total": sum(g["mem_total"] for g in amd),
+                "util":      round(sum(g["util"] for g in amd) / len(amd)),
+                "temp":      max(g["temp"] for g in amd),
+            }}
+    except Exception:
+        pass
+    return {}
 
 
 # ── System / Hardware / Network / Security inventory ──────────────────────────
