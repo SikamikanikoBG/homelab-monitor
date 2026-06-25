@@ -475,6 +475,13 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .badge.ok{color:var(--ok);border-color:#3fb95055}.badge.info{color:var(--mut)}
 .badge.muted{color:var(--mut);border-color:var(--bd);opacity:.85}
 tr.reg-unused td{opacity:.6}
+tr.reg-dead td{opacity:1}
+.reg-ctl{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--mut)}
+.reg-check{cursor:pointer}
+.reg-check input{cursor:pointer;accent-color:var(--accent)}
+#registry-sort{padding:2px 6px;font-size:12px}
+.reg-eff{font-size:10px;margin-left:5px;white-space:nowrap}
+@media(max-width:640px){.reg-ctl{font-size:11px}.reg-eff{display:none}}
 .chartbox{position:relative;height:300px;width:100%}.chartbox.short{height:180px}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .rb{background:var(--inset);border:1px solid var(--bd);color:var(--mut);border-radius:7px;padding:6px 13px;cursor:pointer;font-size:13px}
@@ -1538,6 +1545,18 @@ h2 .hic{ opacity:.9 }
       <h2 data-i18n="registry.title">📦 Installed models</h2>
       <span class="ch-meta" id="registry-summary"></span>
       <span class="ch-space"></span>
+      <label class="reg-ctl" for="registry-sort" data-i18n="registry.sort_label">Sort</label>
+      <select class="btn" id="registry-sort" aria-label="Sort installed models">
+        <option value="size" data-i18n="registry.sort_size">Size ↓</option>
+        <option value="used" data-i18n="registry.sort_used">Last used ↓</option>
+        <option value="tps" data-i18n="registry.sort_tps">tok/s ↓</option>
+        <option value="runs" data-i18n="registry.sort_runs">Runs ↓</option>
+        <option value="name" data-i18n="registry.sort_name">Name ↑</option>
+      </select>
+      <label class="reg-ctl reg-check">
+        <input type="checkbox" id="registry-unused">
+        <span data-i18n="registry.unused_first">Unused first</span>
+      </label>
       <button class="btn" id="registry-refresh" type="button"
               data-i18n="registry.refresh" title="Refresh registry">↻ Refresh</button>
     </div>
@@ -3368,14 +3387,48 @@ function _registryDate(s){
     return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
   }catch(e){ return '—'; }
 }
+// Sort/filter state — applied to the already-fetched data (REGISTRY_DATA), never
+// triggers a refetch. Default: largest on disk first (the "what's eating disk" view).
+let REGISTRY_DATA=null;
+let REGISTRY_SORT='size';
+let REGISTRY_UNUSED_FIRST=false;
+// A model is "dead weight" when it's large on disk yet has never been run — the
+// clearest "not earning its disk" signal. Threshold kept generous (~2 GB).
+const REG_DEADWEIGHT_BYTES=2*1073741824;
+function _regSorted(models){
+  const arr=models.slice();
+  const key=REGISTRY_SORT;
+  const cmp={
+    size:(a,b)=>(b.size_bytes||0)-(a.size_bytes||0),
+    used:(a,b)=>(b.last_used||0)-(a.last_used||0),
+    tps:(a,b)=>(b.avg_tps||0)-(a.avg_tps||0),
+    runs:(a,b)=>(b.runs||0)-(a.runs||0),
+    name:(a,b)=>String(a.name||'').localeCompare(String(b.name||'')),
+  }[key]||((a,b)=>(b.size_bytes||0)-(a.size_bytes||0));
+  arr.sort(cmp);
+  // "Unused first" is a stable secondary pass: never-used models float to the top
+  // while keeping the chosen sort order within each group.
+  if(REGISTRY_UNUSED_FIRST){
+    arr.sort((a,b)=>((a.runs>0)?1:0)-((b.runs>0)?1:0));
+  }
+  return arr;
+}
 function renderRegistry(j){
   const card=document.getElementById('registry-card'); if(!card) return;
   // Registry is local-ollama only — hide entirely on remote hosts.
   if(CURRENT_HOST!=='local'){ card.hidden=true; return; }
   card.hidden=false;
+  REGISTRY_DATA=j;
   const body=document.getElementById('registry-body');
   const sum=document.getElementById('registry-summary');
   const models=(j&&j.models)||[];
+  // Sort/filter controls are only meaningful with a populated table.
+  const hasRows=!!(j&&j.enabled&&j.ollama_reachable&&models.length);
+  const rgs=document.getElementById('registry-sort');
+  const rgu=document.getElementById('registry-unused');
+  document.querySelectorAll('#registry-card .reg-ctl').forEach(el=>{ el.style.display=hasRows?'':'none'; });
+  if(rgs){ rgs.style.display=hasRows?'':'none'; rgs.value=REGISTRY_SORT; }
+  if(rgu) rgu.checked=REGISTRY_UNUSED_FIRST;
   if(!j || !j.enabled || !j.ollama_reachable){
     if(sum) sum.textContent='';
     body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">🌙</div><div>'
@@ -3391,9 +3444,13 @@ function renderRegistry(j){
   const t=j.totals||{};
   if(sum) sum.textContent=I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
     {n:t.count!=null?t.count:models.length, gb:fmtBytes(t.total_bytes).replace(' GB',''), loaded:t.loaded!=null?t.loaded:0});
-  const rows=models.map(m=>{
+  const rows=_regSorted(models).map(m=>{
     const meta=[m.param_size,m.quant].filter(Boolean).map(esc).join(' · ')
       || (m.family?esc(m.family):'<span class="muted">—</span>');
+    // Dead weight: large on disk + never run. The headline "not earning its disk"
+    // chip. For used models, a subtle GB-per-run efficiency hint instead.
+    const isDead=(m.runs===0||m.runs==null)&&(m.size_bytes||0)>=REG_DEADWEIGHT_BYTES;
+    const gbPerRun=(m.runs>0)?( (m.size_bytes||0)/1073741824 / m.runs ):null;
     const loaded=m.loaded
       ? '<span class="badge ok">'+I18N.t('registry.loaded','Loaded')+(m.vram_mb!=null?' · '+esc(fmtMB(m.vram_mb)):'')+'</span>'
       : '<span class="badge info">'+I18N.t('registry.ondisk','On disk')+'</span>';
@@ -3402,11 +3459,14 @@ function renderRegistry(j){
     const used = m.runs>0
       ? '<span title="'+esc(I18N.tf('registry.runs_title','{n} runs (last 30d)',{n:m.runs}))+'">'
           +esc(relTime(m.last_used))+'</span>'
-      : '<span class="badge muted" data-i18n="registry.never">'+I18N.t('registry.never','never used')+'</span>';
+          +(gbPerRun!=null?' <span class="reg-eff muted" title="'+esc(I18N.t('registry.gbrun_title','Disk GB per run — lower earns its disk'))+'">'+esc(gbPerRun.toFixed(gbPerRun<10?1:0))+' '+I18N.t('registry.gbrun','GB/run')+'</span>':'')
+      : (isDead
+          ? '<span class="badge crit" title="'+esc(I18N.t('registry.dead_title','Large on disk and never run — not earning its disk'))+'" data-i18n="registry.dead">'+I18N.t('registry.dead','dead weight')+'</span>'
+          : '<span class="badge muted" data-i18n="registry.never">'+I18N.t('registry.never','never used')+'</span>');
     const tps = (m.avg_tps!=null)
       ? '<span title="'+esc(I18N.t('registry.tps_title','Recent average tok/s'))+'">'+esc(m.avg_tps.toFixed(1))+'</span>'
       : '<span class="muted">—</span>';
-    return '<tr'+(m.runs>0?'':' class="reg-unused"')+'><td>'+esc(m.name)+'</td>'
+    return '<tr'+(m.runs>0?'':(isDead?' class="reg-unused reg-dead"':' class="reg-unused"'))+'><td>'+esc(m.name)+'</td>'
       +'<td>'+esc(fmtBytes(m.size_bytes))+'</td>'
       +'<td>'+meta+'</td>'
       +'<td>'+loaded+'</td>'
@@ -8069,6 +8129,11 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(lb) lb.onclick=llmBenchmark;
   const rgb=document.getElementById('registry-refresh');
   if(rgb) rgb.onclick=()=>loadRegistry();
+  // Sort/filter operate on the already-fetched registry data — re-render only, no refetch.
+  const rgs=document.getElementById('registry-sort');
+  if(rgs) rgs.onchange=()=>{ REGISTRY_SORT=rgs.value; if(REGISTRY_DATA) renderRegistry(REGISTRY_DATA); };
+  const rgu=document.getElementById('registry-unused');
+  if(rgu) rgu.onchange=()=>{ REGISTRY_UNUSED_FIRST=rgu.checked; if(REGISTRY_DATA) renderRegistry(REGISTRY_DATA); };
   const ab=document.getElementById('copilot-ask-btn');
   if(ab) ab.onclick=copilotAsk;
   const q=document.getElementById('copilot-q');
