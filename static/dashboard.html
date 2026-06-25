@@ -1911,6 +1911,41 @@ h2 .hic{ opacity:.9 }
       </div>
       <div id="maint_list" style="margin-top:12px"></div>
 
+      <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="routes.title">🔀 Notification routing</div>
+      <p class="cap" style="margin:2px 0 10px" data-i18n="routes.intro">
+        Send matching alerts to a specific channel instead of every channel. A route matches when the alert's subject (container/service/host/series/mount/check name) fits its pattern and its level is at or above the route's minimum. Routes are checked top-to-bottom; an alert goes to every matching route's channel.</p>
+      <div class="ins" style="margin:0 0 10px" role="note" data-i18n="routes.note">No routes = every alert goes to its rule's own channel (today's default). Routing only ever redirects matching alerts — it never drops them.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;max-width:880px;align-items:end">
+        <div style="grid-column:1/-1">
+          <div class="flabel" data-i18n="routes.f_label">Label</div>
+          <input type="text" id="rt_label" class="field" placeholder="e.g. Critical to Slack" maxlength="120">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="routes.f_match">Match (glob, * = any)</div>
+          <input type="text" id="rt_match" class="field" placeholder="*gpu*" maxlength="200" value="*">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="routes.f_minlevel">Minimum level</div>
+          <select id="rt_minlevel" class="field">
+            <option value="info" data-i18n="opt.sev_info">info</option>
+            <option value="warning" data-i18n="opt.sev_warning">warning</option>
+            <option value="critical" data-i18n="opt.sev_critical">critical</option>
+          </select>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="routes.f_channel">Channel</div>
+          <select id="rt_channel" class="field"></select>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="routes.f_priority">Priority</div>
+          <input type="number" id="rt_priority" class="field" value="0" step="1">
+        </div>
+        <div>
+          <button class="rb on" id="rt_add" data-i18n="routes.add_btn">Add route</button>
+        </div>
+      </div>
+      <div id="routes_list" style="margin-top:12px"></div>
+
       <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.history_title">Alert history</div>
       <div id="rules_history"></div>
     </div><!-- /set-pane-rules -->
@@ -4395,7 +4430,58 @@ async function loadRules(){
     });
   }
   loadMaintenance();
+  loadRoutes();
   loadAlertHistory();
+}
+
+// ── Notification routing rules ────────────────────────────────────────────────
+const ROUTE_LEVEL_LABEL = {info:'opt.sev_info', warning:'opt.sev_warning', critical:'opt.sev_critical'};
+async function loadRoutes(){
+  let j; try{ j=await(await fetch('/api/alerts/routes')).json(); }catch(e){ return; }
+  const chans=j.channels||[];
+  const sel=document.getElementById('rt_channel');
+  if(chans.length){
+    sel.innerHTML=chans.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    sel.disabled=false; document.getElementById('rt_add').disabled=false;
+  } else {
+    sel.innerHTML='<option value="">'+esc(I18N.t('routes.no_channels','no channels configured'))+'</option>';
+    sel.disabled=true; document.getElementById('rt_add').disabled=true;
+  }
+  const box=document.getElementById('routes_list');
+  if(!(j.routes||[]).length){ box.innerHTML='<p class="cap">'+I18N.t('routes.none','No routes — alerts go to their rule’s channel (default).')+'</p>'; return; }
+  box.innerHTML = j.routes.map(r=>{
+    const lvl=I18N.t(ROUTE_LEVEL_LABEL[r.min_level]||'',r.min_level);
+    return `<div class="ins ${r.enabled?'info':''}" style="display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap">
+      <div><b>${esc(r.label)}</b>
+        <span class="cap">· ${I18N.t('routes.lbl_match','match')} <code>${esc(r.match)}</code> · &ge; ${esc(lvl)} &rarr; ${esc(r.channel)} · ${I18N.t('routes.lbl_priority','priority')} ${r.priority}</span></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label class="cap" style="display:flex;align-items:center;gap:5px">
+          <input type="checkbox" data-rttoggle="${r.id}" ${r.enabled?'checked':''}> ${I18N.t('rules.enabled','enabled')}</label>
+        <button class="rb" data-rtdel="${r.id}">${I18N.t('btn.delete','Delete')}</button>
+      </div></div>`;
+  }).join('');
+  box.querySelectorAll('[data-rttoggle]').forEach(el=>el.onchange=async()=>{
+    await fetch('/api/alerts/routes/'+el.dataset.rttoggle,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled:el.checked})}); loadRoutes();
+  });
+  box.querySelectorAll('[data-rtdel]').forEach(el=>el.onclick=async()=>{
+    await fetch('/api/alerts/routes/'+el.dataset.rtdel,{method:'DELETE'}); loadRoutes();
+  });
+}
+async function addRoute(){
+  const body={
+    label: document.getElementById('rt_label').value.trim(),
+    match: document.getElementById('rt_match').value.trim()||'*',
+    min_level: document.getElementById('rt_minlevel').value,
+    channel: document.getElementById('rt_channel').value,
+    priority: parseInt(document.getElementById('rt_priority').value||'0',10),
+    enabled: true,
+  };
+  let j; try{ j=await(await fetch('/api/alerts/routes',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not add route: '+e); return; }
+  if(j.ok){ document.getElementById('rt_label').value=''; document.getElementById('rt_match').value='*';
+    showAlertStatus('ok',I18N.t('routes.added','Route added.')); loadRoutes(); }
+  else showAlertStatus('critical', j.error||'Could not add route.');
 }
 
 // ── Maintenance / alert-silence windows ──────────────────────────────────────
@@ -4524,6 +4610,7 @@ document.getElementById('r_add').onclick = addRule;
 document.getElementById('r_test_btn').onclick = testRuleChannel;
 document.getElementById('m_kind').onchange = maintKindVisibility;
 document.getElementById('m_add').onclick = addMaintenance;
+document.getElementById('rt_add').onclick = addRoute;
 
 // ── Backup (settings) tab ─────────────────────────────────────────────────────
 function showBackupStatus(level,text){

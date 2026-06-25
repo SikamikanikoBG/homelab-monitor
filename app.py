@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib
+import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch
 import email.message
 from functools import wraps
 try:
@@ -188,6 +188,17 @@ CREATE TABLE IF NOT EXISTS maintenance_windows(
   recurring INTEGER NOT NULL DEFAULT 0,
   start_ts INTEGER, end_ts INTEGER, daily_start TEXT, daily_end TEXT,
   created_at INTEGER NOT NULL);
+-- Notification routing rules: redirect a firing alert to a specific channel when
+-- its entity/subject glob-matches and its level is at/above min_level. Evaluated in
+-- `priority` order BEFORE the default fan-out. ZERO rows = byte-identical to the
+-- pre-routing behaviour (the alert rule's own channel). Only ever REDIRECTS; never
+-- drops (a matched route to an unconfigured channel falls back, never black-holes).
+CREATE TABLE IF NOT EXISTS notification_routes(
+  id TEXT PRIMARY KEY, label TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  match TEXT NOT NULL DEFAULT '*', min_level TEXT NOT NULL DEFAULT 'info',
+  channel TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_routes_order ON notification_routes(priority, created_at);
 CREATE TABLE IF NOT EXISTS incidents(
   id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'open', severity TEXT NOT NULL DEFAULT 'warning',
   opened_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cleared_at INTEGER,
@@ -4493,6 +4504,178 @@ def _in_maintenance(now=None):
                 latest_end = ends
     return active, latest_end
 
+# ── Notification routing rules ────────────────────────────────────────────────
+# Route a firing alert to a specific channel when its entity/subject glob-matches
+# AND its level is at/above the route's min_level. Evaluated in `priority` order
+# (then created_at) BEFORE the default fan-out in evaluate_rules.
+#
+# CRITICAL invariant — ZERO routes (or no match) = byte-identical to the prior
+# behaviour: dispatch_alert(..., channel=rule["channel"]). Routing ONLY ever
+# REDIRECTS to the union of matching routes' channels; it never silently drops.
+# A matched route whose channel is not configured falls back to the rule's own
+# channel (recorded), so a misconfigured route can never black-hole an alert.
+#
+# The matcher is a single case-insensitive fnmatch glob over the alert's derived
+# "entity" — see _alert_entity: the rule name plus the per-ctype subject (which
+# already carries the container/service/host/series/mount/check label). A recovery
+# notice carries the SAME entity as the fire it recovers, so it routes identically.
+
+def _route_row_to_dict(r):
+    cols = ("id", "label", "enabled", "match", "min_level", "channel", "priority", "created_at")
+    d = dict(zip(cols, r))
+    d["enabled"] = bool(d["enabled"])
+    return d
+
+def list_routes():
+    with LOCK:
+        rows = DB.execute(
+            "SELECT id,label,enabled,match,min_level,channel,priority,created_at "
+            "FROM notification_routes ORDER BY priority, created_at").fetchall()
+    return [_route_row_to_dict(r) for r in rows]
+
+def _validate_route(body):
+    """Return (clean_dict, None) or (None, error_string)."""
+    label = (body.get("label") or "").strip()
+    if not label:
+        return None, "A label is required."
+    label = label[:120]
+    match = (body.get("match") or "*").strip()
+    if not match:
+        return None, "A match pattern is required (use * for any)."
+    match = match[:200]
+    min_level = (body.get("min_level") or "info").strip()
+    if min_level not in LEVELS:
+        return None, "min_level must be info, warning, or critical."
+    channel = (body.get("channel") or "").strip()
+    # A route MUST name a concrete channel — "all" is the default-fan-out behaviour
+    # and is meaningless as a redirect target.
+    if channel not in _NOTIFY_CHANNELS:
+        return None, f"Channel must be one of: {', '.join(_NOTIFY_CHANNELS)}."
+    try:
+        priority = int(body.get("priority", 0))
+    except (TypeError, ValueError):
+        return None, "priority must be a whole number."
+    return {"label": label, "match": match, "min_level": min_level, "channel": channel,
+            "priority": priority, "enabled": 1 if body.get("enabled", True) else 0}, None
+
+def create_route(body):
+    clean, err = _validate_route(body)
+    if err:
+        return None, err
+    rid = uuid.uuid4().hex
+    with LOCK:
+        DB.execute(
+            "INSERT INTO notification_routes(id,label,enabled,match,min_level,channel,priority,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (rid, clean["label"], clean["enabled"], clean["match"], clean["min_level"],
+             clean["channel"], clean["priority"], int(time.time())))
+        DB.commit()
+    return rid, None
+
+def update_route(rid, body):
+    with LOCK:
+        exists = DB.execute("SELECT 1 FROM notification_routes WHERE id=?", (rid,)).fetchone()
+    if not exists:
+        return False, "not found"
+    if not body:
+        return False, "empty update"
+    # Quick enable/disable toggle without full revalidation.
+    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+        with LOCK:
+            DB.execute("UPDATE notification_routes SET enabled=? WHERE id=?",
+                       (1 if body.get("enabled") else 0, rid))
+            DB.commit()
+        return True, None
+    clean, err = _validate_route(body)
+    if err:
+        return False, err
+    with LOCK:
+        DB.execute(
+            "UPDATE notification_routes SET label=?,enabled=?,match=?,min_level=?,channel=?,priority=? WHERE id=?",
+            (clean["label"], clean["enabled"], clean["match"], clean["min_level"],
+             clean["channel"], clean["priority"], rid))
+        DB.commit()
+    return True, None
+
+def delete_route(rid):
+    with LOCK:
+        cur = DB.execute("DELETE FROM notification_routes WHERE id=?", (rid,))
+        DB.commit()
+        return cur.rowcount > 0
+
+def _alert_entity(rule, title):
+    """The matchable entity/subject for an alert, for notification routing.
+
+    `_eval_rule`'s `title` already embeds the per-ctype subject — the series key
+    (anomaly), the mount (disk_eta), 'GPU VRAM' (vram_eta), the projected-cost line
+    (cost_budget), 'incident' (incident), or the check label (uptime_down). We pair
+    it with the rule name so a glob can target either the user's rule naming or the
+    underlying entity. Lowercased for case-insensitive matching. Recovery notices
+    pass the SAME (rule, fire-title) so they route to the same channels as the fire."""
+    return f"{rule.get('name') or ''} {title or ''}".strip().lower()
+
+# A stable per-ctype subject keyword, so a recovery notice (which has no live fire
+# title — the condition has cleared) routes consistently with the fire it recovers.
+# These keywords also appear in the fire titles ("Anomaly on …", "Disk … fills",
+# "GPU VRAM …", "… incident …", "Uptime …"), so a glob targeting the entity matches
+# both fire and recovery for the same rule.
+_CTYPE_SUBJECT = {"anomaly": "anomaly", "disk_eta": "disk", "vram_eta": "vram",
+                  "cost_budget": "cost", "incident": "incident", "uptime_down": "uptime"}
+
+def _recovery_entity(rule):
+    """Matchable entity for a recovery notice — rule name + ctype subject keyword,
+    so it routes the SAME way as the fire it recovers."""
+    return f"{rule.get('name') or ''} {_CTYPE_SUBJECT.get(rule.get('ctype'), '')}".strip().lower()
+
+def _route_channels(level, entity):
+    """Channels selected by the enabled routing rules for an alert at `level` whose
+    derived `entity` matches. Returns the ORDERED, de-duplicated union of matching
+    routes' channels (priority then created_at order). Empty list = NO route matched
+    → caller MUST fall back to the alert rule's own channel (unchanged behaviour).
+    Pure read; never raises out."""
+    try:
+        rank = LEVELS.get(level, 0)
+        ent = (entity or "").lower()
+        chans = []
+        for r in list_routes():
+            if not r["enabled"]:
+                continue
+            if rank < LEVELS.get(r["min_level"], 0):
+                continue
+            if not fnmatch.fnmatch(ent, (r["match"] or "*").lower()):
+                continue
+            if r["channel"] not in chans:
+                chans.append(r["channel"])
+        return chans
+    except Exception as e:
+        print("route selection error:", e, flush=True)
+        return []
+
+def dispatch_routed(s, level, title, detail, *, entity, default_channel):
+    """Dispatch an alert through notification routing, then fall back to the prior
+    behaviour. If ANY enabled route matches (`entity` glob + level≥min_level), send
+    to each matched channel — but a matched channel that isn't configured falls back
+    to `default_channel` (recorded, never dropped). If NO route matches, behave
+    byte-identically to dispatch_alert(s, level, title, detail, channel=default_channel).
+    Returns the same [(channel, ok, err), ...] shape as dispatch_alert."""
+    chans = _route_channels(level, entity)
+    if not chans:
+        return dispatch_alert(s, level, title, detail, channel=default_channel)
+    configured = set(_configured_channels(s))
+    out = []
+    fellback = False
+    for ch in chans:
+        if ch in configured:
+            ok, err = _send_one_channel(s, ch, level, title, detail)
+            out.append((ch, ok, err))
+        elif not fellback:
+            # Matched route points at an unconfigured channel: don't black-hole —
+            # fall back to the default fan-out exactly once, so the alert still goes
+            # out. Recorded under its real channel name(s) by dispatch_alert.
+            fellback = True
+            out.extend(dispatch_alert(s, level, title, detail, channel=default_channel))
+    return out
+
 def _eval_rule(rule, signals):
     """Evaluate one rule against the precomputed signal bundle. Returns
     (fired_bool, title, detail). Pure; no I/O, no recompute."""
@@ -4694,7 +4877,9 @@ def evaluate_rules(signals=None):
         if should_fire:
             level = rule["level"]
             full_title = f"{rule['name']}: {title}"
-            for ch, ok, err in dispatch_alert(s, level, full_title, detail, channel=rule["channel"]):
+            entity = _alert_entity(rule, title)
+            for ch, ok, err in dispatch_routed(s, level, full_title, detail,
+                                               entity=entity, default_channel=rule["channel"]):
                 status = "sent" if ok else "error"
                 record_alert(rule["id"], rule["name"], level, ch, status, full_title, detail if ok else (err or ""))
                 if not ok:
@@ -4720,7 +4905,13 @@ def evaluate_rules(signals=None):
             # and only because the rule had previously fired (last_state=='active').
             r_title = f"✅ {rule['name']}: cleared"
             r_detail = "Condition recovered — the signal returned to normal."
-            for ch, ok, err in dispatch_alert(s, "info", r_title, r_detail, channel=rule["channel"]):
+            # Route the recovery the SAME way as the fire it recovers. A recovery is
+            # level 'info'; routes whose min_level is warning/critical won't match it,
+            # so it falls back to the rule's own channel — i.e. it goes wherever the
+            # fire's own channel sent its recovery before. (See _recovery_entity.)
+            r_entity = _recovery_entity(rule)
+            for ch, ok, err in dispatch_routed(s, "info", r_title, r_detail,
+                                               entity=r_entity, default_channel=rule["channel"]):
                 status = "recovered" if ok else "error"
                 record_alert(rule["id"], rule["name"], "info", ch, status, r_title, r_detail if ok else (err or ""))
                 if not ok:
@@ -11038,6 +11229,29 @@ def api_maintenance_one(mid):
         return jsonify({"ok": ok}), (200 if ok else 404)
     body = request.get_json(silent=True) or {}
     ok, err = update_maintenance(mid, body)
+    if not ok:
+        code = 404 if err == "not found" else 400
+        return jsonify({"ok": False, "error": err}), code
+    return jsonify({"ok": True})
+
+@app.route("/api/alerts/routes", methods=["GET", "POST"])
+def api_alert_routes():
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        rid, err = create_route(body)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "id": rid}), 201
+    return jsonify({"routes": list_routes(),
+                    "channels": _configured_channels(get_settings())})
+
+@app.route("/api/alerts/routes/<rid>", methods=["PATCH", "DELETE"])
+def api_alert_route_one(rid):
+    if request.method == "DELETE":
+        ok = delete_route(rid)
+        return jsonify({"ok": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    ok, err = update_route(rid, body)
     if not ok:
         code = 404 if err == "not found" else 400
         return jsonify({"ok": False, "error": err}), code
