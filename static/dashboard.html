@@ -1335,11 +1335,30 @@ h2 .hic{ opacity:.9 }
     </div>
     <details id="digest-sched" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:11px">
       <summary style="cursor:pointer;font-weight:600" data-i18n="digest.title">📬 Scheduled digest</summary>
-      <div class="fleet-meta" style="margin-top:7px" data-i18n="digest.desc">Push this plain-English summary to your alert channels once a day. Off by default — needs a notification channel configured under Alerts.</div>
+      <div class="fleet-meta" style="margin-top:7px" data-i18n="digest.desc">Push a structured, plain-English brief to your alert channels on a schedule — an AI summary plus capacity, cost, fleet and anomaly sections. Off by default — needs a notification channel configured under Alerts.</div>
       <div class="row" style="gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
         <label class="row" style="gap:6px;align-items:center">
           <input type="checkbox" id="digest-enabled">
-          <span data-i18n="digest.enable">Send a daily digest</span>
+          <span data-i18n="digest.enable">Send a scheduled digest</span>
+        </label>
+        <label class="row" style="gap:6px;align-items:center">
+          <span class="muted" data-i18n="digest.cadence">cadence</span>
+          <select class="hosts-input" id="digest-cadence" style="width:auto">
+            <option value="daily" data-i18n="digest.cadence_daily">Daily</option>
+            <option value="weekly" data-i18n="digest.cadence_weekly">Weekly</option>
+          </select>
+        </label>
+        <label class="row" style="gap:6px;align-items:center" id="digest-weekday-wrap">
+          <span class="muted" data-i18n="digest.on">on</span>
+          <select class="hosts-input" id="digest-weekday" style="width:auto">
+            <option value="0" data-i18n="digest.mon">Monday</option>
+            <option value="1" data-i18n="digest.tue">Tuesday</option>
+            <option value="2" data-i18n="digest.wed">Wednesday</option>
+            <option value="3" data-i18n="digest.thu">Thursday</option>
+            <option value="4" data-i18n="digest.fri">Friday</option>
+            <option value="5" data-i18n="digest.sat">Saturday</option>
+            <option value="6" data-i18n="digest.sun">Sunday</option>
+          </select>
         </label>
         <label class="row" style="gap:6px;align-items:center">
           <span class="muted" data-i18n="digest.at">at</span>
@@ -6945,9 +6964,13 @@ async function loadDigestConfig(){
   const wrap=document.getElementById('digest-sched'); if(!wrap) return;
   let s; try{ s=(await(await fetch('/api/settings')).json()).settings||{}; }catch(e){ return; }
   const en=document.getElementById('digest-enabled'), tm=document.getElementById('digest-time'),
-        sel=document.getElementById('digest-channel');
+        sel=document.getElementById('digest-channel'),
+        cad=document.getElementById('digest-cadence'), wd=document.getElementById('digest-weekday');
   if(en) en.checked = s.digest_enabled==='1';
   if(tm) tm.value = s.digest_time || '08:00';
+  if(cad) cad.value = (s.digest_cadence==='weekly')?'weekly':'daily';
+  if(wd) wd.value = String(parseInt(s.digest_weekday,10)||0);
+  _digestToggleWeekday();
   if(sel){
     const chans=_digestChannels(s), cur=s.digest_channel||'all';
     const opts=['all'].concat(chans);
@@ -6960,12 +6983,19 @@ async function loadDigestConfig(){
     } else { sel.disabled=false; }
   }
 }
+function _digestToggleWeekday(){
+  const cad=document.getElementById('digest-cadence'), wrap=document.getElementById('digest-weekday-wrap');
+  if(wrap) wrap.style.display = (cad&&cad.value==='weekly')?'':'none';
+}
 async function saveDigestConfig(){
   const en=document.getElementById('digest-enabled'), tm=document.getElementById('digest-time'),
-        sel=document.getElementById('digest-channel'), res=document.getElementById('digest-result');
+        sel=document.getElementById('digest-channel'), res=document.getElementById('digest-result'),
+        cad=document.getElementById('digest-cadence'), wd=document.getElementById('digest-weekday');
   const body={ digest_enabled: en&&en.checked?'1':'0',
                digest_time: (tm&&tm.value)||'08:00',
-               digest_channel: (sel&&sel.value)||'all' };
+               digest_channel: (sel&&sel.value)||'all',
+               digest_cadence: (cad&&cad.value==='weekly')?'weekly':'daily',
+               digest_weekday: String((wd&&parseInt(wd.value,10))||0) };
   try{
     await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(res){ res.textContent=I18N.t('digest.saved','Saved.'); setTimeout(()=>{ if(res) res.textContent=''; },3000); }
@@ -8006,6 +8036,7 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(sched) sched.addEventListener('toggle',()=>{ if(sched.open) loadDigestConfig(); });
   const dsave=document.getElementById('digest-save'); if(dsave) dsave.onclick=saveDigestConfig;
   const dsend=document.getElementById('digest-send'); if(dsend) dsend.onclick=sendDigestNow;
+  const dcad=document.getElementById('digest-cadence'); if(dcad) dcad.onchange=_digestToggleWeekday;
 })();
 document.getElementById('key_showraw').onclick = () => {
   const el = document.getElementById('pubkey'), b = document.getElementById('key_showraw');

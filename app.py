@@ -4150,8 +4150,10 @@ SETTING_DEFAULTS = {
     # A plain-English daily summary built by the Copilot and PUSHED through the
     # existing alert channels. Reuses the channel dispatch + the digest builder.
     "digest_enabled":      "0",        # "0" / "1" — master switch (off => zero new behaviour)
-    "digest_time":         "08:00",    # local time-of-day "HH:MM" to push the daily digest
+    "digest_time":         "08:00",    # local time-of-day "HH:MM" to push the daily/weekly digest
     "digest_channel":      "all",      # which configured channel: all/discord/ntfy/telegram/webhook
+    "digest_cadence":      "daily",    # "daily" | "weekly" — how often the digest fires
+    "digest_weekday":      "0",        # 0=Mon … 6=Sun — the day weekly digests fire (ignored for daily)
     "digest_last_sent":    "",         # internal: "YYYY-MM-DD" of the last send (edge-trigger guard)
     # ── Home Assistant / MQTT auto-discovery (E4) — OFF by default, inert until enabled ─
     # PUBLISH-ONLY: the monitor pushes its key metrics out to an MQTT broker with
@@ -7767,25 +7769,178 @@ def api_llm():
 # nothing. Read-only otherwise — it only sends data OUT, never mutates the host.
 
 DIGEST_TITLE = "Lab Copilot — daily digest"
+DIGEST_TITLE_WEEKLY = "Lab Copilot — weekly digest"
+
+# Digest v2 — a structured, multi-section brief built entirely from already-computed
+# signals (the SAME forecast/reco/incident/uptime/cost accessors the dashboard uses),
+# led by the optional ollama narrative. Every section is DETERMINISTIC and stands
+# alone: if the LLM is unreachable the brief still sends (just without the narrative
+# line), and it never carries secrets — only telemetry facts (no URLs/tokens/settings).
+
+
+def _digest_sections(now=None):
+    """Assemble the deterministic, secret-free sections of the digest from the
+    live signal bundle (reused from the recommendations path — no new heavy work).
+    Returns a list of (header, [lines]) tuples; empty sections are omitted by the
+    caller. Never raises (a failed sub-signal just yields fewer lines)."""
+    now = now or int(time.time())
+    sections = []
+    try:
+        sig = _reco_signals(now)
+    except Exception as e:
+        print("digest signals error:", e, flush=True)
+        sig = {}
+    try:
+        recos = _reco_detect(sig, now)[:RECO_MAX_ITEMS]
+    except Exception:
+        recos = []
+
+    # ── Needs attention: open recommendations + incidents + down uptime checks ──
+    attn = []
+    inc = sig.get("incidents") or {}
+    open_inc = int(inc.get("open") or 0)
+    uptime = [c for c in (sig.get("uptime") or []) if c.get("enabled")]
+    down = [c for c in uptime if c.get("state") == "down"]
+    crit_n = sum(1 for it in recos if it.get("severity") == "crit")
+    warn_n = sum(1 for it in recos if it.get("severity") == "warn")
+    if recos:
+        attn.append("Recommendations: %d open (%d critical, %d warning)." % (
+            len(recos), crit_n, warn_n))
+        for it in recos[:3]:
+            attn.append("  - [%s] %s" % ((it.get("severity") or "info").upper(),
+                                         it.get("title") or "?"))
+    if open_inc:
+        top = inc.get("top") or {}
+        attn.append("Incidents: %d open (top severity %s, %d active series)." % (
+            open_inc, top.get("severity") or "?", int(top.get("active_count") or 0)))
+    if down:
+        names = ", ".join(str(c.get("label") or c.get("id") or "check") for c in down[:3])
+        attn.append("Uptime: %d check%s DOWN — %s." % (
+            len(down), "" if len(down) == 1 else "s", names))
+    if attn:
+        sections.append(("Needs attention", attn))
+
+    # ── Capacity: disk-fill / VRAM / cost-projection ETAs (the nudges) ──────────
+    cap = []
+    fills = sorted(
+        [d for d in (sig.get("disk") or [])
+         if d.get("status") == "filling" and d.get("eta_days") is not None],
+        key=lambda d: d.get("eta_days"))
+    for d in fills[:3]:
+        cap.append("Disk %s is %s%% full, fills in ~%s days (~%s GB/day)." % (
+            d.get("mount") or "?", d.get("pct"), _reco_num(d.get("eta_days")),
+            _reco_num(d.get("gb_per_day"))))
+    v = sig.get("vram") or {}
+    if v.get("status") == "filling" and v.get("eta_min") is not None:
+        cap.append("VRAM trending to full in ~%s min (~%s MB/min)." % (
+            _reco_num(v.get("eta_min")), _reco_num(v.get("mb_per_min"))))
+    elif v.get("free_gb") is not None and v.get("total_gb"):
+        cap.append("VRAM headroom %s GB of %s GB total." % (
+            _reco_num(v.get("free_gb")), _reco_num(v.get("total_gb"))))
+    if cap:
+        sections.append(("Capacity", cap))
+
+    # ── Cost: month-to-date + projected + top entity ───────────────────────────
+    cost = []
+    cm = sig.get("cost_month") or {}
+    if cm.get("enabled"):
+        cur = cm.get("currency") or "$"
+        line = "Energy month-to-date %s%s; projected full month %s%s" % (
+            cur, cm.get("month_to_date"), cur, cm.get("projected_month"))
+        dp = cm.get("delta_pct")
+        if dp is not None:
+            line += " (%s%d%% vs last month)" % ("+" if dp >= 0 else "", dp)
+        cost.append(line + ".")
+        try:
+            top_ents = _ask_top_cost_entities(now, n=1)
+        except Exception:
+            top_ents = []
+        if top_ents:
+            t = top_ents[0]
+            if t.get("priced"):
+                cost.append("Top spender (30d): %s '%s' — %s%s." % (
+                    t.get("kind"), t.get("name"), t.get("currency") or "$", t.get("cost")))
+            else:
+                cost.append("Top consumer (30d): %s '%s' — %s kWh." % (
+                    t.get("kind"), t.get("name"), t.get("energy_kwh")))
+        if cost:
+            sections.append(("Cost", cost))
+
+    # ── Fleet / Uptime: up/down checks + uptime % ──────────────────────────────
+    fleet = []
+    if uptime:
+        up = sum(1 for c in uptime if c.get("state") == "up")
+        pcts = [c.get("uptime") for c in uptime if c.get("uptime") is not None]
+        avg = (sum(pcts) / len(pcts)) if pcts else None
+        line = "Uptime checks: %d up, %d down of %d" % (up, len(down), len(uptime))
+        if avg is not None:
+            line += " (avg %s%% over window)" % _reco_num(round(avg, 1))
+        fleet.append(line + ".")
+        for c in down[:3]:
+            fleet.append("  - %s is down." % str(c.get("label") or c.get("id") or "check"))
+    if fleet:
+        sections.append(("Fleet / Uptime", fleet))
+
+    # ── Anomalies: recent z-score flags ────────────────────────────────────────
+    anoms_block = sig.get("anomalies") or {}
+    items = (anoms_block.get("items") or [])[:3]
+    if items:
+        an = []
+        for a in items:
+            an.append("%s %s — %s%s now vs ~%s%s baseline (%sσ)." % (
+                a.get("key"), a.get("direction"), a.get("value"), a.get("unit"),
+                a.get("baseline"), a.get("unit"), a.get("z")))
+        sections.append(("Anomalies", an))
+    elif anoms_block.get("status") == "quiet":
+        sections.append(("Anomalies", ["No anomalies — all monitored series are within range."]))
+
+    return sections
+
+
+def _render_digest_body(narrative, sections):
+    """Plain-text, scannable layout that reads well across Discord/ntfy/Telegram/
+    email/Slack. The narrative (when present) leads; deterministic sections follow
+    under simple headers. Never empty when sections exist."""
+    parts = []
+    if narrative:
+        parts.append("Summary")
+        parts.append(narrative.strip())
+    for header, lines in sections:
+        if not lines:
+            continue
+        parts.append(("\n" if parts else "") + header)
+        parts.extend(lines)
+    return "\n".join(parts).strip()
+
 
 def build_digest(now=None):
-    """Build the digest message (title, body, llm_status). Reuses the Copilot
-    context/facts builders and the ollama call. When the LLM is unreachable it
-    degrades to the deterministic fact summary — still a useful digest, never
-    empty. Never raises."""
+    """Build the digest message (title, body, llm_status). Composes the optional
+    ollama narrative (our differentiator) on top of a structured, deterministic
+    brief assembled from the live signals. When the LLM is unreachable the brief
+    still sends — just without the narrative line — and is never empty. The body
+    carries telemetry facts ONLY (no secrets). Never raises."""
     now = now or int(time.time())
+    s = get_settings()
+    weekly = (s.get("digest_cadence") or "daily").strip() == "weekly"
+    title = DIGEST_TITLE_WEEKLY if weekly else DIGEST_TITLE
     try:
         ctx = _copilot_context(now)
         facts = _copilot_facts(ctx)
     except Exception as e:
         print("build_digest context error:", e, flush=True)
         facts = ["The monitor could not assemble metrics for this digest."]
-    text, err = _ollama_generate(_copilot_digest_prompt(facts))
-    if text:
-        return DIGEST_TITLE, text, "ok"
-    # Graceful fallback: the deterministic fact summary. Always non-empty
-    # (facts is guaranteed non-empty by _copilot_facts).
-    return DIGEST_TITLE, "\n".join("• " + f for f in facts), (err or "facts")
+    try:
+        sections = _digest_sections(now)
+    except Exception as e:
+        print("build_digest sections error:", e, flush=True)
+        sections = []
+    narrative, err = _ollama_generate(_copilot_digest_prompt(facts))
+    llm_status = "ok" if narrative else (err or "facts")
+    body = _render_digest_body(narrative, sections)
+    if not body:
+        # Last-resort fallback: the terse fact bullets (always non-empty).
+        body = "\n".join("- " + f for f in facts)
+    return title, body, llm_status
 
 
 def send_digest(channel=None, s=None, record=True):
@@ -7817,11 +7972,17 @@ def send_digest(channel=None, s=None, record=True):
 
 
 def _digest_due(s, now=None):
-    """True iff the daily digest should fire on this pass: enabled, a channel is
+    """True iff the digest should fire on this pass: enabled, a channel is
     configured, the local wall-clock has reached digest_time, and we have not
     already sent today's digest. Edge-triggered via digest_last_sent (a date), so
-    it fires exactly once per day on the first pass at/after the target time —
-    robust to the loop interval not landing on HH:MM."""
+    it fires exactly once on the first pass at/after the target time — robust to
+    the loop interval not landing on HH:MM.
+
+    Cadence:
+      • daily  — fires once today, at/after digest_time (unchanged behaviour).
+      • weekly — fires ONLY on digest_weekday (0=Mon … 6=Sun), once that day at/
+        after digest_time. On any other weekday it never fires, and the once-per-
+        day latch (digest_last_sent) prevents a second send the same day."""
     if s.get("digest_enabled") != "1":
         return False
     ch = (s.get("digest_channel") or "all").strip()
@@ -7839,6 +8000,13 @@ def _digest_due(s, now=None):
     today = time.strftime("%Y-%m-%d", lt)
     if (s.get("digest_last_sent") or "") == today:
         return False                      # already sent today's digest
+    if (s.get("digest_cadence") or "daily").strip() == "weekly":
+        try:
+            want_wday = int(s.get("digest_weekday") or "0") % 7
+        except Exception:
+            want_wday = 0
+        if lt.tm_wday != want_wday:        # wrong weekday — never fire
+            return False
     return (lt.tm_hour * 60 + lt.tm_min) >= target_min
 
 

@@ -27,6 +27,7 @@ class _SettingsBase(unittest.TestCase):
     """Snapshot/restore the digest-related settings + COPILOT_ENABLED so tests
     don't leak into each other or the real DB."""
     KEYS = ("digest_enabled", "digest_time", "digest_channel", "digest_last_sent",
+            "digest_cadence", "digest_weekday",
             "discord_webhook_url", "ntfy_topic", "webhook_url",
             "telegram_token", "telegram_chat_id")
 
@@ -201,6 +202,177 @@ class TestSettingsRoundTrip(_SettingsBase):
         pub = self.c.post("/api/settings", json={}).get_json()["settings"]
         self.assertNotIn("discord_webhook_url", pub)
         self.assertTrue(pub.get("discord_webhook_url_set"))
+
+
+_FAKE_SIG = {
+    "disk": [{"mount": "/backup", "pct": 88, "eta_days": 6.0,
+              "gb_per_day": 12.0, "free_gb": 70.0, "status": "filling"}],
+    "vram": {"free_gb": 1.2, "total_gb": 24.0, "models_gb": 22.0, "status": "ok"},
+    "cost_month": {"enabled": True, "currency": "€", "month_to_date": 4.20,
+                   "projected_month": 12.50, "delta_pct": 15, "last_month": 10.0},
+    "anomalies": {"status": "flagged", "items": [
+        {"key": "gpu_power", "direction": "spike", "value": 310, "unit": "W",
+         "baseline": 120, "z": 4.1}]},
+    "incidents": {"open": 2, "top": {"severity": "critical", "active_count": 3}},
+    "uptime": [
+        {"id": 1, "enabled": True, "state": "down", "label": "chroma", "uptime": 40.0,
+         "window_total": 10, "last_code": 503, "last_err": "boom"},
+        {"id": 2, "enabled": True, "state": "up", "label": "ollama", "uptime": 99.9,
+         "window_total": 10}],
+    "ooms": [], "image_updates": {},
+}
+
+
+class TestDigestSections(_SettingsBase):
+    """The structured deterministic body — sections present, sane, secret-free."""
+
+    def setUp(self):
+        super().setUp()
+        self._sig = app._reco_signals
+        app._reco_signals = lambda now=None: dict(_FAKE_SIG)
+
+    def tearDown(self):
+        app._reco_signals = self._sig
+        super().tearDown()
+
+    def test_sections_present_and_sane(self):
+        secs = dict(app._digest_sections(now=1_700_000_000))
+        for h in ("Needs attention", "Capacity", "Cost", "Fleet / Uptime", "Anomalies"):
+            self.assertIn(h, secs)
+        # Needs attention surfaces the down check + open incidents
+        attn = "\n".join(secs["Needs attention"])
+        self.assertIn("chroma", attn)
+        self.assertIn("Incidents", attn)
+        # Capacity shows the disk-fill ETA nudge
+        self.assertIn("/backup", "\n".join(secs["Capacity"]))
+        # Cost shows MTD + projected + delta
+        cost = "\n".join(secs["Cost"])
+        self.assertIn("4.2", cost)
+        self.assertIn("12.5", cost)
+        # Anomalies surfaces the flagged series
+        self.assertIn("gpu_power", "\n".join(secs["Anomalies"]))
+
+    def test_llm_down_structured_body_still_produced(self):
+        # COPILOT_ENABLED=False in the base => no narrative; body must still carry
+        # the deterministic sections and never be empty.
+        title, body, status = app.build_digest(now=1_700_000_000)
+        self.assertTrue(body.strip())
+        self.assertNotIn("Summary", body)        # no narrative line when LLM off
+        for h in ("Needs attention", "Capacity", "Cost", "Anomalies"):
+            self.assertIn(h, body)
+        self.assertIn(status, ("disabled", "facts", "ok"))
+
+    def test_narrative_leads_when_llm_up(self):
+        orig = app._ollama_generate
+        app._ollama_generate = lambda prompt, timeout=None: ("All quiet on the rig.", None)
+        try:
+            title, body, status = app.build_digest(now=1_700_000_000)
+        finally:
+            app._ollama_generate = orig
+        self.assertEqual(status, "ok")
+        self.assertTrue(body.startswith("Summary"))
+        self.assertIn("All quiet on the rig.", body)
+        self.assertIn("Capacity", body)          # sections still follow
+
+    def test_body_carries_no_secrets(self):
+        # plant secrets in settings; they must never appear in the body.
+        app.save_settings({"discord_webhook_url": "https://discord.test/webhook/SECRET123",
+                           "webhook_url": "https://hook.test/TOKENXYZ"})
+        _t, body, _s = app.build_digest(now=1_700_000_000)
+        self.assertNotIn("SECRET123", body)
+        self.assertNotIn("TOKENXYZ", body)
+        self.assertNotIn("discord.test", body)
+        self.assertNotIn("hook.test", body)
+
+
+class TestWeeklyDue(_SettingsBase):
+    def _cfg(self, **kw):
+        base = {"digest_enabled": "1", "digest_channel": "all",
+                "digest_time": "00:00", "digest_last_sent": "",
+                "digest_cadence": "weekly", "ntfy_topic": "lab"}
+        base.update(kw)
+        app.save_settings(base)
+        return app.get_settings()
+
+    def _now_for_wday(self, wday):
+        """A unix ts whose LOCAL weekday is `wday`, at 12:00 local (well past 00:00)."""
+        base = int(time.time())
+        lt = time.localtime(base)
+        # step day-by-day until local weekday matches
+        for d in range(8):
+            cand = base + d * 86400
+            if time.localtime(cand).tm_wday == wday:
+                clt = time.localtime(cand)
+                noon = time.mktime((clt.tm_year, clt.tm_mon, clt.tm_mday,
+                                    12, 0, 0, 0, 0, -1))
+                return int(noon)
+        return base
+
+    def test_fires_only_on_configured_weekday(self):
+        s = self._cfg(digest_weekday="2")          # Wednesday
+        wed = self._now_for_wday(2)
+        thu = self._now_for_wday(3)
+        self.assertTrue(app._digest_due(s, now=wed))
+        self.assertFalse(app._digest_due(s, now=thu))
+
+    def test_weekly_latch_no_double_send(self):
+        s = self._cfg(digest_weekday="2")
+        wed = self._now_for_wday(2)
+        self.assertTrue(app._digest_due(s, now=wed))
+        today = time.strftime("%Y-%m-%d", time.localtime(wed))
+        s2 = self._cfg(digest_weekday="2", digest_last_sent=today)
+        self.assertFalse(app._digest_due(s2, now=wed))   # already sent that day
+
+    def test_weekly_not_due_before_time(self):
+        # target far in the future today, on the right weekday -> not yet
+        wday = time.localtime().tm_wday
+        s = self._cfg(digest_weekday=str(wday), digest_time="23:59")
+        # use a now early in that day
+        clt = time.localtime()
+        early = int(time.mktime((clt.tm_year, clt.tm_mon, clt.tm_mday, 0, 1, 0, 0, 0, -1)))
+        self.assertFalse(app._digest_due(s, now=early))
+
+    def test_daily_cadence_unchanged(self):
+        s = self._cfg(digest_cadence="daily", digest_time="00:00")
+        self.assertTrue(app._digest_due(s))          # daily fires regardless of weekday
+
+    def test_cadence_weekday_round_trip(self):
+        c = app.app.test_client()
+        r = c.post("/api/settings", json={"digest_cadence": "weekly", "digest_weekday": "5"})
+        self.assertEqual(r.status_code, 200)
+        s = r.get_json()["settings"]
+        self.assertEqual(s["digest_cadence"], "weekly")
+        self.assertEqual(s["digest_weekday"], "5")
+
+
+class TestSendNowRicher(_SettingsBase):
+    """Manual send-now produces the new richer body (sections present)."""
+
+    def setUp(self):
+        super().setUp()
+        self._sig = app._reco_signals
+        app._reco_signals = lambda now=None: dict(_FAKE_SIG)
+        self._disp = app.dispatch_alert
+        self.captured = {}
+
+        def _cap(s, level, title, body, channel=None):
+            self.captured["title"] = title
+            self.captured["body"] = body
+            return [(channel or "ntfy", True, None)]
+        app.dispatch_alert = _cap
+
+    def tearDown(self):
+        app._reco_signals = self._sig
+        app.dispatch_alert = self._disp
+        super().tearDown()
+
+    def test_send_now_richer_body(self):
+        app.save_settings({"ntfy_topic": "lab"})
+        out = app.send_digest(channel="ntfy", record=False)
+        self.assertTrue(out["ok"])
+        body = self.captured["body"]
+        for h in ("Needs attention", "Capacity", "Cost"):
+            self.assertIn(h, body)
 
 
 if __name__ == "__main__":
