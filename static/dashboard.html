@@ -481,6 +481,16 @@ tr.reg-dead td{opacity:1}
 .reg-check input{cursor:pointer;accent-color:var(--accent)}
 #registry-sort{padding:2px 6px;font-size:12px}
 .reg-eff{font-size:10px;margin-left:5px;white-space:nowrap}
+/* Reclaim advice (advice-only — copies a suggested `ollama rm` to the clipboard,
+   never executes it). Per-row copy button + header "GB reclaimable" summary. */
+.reg-rm{display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;
+  padding:1px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;
+  background:var(--inset);border:1px solid var(--bd);color:var(--mut)}
+.reg-rm:hover{border-color:var(--accent);color:var(--fg)}
+.reg-rm.done{border-color:#2ea043;color:#2ea043}
+.reg-reclaim{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--mut)}
+.reg-reclaim b{color:var(--fg)}
+.reg-reclaim .reg-rm-all{font-size:11px}
 @media(max-width:640px){.reg-ctl{font-size:11px}.reg-eff{display:none}}
 .chartbox{position:relative;height:300px;width:100%}.chartbox.short{height:180px}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -1544,6 +1554,7 @@ h2 .hic{ opacity:.9 }
     <div class="card-h">
       <h2 data-i18n="registry.title">📦 Installed models</h2>
       <span class="ch-meta" id="registry-summary"></span>
+      <span class="reg-reclaim" id="registry-reclaim" hidden></span>
       <span class="ch-space"></span>
       <label class="reg-ctl" for="registry-sort" data-i18n="registry.sort_label">Sort</label>
       <select class="btn" id="registry-sort" aria-label="Sort installed models">
@@ -3444,6 +3455,11 @@ function renderRegistry(j){
   const t=j.totals||{};
   if(sum) sum.textContent=I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
     {n:t.count!=null?t.count:models.length, gb:fmtBytes(t.total_bytes).replace(' GB',''), loaded:t.loaded!=null?t.loaded:0});
+  // Reclaim advice (advice-only): collect the dead-weight set so the header can
+  // show "≈ X GB reclaimable across N unused models". We never execute anything —
+  // each affordance only writes an `ollama rm <name>` string to the clipboard.
+  const deadSet=models.filter(m=>(m.runs===0||m.runs==null)&&(m.size_bytes||0)>=REG_DEADWEIGHT_BYTES);
+  const reclaimBytes=deadSet.reduce((s,m)=>s+(m.size_bytes||0),0);
   const rows=_regSorted(models).map(m=>{
     const meta=[m.param_size,m.quant].filter(Boolean).map(esc).join(' · ')
       || (m.family?esc(m.family):'<span class="muted">—</span>');
@@ -3462,6 +3478,10 @@ function renderRegistry(j){
           +(gbPerRun!=null?' <span class="reg-eff muted" title="'+esc(I18N.t('registry.gbrun_title','Disk GB per run — lower earns its disk'))+'">'+esc(gbPerRun.toFixed(gbPerRun<10?1:0))+' '+I18N.t('registry.gbrun','GB/run')+'</span>':'')
       : (isDead
           ? '<span class="badge crit" title="'+esc(I18N.t('registry.dead_title','Large on disk and never run — not earning its disk'))+'" data-i18n="registry.dead">'+I18N.t('registry.dead','dead weight')+'</span>'
+            +'<button type="button" class="reg-rm" data-rm="'+esc(m.name)+'"'
+              +' title="'+esc(I18N.t('registry.rm_title','Suggested command to run yourself — copies an ollama rm to your clipboard. The monitor never removes models.'))+'"'
+              +' aria-label="'+esc(I18N.tf('registry.rm_aria','Copy remove command for {name}',{name:m.name}))+'">'
+              +'📋 '+esc(I18N.t('registry.rm_copy','Copy ollama rm'))+'</button>'
           : '<span class="badge muted" data-i18n="registry.never">'+I18N.t('registry.never','never used')+'</span>');
     const tps = (m.avg_tps!=null)
       ? '<span title="'+esc(I18N.t('registry.tps_title','Recent average tok/s'))+'">'+esc(m.avg_tps.toFixed(1))+'</span>'
@@ -3483,6 +3503,57 @@ function renderRegistry(j){
     +'<th>'+I18N.t('registry.col_tps','tok/s')+'</th>'
     +'<th>'+I18N.t('registry.col_modified','Modified')+'</th>'
     +'</tr></thead><tbody>'+rows+'</tbody></table>';
+
+  // Header reclaim summary — only when there's dead weight. Advice-only: the
+  // "Copy all" affordance writes a multi-line `ollama rm …` block, nothing runs.
+  const reclaimEl=document.getElementById('registry-reclaim');
+  if(reclaimEl){
+    if(deadSet.length){
+      reclaimEl.hidden=false;
+      const gb=(reclaimBytes/1073741824);
+      reclaimEl.innerHTML='♻️ <span>'+esc(I18N.tf('registry.reclaim',
+        '≈ {gb} GB reclaimable across {n} unused models',
+        {gb:gb.toFixed(gb<10?1:0), n:deadSet.length}))+'</span>'
+        +(deadSet.length>1
+          ? ' <button type="button" class="reg-rm reg-rm-all" data-rm-all="1"'
+              +' title="'+esc(I18N.t('registry.rm_all_title','Suggested commands to run yourself — copies an ollama rm for every unused model. The monitor never removes models.'))+'"'
+              +' aria-label="'+esc(I18N.t('registry.rm_all_aria','Copy remove commands for all unused models'))+'">'
+              +'📋 '+esc(I18N.t('registry.rm_all','Copy all'))+'</button>'
+          : '');
+      const allBtn=reclaimEl.querySelector('[data-rm-all]');
+      if(allBtn) allBtn.onclick=async ()=>{
+        // Build the command block from textContent-safe model names; never innerHTML.
+        const cmd=deadSet.map(m=>'ollama rm '+m.name).join('\n');
+        const ok=await copyText(cmd);
+        _regRmDone(allBtn, ok, I18N.t('registry.rm_all','Copy all'),
+          I18N.tf('registry.rm_copied_all','Copied {n} ollama rm commands — review and run them yourself.',{n:deadSet.length}));
+      };
+    } else {
+      reclaimEl.hidden=true; reclaimEl.innerHTML='';
+    }
+  }
+  // Per-row copy: writes exactly `ollama rm <name>` to the clipboard. No fetch,
+  // no POST, no execution — advice only.
+  body.querySelectorAll('.reg-rm[data-rm]').forEach(btn=>{
+    btn.onclick=async ()=>{
+      const name=btn.getAttribute('data-rm')||'';
+      const ok=await copyText('ollama rm '+name);
+      _regRmDone(btn, ok, '📋 '+I18N.t('registry.rm_copy','Copy ollama rm'),
+        I18N.tf('registry.rm_copied','Copied "ollama rm {name}" — review and run it yourself.',{name:name}));
+    };
+  });
+}
+// Brief "copied" confirmation on a reclaim button + an aria-live announcement.
+// toast() is the dashboard's polite live-region; respects reduced-motion via CSS.
+function _regRmDone(btn, ok, restore, msg){
+  if(ok){
+    btn.classList.add('done');
+    btn.textContent='✓ '+I18N.t('registry.rm_copied_chip','Copied');
+    toast('ok', msg);
+    setTimeout(()=>{ btn.classList.remove('done'); btn.textContent=restore; }, 1600);
+  } else {
+    toast('warning', I18N.t('registry.rm_copy_fail','Couldn’t copy automatically — select the command and Ctrl+C.'));
+  }
 }
 let REGISTRY_BUSY=false;
 async function loadRegistry(){
