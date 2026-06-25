@@ -2150,6 +2150,24 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
         <button class="rb" id="mqtt_test" data-i18n="mqtt.test">Test connection &amp; publish now</button>
       </div>
       <div id="mqtt_state" class="cap" style="margin-top:8px" aria-live="polite"></div>
+
+      <!-- ── Docker image-update awareness (What's-Up-Docker style) ── -->
+      <div class="card-sub" style="font-weight:600;margin-top:20px" data-i18n="imgupd.title">⬆ Docker image-update awareness</div>
+      <p class="cap" style="margin:4px 0" data-i18n="imgupd.cap">Compares each running container's deployed image digest with the upstream registry's current tag digest (Docker Hub, GHCR, and other public v2 registries) and flags when a newer image exists. Awareness only — it NEVER pulls, runs, restarts or deletes anything. Heavily cached and bounded; off by default to avoid background registry traffic. Private/digest-pinned/local-only images show as "unknown".</p>
+      <label style="display:flex;align-items:center;gap:9px;margin:8px 0">
+        <input type="checkbox" id="image_update_check">
+        <span data-i18n-html="imgupd.enable"><b>Enable image-update checks</b> — read-only registry queries on a slow cadence.</span>
+      </label>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;max-width:680px">
+        <div>
+          <div class="flabel" data-i18n="imgupd.interval">Re-check interval (s)</div>
+          <input type="number" id="image_update_interval_sec" placeholder="21600" min="3600" max="604800" class="field">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="rb on" id="imgupd_save" data-i18n="btn.save">Save</button>
+      </div>
+      <div id="imgupd_state" class="cap" style="margin-top:8px" aria-live="polite"></div>
     </div><!-- /set-pane-integrations -->
   </div>
 </section>
@@ -3566,10 +3584,15 @@ function renderHealth(){
 
   // Containers
   const dk=HH.docker||{}, ds=dk.summary||{};
-  document.getElementById('ctkpis').innerHTML = dk.available? [
+  const ctkpi = [
     {v:ds.total||0,l:I18N.t('kpi.containers','Containers')},{v:ds.running||0,l:I18N.t('kpi.running','Running')},
     {v:ds.problems||0,l:I18N.t('kpi.need_attention','Need attention')},{v:(ds.total||0)-(ds.running||0),l:I18N.t('kpi.stopped','Stopped')},
-  ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div></div>`).join('')
+  ];
+  // Image-update awareness — only show the KPI when the check is on and something
+  // has a newer upstream image (awareness only; we never pull/update anything).
+  if((ds.updates_available||0) > 0) ctkpi.push({v:'⬆ '+ds.updates_available, l:I18N.t('kpi.img_updates','Image updates'), accent:true});
+  document.getElementById('ctkpis').innerHTML = dk.available?
+    ctkpi.map(t=>`<div class="kpi"${t.accent?' title="'+esc(I18N.t('ct.img_updates_hint','Newer upstream images available — review & update on your own terms'))+'"':''}><div class="v"${t.accent?' style="color:var(--info)"':''}>${t.v}</div><div class="l">${t.l}</div></div>`).join('')
     : `<div class="ins info"><div class="ic">ℹ️</div><div><div class="t">${I18N.t('ct.docker_unavailable','Docker unavailable')}</div><div class="d">${esc(dk.reason||'')}</div></div></div>`;
   const ctlist = dk.containers||[];
   // Table totals (footer): sum RAM, VRAM and disk across all containers — the
@@ -3584,9 +3607,16 @@ function renderHealth(){
     // keep only the trailing health/exit detail (if any).
     const stext = c.status_text || '';
     const upStripped = stext.replace(/^Up\s+[^()]+\s*/i,'').trim() || (stext.startsWith('Up ') ? '' : stext);
+    // Image-update chip — awareness only (we never pull/update). Shown only when
+    // the check is on and the row resolved to an actionable / unknown state.
+    let updChip = '';
+    if(c.image_update === 'update_available')
+      updChip = ` <span class="chip info" title="${esc(I18N.t('ct.update_available_hint','A newer upstream image exists for this tag. Awareness only — nothing is pulled or restarted.'))}">⬆ ${esc(I18N.t('ct.update_available','update'))}</span>`;
+    else if(c.image_update === 'up_to_date')
+      updChip = ` <span class="chip ok" title="${esc(I18N.t('ct.up_to_date_hint','Deployed image matches the upstream tag.'))}">✓</span>`;
     return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.name)}</td>
      <td><span class="badge ${c.status}">${esc(c.label)}</span></td>
-     <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}</td>
+     <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}${updChip}</td>
      <td>${renderPorts(c.ports)}</td>
      <td class="muted">${c.state==='running'?fmtUpShort(c.uptime_s):'—'}</td>
      <td class="muted">${fmtBytes(c.mem_bytes)}</td>
@@ -4287,6 +4317,9 @@ async function loadAlerts(){
     ? I18N.t('mqtt.pass_saved','A password is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.')
     : I18N.t('mqtt.pass_none','No password saved.');
   refreshMqttStatus();
+  // ── Image-update awareness fields ──
+  const iuEn=document.getElementById('image_update_check'); if(iuEn) iuEn.checked = s.image_update_check==='1';
+  setV('image_update_interval_sec', s.image_update_interval_sec||'21600');
   buildCountrySelect().then(()=>{ document.getElementById('al_country').value = s.country||''; });
   setTariffMode(s.tariff_mode==='dual');
   // The webhook is a secret — server only returns whether one is set.
@@ -7869,7 +7902,22 @@ function intgStatus(level,msg){
   if(rs) rs.onchange=()=>renderRuns();
   const mqs=document.getElementById('mqtt_save'); if(mqs) mqs.onclick=saveMqtt;
   const mqt=document.getElementById('mqtt_test'); if(mqt) mqt.onclick=testMqtt;
+  const iqs=document.getElementById('imgupd_save'); if(iqs) iqs.onclick=saveImgUpd;
 })();
+
+async function saveImgUpd(){
+  const v=id=>(document.getElementById(id)||{}).value;
+  const body={
+    image_update_check: document.getElementById('image_update_check').checked?'1':'0',
+    image_update_interval_sec: String(Math.max(3600,parseInt(v('image_update_interval_sec')||'21600',10)||21600)),
+  };
+  const st=document.getElementById('imgupd_state');
+  try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+  catch(e){ if(st) st.textContent=I18N.t('imgupd.save_fail','Could not save: ')+e; return; }
+  ALERTS_LOADED=false; await loadAlerts();
+  if(st) st.textContent='✓ '+I18N.t('toast.settings_saved','Settings saved.');
+  intgStatus('ok',I18N.t('toast.settings_saved','Settings saved.'));
+}
 
 function _mqttBodyFromForm(){
   const v=id=>(document.getElementById(id)||{}).value;

@@ -101,6 +101,13 @@ RECO_OOM_WARN_N      = int(os.environ.get("RECO_OOM_WARN_N", "1"))          # OO
 RECO_OOM_CRIT_N      = int(os.environ.get("RECO_OOM_CRIT_N", "3"))          # OOM kills in window → crit
 RECO_OOM_WINDOW_DAYS = float(os.environ.get("RECO_OOM_WINDOW_DAYS", "7"))   # OOM look-back window
 RECO_MAX_ITEMS       = int(os.environ.get("RECO_MAX_ITEMS", "6"))           # cap the list
+# Image-update awareness (What's-Up-Docker style). OFF by default (see settings).
+# All env-tunable so the unattended checker stays bounded + polite to registries.
+IMG_CHECK_INTERVAL_DEFAULT  = int(os.environ.get("IMG_CHECK_INTERVAL_SEC", "21600"))  # ~6h between full re-checks
+IMG_CHECK_INTERVAL_MIN      = int(os.environ.get("IMG_CHECK_INTERVAL_MIN_SEC", "3600"))  # never re-check faster than ~1h
+IMG_CHECK_MAX_PER_CYCLE     = int(os.environ.get("IMG_CHECK_MAX_PER_CYCLE", "40"))    # cap containers queried per cycle
+IMG_CHECK_RATELIMIT_BACKOFF = int(os.environ.get("IMG_CHECK_RATELIMIT_BACKOFF", "3600"))  # back off ~1h on a 429
+RECO_IMG_UPDATES_INFO_N     = int(os.environ.get("RECO_IMG_UPDATES_INFO_N", "1"))     # N updates available → info reco
 # Multi-machine monitoring (Issue #35, slice 1: registry + probe). The hub's own
 # SSH key lives under SSH_DIR — it's inside /data so it persists across rebuilds
 # the same way the SQLite history does. Capability probes run via the system
@@ -403,6 +410,323 @@ def logs_since(cid, since):
             out.append(raw[i:i + size]); i += size
         raw = b"".join(out)
     return raw.decode("utf-8", "replace")
+
+# ── Image-update awareness (What's-Up-Docker style) ────────────────────────────
+# AWARENESS ONLY: for each RUNNING container, read its deployed image digest from
+# the LOCAL docker socket (already mounted, already read elsewhere) and compare it
+# against the upstream registry's CURRENT manifest digest for the same tag. We
+# NEVER pull/run/restart/delete — only registry GETs + local inspects. The whole
+# subsystem is OFF by default (image_update_check=0 → zero outbound, zero new
+# behaviour). When on, a dedicated daemon thread runs on a slow cadence, heavily
+# caches results (~the interval), bounds work per cycle, uses short timeouts, and
+# catches every exception so a registry hiccup can NEVER affect monitoring.
+#
+# Status vocabulary (per container):
+#   up_to_date       — deployed digest == upstream manifest digest
+#   update_available — deployed digest != upstream manifest digest
+#   unknown          — digest-pinned / local-only / unresolvable / private /
+#                      auth fail / rate-limited / timeout / unreachable
+
+# Manifest Accept set: cover both single-image manifests and multi-arch manifest
+# lists / OCI indexes so the Docker-Content-Digest we read matches what `docker
+# pull <repo>:<tag>` would resolve to for this host.
+_IMG_ACCEPT = ", ".join([
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.oci.image.manifest.v1+json",
+])
+_IMG_UA = "homelab-monitor-imgcheck/%s" % VERSION
+
+# In-memory result cache (no new table needed — results live ~one interval and a
+# restart simply re-checks). Keyed by container id. Guarded by its own lock so we
+# NEVER hold the DB LOCK across a network call.
+_IMG_LOCK   = threading.Lock()
+_IMG_STATE  = {"results": {}, "checked_at": 0, "count": 0, "running": False,
+               "rate_limited_until": 0, "last_error": None, "enabled": False}
+# A small per-(repo,tag,registry) upstream-digest cache so two containers on the
+# same image don't double-query, and re-checks within the interval are free.
+_IMG_DIGEST_CACHE = {}   # (registry, repo, tag) -> {"digest": str|None, "at": ts, "status": str}
+
+def _img_settings(settings=None):
+    """Resolve the effective image-update-check config from settings. Returns
+    (enabled: bool, interval_sec: int). Never raises."""
+    try:
+        s = settings if settings is not None else get_settings()
+        enabled = str(s.get("image_update_check", "0")) == "1"
+        interval = int(float(s.get("image_update_interval_sec", IMG_CHECK_INTERVAL_DEFAULT)))
+    except Exception:
+        return False, IMG_CHECK_INTERVAL_DEFAULT
+    interval = max(IMG_CHECK_INTERVAL_MIN, interval)
+    return enabled, interval
+
+def _parse_image_ref(image):
+    """Parse a docker image reference into (registry, repository, tag, pinned_digest).
+
+    Handles: implicit Docker Hub (nginx, library/nginx, user/repo), explicit
+    docker.io, ghcr.io and other v2 registries (host[:port]/path), :tag (default
+    latest), and digest-pinned refs (repo@sha256:...). Returns registry==None for
+    an unparseable/empty ref. `pinned_digest` is set only for @sha256 refs (those
+    are unknown — there's no moving tag to compare)."""
+    if not image or not isinstance(image, str):
+        return (None, None, None, None)
+    ref = image.strip()
+    if not ref:
+        return (None, None, None, None)
+    # Digest-pinned: repo@sha256:... — and possibly repo:tag@sha256:...
+    pinned = None
+    if "@" in ref:
+        ref, _, dig = ref.partition("@")
+        pinned = dig.strip() or None
+    # Split off the registry host: the first path segment is a host iff it has a
+    # '.' or ':' (port) or is exactly 'localhost' — Docker's own rule.
+    registry = None
+    name = ref
+    if "/" in ref:
+        head, _, rest = ref.partition("/")
+        if head == "localhost" or "." in head or ":" in head:
+            registry = head
+            name = rest
+    # Tag (only after the registry split, so a registry port colon isn't mistaken
+    # for a tag separator).
+    repo, tag = name, "latest"
+    if ":" in name:
+        repo, _, tag = name.rpartition(":")
+    # Normalise the registry + library/ default for Docker Hub.
+    if registry is None or registry in ("docker.io", "index.docker.io", "registry-1.docker.io"):
+        registry = "docker.io"
+        if "/" not in repo:
+            repo = "library/" + repo
+    if not repo:
+        return (None, None, None, None)
+    return (registry, repo, tag, pinned)
+
+def _registry_token(registry, repo, timeout=6):
+    """Fetch an anonymous pull bearer token for a v2 registry. Docker Hub and GHCR
+    expose a token service; many others advertise theirs via a 401 WWW-Authenticate
+    challenge. We try the well-known endpoints first, then fall back to the
+    challenge. Returns a token string or None (anonymous/none needed)."""
+    urls = []
+    if registry == "docker.io":
+        urls.append("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull" % repo)
+    elif registry == "ghcr.io":
+        urls.append("https://ghcr.io/token?scope=repository:%s:pull" % repo)
+    elif registry in ("quay.io",):
+        urls.append("https://quay.io/v2/auth?service=quay.io&scope=repository:%s:pull" % repo)
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _IMG_UA})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = json.loads(r.read() or b"{}")
+            tok = body.get("token") or body.get("access_token")
+            if tok:
+                return tok
+        except Exception:
+            continue
+    return None
+
+def _registry_base(registry):
+    return "registry-1.docker.io" if registry == "docker.io" else registry
+
+def _upstream_manifest_digest(registry, repo, tag, timeout=6):
+    """Query the registry v2 manifest endpoint for the CURRENT digest of repo:tag.
+    Returns (digest|None, status) where status is one of 'ok', 'rate_limited',
+    'auth', 'notfound', 'error'. Never raises. Read-only GET (we request the
+    manifest but only need the Docker-Content-Digest header)."""
+    host = _registry_base(registry)
+    url = "https://%s/v2/%s/manifests/%s" % (host, repo, urllib.parse.quote(tag, safe=""))
+    token = _registry_token(registry, repo, timeout=timeout)
+    def _do(tok):
+        hdr = {"Accept": _IMG_ACCEPT, "User-Agent": _IMG_UA}
+        if tok:
+            hdr["Authorization"] = "Bearer " + tok
+        # HEAD is enough for the digest and avoids pulling the manifest body, but
+        # some registries reject HEAD on manifests — we GET if HEAD misbehaves.
+        req = urllib.request.Request(url, headers=hdr, method="HEAD")
+        return urllib.request.urlopen(req, timeout=timeout)
+    try:
+        try:
+            resp = _do(token)
+        except urllib.error.HTTPError as he:
+            if he.code in (405, 400):     # HEAD unsupported → retry as GET
+                hdr = {"Accept": _IMG_ACCEPT, "User-Agent": _IMG_UA}
+                if token:
+                    hdr["Authorization"] = "Bearer " + token
+                resp = urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=timeout)
+            else:
+                raise
+        with resp:
+            dig = resp.headers.get("Docker-Content-Digest")
+        if dig:
+            return (dig.strip(), "ok")
+        return (None, "error")
+    except urllib.error.HTTPError as he:
+        if he.code == 429:
+            return (None, "rate_limited")
+        if he.code in (401, 403):
+            return (None, "auth")
+        if he.code == 404:
+            return (None, "notfound")
+        return (None, "error")
+    except Exception:
+        return (None, "error")
+
+def _container_deployed_digest(cid):
+    """Read the deployed image's repo-digest (what's actually running) from the
+    LOCAL docker socket. Inspect the container for its Image (image id), then
+    inspect that image for RepoDigests — the digest the local image was pulled at.
+    Returns (digest|None, image_ref). Never raises."""
+    try:
+        code, raw = _docker_req("GET", "/containers/%s/json" % urllib.parse.quote(cid), timeout=4)
+        if code >= 400:
+            return (None, None)
+        ins = json.loads(raw or b"{}")
+    except Exception:
+        return (None, None)
+    image_ref = (ins.get("Config") or {}).get("Image") or ins.get("Image") or ""
+    img_id = ins.get("Image") or ""
+    try:
+        code, raw = _docker_req("GET", "/images/%s/json" % urllib.parse.quote(img_id), timeout=4)
+        if code >= 400:
+            return (None, image_ref)
+        idata = json.loads(raw or b"{}")
+    except Exception:
+        return (None, image_ref)
+    repo_digests = idata.get("RepoDigests") or []
+    digest = None
+    # RepoDigests look like "repo@sha256:...". Match the one for our repo if we can,
+    # else take the first (single-repo images have exactly one).
+    reg, repo, _tag, _pin = _parse_image_ref(image_ref)
+    for rd in repo_digests:
+        if "@" in rd:
+            name_part, _, dg = rd.partition("@")
+            r2, repo2, _t2, _p2 = _parse_image_ref(name_part)
+            if repo and repo2 == repo:
+                digest = dg.strip()
+                break
+            if digest is None:
+                digest = dg.strip()
+    return (digest, image_ref)
+
+def _check_one_image(cid, image_ref, interval):
+    """Resolve the update status for a single container. Uses the per-image
+    upstream-digest cache so repeated/same-image checks are free within the
+    interval. Returns a result dict. Never raises."""
+    reg, repo, tag, pinned = _parse_image_ref(image_ref)
+    base = {"id": cid, "image": image_ref or "", "registry": reg,
+            "repository": repo, "tag": tag, "status": "unknown",
+            "current_digest": None, "latest_digest": None, "checked_at": int(time.time())}
+    if pinned:
+        base["reason"] = "digest-pinned"
+        return base
+    if not reg or not repo:
+        base["reason"] = "unparseable"
+        return base
+    # Local-only / private registries we can't anonymously reach → unknown, but we
+    # still TRY the public ones (docker.io/ghcr.io/quay.io/lscr.io/gcr.io etc.).
+    deployed, _ref = _container_deployed_digest(cid)
+    base["current_digest"] = deployed
+    if not deployed:
+        base["reason"] = "no-local-digest"   # built locally / never pushed with a digest
+        return base
+    # Per-image upstream digest cache.
+    ck = (reg, repo, tag)
+    now = time.time()
+    cached = _IMG_DIGEST_CACHE.get(ck)
+    if cached and (now - cached["at"]) < interval:
+        latest, status = cached["digest"], cached["status"]
+    else:
+        latest, status = _upstream_manifest_digest(reg, repo, tag)
+        _IMG_DIGEST_CACHE[ck] = {"digest": latest, "status": status, "at": now}
+    base["latest_digest"] = latest
+    if status == "rate_limited":
+        base["status"] = "unknown"; base["reason"] = "rate_limited"; return base
+    if status == "auth":
+        base["status"] = "unknown"; base["reason"] = "private-or-auth"; return base
+    if status == "notfound":
+        base["status"] = "unknown"; base["reason"] = "tag-not-found"; return base
+    if status != "ok" or not latest:
+        base["status"] = "unknown"; base["reason"] = "unreachable"; return base
+    base["status"] = "up_to_date" if latest == deployed else "update_available"
+    return base
+
+def _image_update_run_cycle():
+    """One bounded pass: for each RUNNING container, resolve its update status,
+    respecting a per-cycle cap, a rate-limit backoff, and the OFF switch. Publishes
+    into _IMG_STATE. Never raises; never holds DB LOCK across network calls."""
+    enabled, interval = _img_settings()
+    if not enabled:
+        with _IMG_LOCK:
+            _IMG_STATE["enabled"] = False
+        return
+    now = time.time()
+    with _IMG_LOCK:
+        _IMG_STATE["enabled"] = True
+        rl_until = _IMG_STATE["rate_limited_until"]
+        already = _IMG_STATE["checked_at"]
+    if now < rl_until:
+        return                                   # backing off a 429
+    if already and (now - already) < interval:
+        return                                   # cached results still fresh
+    # Enumerate RUNNING containers from the local socket (read-only).
+    try:
+        raw = json.loads(_docker("/containers/json"))   # running only (no ?all=1)
+    except Exception as e:
+        with _IMG_LOCK:
+            _IMG_STATE["last_error"] = "docker: %s" % e
+        return
+    targets = [(ct["Id"][:12], ct.get("Image", "")) for ct in raw if ct.get("Id")]
+    targets = targets[:IMG_CHECK_MAX_PER_CYCLE]      # bound the work
+    results, rate_limited = {}, False
+    for cid, image_ref in targets:
+        try:
+            res = _check_one_image(cid, image_ref, interval)
+        except Exception as e:
+            res = {"id": cid, "image": image_ref or "", "status": "unknown",
+                   "reason": "error", "checked_at": int(time.time())}
+            print("image check error (%s): %s" % (cid, e), flush=True)
+        if res.get("reason") == "rate_limited":
+            rate_limited = True
+        results[cid] = res
+    count = sum(1 for r in results.values() if r.get("status") == "update_available")
+    with _IMG_LOCK:
+        _IMG_STATE["results"] = results
+        _IMG_STATE["checked_at"] = int(time.time())
+        _IMG_STATE["count"] = count
+        _IMG_STATE["last_error"] = None
+        if rate_limited:
+            _IMG_STATE["rate_limited_until"] = time.time() + IMG_CHECK_RATELIMIT_BACKOFF
+
+def image_update_worker():
+    """Dedicated daemon loop. Inert (zero outbound) while disabled. When enabled,
+    runs one bounded, heavily-cached cycle then sleeps; a registry problem is caught
+    and can NEVER stall or crash monitoring."""
+    while True:
+        try:
+            _image_update_run_cycle()
+        except Exception as e:
+            print("image_update_worker error:", e, flush=True)
+        time.sleep(60)   # wake often; the cycle itself no-ops until the interval elapses
+
+def image_updates_snapshot():
+    """Read-only view of the current image-update results for the API + reco +
+    badge. Never raises. When disabled, returns enabled=False with empty results."""
+    enabled, interval = _img_settings()
+    with _IMG_LOCK:
+        results = list(_IMG_STATE["results"].values())
+        checked_at = _IMG_STATE["checked_at"]
+        count = _IMG_STATE["count"]
+        last_error = _IMG_STATE["last_error"]
+        rl_until = _IMG_STATE["rate_limited_until"]
+    # If disabled, never advertise stale results.
+    if not enabled:
+        results, count, checked_at = [], 0, 0
+    by_status = {"up_to_date": 0, "update_available": 0, "unknown": 0}
+    for r in results:
+        by_status[r.get("status", "unknown")] = by_status.get(r.get("status", "unknown"), 0) + 1
+    return {"enabled": enabled, "interval_sec": interval, "checked_at": checked_at,
+            "count": count, "by_status": by_status, "results": results,
+            "rate_limited": time.time() < rl_until, "last_error": last_error}
 
 # ── Model-server probes (agnostic: append to PROBES to support a new server) ───
 def _http_json(ip, port, path, timeout=2):
@@ -1763,11 +2087,25 @@ def collect_docker():
         vmb = vram_mb.get(c["name"])
         c["vram_bytes"] = round(vmb * 1048576) if vmb else None
         c["disk_bytes"] = _docker_disk["data"].get(c["id"])
+    # Image-update awareness — fold the cached per-container status in (no network
+    # here; the background worker owns the registry queries). Off => all absent.
+    img_count = 0
+    try:
+        iu = image_updates_snapshot()
+        if iu.get("enabled"):
+            by_id = {r.get("id"): r for r in (iu.get("results") or [])}
+            for c in items:
+                r = by_id.get(c["id"])
+                c["image_update"] = (r or {}).get("status")   # up_to_date/update_available/unknown/None
+            img_count = int(iu.get("count") or 0)
+    except Exception:
+        pass
     rank = {"crit": 0, "warn": 1, "ok": 2, "info": 3}
     items.sort(key=lambda c: (rank.get(c["status"], 9), c["name"].lower()))
     return {"available": True, "containers": items,
             "summary": {"total": len(items),
                         "running": sum(1 for c in items if c["state"] == "running"),
+                        "updates_available": img_count,
                         "problems": sum(1 for c in items if c["status"] in ("crit", "warn"))}}
 
 def _svc_status(active):
@@ -3828,6 +4166,13 @@ SETTING_DEFAULTS = {
     "mqtt_tls":            "0",        # "0" / "1" — wrap the socket in TLS
     "mqtt_prefix":         "homeassistant",  # HA discovery topic prefix
     "mqtt_interval_sec":   "30",       # seconds between state publishes (min ~10)
+    # ── Docker image-update awareness (What's-Up-Docker style) — OFF by default ──
+    # AWARENESS ONLY: compares each running container's deployed image digest with
+    # the upstream registry's current manifest digest. NEVER pulls/runs/restarts/
+    # deletes anything. When off (default): zero outbound, zero new behaviour. When
+    # on: a slow, heavily-cached, bounded background poller (see IMG_CHECK_* envs).
+    "image_update_check":        "0",        # "0" / "1" — master switch
+    "image_update_interval_sec": "21600",    # seconds between full re-checks (~6h; min ~1h enforced)
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass", "slack_webhook_url", "smtp_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
@@ -8275,6 +8620,13 @@ def _reco_signals(now):
         sig["uptime"] = uptime_overview().get("checks", []) or []
     except Exception as e:
         print("recommendations uptime error:", e, flush=True)
+    # Image-update awareness — cheap read of the cached checker results (no network
+    # here; the background worker does the registry queries). Absent/off => empty.
+    try:
+        sig["image_updates"] = image_updates_snapshot()
+    except Exception as e:
+        print("recommendations image-updates error:", e, flush=True)
+        sig["image_updates"] = {}
     return sig
 
 
@@ -8437,6 +8789,22 @@ def _reco_detect(sig, now=None):
                 "link": "uptime", "ts": c.get("last_checked"), "impact": 100 - up_pct,
             })
 
+    # 7) Container images with newer upstream versions (awareness-only) ---------
+    iu = sig.get("image_updates") or {}
+    if iu.get("enabled"):
+        n_up = int(iu.get("count") or 0)
+        if n_up >= RECO_IMG_UPDATES_INFO_N:
+            avail = [r for r in (iu.get("results") or []) if r.get("status") == "update_available"]
+            names = ", ".join((r.get("image") or "?") for r in avail[:4])
+            more = (" +%d more" % (len(avail) - 4)) if len(avail) > 4 else ""
+            items.append({
+                "id": "images:updates", "severity": "info", "source": "images",
+                "title": "%d container image%s have updates" % (n_up, "" if n_up == 1 else "s"),
+                "detail": "Newer upstream images for: %s%s." % (names or "container images", more),
+                "action": "Review on the Containers tab and update when convenient.",
+                "link": "containers", "impact": n_up,
+            })
+
     # Rank: severity desc, then impact desc, then recency (newer ts first).
     items.sort(key=lambda it: (
         _RECO_SEV_RANK.get(it.get("severity"), 0),
@@ -8551,6 +8919,22 @@ def api_recommendations():
         else:
             out["llm_status"] = err
     return jsonify(out)
+
+
+@app.route("/api/images/updates")
+def api_image_updates():
+    """Image-update awareness: per-container update status + an updates-available
+    count. AWARENESS ONLY — this endpoint (and the whole subsystem) never pulls,
+    runs, restarts or deletes anything. Always 200, graceful-degrade, read-only.
+    When the check is OFF (default) returns enabled=False with empty results and
+    zero outbound has happened. Statuses: up_to_date / update_available / unknown."""
+    try:
+        snap = image_updates_snapshot()
+    except Exception as e:
+        print("image updates endpoint error:", e, flush=True)
+        snap = {"enabled": False, "count": 0, "results": [],
+                "by_status": {"up_to_date": 0, "update_available": 0, "unknown": 0}}
+    return jsonify(snap)
 
 
 @app.route("/api/sessions")
@@ -11534,6 +11918,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=host_poller, daemon=True).start()
     threading.Thread(target=uptime_worker, daemon=True).start()
     threading.Thread(target=mqtt_worker, daemon=True).start()
+    threading.Thread(target=image_update_worker, daemon=True).start()
 
 if __name__ == "__main__":
     print(
