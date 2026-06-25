@@ -473,6 +473,8 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .badge{font-size:11px;border-radius:20px;padding:1px 9px;border:1px solid var(--bd);white-space:nowrap}
 .badge.crit{color:var(--crit);border-color:#f8514955}.badge.warn{color:var(--warn);border-color:#d2992255}
 .badge.ok{color:var(--ok);border-color:#3fb95055}.badge.info{color:var(--mut)}
+.badge.muted{color:var(--mut);border-color:var(--bd);opacity:.85}
+tr.reg-unused td{opacity:.6}
 .chartbox{position:relative;height:300px;width:100%}.chartbox.short{height:180px}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .rb{background:var(--inset);border:1px solid var(--bd);color:var(--mut);border-radius:7px;padding:6px 13px;cursor:pointer;font-size:13px}
@@ -3358,10 +3360,21 @@ function renderRegistry(j){
     const loaded=m.loaded
       ? '<span class="badge ok">'+I18N.t('registry.loaded','Loaded')+(m.vram_mb!=null?' · '+esc(fmtMB(m.vram_mb)):'')+'</span>'
       : '<span class="badge info">'+I18N.t('registry.ondisk','On disk')+'</span>';
-    return '<tr><td>'+esc(m.name)+'</td>'
+    // Usage rollup from llm_samples (last 30d), joined by model name. runs:0 →
+    // a muted "never used" chip so the "earning their disk" story reads at a glance.
+    const used = m.runs>0
+      ? '<span title="'+esc(I18N.tf('registry.runs_title','{n} runs (last 30d)',{n:m.runs}))+'">'
+          +esc(relTime(m.last_used))+'</span>'
+      : '<span class="badge muted" data-i18n="registry.never">'+I18N.t('registry.never','never used')+'</span>';
+    const tps = (m.avg_tps!=null)
+      ? '<span title="'+esc(I18N.t('registry.tps_title','Recent average tok/s'))+'">'+esc(m.avg_tps.toFixed(1))+'</span>'
+      : '<span class="muted">—</span>';
+    return '<tr'+(m.runs>0?'':' class="reg-unused"')+'><td>'+esc(m.name)+'</td>'
       +'<td>'+esc(fmtBytes(m.size_bytes))+'</td>'
       +'<td>'+meta+'</td>'
       +'<td>'+loaded+'</td>'
+      +'<td>'+used+'</td>'
+      +'<td>'+tps+'</td>'
       +'<td><span class="muted">'+esc(_registryDate(m.modified))+'</span></td></tr>';
   }).join('');
   body.innerHTML='<table style="margin-top:4px"><thead><tr>'
@@ -3369,6 +3382,8 @@ function renderRegistry(j){
     +'<th>'+I18N.t('registry.col_size','Size')+'</th>'
     +'<th>'+I18N.t('registry.col_meta','Params · Quant')+'</th>'
     +'<th>'+I18N.t('registry.col_status','Status')+'</th>'
+    +'<th>'+I18N.t('registry.col_used','Last used')+'</th>'
+    +'<th>'+I18N.t('registry.col_tps','tok/s')+'</th>'
     +'<th>'+I18N.t('registry.col_modified','Modified')+'</th>'
     +'</tr></thead><tbody>'+rows+'</tbody></table>';
 }

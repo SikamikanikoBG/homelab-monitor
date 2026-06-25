@@ -7070,6 +7070,90 @@ def _llm_history(limit=60):
     return out
 
 
+# Per-model usage rollup window: how far back llm_samples are aggregated for the
+# registry's "which models earn their disk" view. Bounded so the GROUP BY stays
+# cheap and the join reflects RECENT usage, not ancient one-offs.
+_LLM_USAGE_WINDOW = int(os.environ.get("COPILOT_USAGE_WINDOW_DAYS", "30")) * 86400
+
+
+def _normalize_model_name(name):
+    """Canonical key for joining ollama tag names against llm_samples.model.
+    ollama's /api/tags emits fully-qualified tags ('gemma3:1b'); a bare 'gemma3'
+    implies ':latest'. We fold a missing tag → ':latest' so the two sides land
+    on the same key regardless of which form was recorded. Pure."""
+    if not name:
+        return ""
+    n = str(name).strip()
+    return n if ":" in n else n + ":latest"
+
+
+def _llm_usage_by_model(now=None, window=None):
+    """One cheap grouped read over llm_samples → per-model usage rollup, keyed by
+    the NORMALIZED model name. Bounded to the last _LLM_USAGE_WINDOW so the scan
+    stays small and reflects recent usage. Reads under the global LOCK following
+    the existing DB-read pattern; MUST be called OUTSIDE any held LOCK.
+
+    Returns {normalized_name: {last_used, runs, avg_tps, last_tps, avg_ttft_ms}}.
+    Never raises — empty dict on any error so the registry join degrades cleanly."""
+    now = int(now or time.time())
+    win = _LLM_USAGE_WINDOW if window is None else window
+    cutoff = now - win
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT model, MAX(ts), COUNT(*), AVG(tps), AVG(ttft_ms) "
+                "FROM llm_samples WHERE ts >= ? GROUP BY model",
+                (cutoff,)).fetchall()
+            # last_tps is the tps of the most-recent row per model; a correlated
+            # lookup keeps it in the same bounded scan without a second hot path.
+            last_rows = DB.execute(
+                "SELECT s.model, s.tps FROM llm_samples s "
+                "JOIN (SELECT model, MAX(ts) mts FROM llm_samples "
+                "      WHERE ts >= ? GROUP BY model) m "
+                "  ON s.model = m.model AND s.ts = m.mts",
+                (cutoff,)).fetchall()
+    except Exception:
+        return {}
+    last_tps = {}
+    for r in last_rows:
+        if r[0] is not None:
+            last_tps[_normalize_model_name(r[0])] = r[1]
+    out = {}
+    for model, max_ts, runs, avg_tps, avg_ttft in rows:
+        if model is None:
+            continue
+        key = _normalize_model_name(model)
+        out[key] = {
+            "last_used": int(max_ts) if max_ts is not None else None,
+            "runs": int(runs or 0),
+            "avg_tps": round(avg_tps, 2) if avg_tps is not None else None,
+            "last_tps": last_tps.get(key),
+            "avg_ttft_ms": round(avg_ttft, 1) if avg_ttft is not None else None,
+        }
+    return out
+
+
+def _apply_usage_to_models(models, usage):
+    """Attach the usage rollup to each registry entry by normalized name. A model
+    with no samples gets a clean never-used shape (runs:0, last_used:null), never
+    a missing key or NaN. Pure; mutates+returns the list it was given."""
+    for m in models:
+        u = usage.get(_normalize_model_name(m.get("name")))
+        if u:
+            m["last_used"] = u["last_used"]
+            m["runs"] = u["runs"]
+            m["avg_tps"] = u["avg_tps"]
+            m["last_tps"] = u["last_tps"]
+            m["avg_ttft_ms"] = u["avg_ttft_ms"]
+        else:
+            m["last_used"] = None
+            m["runs"] = 0
+            m["avg_tps"] = None
+            m["last_tps"] = None
+            m["avg_ttft_ms"] = None
+    return models
+
+
 def _llm_resident_models():
     """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
     timeout, stdlib only. Returns (list, reachable). Each entry:
@@ -7200,7 +7284,12 @@ def _fetch_model_registry():
     # Resident cross-ref is best-effort: if /api/ps fails we still return the
     # on-disk list (just without loaded flags), never an error.
     resident, _ = _llm_resident_models()
-    return _parse_model_registry(tags, resident), True
+    models = _parse_model_registry(tags, resident)
+    # Per-model usage rollup (last_used/runs/avg_tps) joined from llm_samples by
+    # normalized name. Computed here so it rides the registry's 45s cache — no
+    # separate hot path. Read happens outside the cache lock per the pattern.
+    _apply_usage_to_models(models, _llm_usage_by_model())
+    return models, True
 
 
 def _model_registry(now=None):
