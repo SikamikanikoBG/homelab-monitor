@@ -328,7 +328,10 @@ class TestHeartbeatHistory(unittest.TestCase):
 
     # ── re-sampling in the same bucket replaces, not duplicates ──────────────
     def test_sample_idempotent_per_bucket(self):
-        ts = int(time.time())
+        # Align to a bucket START so ts and ts+5 are guaranteed in the SAME 5-min
+        # cell — otherwise a wall-clock landing within 5s of a boundary splits them
+        # into two buckets and the count doubles (intermittent flake, not a bug).
+        ts = (int(time.time()) // app._STATHIST_BUCKET) * app._STATHIST_BUCKET
         with app.LOCK:
             app.sample_status_history(ts)
             app.sample_status_history(ts + 5)   # same 5-min bucket
