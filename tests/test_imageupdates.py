@@ -20,6 +20,7 @@ touched in CI. Covers the constraints the reviewer hammers:
 import os
 import sys
 import json
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -246,6 +247,21 @@ class RunCycleAndSnapshot(unittest.TestCase):
         self.assertFalse(snap["enabled"])
         self.assertEqual(snap["results"], [])
         self.assertEqual(snap["count"], 0)
+
+    def test_disabled_snapshot_is_fully_inert(self):
+        # A backoff left over from a previous enabled run must NOT leak into the
+        # disabled snapshot — off => clean (rate_limited False, no stale results).
+        with app._IMG_LOCK:
+            app._IMG_STATE.update(rate_limited_until=time.time() + 9999,
+                                  results={"x": {"id": "x", "status": "update_available"}},
+                                  count=1, checked_at=int(time.time()))
+        with patch.object(app, "get_settings", return_value=dict(app.SETTING_DEFAULTS)):
+            snap = app.image_updates_snapshot()
+        self.assertFalse(snap["enabled"])
+        self.assertFalse(snap["rate_limited"])
+        self.assertEqual(snap["results"], [])
+        self.assertEqual(snap["count"], 0)
+        self.assertEqual(snap["checked_at"], 0)
 
     def test_on_runs_and_counts_updates(self):
         s = dict(app.SETTING_DEFAULTS); s["image_update_check"] = "1"

@@ -718,9 +718,10 @@ def image_updates_snapshot():
         count = _IMG_STATE["count"]
         last_error = _IMG_STATE["last_error"]
         rl_until = _IMG_STATE["rate_limited_until"]
-    # If disabled, never advertise stale results.
+    # If disabled, never advertise stale results — including a stale rate-limit
+    # backoff left over from a previous enabled run (off => fully inert/clean).
     if not enabled:
-        results, count, checked_at = [], 0, 0
+        results, count, checked_at, rl_until = [], 0, 0, 0
     by_status = {"up_to_date": 0, "update_available": 0, "unknown": 0}
     for r in results:
         by_status[r.get("status", "unknown")] = by_status.get(r.get("status", "unknown"), 0) + 1
