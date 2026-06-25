@@ -7125,6 +7125,119 @@ def _parse_resident_models(data, now=None):
     return out
 
 
+# ── Model registry (E1): the full on-disk model inventory ─────────────────────
+# The resident view (/api/ps, above) shows what's LOADED right now. The registry
+# is the superset: everything PULLED to disk (ollama GET /api/tags). Read-only
+# metadata — no generation, no GPU spin. Cached briefly so a chatty UI can't hit
+# ollama hard. Always-200 / graceful-degrade lives in the endpoint, not here.
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_CACHE = None            # {"ts": int, "models": [...], "reachable": bool}
+_REGISTRY_TTL = float(os.environ.get("COPILOT_REGISTRY_TTL", "45"))  # seconds
+
+
+def _parse_model_registry(tags, resident=None):
+    """Parse an ollama /api/tags payload into the installed-model inventory. Pure
+    → unit-testable. Cross-references the resident set (by model name) to flag
+    which entries are loaded right now and surface their live VRAM. Tolerates
+    missing/odd fields; never raises.
+
+    Each entry: {name, size_bytes, size_gb, family, param_size, quant, modified,
+    loaded(bool), vram_mb}."""
+    res_by_name = {}
+    for m in (resident or []):
+        nm = m.get("name")
+        if nm:
+            res_by_name[nm] = m
+    out = []
+    for m in (tags or {}).get("models", []) if isinstance(tags, dict) else []:
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        size = m.get("size") or 0
+        det = m.get("details") or {}
+        r = res_by_name.get(name)
+        out.append({
+            "name": name,
+            "size_bytes": size,
+            "size_gb": round(size / 1073741824, 2) if size else 0.0,
+            "family": det.get("family") or None,
+            "param_size": det.get("parameter_size") or None,
+            "quant": det.get("quantization_level") or None,
+            "modified": m.get("modified_at") or m.get("modified") or None,
+            "loaded": r is not None,
+            "vram_mb": (r or {}).get("vram_mb"),
+        })
+    # Largest on disk first — the inventory's natural "what's eating my disk" sort.
+    out.sort(key=lambda x: x["size_bytes"] or 0, reverse=True)
+    return out
+
+
+def _registry_totals(models):
+    """Header summary for the registry: count, total disk bytes/GB, loaded count.
+    Pure."""
+    total = sum(m.get("size_bytes") or 0 for m in models)
+    return {
+        "count": len(models),
+        "loaded": sum(1 for m in models if m.get("loaded")),
+        "total_bytes": total,
+        "total_gb": round(total / 1073741824, 2) if total else 0.0,
+    }
+
+
+def _fetch_model_registry():
+    """Poll ollama GET /api/tags for the on-disk catalogue, cross-referenced with
+    the resident set. Returns (models, reachable). Read-only, short timeout,
+    stdlib only. MUST be called OUTSIDE any held LOCK (network I/O)."""
+    if not COPILOT_ENABLED:
+        return [], False
+    url = COPILOT_OLLAMA_URL + "/api/tags"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=4) as r:
+            tags = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return [], False
+    # Resident cross-ref is best-effort: if /api/ps fails we still return the
+    # on-disk list (just without loaded flags), never an error.
+    resident, _ = _llm_resident_models()
+    return _parse_model_registry(tags, resident), True
+
+
+def _model_registry(now=None):
+    """Cached registry accessor. Serves a fresh fetch at most once per _REGISTRY_TTL
+    so a chatty UI can't hammer ollama. Returns (models, reachable). Network I/O
+    happens OUTSIDE the cache lock."""
+    now = now or time.time()
+    with _REGISTRY_LOCK:
+        c = _REGISTRY_CACHE
+        if c and (now - c["ts"]) < _REGISTRY_TTL:
+            return list(c["models"]), c["reachable"]
+    models, reachable = _fetch_model_registry()
+    with _REGISTRY_LOCK:
+        globals()["_REGISTRY_CACHE"] = {
+            "ts": now, "models": models, "reachable": reachable}
+    return list(models), reachable
+
+
+@app.route("/api/models")
+def api_models():
+    """The Model Registry: the full inventory of models PULLED to disk on this
+    host's ollama (GET /api/tags), cross-referenced with what's loaded right now
+    (/api/ps) so the UI can flag resident models + their live VRAM.
+
+    Always 200, graceful-degrade, never 500, no secret leak (we echo a `reachable`
+    bool, never the URL/creds). Cached ~45s — this is rarely-changing metadata, so
+    a busy tab can't hammer ollama. Read-only: no generation, no GPU spin.
+    /api/tags is polled outside any held LOCK."""
+    models, reachable = _model_registry()
+    return jsonify({
+        "enabled": COPILOT_ENABLED,
+        "ollama_reachable": reachable,
+        "models": models,
+        "totals": _registry_totals(models),
+    })
+
+
 def _ollama_generate(prompt, timeout=None):
     """Call the local ollama /api/generate (non-streaming). Returns (text, error)
     where exactly one is non-None. Never raises. `error` is a short machine code:
