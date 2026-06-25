@@ -18,7 +18,8 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib
+import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib
+import email.message
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -3768,6 +3769,18 @@ SETTING_DEFAULTS = {
     "telegram_token":      "",
     "telegram_chat_id":    "",
     "webhook_url":         "",         # generic outbound webhook (POST JSON) for the rule engine
+    # ── Slack incoming-webhook channel — OFF by default, inert until set ────────
+    "slack_webhook_url":   "",         # SECRET — Slack incoming webhook (POST JSON); blank => off
+    # ── Email (SMTP) channel — OFF by default, inert until host+from+to set ─────
+    # SEND-ONLY: the monitor connects out to an SMTP relay to deliver alerts. It
+    # never receives mail and never mutates the host. Pure-stdlib smtplib/email.
+    "smtp_host":           "",         # SMTP server hostname/IP (blank => off, even if other fields set)
+    "smtp_port":           "587",      # SMTP TCP port (587 STARTTLS typical, 465 implicit TLS, 25 plain)
+    "smtp_user":           "",         # optional login username (not a secret on its own)
+    "smtp_pass":           "",         # SECRET — login password; redacted like other secrets
+    "smtp_from":           "",         # envelope/From address
+    "smtp_to":             "",         # recipient(s), comma-separated
+    "smtp_tls":            "1",        # "1" => STARTTLS (default) / "0" => plain
     "alert_min_level":     "warning",  # "warning" or "critical"
     "disk_alert_pct":      "90",       # disk usage % that trips an alert
     "kwh_price":           "",         # electricity price per kWh (day/peak in dual mode); empty hides the cost card (#25)
@@ -3805,7 +3818,7 @@ SETTING_DEFAULTS = {
     "mqtt_prefix":         "homeassistant",  # HA discovery topic prefix
     "mqtt_interval_sec":   "30",       # seconds between state publishes (min ~10)
 }
-SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
+SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass", "slack_webhook_url", "smtp_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
 def get_settings():
     """Return the full settings dict (defaults + persisted overrides)."""
@@ -3825,7 +3838,7 @@ def get_settings():
 # LAN, so validating the scheme/host on save keeps someone who can reach the
 # dashboard from pointing these at a non-HTTP scheme or an empty host — a small
 # SSRF-surface tightening, not a change to the trusted-LAN model.
-_URL_SETTING_KEYS = {"discord_webhook_url", "ntfy_server", "webhook_url"}
+_URL_SETTING_KEYS = {"discord_webhook_url", "ntfy_server", "webhook_url", "slack_webhook_url"}
 
 def _validate_url_settings(updates):
     """Return an error string if any URL-valued setting is malformed, else None.
@@ -3862,7 +3875,13 @@ def save_settings(updates):
 _NOTIFIED = {}            # key -> 1, "armed" alerts pending recovery
 _NOTIFIER_LOCK = threading.Lock()
 LEVELS  = {"info": 0, "warning": 1, "critical": 2}
+# Every notification channel the rule engine / digest / test paths may target.
+# "all" fans out to every configured channel; the rest are the individual senders.
+_NOTIFY_CHANNELS = ("discord", "ntfy", "telegram", "webhook", "slack", "email")
+_VALID_CHANNELS  = ("all",) + _NOTIFY_CHANNELS
 _COLORS = {"info": 0x58A6FF, "warning": 0xD29922, "critical": 0xF85149}
+# Slack attachment bar colour per level (hex strings; Slack wants "#rrggbb").
+_SLACK_COLORS = {"info": "#58A6FF", "warning": "#D29922", "critical": "#F85149"}
 _NTFY_P = {"info": 3, "warning": 4, "critical": 5}
 _NTFY_T = {"info": "information_source", "warning": "warning", "critical": "rotating_light"}
 
@@ -3918,6 +3937,54 @@ def send_webhook(url, level, title, detail):
                "detail": detail, "ts": int(time.time())}
     return _post_json(url, payload)
 
+def send_slack(webhook, level, title, detail):
+    """Slack incoming-webhook: a `text` fallback plus one level-coloured attachment
+    so the message reads cleanly in the channel. Goes out via the shared _post_json
+    (carries the User-Agent). Returns whatever _post_json returns; raises on error."""
+    payload = {
+        "text": f"{title}\n{detail}",
+        "attachments": [{
+            "color":    _SLACK_COLORS.get(level, _SLACK_COLORS["info"]),
+            "title":    title,
+            "text":     detail,
+            "footer":   f"HomeLab Monitor · {level}",
+            "ts":       int(time.time()),
+        }],
+    }
+    return _post_json(webhook, payload)
+
+def send_email(subject, body, level, *, host, port=587, user="", password="",
+               sender="", to="", tls=True, timeout=10):
+    """Deliver a plain-text alert via SMTP using stdlib smtplib + EmailMessage.
+    STARTTLS when `tls`; login when user+password set. Returns (ok, err) and NEVER
+    raises into the alert loop — and the error text never embeds the password."""
+    try:
+        recipients = [a.strip() for a in (to or "").split(",") if a.strip()]
+        if not (host and sender and recipients):
+            return (False, "not configured")
+        msg = email.message.EmailMessage()
+        msg["Subject"] = subject
+        msg["From"]    = sender
+        msg["To"]      = ", ".join(recipients)
+        msg["X-HomeLab-Level"] = level
+        msg.set_content(body)
+        with smtplib.SMTP(host, int(port or 587), timeout=timeout) as srv:
+            srv.ehlo()
+            if tls:
+                srv.starttls()
+                srv.ehlo()
+            if user and password:
+                srv.login(user, password)
+            srv.send_message(msg, from_addr=sender, to_addrs=recipients)
+        return (True, None)
+    except Exception as e:
+        # Scrub the configured password out of any exception text, just in case a
+        # backend echoed it back (e.g. auth failures that quote the credential).
+        err = str(e)
+        if password:
+            err = err.replace(password, "***")
+        return (False, err)
+
 # Which channels a given settings dict has wired up — drives the "channel"
 # selector in the rule engine. "all" means "every configured channel".
 def _configured_channels(s):
@@ -3926,6 +3993,8 @@ def _configured_channels(s):
     if s.get("ntfy_topic"):          out.append("ntfy")
     if s.get("telegram_token") and s.get("telegram_chat_id"): out.append("telegram")
     if s.get("webhook_url"):         out.append("webhook")
+    if s.get("slack_webhook_url"):   out.append("slack")
+    if s.get("smtp_host") and s.get("smtp_from") and s.get("smtp_to"): out.append("email")
     return out
 
 def _send_one_channel(s, ch, level, title, detail):
@@ -3943,6 +4012,19 @@ def _send_one_channel(s, ch, level, title, detail):
         elif ch == "webhook":
             if not s.get("webhook_url"): return (False, "not configured")
             send_webhook(s["webhook_url"], level, title, detail)
+        elif ch == "slack":
+            if not s.get("slack_webhook_url"): return (False, "not configured")
+            send_slack(s["slack_webhook_url"], level, title, detail)
+        elif ch == "email":
+            if not (s.get("smtp_host") and s.get("smtp_from") and s.get("smtp_to")):
+                return (False, "not configured")
+            ok, err = send_email(
+                title, detail, level,
+                host=s.get("smtp_host"), port=s.get("smtp_port") or 587,
+                user=s.get("smtp_user") or "", password=s.get("smtp_pass") or "",
+                sender=s.get("smtp_from"), to=s.get("smtp_to"),
+                tls=(str(s.get("smtp_tls", "1")) != "0"))
+            return (ok, err)
         else:
             return (False, f"unknown channel {ch}")
         return (True, None)
@@ -3982,8 +4064,7 @@ def notify_scan():
     s = get_settings()
     if s.get("alerts_enabled") != "1":
         return
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
-            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
+    if not _configured_channels(s):
         return
 
     # ── Docker containers: edge-trigger on crit/warn, clear on ok ─────────────
@@ -4112,7 +4193,7 @@ def _validate_rule(body):
     if ctype not in _RULE_TYPES:
         return None, f"Unknown condition type. Use one of: {', '.join(sorted(_RULE_TYPES))}."
     channel = (body.get("channel") or "all").strip()
-    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+    if channel not in _VALID_CHANNELS:
         return None, "Unknown channel."
     level = (body.get("level") or "warning").strip()
     if level not in LEVELS:
@@ -6977,7 +7058,7 @@ def send_digest(channel=None, s=None, record=True):
     acquires LOCK itself (non-reentrant)."""
     s = s or get_settings()
     channel = (channel or s.get("digest_channel") or "all").strip()
-    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+    if channel not in _VALID_CHANNELS:
         return {"ok": False, "results": [], "reason": "Unknown channel."}
     if channel == "all":
         if not _configured_channels(s):
@@ -10881,10 +10962,9 @@ def api_mqtt_test():
 def api_notify_test():
     """Send a one-shot test alert using the currently saved settings."""
     s = get_settings()
-    if not (s.get("discord_webhook_url") or s.get("ntfy_topic")
-            or (s.get("telegram_token") and s.get("telegram_chat_id"))):
+    if not _configured_channels(s):
         return jsonify({"ok": False, "results": [],
-                        "reason": "No Discord webhook, ntfy topic, or Telegram bot configured."}), 400
+                        "reason": "No notification channel configured."}), 400
     results = dispatch_alert(s, "info",
                              "✅ HomeLab Monitor — test alert",
                              "If you see this, alerts are wired up correctly.")
@@ -10898,7 +10978,7 @@ def api_alerts_channel_test():
     alert history. Only sends data out — never touches the host."""
     body = request.get_json(silent=True) or {}
     channel = (body.get("channel") or "all").strip()
-    if channel not in ("all", "discord", "ntfy", "telegram", "webhook"):
+    if channel not in _VALID_CHANNELS:
         return jsonify({"ok": False, "error": "Unknown channel."}), 400
     s = get_settings()
     if channel == "all" and not _configured_channels(s):

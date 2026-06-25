@@ -1714,6 +1714,60 @@ h2 .hic{ opacity:.9 }
         <div class="cap" data-i18n-html="alerts.webhook_cap">Optional. We POST a small JSON envelope <code>{source,level,title,detail,ts}</code> — wire it into Home Assistant, n8n, a script, or Slack-incoming.</div>
       </div>
 
+      <div>
+        <div class="flabel" data-i18n="set.slack_url">Slack incoming webhook</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="al_slack" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false"
+                 style="flex:1">
+          <button class="rb" id="al_slack_test" data-i18n="btn.test" type="button">Test</button>
+        </div>
+        <div class="cap" id="al_slack_state" style="margin-top:4px"></div>
+        <div class="cap" data-i18n="alerts.slack_cap">Optional. Posts a level-coloured message to a Slack channel via an incoming webhook.</div>
+      </div>
+
+      <div style="border-top:1px solid var(--border,#30363d);padding-top:10px">
+        <div class="card-sub" style="font-weight:600;margin-bottom:8px" data-i18n="alerts.email_title">📧 Email (SMTP)</div>
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px">
+          <div>
+            <div class="flabel" data-i18n="set.smtp_host">SMTP host</div>
+            <input type="text" id="al_smtp_host" placeholder="smtp.example.com" autocomplete="off" spellcheck="false" class="field">
+          </div>
+          <div>
+            <div class="flabel" data-i18n="set.smtp_port">Port</div>
+            <input type="number" id="al_smtp_port" min="1" max="65535" step="1" placeholder="587" class="field">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          <div>
+            <div class="flabel" data-i18n="set.smtp_user">Username (optional)</div>
+            <input type="text" id="al_smtp_user" autocomplete="off" spellcheck="false" class="field">
+          </div>
+          <div>
+            <div class="flabel" data-i18n="set.smtp_pass">Password</div>
+            <input type="password" id="al_smtp_pass" autocomplete="new-password" spellcheck="false" class="field">
+            <div class="cap" id="al_smtp_pass_state" style="margin-top:4px"></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          <div>
+            <div class="flabel" data-i18n="set.smtp_from">From address</div>
+            <input type="text" id="al_smtp_from" placeholder="homelab@example.com" autocomplete="off" spellcheck="false" class="field">
+          </div>
+          <div>
+            <div class="flabel" data-i18n="set.smtp_to">To (comma-separated)</div>
+            <input type="text" id="al_smtp_to" placeholder="me@example.com" autocomplete="off" spellcheck="false" class="field">
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;margin-top:8px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:7px">
+            <input type="checkbox" id="al_smtp_tls">
+            <span data-i18n="set.smtp_tls">Use STARTTLS</span>
+          </label>
+          <button class="rb" id="al_smtp_test" data-i18n="btn.test" type="button">Test</button>
+        </div>
+        <div class="cap" data-i18n="alerts.email_cap">Optional. Active once host, From, and To are filled in. Sends plain-text alerts via SMTP.</div>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
         <div>
           <div class="flabel" data-i18n="set.min_severity">Minimum severity</div>
@@ -4132,6 +4186,28 @@ async function loadAlerts(){
   if(wstate) wstate.textContent = s.webhook_url_set
     ? 'A webhook is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.'
     : 'No webhook saved yet.';
+  // Slack incoming webhook is a secret — same mask + *_set + CLEAR pattern.
+  const slk=document.getElementById('al_slack');
+  if(slk){
+    if(!ALERTS_LOADED){ slk.value=''; slk.placeholder = s.slack_webhook_url_set
+      ? '•••••• webhook saved — type to replace, clear to remove' : 'https://hooks.slack.com/services/…'; }
+    const sst=document.getElementById('al_slack_state');
+    if(sst) sst.textContent = s.slack_webhook_url_set
+      ? I18N.t('alerts.slack_saved','A webhook is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.')
+      : I18N.t('alerts.slack_none','No webhook saved yet.');
+  }
+  // ── Email / SMTP fields (password is a secret: *_set + CLEAR pattern) ──
+  const setEV=(id,v)=>{const el=document.getElementById(id); if(el) el.value=v;};
+  setEV('al_smtp_host', s.smtp_host||''); setEV('al_smtp_port', s.smtp_port||'587');
+  setEV('al_smtp_user', s.smtp_user||''); setEV('al_smtp_from', s.smtp_from||'');
+  setEV('al_smtp_to', s.smtp_to||'');
+  const smTls=document.getElementById('al_smtp_tls'); if(smTls) smTls.checked = (s.smtp_tls||'1')!=='0';
+  const smp=document.getElementById('al_smtp_pass');
+  if(!ALERTS_LOADED && smp){ smp.value=''; smp.placeholder = s.smtp_pass_set ? '•••••• saved — type to replace' : ''; }
+  const smps=document.getElementById('al_smtp_pass_state');
+  if(smps) smps.textContent = s.smtp_pass_set
+    ? I18N.t('alerts.smtp_pass_saved','A password is saved. Leave blank to keep it; type a new one to replace; type CLEAR and save to remove.')
+    : I18N.t('alerts.smtp_pass_none','No password saved.');
   ALERTS_LOADED=true;
 }
 
@@ -4182,6 +4258,12 @@ async function saveAlerts(){
     system_idle_watts: (document.getElementById('al_idle_w')||{}).value || '',
     mlflow_uri:        (document.getElementById('al_mlflow_uri')||{}).value || '',
     country:          document.getElementById('al_country').value,
+    smtp_host:        (document.getElementById('al_smtp_host')||{}).value?.trim()||'',
+    smtp_port:        String(parseInt((document.getElementById('al_smtp_port')||{}).value||'587',10)||587),
+    smtp_user:        (document.getElementById('al_smtp_user')||{}).value?.trim()||'',
+    smtp_from:        (document.getElementById('al_smtp_from')||{}).value?.trim()||'',
+    smtp_to:          (document.getElementById('al_smtp_to')||{}).value?.trim()||'',
+    smtp_tls:         (document.getElementById('al_smtp_tls')||{}).checked ? '1' : '0',
   };
   // Only send the webhook field if the user actually typed in it — empty means
   // "no change" when one is already saved (matching the placeholder hint),
@@ -4198,11 +4280,19 @@ async function saveAlerts(){
   const wv = document.getElementById('al_webhook').value;
   if(wv === 'CLEAR'){ body.webhook_url=''; }
   else if(wv && wv.trim()){ body.webhook_url = wv.trim(); }
+  const skv = (document.getElementById('al_slack')||{}).value;
+  if(skv === 'CLEAR'){ body.slack_webhook_url=''; }
+  else if(skv && skv.trim()){ body.slack_webhook_url = skv.trim(); }
+  const spv = (document.getElementById('al_smtp_pass')||{}).value;
+  if(spv === 'CLEAR'){ body.smtp_pass=''; }
+  else if(spv && spv.trim()){ body.smtp_pass = spv.trim(); }
   let j; try{ j=await(await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not save settings: '+e); return; }
   document.getElementById('al_discord').value='';
   document.getElementById('al_telegram_token').value='';
   document.getElementById('al_webhook').value='';
+  const slkEl=document.getElementById('al_slack'); if(slkEl) slkEl.value='';
+  const smpEl=document.getElementById('al_smtp_pass'); if(smpEl) smpEl.value='';
   const mtok=document.getElementById('al_mlflow_token'); if(mtok) mtok.value='';
   await loadAlerts();
   showAlertStatus('ok',I18N.t('toast.settings_saved','Settings saved.'));
@@ -4398,6 +4488,17 @@ async function testRuleChannel(){
   else{ const f=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
         showAlertStatus('critical', f || j.reason || 'Test failed.'); }
   loadAlertHistory();
+}
+// Per-channel "Send test" (Slack/Email): persist current settings first so the
+// just-typed values are live, then reuse the shared channel-test path.
+async function testChannel(ch){
+  showAlertStatus('info',I18N.t('toast.sending_test','Sending test alert…'));
+  await saveAlerts();
+  let j; try{ j=await(await fetch('/api/alerts/channels/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({channel:ch})})).json(); }catch(e){ showAlertStatus('critical','Test failed: '+e); return; }
+  if(j.ok) showAlertStatus('ok','Test sent: '+(j.results||[]).map(r=>r.channel).join(', ')+'.');
+  else{ const f=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
+        showAlertStatus('critical', f || j.reason || 'Test failed.'); }
 }
 async function loadAlertHistory(){
   let j; try{ j=await(await fetch('/api/alerts/history?limit=100')).json(); }catch(e){ return; }
@@ -7512,6 +7613,10 @@ async function maybeWhatsNew(curVersion){
 window.addEventListener('hashchange',()=>{const h=location.hash.slice(1); if(h && TABS.some(t=>t.id===h) && h!==TAB) showTab(h);});
 document.getElementById('al_save').onclick = saveAlerts;
 document.getElementById('al_test').onclick = testAlerts;
+const al_slack_test=document.getElementById('al_slack_test');
+if(al_slack_test) al_slack_test.onclick = ()=>testChannel('slack');
+const al_smtp_test=document.getElementById('al_smtp_test');
+if(al_smtp_test) al_smtp_test.onclick = ()=>testChannel('email');
 const al_save_costs = document.getElementById('al_save_costs');
 if(al_save_costs) al_save_costs.onclick = saveAlerts;   // both panes persist all settings
 document.getElementById('al_mode_single').onclick = () => setTariffMode(false);
