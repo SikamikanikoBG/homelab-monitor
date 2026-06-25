@@ -54,7 +54,8 @@ INSTRUCTIONS = (
     "full System/Network/Security inventory) → `get_snapshot` (live overview). Detail "
     "tools: `get_containers` and `get_services` (full Docker/systemd lists), "
     "`get_memory` (per-service/per-process RAM breakdown), `get_gpu` (utilisation, "
-    "per-model VRAM, and who's driving it), `get_ai_models` (loaded models), "
+    "per-model VRAM, and who's driving it), `get_ai_models` (which models are loaded "
+    "vs on-disk, how often each is used, and recent tok/s), "
     "`get_history` (charted time-series), `get_costs`/`get_entity_cost` (power "
     "turned into money, per machine and per process/container/service/model), "
     "`get_experiments`/`get_experiment` (tracked runs priced by the GPU energy they "
@@ -182,9 +183,14 @@ def scan_disk(path: str = "/", rescan: bool = False) -> dict:
 @mcp.tool()
 @_track
 def get_ai_models(range: str = "6h") -> dict:
-    """AI model servers: which models are loaded, their VRAM use, and who is driving
+    """AI models: which models are loaded vs on-disk, their VRAM use, who is driving
     them (caller→server connection-seconds attribution over `range`, e.g. "6h",
-    "24h", "7d"). Answers "why is the GPU pinned, and which service is calling it?".
+    "24h", "7d"), and how often each model is actually used (recent tok/s). The
+    `registry` field is the full on-disk inventory with per-model usage
+    (`runs`/`avg_tps`/`last_used` — a model with `runs:0` is never-used dead weight),
+    sourced from the cheap cached `/api/models` metadata (no LLM, no GPU spin).
+    Answers "why is the GPU pinned, which service is calling it, and which models
+    earn their disk?".
     """
     return hc.get_ai_models(range)
 

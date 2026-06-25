@@ -193,6 +193,27 @@ INCIDENT_ONE = {
                  ]},
 }
 
+# /api/models registry: on-disk inventory cross-referenced with resident + usage.
+# llama3:70b is loaded and used (runs>0); gemma3:1b is on-disk but never used
+# (runs:0 → dead weight). Mirrors what _apply_usage_to_models / _registry_totals emit.
+MODELS = {
+    "enabled": True,
+    "ollama_reachable": True,
+    "models": [
+        {"name": "llama3:70b", "size_bytes": 40000000000, "size_gb": 37.25,
+         "family": "llama", "param_size": "70B", "quant": "Q4_0",
+         "modified": "2026-06-01T00:00:00Z", "loaded": True, "vram_mb": 8200,
+         "last_used": 9000, "runs": 42, "avg_tps": 18.5, "last_tps": 19.1,
+         "avg_ttft_ms": 320},
+        {"name": "gemma3:1b", "size_bytes": 1500000000, "size_gb": 1.4,
+         "family": "gemma", "param_size": "1B", "quant": "Q8_0",
+         "modified": "2026-05-01T00:00:00Z", "loaded": False, "vram_mb": None,
+         "last_used": None, "runs": 0, "avg_tps": None, "last_tps": None,
+         "avg_ttft_ms": None},
+    ],
+    "totals": {"count": 2, "loaded": 1, "total_bytes": 41500000000, "total_gb": 38.65},
+}
+
 METRICS = "# HELP gpu_util GPU utilization\ngpu_util{gpu=\"gpu0\"} 73\n"
 HEALTHZ = {"status": "ok", "version": "0.13.1"}
 
@@ -238,12 +259,13 @@ ROUTES = {
     "/api/costs/entity": COSTS_ENTITY,
     "/api/runs": RUNS,
     "/api/incidents": INCIDENTS,
+    "/api/models": MODELS,
     "/healthz": HEALTHZ,
 }
 
 # Records the raw query/body each handler saw, so tests can assert the client used
 # the LLM-free path and posted the question.
-_SEEN = {"reco_query": None, "ask_body": None}
+_SEEN = {"reco_query": None, "ask_body": None, "models_hit": False}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -309,6 +331,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(b'{"error":"unknown incident"}')
+            return
+        if path == "/api/models":
+            _SEEN["models_hit"] = True
+            self._json(MODELS)
             return
         if path in ROUTES:
             body = json.dumps(ROUTES[path]).encode()
@@ -415,10 +441,24 @@ def run():
         check(r["state"] == "scanning" and "note" in r, "scanning path returns poll-again note")
 
         print("get_ai_models")
+        _SEEN["models_hit"] = False
         r = hc.get_ai_models("24h")
         check(r["loaded"][0]["model"] == "llama3:70b", "loaded models")
         check(r["callers"][0]["caller"] == "open-webui", "caller attribution")
         check(r["vram_summary"][0]["peak"] == 8200, "vram summary")
+        # registry enrichment from the cheap, cached, LLM-free /api/models metadata
+        check(_SEEN["models_hit"] is True, "enriches from /api/models (cheap, no-LLM path)")
+        check(len(r["registry"]) == 2, "registry inventory surfaced")
+        used = r["registry"][0]
+        check(used["name"] == "llama3:70b" and used["loaded"] is True, "loaded model flagged")
+        check(used["runs"] == 42 and used["avg_tps"] == 18.5, "per-model usage rollup")
+        check(used["vram_mb"] == 8200, "resident VRAM surfaced")
+        dead = r["registry"][1]
+        check(dead["name"] == "gemma3:1b" and dead["runs"] == 0, "never-used dead weight surfaced")
+        check(dead["last_used"] is None and dead["loaded"] is False, "dead weight on-disk only")
+        check(r["registry_totals"]["count"] == 2 and r["registry_totals"]["loaded"] == 1, "registry totals")
+        check(r["registry_totals"]["total_gb"] == 38.65, "registry total disk")
+        check(r["registry_reachable"] is True, "ollama reachability surfaced")
 
         print("get_events / get_alerts")
         r = hc.get_events()

@@ -272,19 +272,32 @@ def get_services():
 
 
 def get_ai_models(range="6h"):
-    """Which model servers are loaded, their VRAM, and *who is driving them*.
+    """Which models are on disk vs loaded, *who is driving them*, and how each one
+    is actually used — so an agent can reason over dead-weight models.
 
     `loaded` is the current snapshot of model servers; `vram_summary` is peak/avg
     VRAM per (server, model) over `range`; `callers` is connection-seconds per
     caller→server edge over `range` — the "driven by" attribution.
+
+    `registry` is the on-disk inventory from `/api/models` (cheap, cached metadata —
+    no LLM, no GPU spin), one entry per installed model with `name`/`size_gb`/
+    `family`/`param_size`/`quant`/`modified` plus `loaded`/`vram_mb` (resident right
+    now) and the per-model usage rollup `runs`/`avg_tps`/`last_tps`/`avg_ttft_ms`/
+    `last_used`. A model with `runs:0` is never-used dead weight. `registry_totals`
+    gives count/loaded/total_gb. `registry_reachable` is False when ollama is
+    unreachable (the rest still degrades gracefully).
     """
     data = _get("/api/data?range=" + urllib.parse.quote(str(range)))
     now = data.get("now") or {}
+    reg = _get("/api/models")
     return {
         "range": data.get("range", range),
         "loaded": now.get("models") or [],
         "vram_summary": data.get("model_summary") or [],
         "callers": data.get("callers") or [],
+        "registry": reg.get("models") or [],
+        "registry_totals": reg.get("totals") or {},
+        "registry_reachable": bool(reg.get("ollama_reachable")),
     }
 
 
