@@ -1016,6 +1016,7 @@
   "reco.allclear_t": "All clear",
   "reco.allclear_d": "No recommendations right now — disks, VRAM, cost, incidents and uptime all look healthy.",
   "reco.err": "Could not load recommendations.",
+  "reco.analyzing": "Analyzing top priority",
   "reco.sev_crit": "Critical",
   "reco.sev_warn": "Warning",
   "reco.sev_info": "Info",

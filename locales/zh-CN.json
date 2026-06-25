@@ -1043,6 +1043,7 @@
   "reco.allclear_t": "一切正常",
   "reco.allclear_d": "暂无建议——磁盘、显存、成本、事件与在线状态均良好。",
   "reco.err": "无法加载建议。",
+  "reco.analyzing": "正在分析首要事项",
   "reco.sev_crit": "严重",
   "reco.sev_warn": "警告",
   "reco.sev_info": "提示",

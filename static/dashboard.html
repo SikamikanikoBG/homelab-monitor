@@ -6715,6 +6715,9 @@ function _copilotSourcesLine(sources){
 // Deterministic detectors on the backend; the LLM only optionally adds a one-line
 // "top priority" framing. Always renders the deterministic items even with no LLM.
 let RECO=null, RECO_AT=0, RECO_BUSY=false;
+// True while phase-2 (full LLM /api/recommendations) is in flight after a brief render —
+// drives the "analyzing…" placeholder on the top-priority line.
+let RECO_PRIO_PENDING=false, RECO_PRIO_SEQ=0;
 // severity → {ins class for the row border, chip class, icon, label key}
 const RECO_SEV={
   crit:{ins:'critical',chip:'crit',ic:'🔴',k:'reco.sev_crit',d:'Critical'},
@@ -6752,12 +6755,23 @@ function renderReco(){
       cnt.textContent=I18N.tf('reco.count','{n} to review',{n:items.length});
     }
   }
-  // optional LLM "top priority" line — shown only when the LLM actually framed it
+  // optional LLM "top priority" line — two-phase: while the full /api/recommendations
+  // is still framing it we show an "analyzing…" placeholder (only when there ARE items
+  // and the LLM is enabled); once it returns we swap in the real line (or drop the
+  // placeholder if the LLM was unreachable / timed out).
   if(prio){
-    if(j.llm_used && j.priority){
-      prio.hidden=false;
-      prio.innerHTML='<span class="ic">🧠</span><span>'+esc(j.priority)+'</span>';
-    }else{ prio.hidden=true; prio.innerHTML=''; }
+    prio.setAttribute('aria-live','polite');
+    if(j.llm_used && j.priority){            // phase 2 done, LLM framed it
+      prio.hidden=false; prio.removeAttribute('aria-busy');
+      prio.innerHTML='<span class="ic" aria-hidden="true">🧠</span><span class="txt"></span>';
+      prio.querySelector('.txt').textContent=j.priority;   // XSS-safe via textContent
+    }else if(RECO_PRIO_PENDING && items.length){  // phase 1: still analyzing
+      prio.hidden=false; prio.setAttribute('aria-busy','true');
+      const rm=(function(){try{return matchMedia('(prefers-reduced-motion:reduce)').matches;}catch(_){return false;}})();
+      const dots=rm?'':'<span class="lds-dots" aria-hidden="true"></span>';
+      prio.innerHTML='<span class="ic" aria-hidden="true">🧠</span>'
+        +'<span class="txt muted">'+esc(I18N.t('reco.analyzing','Analyzing top priority'))+dots+'</span>';
+    }else{ prio.hidden=true; prio.removeAttribute('aria-busy'); prio.innerHTML=''; }
   }
   if(!items.length){
     body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">✅</div><div>'
@@ -6803,19 +6817,47 @@ function renderHeroPriority(){
       const b=document.getElementById('reco-body'); if(b) b.setAttribute('tabindex','-1'),b.focus({preventScroll:true}); }
   };
 }
+// Two-phase load (NEVER blocks on the LLM, and only ever fires on view/refresh — never
+// on the 15s poll):
+//   phase 1  — fetch /api/recommendations?brief=1 (deterministic items + counts, ~15ms)
+//              → render items INSTANTLY, with an "analyzing…" placeholder on the priority
+//                line when there are items AND the LLM is enabled.
+//   phase 2  — fire the full /api/recommendations (the ~7s LLM "top priority" framing) in
+//              the background → fill the priority line + refresh the shared RECO cache so
+//              the hero "tackle first" line stays consistent. On failure/timeout/LLM-down
+//              the placeholder is dropped gracefully (items remain; no stuck spinner).
 async function loadReco(force){
   if(CURRENT_HOST!=='local'){ const c=document.getElementById('recocard'); if(c) c.hidden=true; return; }
   const c=document.getElementById('recocard'); if(c) c.hidden=false;
   if(RECO_BUSY) return;
+  // cache hit: re-render from RECO (already has the priority if phase 2 completed).
   if(!force && Date.now()-RECO_AT < 120000 && RECO){ renderReco(); return; }
   RECO_BUSY=true;
   const body=document.getElementById('reco-body');
   if(body && !RECO) body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">✅</div><div style="flex:1">'
     +'<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div></div></div>';
-  try{ RECO=await(await fetch('/api/recommendations')).json(); RECO_AT=Date.now(); }
-  catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('reco.err','Could not load recommendations.')+'</div>'; RECO_BUSY=false; return; }
+  // ── phase 1: instant deterministic items (no LLM) ──────────────────────────────
+  let brief;
+  try{ brief=await(await fetch('/api/recommendations?brief=1')).json(); }
+  catch(e){ if(body && !RECO) body.innerHTML='<div class="muted">'+I18N.t('reco.err','Could not load recommendations.')+'</div>'; RECO_BUSY=false; return; }
   RECO_BUSY=false;
+  RECO=brief; RECO_AT=Date.now();
+  // show the placeholder only when there's something to prioritise AND the LLM is on.
+  const wantPrio=!!(brief && (brief.items||[]).length && brief.enabled);
+  RECO_PRIO_PENDING=wantPrio;
+  const seq=++RECO_PRIO_SEQ;   // guards against overlapping/stale phase-2 responses
   renderReco();
+  // ── phase 2: async LLM "top priority" (non-blocking; never on a timer) ──────────
+  if(!wantPrio) return;
+  fetch('/api/recommendations').then(r=>r.json()).then(full=>{
+    if(seq!==RECO_PRIO_SEQ) return;   // a newer load superseded us — ignore
+    RECO_PRIO_PENDING=false;
+    if(full && (full.items||[]).length){ RECO=full; RECO_AT=Date.now(); }
+    renderReco();   // fills the priority line + reconciles items; also refreshes the hero
+  }).catch(()=>{
+    if(seq!==RECO_PRIO_SEQ) return;
+    RECO_PRIO_PENDING=false; renderReco();   // drop the placeholder gracefully
+  });
 }
 
 // ── LLM engine panel (GPU tab) — the AI Lab Cockpit's throughput surface ───────
