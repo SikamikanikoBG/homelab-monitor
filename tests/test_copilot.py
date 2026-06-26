@@ -7,6 +7,7 @@ Covers the non-LLM logic only (no ollama needed in CI):
   • graceful-degrade: every endpoint returns 200 with a clear llm_status when
     the local LLM is disabled / unreachable, never a 500.
 """
+import json
 import os
 import sys
 import time
@@ -428,6 +429,238 @@ class TestAskRouting(unittest.TestCase):
             self.assertNotIn("SECRETTOKEN", blob)
             self.assertNotIn("BOTSECRET123", blob)
             self.assertNotIn("hooks.example", blob)
+
+
+# ── SSE helpers for the streaming tests ───────────────────────────────────────
+def _parse_sse(body):
+    """Parse an SSE byte/str body into a list of (event, data_obj) frames."""
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
+    out = []
+    for frame in body.split("\n\n"):
+        frame = frame.strip()
+        if not frame:
+            continue
+        ev, data = "message", ""
+        for line in frame.split("\n"):
+            if line.startswith("event:"):
+                ev = line[6:].strip()
+            elif line.startswith("data:"):
+                data += line[5:].strip()
+        try:
+            out.append((ev, json.loads(data)))
+        except Exception:
+            out.append((ev, data))
+    return out
+
+
+class _FakeOllamaStreamResp:
+    """Iterates like urllib's response object: yields raw JSONL byte lines, the
+    last carrying done:true + timing fields (mirrors ollama /api/generate)."""
+    def __init__(self, chunks, fail_after=None):
+        lines = []
+        for i, c in enumerate(chunks):
+            lines.append(json.dumps({"model": "m", "response": c, "done": False}))
+        lines.append(json.dumps({"model": "m", "response": "", "done": True,
+                                 "eval_count": 10, "eval_duration": 1000000000,
+                                 "load_duration": 50000000, "prompt_eval_count": 5,
+                                 "prompt_eval_duration": 20000000}))
+        self._lines = [(l + "\n").encode("utf-8") for l in lines]
+        self._fail_after = fail_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        for i, l in enumerate(self._lines):
+            if self._fail_after is not None and i >= self._fail_after:
+                raise OSError("connection reset mid-stream")
+            yield l
+
+
+class TestAskStream(unittest.TestCase):
+    """Streaming ask-box endpoint (/api/copilot/ask/stream): reuses the SAME live
+    fixtures + routing as TestAskRouting (via its setUp/tearDown), mocks ollama
+    streaming. Does NOT subclass it so its tests don't re-run here."""
+
+    setUp = TestAskRouting.setUp
+    tearDown = TestAskRouting.tearDown
+
+    def _post_stream(self, q):
+        c = app.app.test_client()
+        return c.post("/api/copilot/ask/stream", json={"question": q})
+
+    def test_stream_emits_tokens_then_done_with_sources(self):
+        # Mock the streaming generator → token events + a done terminal.
+        def fake_stream(prompt, timeout=None):
+            self.assertIn("chroma", prompt.lower())  # routed facts in the prompt
+            yield ("token", "Chro")
+            yield ("token", "ma is ")
+            yield ("token", "fine.")
+            yield ("done", {"text": "Chroma is fine.", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream("why is chroma using so much memory?")
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "text/event-stream")
+        frames = _parse_sse(r.get_data())
+        toks = [d["t"] for (ev, d) in frames if ev == "token"]
+        self.assertEqual("".join(toks), "Chroma is fine.")
+        done = [d for (ev, d) in frames if ev == "done"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]["source"], "llm")
+        self.assertEqual(done[0]["llm_status"], "ok")
+        self.assertEqual(done[0]["answer"], "Chroma is fine.")
+        self.assertEqual(done[0]["routing"], "live")
+        self.assertIn("container:chroma", done[0]["sources"])
+
+    def test_stream_routes_generic_when_no_match(self):
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "ok")
+            yield ("done", {"text": "ok", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream("hello there friend")
+        finally:
+            app._ollama_generate_stream = orig
+        done = [d for (ev, d) in _parse_sse(r.get_data()) if ev == "done"]
+        self.assertEqual(done[0]["routing"], "generic")
+        self.assertTrue(done[0]["facts"])  # generic digest facts
+
+    def test_stream_llm_error_at_start_emits_terminal_facts(self):
+        # ollama unreachable before any token → single error frame with facts.
+        def fake_stream(prompt, timeout=None):
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream("is the gpu healthy?")
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        self.assertFalse([f for f in frames if f[0] == "token"])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertEqual(err[0]["llm_status"], "unreachable")
+        self.assertTrue(err[0]["facts_summary"])
+        self.assertIn("gpu", err[0]["sources"])
+
+    def test_stream_llm_error_mid_stream_terminates_gracefully(self):
+        # Some tokens arrive, then ollama dies → tokens + a terminal error frame,
+        # never a 500, never a hang.
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "partial ")
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream("is the gpu healthy?")
+        finally:
+            app._ollama_generate_stream = orig
+        frames = _parse_sse(r.get_data())
+        self.assertEqual([d["t"] for (ev, d) in frames if ev == "token"], ["partial "])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+
+    def test_stream_empty_question_emits_terminal_error(self):
+        r = self._post_stream("   ")
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["llm_status"], "no_question")
+
+    def test_stream_disabled_llm_emits_facts_terminal(self):
+        # COPILOT_ENABLED is False (inherited setUp) → real _ollama_generate_stream
+        # yields ('error','disabled'); endpoint must hand back routed facts.
+        r = self._post_stream("why is chroma using ram?")
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["llm_status"], "disabled")
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertIn("container:chroma", err[0]["sources"])
+
+    def test_stream_no_secret_in_streamed_bytes(self):
+        # Plant secrets; the entire streamed body (tokens + terminal) must be clean.
+        with app.LOCK:
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('webhook_url','https://hooks.example/SECRETTOKEN')")
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('telegram_token','BOTSECRET123')")
+            app.DB.commit()
+
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "fine")
+            yield ("done", {"text": "fine", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            for q in ("is the gpu healthy?", "most expensive container?",
+                      "why is chroma using ram?", "which disk is filling?"):
+                body = self._post_stream(q).get_data(as_text=True)
+                self.assertNotIn("SECRETTOKEN", body)
+                self.assertNotIn("BOTSECRET123", body)
+                self.assertNotIn("COPILOT_OLLAMA_URL", body)
+                self.assertNotIn("11434", body)  # ollama URL/port never streamed
+        finally:
+            app._ollama_generate_stream = orig
+
+    def test_stream_generator_real_ollama_jsonl_tokens(self):
+        # Drive the REAL _ollama_generate_stream against a faked urllib response
+        # that yields ollama's JSONL — proves token parsing + done detection.
+        self._en2 = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+
+        def fake_urlopen(req, timeout=None):
+            return _FakeOllamaStreamResp(["Hel", "lo ", "lab"])
+        orig = app.urllib.request.urlopen
+        app.urllib.request.urlopen = fake_urlopen
+        try:
+            evs = list(app._ollama_generate_stream("p"))
+        finally:
+            app.urllib.request.urlopen = orig
+            app.COPILOT_ENABLED = self._en2
+        toks = [v for (k, v) in evs if k == "token"]
+        self.assertEqual("".join(toks), "Hello lab")
+        done = [v for (k, v) in evs if k == "done"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]["text"], "Hello lab")
+
+    def test_stream_generator_unreachable_yields_error(self):
+        self._en2 = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+
+        def boom(req, timeout=None):
+            raise OSError("no route to host")
+        orig = app.urllib.request.urlopen
+        app.urllib.request.urlopen = boom
+        try:
+            evs = list(app._ollama_generate_stream("p"))
+        finally:
+            app.urllib.request.urlopen = orig
+            app.COPILOT_ENABLED = self._en2
+        self.assertEqual(evs, [("error", "unreachable")])
+
+    def test_nonstream_endpoint_still_intact(self):
+        # The additive stream must not have changed the original endpoint.
+        c = app.app.test_client()
+        r = c.post("/api/copilot/ask", json={"question": "is the gpu healthy?"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["routing"], "live")
+        self.assertIn("gpu", j["sources"])
+        self.assertEqual(j["source"], "facts")     # LLM off → facts fallback
+        self.assertEqual(j["llm_status"], "disabled")
 
 
 if __name__ == "__main__":

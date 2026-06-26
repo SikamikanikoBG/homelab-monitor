@@ -1228,6 +1228,12 @@ button,.rb,.nrow,.subtab,a{ transition:border-color .15s ease, background .15s e
 input:focus-visible,select:focus-visible,textarea:focus-visible{
   outline:none; border-color:var(--ring); box-shadow:0 0 0 3px rgba(88,166,255,.28); }
 @media(prefers-reduced-motion:reduce){ input,select,textarea,button,.rb,.nrow,.subtab,a{ transition:none } }
+/* Lab Copilot live-streaming cursor — a blinking caret while tokens arrive.
+   Reduced-motion users never get this element (the text still streams). */
+.copilot-cursor{ display:inline-block; width:2px; height:1.05em; margin-left:1px;
+  vertical-align:-.16em; background:var(--ring,#58a6ff); animation:copilotBlink 1s step-end infinite }
+@keyframes copilotBlink{ 50%{ opacity:0 } }
+@media(prefers-reduced-motion:reduce){ .copilot-cursor{ display:none; animation:none } }
 /* Inline SVG icons that replace heading emoji — inherit text colour + size. */
 .hic{ width:1.05em; height:1.05em; flex:none; vertical-align:-.16em; stroke-width:2; opacity:.82 }
 h2 .hic{ margin-right:8px } .card-sub .hic{ margin-right:6px; width:1em; height:1em } .logo .hic{ width:18px; height:18px; vertical-align:-.22em; opacity:1 } .logo img{ width:22px; height:22px; display:block; border-radius:5px } .brandlogo{ width:26px; height:26px; border-radius:6px; vertical-align:-7px; margin-right:8px }
@@ -6866,13 +6872,10 @@ async function loadCopilot(force){
   catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
   renderCopilot();
 }
-async function copilotAsk(){
-  const inp=document.getElementById('copilot-q'), out=document.getElementById('copilot-answer');
-  if(!inp||!out||COPILOT_BUSY) return;
-  const q=(inp.value||'').trim(); if(!q) return;
-  COPILOT_BUSY=true; out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
-  let j; try{ j=await(await fetch('/api/copilot/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})).json(); }
-  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; COPILOT_BUSY=false; return; }
+// Render a final ask result object (the shape returned by /api/copilot/ask OR
+// the SSE done/error frame). Centralised so the streaming + non-stream paths
+// render identically. XSS-safe: answer/facts via esc(), sources via esc() chips.
+function _copilotRenderAnswer(out,j){
   const srcLine=_copilotSourcesLine(j.sources);
   if(j.source==='llm' && j.answer){
     out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+'</div>'+srcLine+'</div></div>';
@@ -6883,7 +6886,72 @@ async function copilotAsk(){
   }else{
     out.innerHTML='<div class="muted">'+esc(_copilotStatusNote(j.llm_status))+'</div>';
   }
-  COPILOT_BUSY=false;
+}
+// Non-stream ask — the graceful fallback used when streaming can't start/fails.
+async function _copilotAskNonStream(q,out){
+  let j; try{ j=await(await fetch('/api/copilot/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})).json(); }
+  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
+  _copilotRenderAnswer(out,j);
+}
+async function copilotAsk(){
+  const inp=document.getElementById('copilot-q'), out=document.getElementById('copilot-answer');
+  if(!inp||!out||COPILOT_BUSY) return;
+  const q=(inp.value||'').trim(); if(!q) return;
+  COPILOT_BUSY=true; out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  try{ await _copilotAskStream(q,out); }
+  finally{ COPILOT_BUSY=false; }
+}
+// Live token-streaming ask via SSE over fetch()+ReadableStream. Appends tokens
+// to the answer area as they arrive (typing feel), then renders sources on the
+// terminal frame. ANY failure to start/stream → falls back to the non-stream
+// /api/copilot/ask so the user always gets an answer. XSS-safe: tokens go in via
+// textContent, never innerHTML; sources via esc() chips on the done frame.
+async function _copilotAskStream(q,out){
+  let resp;
+  try{
+    resp=await fetch('/api/copilot/ask/stream',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+  }catch(e){ return _copilotAskNonStream(q,out); }
+  if(!resp.ok || !resp.body || !resp.body.getReader){ return _copilotAskNonStream(q,out); }
+  const reduce=(function(){try{return matchMedia('(prefers-reduced-motion:reduce)').matches;}catch(_){return false;}})();
+  // Live answer scaffold: a text node we append tokens to, plus a (optional) cursor.
+  out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1">'
+    +'<div class="d" style="font-size:14px"><span id="copilot-stream-txt"></span>'
+    +(reduce?'':'<span class="copilot-cursor" aria-hidden="true"></span>')+'</div></div></div>';
+  const txt=document.getElementById('copilot-stream-txt');
+  let buf='', gotToken=false, terminal=null;
+  const dec=new TextDecoder(); const reader=resp.body.getReader();
+  // Parse the SSE byte stream into event frames (event:/data: lines, blank-line-delimited).
+  let sse='';
+  function handleFrame(frame){
+    let ev='message', data='';
+    frame.split('\n').forEach(l=>{
+      if(l.indexOf('event:')===0) ev=l.slice(6).trim();
+      else if(l.indexOf('data:')===0) data+=l.slice(5).trim();
+    });
+    if(!data) return;
+    let obj; try{ obj=JSON.parse(data); }catch(_){ return; }
+    if(ev==='token'){ gotToken=true; buf+=(obj.t||''); if(txt) txt.textContent=buf; }
+    else if(ev==='done'||ev==='error'){ terminal=obj; }
+  }
+  try{
+    for(;;){
+      const {value,done}=await reader.read();
+      if(done) break;
+      sse+=dec.decode(value,{stream:true});
+      let idx;
+      while((idx=sse.indexOf('\n\n'))>=0){ handleFrame(sse.slice(0,idx)); sse=sse.slice(idx+2); }
+    }
+    if(sse.trim()) handleFrame(sse);
+  }catch(e){
+    // Mid-stream read failure. If nothing useful arrived, fall back cleanly.
+    if(!gotToken && !terminal) return _copilotAskNonStream(q,out);
+  }
+  // Render the terminal frame (sources chips / facts fallback). If we streamed
+  // tokens but never saw a terminal, synthesize a done from what we have.
+  if(terminal){ _copilotRenderAnswer(out,terminal); return; }
+  if(gotToken){ _copilotRenderAnswer(out,{source:'llm',answer:buf,sources:[]}); return; }
+  return _copilotAskNonStream(q,out);
 }
 // "based on: <chips>" transparency line under an answer. sources is a small list
 // like ['container:chroma','cost','anomalies']; all text XSS-escaped.
