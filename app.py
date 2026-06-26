@@ -4206,6 +4206,12 @@ SETTING_DEFAULTS = {
     "smtp_tls":            "1",        # "1" => STARTTLS (default) / "0" => plain
     "alert_min_level":     "warning",  # "warning" or "critical"
     "disk_alert_pct":      "90",       # disk usage % that trips an alert
+    # ── SLO / error-budget target for uptime checks (display + digest only) ─────
+    # A monthly availability SLO as a PERCENT string (e.g. "99.9"). Drives the
+    # error-budget + burn-rate view on the uptime tiles and a digest mention when
+    # a check is over budget / burning hot. Empty/garbage falls back to 99.9; a
+    # value of "100" means no error budget (any failure shows as over budget).
+    "slo_target":          "99.9",
     "kwh_price":           "",         # electricity price per kWh (day/peak in dual mode); empty hides the cost card (#25)
     "currency":            "$",        # symbol shown next to costs
     # ── dual (day/night) tariff — revamp ──────────────────────────────────────
@@ -8407,6 +8413,20 @@ def _digest_sections(now=None):
         fleet.append(line + ".")
         for c in down[:3]:
             fleet.append("  - %s is down." % str(c.get("label") or c.get("id") or "check"))
+        # SLO error-budget callouts: only when notable (over budget OR burning hot)
+        # AND backed by enough data — silent otherwise.
+        for c in uptime:
+            slo = c.get("slo") or {}
+            if not slo.get("data_sufficient"):
+                continue
+            name = str(c.get("label") or c.get("id") or "check")
+            if slo.get("over_budget"):
+                fleet.append("  ⚠️ %s burned %s%% of its error budget (SLO %s%%)." % (
+                    name, _reco_num(slo.get("budget_consumed_pct")),
+                    _reco_num(round(slo.get("target", 0) * 100, 3))))
+            elif slo.get("burning"):
+                fleet.append("  ⚠️ %s is burning error budget fast (%s× over the last hour)." % (
+                    name, _reco_num(slo.get("burn_1h"))))
     if fleet:
         sections.append(("Fleet / Uptime", fleet))
 
@@ -11148,6 +11168,105 @@ _UPTIME_MAX_TIMEOUT  = 30      # hard cap so a probe can't pin a worker forever
 _UPTIME_MAX_REDIRECTS = 3
 _UPTIME_RESULT_CAP   = 5000    # per-check ring-buffer of results
 _UPTIME_UA = "HomeLab-Monitor uptime check"
+# ── SLO / error-budget ──────────────────────────────────────────────────────
+# The error budget is computed over a 30-day SLO window, but honestly clamped to
+# whatever results actually sit in the per-check ring buffer (a fast cadence may
+# not cover a full 30 days — see _UPTIME_RESULT_CAP). Burn rate is the recent
+# failure fraction over a rolling window divided by the allowed failure fraction,
+# so >1 means the budget is being spent faster than the window can sustain.
+_SLO_WINDOW_SEC      = 30 * 86400   # nominal 30-day SLO window
+_SLO_BURN_FAST_SEC   = 3600         # short burn window (1h)
+_SLO_BURN_SLOW_SEC   = 6 * 3600     # medium burn window (6h)
+_SLO_MIN_SAMPLES     = 20           # below this, "collecting…" instead of a number
+_SLO_MIN_SPAN_FRAC   = 0.02         # need ≥2% of the window spanned to trust the %
+
+def _parse_slo_target(raw):
+    """Parse the slo_target setting (a PERCENT string like '99.9') into an SLO
+    fraction in (0, 1]. Empty/garbage/out-of-range → default 0.999. A target of
+    exactly 100 (% ) is allowed and means 'no error budget' (any failure is over
+    budget); handled downstream via allowed_fail == 0."""
+    default = 0.999
+    if raw is None:
+        return default
+    s = str(raw).strip().rstrip("%").strip()
+    if not s:
+        return default
+    try:
+        pct = float(s)
+    except (TypeError, ValueError):
+        return default
+    if not (0.0 < pct <= 100.0):
+        return default
+    return pct / 100.0
+
+def _uptime_slo(rows, now, target, window=_SLO_WINDOW_SEC):
+    """Pure error-budget + burn-rate stats for ONE check, computed over already-
+    stored (ts, up) result rows — NO poll, NO network, NO DB read here (caller
+    passes the rows it already fetched). `rows` is an iterable of (ts, up[, ...])
+    ascending by ts (extra columns are ignored). `target` is the SLO fraction
+    (0<target<=1); `now` is epoch seconds.
+
+    Returns a dict, always JSON-safe (no NaN/inf):
+      target            SLO fraction echoed back
+      allowed_fail      1 - target (0 when target == 100%)
+      total, down       sample counts inside the window
+      observed_fail     down/total (0 when total==0)
+      budget_consumed_pct  observed_fail/allowed_fail*100, clamped to [0, 999];
+                           None when allowed_fail==0 and there are no failures;
+                           999 (>100 sentinel "over") when target==100% and any fail
+      burn_1h, burn_6h  recent-failure-fraction / allowed_fail over the rolling
+                        windows (None when allowed_fail==0 or no samples in window)
+      window_days_actual  span (first→last sample) in days, rounded to 0.1
+      data_sufficient   False when too few samples / span far short of the window
+      over_budget       budget_consumed_pct is not None and > 100
+      burning           burn_1h is not None and burn_1h > 1
+    """
+    samples = []
+    for r in rows:
+        ts = r[0]
+        if ts is None or ts < now - window:
+            continue
+        samples.append((ts, 1 if r[1] else 0))
+    total = len(samples)
+    allowed_fail = max(0.0, 1.0 - float(target))
+    out = {
+        "target": round(float(target), 6),
+        "allowed_fail": round(allowed_fail, 6),
+        "total": total, "down": 0, "observed_fail": 0.0,
+        "budget_consumed_pct": None,
+        "burn_1h": None, "burn_6h": None,
+        "window_days_actual": 0.0,
+        "data_sufficient": False,
+        "over_budget": False, "burning": False,
+    }
+    if total == 0:
+        return out
+    down = sum(1 for _, up in samples if not up)
+    out["down"] = down
+    observed_fail = down / total
+    out["observed_fail"] = round(observed_fail, 6)
+    span = samples[-1][0] - samples[0][0]
+    out["window_days_actual"] = round(span / 86400.0, 1)
+    out["data_sufficient"] = (total >= _SLO_MIN_SAMPLES and
+                              span >= window * _SLO_MIN_SPAN_FRAC)
+    # Budget consumed: how much of the allowed failure fraction we've eaten.
+    if allowed_fail <= 0.0:               # target == 100% → no budget at all
+        out["budget_consumed_pct"] = 999.0 if down else None
+    else:
+        out["budget_consumed_pct"] = round(min(999.0, observed_fail / allowed_fail * 100.0), 1)
+    out["over_budget"] = (out["budget_consumed_pct"] is not None and
+                          out["budget_consumed_pct"] > 100.0)
+    # Burn rate over rolling sub-windows: recent failure fraction / allowed_fail.
+    def _burn(sub):
+        recent = [up for ts, up in samples if ts >= now - sub]
+        if not recent or allowed_fail <= 0.0:
+            return None
+        fail_frac = sum(1 for up in recent if not up) / len(recent)
+        return round(fail_frac / allowed_fail, 2)
+    out["burn_1h"] = _burn(_SLO_BURN_FAST_SEC)
+    out["burn_6h"] = _burn(_SLO_BURN_SLOW_SEC)
+    out["burning"] = out["burn_1h"] is not None and out["burn_1h"] > 1.0
+    return out
 _UPTIME_CERT_DEFAULT_PORT = 443
 _UPTIME_CERT_DEFAULT_WARN_DAYS = 21    # warn when a cert expires within this window
 _UPTIME_CERT_MAX_WARN_DAYS = 365
@@ -11624,13 +11743,27 @@ def _uptime_state(check_id, now, window=86400):
                 out["issuer_cn"] = ce["issuer_cn"]
     return out
 
+def _uptime_slo_for(check_id, now, target):
+    """Fetch the SLO-window (ts, up) rows for one check and run _uptime_slo over
+    them. Read-only; takes LOCK briefly. Separate from _uptime_state's 1-day read
+    because the SLO window (30d) is wider — but still a single bounded query."""
+    since = now - _SLO_WINDOW_SEC
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up FROM uptime_results WHERE check_id=? AND ts>=? ORDER BY ts",
+            (check_id, since)).fetchall()
+    return _uptime_slo(rows, now, target)
+
 def uptime_overview(window=86400):
     """All checks + their current state. The user-facing private payload."""
     now = int(time.time())
+    target = _parse_slo_target(get_settings().get("slo_target"))
     out = []
     for c in list_uptime_checks():
         st = _uptime_state(c["id"], now, window)
         rec = {**c, **st}
+        # SLO error-budget + burn-rate (private surface only; never on /status).
+        rec["slo"] = _uptime_slo_for(c["id"], now, target)
         # Cert checks expose a soft "warn" when up-but-expiring within the window —
         # state stays 'up' (so uptime_down stays reserved for hard failures), but
         # the UI/exporter can flag the imminent expiry. A hard-expired cert reads

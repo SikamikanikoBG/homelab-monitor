@@ -943,6 +943,19 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 button.btn{background:var(--inset);border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:7px 14px;cursor:pointer;font:inherit;font-size:13px}
 button.btn:hover{border-color:var(--mut)}
 @media(prefers-reduced-motion:reduce){ .uphb .cell{transition:none} }
+/* SLO error-budget line + thin consumption bar on each uptime tile */
+.upslo{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--mut);font-variant-numeric:tabular-nums}
+.upslo .uprow{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.upslo b{color:var(--tx);font-weight:700}
+.upslo .upbar{height:5px;border-radius:3px;background:var(--bd);overflow:hidden}
+.upslo .upbar>span{display:block;height:100%;border-radius:3px;transition:width .2s}
+.upslo .upbar.ok>span{background:var(--ok)}
+.upslo .upbar.warn>span{background:var(--warn)}
+.upslo .upbar.crit>span{background:var(--crit)}
+.upslo .slo-collecting{color:var(--mut);font-style:italic}
+.upslo .slo-pill{font-weight:700}
+.upslo .slo-pill.crit{color:var(--crit)}
+.upslo .slo-pill.warn{color:var(--warn)}
 .hostrow .tg-edit{background:#161b22;color:var(--tx);border:1px solid var(--accent);border-radius:6px;padding:2px 7px;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;min-width:220px}
 .lansug{background:var(--inset);border:1px solid var(--bd);border-radius:9px;padding:10px 12px;margin-top:8px}
 .lansug .row{display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px dashed var(--bd)}
@@ -1930,6 +1943,12 @@ h2 .hic{ opacity:.9 }
           <div class="flabel" data-i18n="set.disk_threshold">Disk alert threshold (%)</div>
           <input type="number" id="al_disk" min="50" max="99" step="1"
                  class="field">
+        </div>
+        <div>
+          <div class="flabel" data-i18n="set.slo_target">Uptime SLO target (%)</div>
+          <input type="number" id="al_slo" min="50" max="100" step="0.001"
+                 class="field" placeholder="99.9">
+          <div class="cap" data-i18n="set.slo_target_cap">Monthly availability SLO for uptime checks. Drives the error-budget &amp; burn-rate view on each check tile. 100 = no error budget.</div>
         </div>
       </div>
 
@@ -4417,6 +4436,47 @@ function upHeartbeat(strip){
   const cells = strip.map(c=>`<div class="cell ${c.up?'ok':'down'}"></div>`).join('');
   return `<div class="uphb" aria-hidden="true">${cells}</div>`;
 }
+// SLO error-budget + burn-rate line for a check. Compact: "SLO 99.9% · budget
+// 34% used · burn 0.7×" with a thin consumption bar. "collecting…" when the
+// backend says there isn't enough data to trust a number. XSS-safe (esc()).
+function upSlo(c){
+  const s = c.slo; if(!s) return '';
+  const tgtPct = (s.target!=null) ? +(s.target*100).toFixed(3) : null;
+  const sloLbl = (tgtPct!=null)
+    ? I18N.tf('uptime.slo_label','SLO {p}%',{p:tgtPct})
+    : I18N.t('uptime.slo','SLO');
+  if(!s.data_sufficient){
+    return `<div class="upslo"><div class="uprow"><span>${esc(sloLbl)}</span>
+      <span class="slo-collecting">${esc(I18N.t('uptime.slo_collecting','collecting…'))}</span></div></div>`;
+  }
+  const used = s.budget_consumed_pct;            // may be null (target 100%, no fails)
+  const burn = s.burn_1h;                         // may be null
+  const over = !!s.over_budget, burning = !!s.burning;
+  // Bar colour: green <80% used, amber 80–100%, red >100% or burning hot.
+  let barCls='ok';
+  if(used!=null && used>100) barCls='crit';
+  else if(used!=null && used>=80) barCls='warn';
+  if(burning) barCls='crit';
+  const barW = (used==null) ? 0 : Math.max(0,Math.min(100,used));
+  const usedTxt = (used==null)
+    ? I18N.t('uptime.slo_no_budget','no budget')
+    : I18N.tf('uptime.slo_budget','budget {p}% used',{p:Math.round(used)});
+  const usedCls = over ? 'slo-pill crit' : (used!=null && used>=80 ? 'slo-pill warn' : 'slo-pill');
+  let burnTxt='';
+  if(burn!=null){
+    const bCls = burning ? 'slo-pill crit' : 'slo-pill';
+    burnTxt = ` · <span class="${bCls}">${esc(I18N.tf('uptime.slo_burn','burn {b}×',{b:(+burn).toFixed(1)}))}</span>`;
+  }
+  const span = (s.window_days_actual!=null)
+    ? `<span title="${esc(I18N.tf('uptime.slo_window','over last {d} days',{d:(+s.window_days_actual).toFixed(1)}))}">${esc(I18N.tf('uptime.slo_window_short','{d}d',{d:(+s.window_days_actual).toFixed(1)}))}</span>`
+    : '';
+  return `<div class="upslo">
+    <div class="uprow"><span>${esc(sloLbl)}</span>
+      <span class="${usedCls}">${esc(usedTxt)}</span>${burnTxt}
+      ${span?'· '+span:''}</div>
+    <div class="upbar ${barCls}" role="img" aria-label="${esc(usedTxt)}"><span style="width:${barW}%"></span></div>
+  </div>`;
+}
 function upCard(c){
   const st = c.state||'unknown';
   const isCert = c.type==='cert';
@@ -4475,6 +4535,7 @@ function upCard(c){
     <div class="upmeta">
       ${meta}
     </div>
+    ${upSlo(c)}
     ${err}
     <div class="upactions">
       <button type="button" class="btn-mini" data-act="toggle" data-id="${esc(c.id)}" data-en="${c.enabled?1:0}">${esc(c.enabled?I18N.t('uptime.pause','Pause'):I18N.t('uptime.resume','Resume'))}</button>
@@ -4557,6 +4618,7 @@ async function loadAlerts(){
   document.getElementById('al_telegram_chat_id').value = s.telegram_chat_id||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
+  document.getElementById('al_slo').value          = s.slo_target||'99.9';
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
@@ -4672,6 +4734,7 @@ async function saveAlerts(){
     telegram_chat_id: document.getElementById('al_telegram_chat_id').value.trim(),
     alert_min_level:  document.getElementById('al_minlevel').value,
     disk_alert_pct:   String(parseInt(document.getElementById('al_disk').value||'90',10)||90),
+    slo_target:       document.getElementById('al_slo').value.trim()||'99.9',
     kwh_price:        document.getElementById('al_kwh').value.trim(),
     currency:         document.getElementById('al_currency').value.trim()||'$',
     tariff_mode:      TARIFF_DUAL ? 'dual' : 'single',
