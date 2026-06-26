@@ -355,9 +355,10 @@ class TestSendNowRicher(_SettingsBase):
         self._disp = app.dispatch_alert
         self.captured = {}
 
-        def _cap(s, level, title, body, channel=None):
+        def _cap(s, level, title, body, channel=None, html_detail=None):
             self.captured["title"] = title
             self.captured["body"] = body
+            self.captured["html_detail"] = html_detail
             return [(channel or "ntfy", True, None)]
         app.dispatch_alert = _cap
 

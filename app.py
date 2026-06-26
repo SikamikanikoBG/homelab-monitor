@@ -20,6 +20,7 @@ Adding a new monitor (it's meant to be easy):
 """
 import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch
 import email.message
+import html as _html
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -4362,10 +4363,15 @@ def send_slack(webhook, level, title, detail):
     return _post_json(webhook, payload)
 
 def send_email(subject, body, level, *, host, port=587, user="", password="",
-               sender="", to="", tls=True, timeout=10):
+               sender="", to="", tls=True, timeout=10, html_body=None):
     """Deliver a plain-text alert via SMTP using stdlib smtplib + EmailMessage.
     STARTTLS when `tls`; login when user+password set. Returns (ok, err) and NEVER
-    raises into the alert loop — and the error text never embeds the password."""
+    raises into the alert loop — and the error text never embeds the password.
+
+    When `html_body` is provided the message is multipart/alternative: the plain-text
+    `body` is the fallback (set_content) and the HTML is added via add_alternative,
+    so HTML-capable clients render the brief while text-only clients fall back. Without
+    `html_body` the message is a single-part text/plain (unchanged behaviour)."""
     try:
         recipients = [a.strip() for a in (to or "").split(",") if a.strip()]
         if not (host and sender and recipients):
@@ -4376,6 +4382,8 @@ def send_email(subject, body, level, *, host, port=587, user="", password="",
         msg["To"]      = ", ".join(recipients)
         msg["X-HomeLab-Level"] = level
         msg.set_content(body)
+        if html_body:
+            msg.add_alternative(html_body, subtype="html")
         with smtplib.SMTP(host, int(port or 587), timeout=timeout) as srv:
             srv.ehlo()
             if tls:
@@ -4405,8 +4413,12 @@ def _configured_channels(s):
     if s.get("smtp_host") and s.get("smtp_from") and s.get("smtp_to"): out.append("email")
     return out
 
-def _send_one_channel(s, ch, level, title, detail):
-    """Send to a single named channel. Returns (ok, err). Raises nothing."""
+def _send_one_channel(s, ch, level, title, detail, html_detail=None):
+    """Send to a single named channel. Returns (ok, err). Raises nothing.
+
+    `html_detail` (optional) is an email-client-safe HTML alternative used ONLY by the
+    email channel (multipart/alternative); chat channels always get plain-text only so
+    they never render raw HTML tags."""
     try:
         if ch == "discord":
             if not s.get("discord_webhook_url"): return (False, "not configured")
@@ -4431,7 +4443,8 @@ def _send_one_channel(s, ch, level, title, detail):
                 host=s.get("smtp_host"), port=s.get("smtp_port") or 587,
                 user=s.get("smtp_user") or "", password=s.get("smtp_pass") or "",
                 sender=s.get("smtp_from"), to=s.get("smtp_to"),
-                tls=(str(s.get("smtp_tls", "1")) != "0"))
+                tls=(str(s.get("smtp_tls", "1")) != "0"),
+                html_body=html_detail)
             return (ok, err)
         else:
             return (False, f"unknown channel {ch}")
@@ -4439,16 +4452,21 @@ def _send_one_channel(s, ch, level, title, detail):
     except Exception as e:
         return (False, str(e))
 
-def dispatch_alert(s, level, title, detail, channel="all"):
+def dispatch_alert(s, level, title, detail, channel="all", html_detail=None):
     """Send to the requested channel(s). channel='all' fans out to every configured
     channel; otherwise just the one named. Returns list of (channel, ok, err).
-    A channel that isn't configured is silently skipped under 'all'."""
+    A channel that isn't configured is silently skipped under 'all'.
+
+    `html_detail` (optional) is passed to the email channel ONLY (multipart/alternative
+    HTML alternative); all other channels receive plain-text `detail` only."""
     if channel and channel != "all":
-        ok, err = _send_one_channel(s, channel, level, title, detail)
+        hd = html_detail if channel == "email" else None
+        ok, err = _send_one_channel(s, channel, level, title, detail, hd)
         return [(channel, ok, err)]
     out = []
     for ch in _configured_channels(s):
-        ok, err = _send_one_channel(s, ch, level, title, detail)
+        hd = html_detail if ch == "email" else None
+        ok, err = _send_one_channel(s, ch, level, title, detail, hd)
         out.append((ch, ok, err))
     return out
 
@@ -7962,12 +7980,91 @@ def _render_digest_body(narrative, sections):
     return "\n".join(parts).strip()
 
 
-def build_digest(now=None):
-    """Build the digest message (title, body, llm_status). Composes the optional
-    ollama narrative (our differentiator) on top of a structured, deterministic
-    brief assembled from the live signals. When the LLM is unreachable the brief
-    still sends — just without the narrative line — and is never empty. The body
-    carries telemetry facts ONLY (no secrets). Never raises."""
+# Subtle severity tints for "Needs attention" lines that begin with [CRIT]/[WARN]
+# (matches the plain-text bullets emitted by _digest_sections). Email-client-safe
+# named/hex colors only — no CSS classes, no external assets.
+_DIGEST_HTML_SEV = (
+    ("[CRIT]", "#b91c1c"),   # red-700
+    ("[WARN]", "#b45309"),   # amber-700
+)
+
+
+def _render_digest_html(narrative, sections, now=None):
+    """Render the SAME deterministic `sections` (and optional ollama narrative) as a
+    compact, email-client-safe HTML brief — inline styles only, no <style>/CSS/JS,
+    no external assets (Gmail/Outlook-safe). Every dynamic value is HTML-escaped so a
+    model/check/entity name containing '<' or '&' can't break the markup. Carries
+    telemetry facts ONLY (no secrets), identical content to the plain-text body, so
+    the two never drift. Never empty when sections exist."""
+    esc = _html.escape
+    ts = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(now or time.time()))
+    blocks = []
+    wrap = "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"
+
+    def _line_html(line):
+        # Indented sub-bullets ("  - ...") render as nested; severity-tagged lines
+        # get a subtle color. Escape first, then wrap.
+        raw = line.rstrip()
+        stripped = raw.lstrip()
+        indented = raw != stripped
+        color = None
+        for tag, col in _DIGEST_HTML_SEV:
+            if tag in stripped:
+                color = col
+                break
+        style = "margin:2px 0;font-size:13px;line-height:1.45;color:%s;" % (color or "#1f2937")
+        if indented:
+            style += "padding-left:16px;color:%s;" % (color or "#4b5563")
+        return '<div style="%s">%s</div>' % (style, esc(stripped))
+
+    # Header
+    blocks.append(
+        '<div style="font-size:18px;font-weight:600;color:#111827;'
+        'margin:0 0 4px;">HomeLab Monitor — Lab Copilot brief</div>')
+
+    # Narrative summary (LLM, optional). Omitted entirely when LLM is down.
+    if narrative:
+        blocks.append(
+            '<div style="margin:10px 0 4px;">'
+            '<div style="font-size:13px;font-weight:600;color:#374151;'
+            'text-transform:uppercase;letter-spacing:.04em;">Summary</div>'
+            '<div style="font-size:13px;line-height:1.5;color:#1f2937;'
+            'margin-top:3px;white-space:pre-wrap;">%s</div></div>' % esc(narrative.strip()))
+
+    # Deterministic sections — always render even with LLM down.
+    for header, lines in sections:
+        if not lines:
+            continue
+        attn = (header == "Needs attention")
+        accent = "#b45309" if attn else "#374151"
+        inner = "".join(_line_html(ln) for ln in lines)
+        blocks.append(
+            '<div style="margin:12px 0 0;padding:8px 10px;background:#f9fafb;'
+            'border-left:3px solid %s;border-radius:4px;">'
+            '<div style="font-size:13px;font-weight:600;color:%s;'
+            'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">%s</div>'
+            '%s</div>' % (accent, accent, esc(header), inner))
+
+    body_inner = "".join(blocks)
+    footer = (
+        '<div style="margin-top:16px;padding-top:8px;border-top:1px solid #e5e7eb;'
+        'font-size:11px;color:#9ca3af;">HomeLab Monitor &middot; %s</div>' % esc(ts))
+
+    return (
+        '<!DOCTYPE html><html><body style="margin:0;padding:0;background:#ffffff;">'
+        '<div style="%smax-width:640px;margin:0 auto;padding:16px;color:#1f2937;">'
+        '%s%s</div></body></html>' % (wrap, body_inner, footer))
+
+
+def build_digest(now=None, with_html=False):
+    """Build the digest message (title, body, llm_status[, html]). Composes the
+    optional ollama narrative (our differentiator) on top of a structured,
+    deterministic brief assembled from the live signals. When the LLM is unreachable
+    the brief still sends — just without the narrative line — and is never empty. The
+    body carries telemetry facts ONLY (no secrets). Never raises.
+
+    With `with_html=True`, also returns an email-client-safe HTML rendering of the
+    SAME sections+narrative as a 4th element (for the email channel only)."""
     now = now or int(time.time())
     s = get_settings()
     weekly = (s.get("digest_cadence") or "daily").strip() == "weekly"
@@ -7989,6 +8086,13 @@ def build_digest(now=None):
     if not body:
         # Last-resort fallback: the terse fact bullets (always non-empty).
         body = "\n".join("- " + f for f in facts)
+    if with_html:
+        try:
+            html_body = _render_digest_html(narrative, sections, now)
+        except Exception as e:
+            print("build_digest html error:", e, flush=True)
+            html_body = None
+        return title, body, llm_status, html_body
     return title, body, llm_status
 
 
@@ -8008,8 +8112,9 @@ def send_digest(channel=None, s=None, record=True):
             return {"ok": False, "results": [], "reason": "No channel configured."}
     elif channel not in _configured_channels(s):
         return {"ok": False, "results": [], "reason": "Channel not configured."}
-    title, body, llm_status = build_digest()
-    results = dispatch_alert(s, "info", title, body, channel=channel)
+    title, body, llm_status, html_body = build_digest(with_html=True)
+    results = dispatch_alert(s, "info", title, body, channel=channel,
+                             html_detail=html_body)
     if record:
         for ch, ok, err in results:
             record_alert(None, "scheduled digest", "info", ch,
