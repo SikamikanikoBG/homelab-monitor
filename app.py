@@ -7521,6 +7521,11 @@ def _llm_metrics_from_response(data, model=None):
         "prompt_tps": prompt_tps,
         "eval_count": int(eval_count),
         "prompt_eval_count": int(p_count) if p_count else 0,
+        # eval_duration (ns) is kept so the per-inference cost/energy chip can
+        # turn generation TIME × live GPU watts into Wh/money server-side. It is
+        # NOT persisted to llm_samples (that schema is unchanged) — purely a
+        # transient field consumed by _inference_cost. None-safe downstream.
+        "eval_duration_ns": int(eval_dur),
         "ts": int(time.time()),
     }
 
@@ -7564,6 +7569,69 @@ def _capture_llm_metrics(data):
         _persist_llm_sample(m)
     except Exception:
         pass
+
+
+def _inference_cost(metrics, now=None):
+    """Turn ONE local generation's timing into a tiny per-inference cost/throughput
+    object for the chip under a Copilot answer — server-side, so the electricity
+    tariff and live GPU watts never ship to the client.
+
+    `metrics` is a dict from `_llm_metrics_from_response` (carries eval_count, tps,
+    ttft_ms and eval_duration_ns). Returns:
+        {model, tokens, tps, ttft_ms, energy_wh, cost, currency}
+    or None when there is no usable timing (LLM-down / facts-only path → no chip).
+
+    energy_wh = eval_duration_s × current_GPU_power_W / 3600   (an approximation —
+    the chip is prefixed "~" in the UI). Current GPU power is read from the SAME
+    live snapshot the cost attribution uses (LATEST['power']). If GPU power is
+    unavailable, energy_wh/cost are omitted (chip still shows tokens + tps).
+
+    cost = (energy_wh/1000) × tariff_per_kWh, currency from the cost context, ONLY
+    when cost is enabled (a positive tariff at `now`). Otherwise cost is None and
+    the chip shows no money. Reuses _cost_ctx/_price_at — the one source of truth,
+    so it can never contradict the Costs tab. Pure + side-effect-free → testable.
+    Reads LATEST (a plain dict snapshot); takes no LOCK and makes no network call."""
+    if not isinstance(metrics, dict):
+        return None
+    tokens = metrics.get("eval_count")
+    eval_ns = metrics.get("eval_duration_ns")
+    if not tokens or not eval_ns or eval_ns <= 0:
+        return None
+    out = {
+        "model": metrics.get("model") or COPILOT_MODEL,
+        "tokens": int(tokens),
+        "tps": metrics.get("tps"),
+        "ttft_ms": metrics.get("ttft_ms"),
+        "energy_wh": None,
+        "cost": None,
+        "currency": None,
+    }
+    # Current total GPU power draw (W) from the live snapshot — same source the
+    # cost attribution reads. None/0 → energy & cost are simply omitted.
+    try:
+        gpu_w = float(LATEST.get("power") or 0)
+    except (TypeError, ValueError):
+        gpu_w = 0.0
+    if gpu_w > 0:
+        eval_s = eval_ns / 1e9
+        energy_wh = eval_s * gpu_w / 3600.0
+        out["energy_wh"] = round(energy_wh, 3)
+        # Cost only when a tariff is configured (cost-enabled host). Tariff-aware
+        # via _price_at — never contradicts the Costs tab.
+        try:
+            ctx = _cost_ctx()
+            ts = int(now if now is not None else time.time())
+            price = _price_at(ctx, ts)  # per-kWh
+            if price and price > 0:
+                cost = (energy_wh / 1000.0) * price
+                # Floor so a real (tiny) cost never renders as a bare 0.0000.
+                out["cost"] = round(cost, 4) if cost >= 0.00005 else 0.0001
+                out["cost_floored"] = cost < 0.00005
+                out["currency"] = ctx.get("currency") or "$"
+        except Exception:
+            out["cost"] = None
+            out["currency"] = None
+    return out
 
 
 def _llm_history(limit=60):
@@ -7844,10 +7912,15 @@ def api_models():
     })
 
 
-def _ollama_generate(prompt, timeout=None):
+def _ollama_generate(prompt, timeout=None, capture=None):
     """Call the local ollama /api/generate (non-streaming). Returns (text, error)
     where exactly one is non-None. Never raises. `error` is a short machine code:
-    'disabled' | 'no_model' | 'unreachable' | 'bad_response'."""
+    'disabled' | 'no_model' | 'unreachable' | 'bad_response'.
+
+    `capture`, when a list, has this call's throughput metrics dict (from
+    `_llm_metrics_from_response`, or None) appended — lets a caller build the
+    per-inference cost chip WITHOUT changing the (text, error) return shape that
+    six callers rely on."""
     if not COPILOT_ENABLED:
         return None, "disabled"
     url = COPILOT_OLLAMA_URL + "/api/generate"
@@ -7861,6 +7934,11 @@ def _ollama_generate(prompt, timeout=None):
         with urllib.request.urlopen(req, timeout=(timeout or COPILOT_TIMEOUT)) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
         _capture_llm_metrics(data)  # side-channel; never alters text below
+        if isinstance(capture, list):
+            try:
+                capture.append(_llm_metrics_from_response(data, COPILOT_MODEL))
+            except Exception:
+                capture.append(None)
         txt = (data.get("response") or "").strip()
         if not txt:
             return None, "bad_response"
@@ -7957,9 +8035,13 @@ def api_copilot_digest():
     facts = _copilot_facts(ctx)
     out = {"now": now, "model": COPILOT_MODEL, "facts": facts,
            "context": ctx, "enabled": COPILOT_ENABLED}
-    text, err = _ollama_generate(_copilot_digest_prompt(facts))
+    _cap = []
+    text, err = _ollama_generate(_copilot_digest_prompt(facts), capture=_cap)
     if text is not None:
         out.update({"digest": text, "source": "llm", "llm_status": "ok"})
+        inf = _inference_cost(_cap[0] if _cap else None, now)
+        if inf:
+            out["inference"] = inf
     else:
         out.update({"digest": " ".join(facts), "source": "facts", "llm_status": err})
     return jsonify(out)
@@ -8864,9 +8946,13 @@ def api_copilot_ask():
     out = {"now": now, "model": COPILOT_MODEL, "question": question,
            "facts": facts, "sources": used, "routing": routing,
            "enabled": COPILOT_ENABLED}
-    text, err = _ollama_generate(_copilot_ask_prompt(facts, question))
+    _cap = []
+    text, err = _ollama_generate(_copilot_ask_prompt(facts, question), capture=_cap)
     if text is not None:
         out.update({"answer": text, "source": "llm", "llm_status": "ok"})
+        inf = _inference_cost(_cap[0] if _cap else None, now)
+        if inf:
+            out["inference"] = inf
     else:
         # No LLM: hand back the routed facts as a readable summary so the box is
         # still useful (never a dead end), with the same sources.
@@ -8936,11 +9022,15 @@ def api_copilot_ask_stream():
                     acc.append(val)
                     yield _sse("token", {"t": val})
                 elif kind == "done":
-                    yield _sse("done", {
+                    done = {
                         "answer": val.get("text") or "".join(acc),
                         "source": "llm", "llm_status": "ok",
                         "sources": used, "routing": routing,
-                        "facts": facts, "model": COPILOT_MODEL})
+                        "facts": facts, "model": COPILOT_MODEL}
+                    inf = _inference_cost(val.get("metrics"), now)
+                    if inf:
+                        done["inference"] = inf
+                    yield _sse("done", done)
                     return
                 elif kind == "error":
                     # LLM unavailable (at start or mid-stream): hand back the
@@ -9156,9 +9246,13 @@ def api_copilot_explain():
     facts = _explain_facts(ctx)
     out = {"now": now, "model": COPILOT_MODEL, "key": ctx.get("key"),
            "facts": facts, "context": ctx, "enabled": COPILOT_ENABLED}
-    text, err = _ollama_generate(_explain_prompt(facts))
+    _cap = []
+    text, err = _ollama_generate(_explain_prompt(facts), capture=_cap)
     if text is not None:
         out.update({"explanation": text, "source": "llm", "llm_status": "ok"})
+        inf = _inference_cost(_cap[0] if _cap else None, now)
+        if inf:
+            out["inference"] = inf
     else:
         # No LLM: hand back the deterministic facts as the explanation so the
         # "Why?" action is never a dead end.
@@ -9212,6 +9306,9 @@ def api_copilot_explain_stream():
                     out = dict(base)
                     out.update({"explanation": val.get("text") or "".join(acc),
                                 "source": "llm", "llm_status": "ok"})
+                    inf = _inference_cost(val.get("metrics"), now)
+                    if inf:
+                        out["inference"] = inf
                     yield _sse("done", out)
                     return
                 elif kind == "error":
@@ -9293,6 +9390,9 @@ def api_copilot_digest_stream():
                     out = dict(base)
                     out.update({"digest": val.get("text") or "".join(acc),
                                 "source": "llm", "llm_status": "ok"})
+                    inf = _inference_cost(val.get("metrics"), now)
+                    if inf:
+                        out["inference"] = inf
                     yield _sse("done", out)
                     return
                 elif kind == "error":

@@ -6579,7 +6579,7 @@ async function explainAnomaly(it, i, btn){
 function _copilotRenderExplain(out,j){
   if(!out||!j) return;
   if(j.source==='llm' && j.explanation){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div>'+_copilotInferenceChip(j.inference)+'</div></div>';
   }else{
     const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
     out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
@@ -7020,6 +7020,29 @@ function _copilotChip(j){
   el.hidden=false; txt.textContent=model;
   el.classList.toggle('ok', !!(j && j.llm_status==='ok'));
 }
+// Per-inference cost/throughput chip under a Copilot answer. `inf` is the
+// server-computed object {model,tokens,tps,ttft_ms,energy_wh,cost,currency} — the
+// tariff + GPU watts stay server-side; we only format what we're handed. Renders
+// e.g. "~€0.0003 · 121 tok · 24 tok/s · 0.4 Wh"; omits the money segment when
+// cost is null (cost disabled) and returns '' entirely when no object (LLM-down /
+// facts path / still streaming). XSS-safe (esc()).
+function _copilotInferenceChip(inf){
+  if(!inf || typeof inf!=='object') return '';
+  const parts=[];
+  if(inf.cost!=null){
+    const cur=inf.currency||'';
+    const v=(inf.cost_floored?'<':'')+Number(inf.cost).toFixed(4);
+    parts.push(cur+v);
+  }
+  if(inf.tokens!=null) parts.push(I18N.tf('copilot.inf_tok','{n} tok',{n:inf.tokens}));
+  if(inf.tps!=null) parts.push(I18N.tf('copilot.inf_tps','{n} tok/s',{n:Number(inf.tps).toFixed(1)}));
+  if(inf.energy_wh!=null) parts.push(I18N.tf('copilot.inf_wh','{n} Wh',{n:Number(inf.energy_wh).toFixed(energyDp(inf.energy_wh))}));
+  if(!parts.length) return '';
+  const txt='~'+parts.join(' · ');
+  return '<div class="muted copilot-inf" style="font-size:11px;margin-top:5px;opacity:.85" title="'
+    +esc(I18N.t('copilot.inf_title','Estimated energy & cost this local generation burned'))+'">'+esc(txt)+'</div>';
+}
+function energyDp(wh){ return Math.abs(wh)>=1 ? 2 : 3; }
 function renderCopilot(){
   const card=document.getElementById('copilotcard'); if(!card) return;
   const j=COPILOT||{}; const body=document.getElementById('copilot-digest');
@@ -7034,7 +7057,7 @@ function renderCopilot(){
     if(TAB==='overview' && typeof renderHero==='function') renderHero();
   }
   if(j.source==='llm'){
-    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:14px">'+digest+'</div>'+_copilotDigestSections(j.sections)+'</div></div>';
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:14px">'+digest+'</div>'+_copilotDigestSections(j.sections)+_copilotInferenceChip(j.inference)+'</div></div>';
   }else{
     // Graceful state: clear note + the deterministic facts so it's never empty.
     const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
@@ -7137,7 +7160,7 @@ async function _copilotDigestStream(body){
 function _copilotRenderAnswer(out,j){
   const srcLine=_copilotSourcesLine(j.sources);
   if(j.source==='llm' && j.answer){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+'</div>'+srcLine+'</div></div>';
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+'</div>'+srcLine+_copilotInferenceChip(j.inference)+'</div></div>';
   }else if(j.facts_summary){
     // LLM unavailable but routing still pulled live facts — show them (never a dead end).
     out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">📊</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.facts_summary)+'</div>'
