@@ -1129,6 +1129,8 @@
   "digest.at": "时间",
   "digest.via": "通过",
   "digest.save": "保存",
+  "digest.preview": "预览",
+  "digest.preview_hint": "在新标签页中打开当前摘要的渲染预览",
   "digest.send_test": "立即发送测试摘要",
   "digest.all_channels": "所有已配置通道",
   "digest.no_channel": "未配置通道——请先在「告警」中设置。",

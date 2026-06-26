@@ -8047,6 +8047,92 @@ def api_copilot_digest():
     return jsonify(out)
 
 
+# Dark variant of the email-safe palette used by _render_digest_html. Same inline-
+# only, no-CSS/JS, no-external-asset contract — we just post-process the light HTML's
+# named/hex colours to their dark equivalents so the preview can be viewed in a dark
+# browser tab. Order matters (longest/most-specific first) so substrings don't clash.
+_DIGEST_DARK_SUBS = (
+    ("background:#ffffff", "background:#0b0f17"),
+    ("background:#f9fafb", "background:#161b26"),
+    ("color:#111827", "color:#f3f4f6"),
+    ("color:#1f2937", "color:#e5e7eb"),
+    ("color:#374151", "color:#cbd5e1"),
+    ("color:#4b5563", "color:#9ca3af"),
+    ("border-top:1px solid #e5e7eb", "border-top:1px solid #2a3242"),
+    ("color:#9ca3af", "color:#7b8494"),
+)
+
+
+def _digest_html_dark(html_doc):
+    """Recolour the light, email-safe digest HTML to a dark variant for the in-browser
+    preview ONLY (the email channel keeps the light original — never touched). Pure
+    string substitution over our own known inline colours; adds no <style>/JS/assets,
+    leaks nothing new. Severity tints (#b91c1c/#b45309) stay — they read fine on dark."""
+    for light, dark in _DIGEST_DARK_SUBS:
+        html_doc = html_doc.replace(light, dark)
+    return html_doc
+
+
+@app.route("/api/copilot/digest/preview")
+def api_copilot_digest_preview():
+    """In-browser preview of the CURRENT scheduled digest, rendered as a standalone
+    HTML page by the SAME builders the email channel uses (_digest_sections +
+    _render_digest_html) — one source of truth, so the preview is byte-faithful to
+    what would actually be sent. Always 200 text/html, never hangs, never 500, no
+    secret (telemetry facts only; the renderer html-escapes every dynamic value).
+
+    This is an EXPLICIT user action (clicking Preview), so a synchronous ollama call
+    for the narrative is acceptable — but bounded: if the LLM is disabled/slow/down
+    the page still renders the deterministic sections (narrative omitted), exactly as
+    the digest already degrades. ollama is NEVER triggered on a poll, only here.
+
+    Query params:
+      • theme = light (default) | dark  — accepted for both; unknown values fall back
+        to light. dark applies a recolour of the email-safe palette only.
+      • narrative = 1 (default) | 0     — narrative=0 skips ollama for an instant,
+        purely-deterministic preview.
+
+    LOCK discipline mirrors /api/copilot/digest: _digest_sections / _copilot_context
+    acquire LOCK internally; ollama is called with NO lock held."""
+    now = int(time.time())
+    theme = (request.args.get("theme") or "light").strip().lower()
+    if theme != "dark":
+        theme = "light"
+    want_narrative = (request.args.get("narrative") or "1").strip() != "0"
+
+    # Deterministic sections first (each helper takes LOCK itself, briefly).
+    try:
+        sections = _digest_sections(now)
+    except Exception as e:
+        print("digest preview sections error:", e, flush=True)
+        sections = []
+
+    # Optional narrative — assembled OUTSIDE any held lock, and only on this explicit
+    # request. Any LLM problem (disabled/unreachable/slow/bad) just drops the
+    # narrative; the sections stand alone, so the page is always valid.
+    narrative = None
+    if want_narrative:
+        try:
+            ctx = _copilot_context(now)
+            facts = _copilot_facts(ctx)
+            narrative, _err = _ollama_generate(_copilot_digest_prompt(facts))
+        except Exception as e:
+            print("digest preview narrative error:", e, flush=True)
+            narrative = None
+
+    try:
+        html_doc = _render_digest_html(narrative, sections, now)
+    except Exception as e:
+        print("digest preview render error:", e, flush=True)
+        html_doc = ("<!DOCTYPE html><html><body><p>HomeLab Monitor — Lab Copilot "
+                    "brief: no data to preview yet.</p></body></html>")
+    if theme == "dark":
+        html_doc = _digest_html_dark(html_doc)
+
+    return Response(html_doc, mimetype="text/html",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.route("/api/llm")
 def api_llm():
     """The AI Lab Cockpit's live LLM-engine surface. Always 200, graceful-degrade,

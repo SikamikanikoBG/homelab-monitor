@@ -1102,6 +1102,8 @@
   "digest.at": "at",
   "digest.via": "via",
   "digest.save": "Save",
+  "digest.preview": "Preview",
+  "digest.preview_hint": "Open a rendered preview of the current digest in a new tab",
   "digest.send_test": "Send test digest now",
   "digest.all_channels": "All configured channels",
   "digest.no_channel": "No channel configured — set one under Alerts first.",

@@ -1459,6 +1459,7 @@ h2 .hic{ opacity:.9 }
           <select class="hosts-input" id="digest-channel" style="width:auto"></select>
         </label>
         <button class="osvar" type="button" id="digest-save" data-i18n="digest.save">Save</button>
+        <button class="osvar" type="button" id="digest-preview" data-i18n="digest.preview" title="Open a rendered preview of the current digest in a new tab">Preview</button>
         <button class="osvar" type="button" id="digest-send" data-i18n="digest.send_test">Send test digest now</button>
         <span id="digest-result" class="muted" style="font-size:13px"></span>
       </div>
@@ -7593,6 +7594,13 @@ async function sendDigestNow(){
   }
   DIGEST_SEND_BUSY=false;
 }
+function openDigestPreview(){
+  // Render the CURRENT digest exactly as it would be sent, in a new tab. Matches the
+  // active UI theme (dark/light). The endpoint is read-only telemetry, no secrets.
+  const dark=document.documentElement.getAttribute('data-theme')!=='light';
+  const url='/api/copilot/digest/preview?theme='+(dark?'dark':'light');
+  window.open(url,'_blank','noopener');
+}
 function renderDisksTab(){
   loadForecast();
   const root=document.getElementById('disksbody'); if(!root) return;
@@ -8666,6 +8674,10 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(sched) sched.addEventListener('toggle',()=>{ if(sched.open) loadDigestConfig(); });
   const dsave=document.getElementById('digest-save'); if(dsave) dsave.onclick=saveDigestConfig;
   const dsend=document.getElementById('digest-send'); if(dsend) dsend.onclick=sendDigestNow;
+  const dprev=document.getElementById('digest-preview'); if(dprev){
+    dprev.title=I18N.t('digest.preview_hint','Open a rendered preview of the current digest in a new tab');
+    dprev.onclick=openDigestPreview;
+  }
   const dcad=document.getElementById('digest-cadence'); if(dcad) dcad.onchange=_digestToggleWeekday;
 })();
 document.getElementById('key_showraw').onclick = () => {
