@@ -291,12 +291,13 @@ class TestCertMetric(unittest.TestCase):
     def tearDown(self):
         _clean_db()
 
-    def _result(self, cid, up, days):
+    def _result(self, cid, up, days, cert_extra=None):
         with app.LOCK:
             app.DB.execute(
-                "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (cid, int(time.time()), 1 if up else 0, 9.0, None, None, days))
+                "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry,cert_extra) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (cid, int(time.time()), 1 if up else 0, 9.0, None, None, days,
+                 json.dumps(cert_extra) if cert_extra else None))
             app.DB.commit()
 
     def test_cert_days_metric_present_when_cert_check_probed(self):
@@ -320,6 +321,29 @@ class TestCertMetric(unittest.TestCase):
         body = self.c.get("/metrics").get_data(as_text=True)
         self.assertIn("homelab_uptime_cert_days_remaining", body)
         self.assertIn("-7", body)
+
+    def test_cert_not_after_metric_present_when_persisted(self):
+        # The absolute-expiry gauge appears when the persisted cert_extra carries a
+        # parseable not_after (→ not_after_ts surfaced by _uptime_state).
+        cid, _ = app.create_uptime_check(
+            {"label": "ghcert", "type": "cert", "target": "github.com:443"})
+        na = _not_after(58)
+        na_ts = int(app._parse_cert_not_after(na))
+        self._result(cid, up=True, days=58, cert_extra={"not_after": na,
+                     "subject_cn": "github.com", "issuer_cn": "Test CA"})
+        body = self.c.get("/metrics").get_data(as_text=True)
+        self.assertIn("homelab_uptime_cert_not_after_seconds", body)
+        self.assertIn(str(na_ts), body)
+
+    def test_cert_not_after_metric_absent_without_extra(self):
+        # An older row with no cert_extra (pre-migration / not persisted) → no
+        # not_after_ts → the absolute-expiry gauge is omitted (days gauge still emits).
+        cid, _ = app.create_uptime_check(
+            {"label": "ghcert", "type": "cert", "target": "github.com:443"})
+        self._result(cid, up=True, days=58)
+        body = self.c.get("/metrics").get_data(as_text=True)
+        self.assertIn("homelab_uptime_cert_days_remaining", body)
+        self.assertNotIn("homelab_uptime_cert_not_after_seconds", body)
 
 
 # ── cert_extra persistence + surfacing ───────────────────────────────────────

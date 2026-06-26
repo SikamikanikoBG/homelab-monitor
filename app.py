@@ -11672,7 +11672,7 @@ def _extra_metrics_text():
     try:
         checks = (uptime_overview().get("checks") or [])
         if checks:
-            up_s, lat_s, ratio_s, cert_s = [], [], [], []
+            up_s, lat_s, ratio_s, cert_s, cert_na_s = [], [], [], [], []
             down_n = 0
             for c in checks:
                 lbl = {"check": c.get("label") or c.get("id") or "?"}
@@ -11694,6 +11694,11 @@ def _extra_metrics_text():
                 # expired). Only emitted for cert checks that have actually probed.
                 if c.get("type") == "cert" and c.get("days_to_expiry") is not None:
                     cert_s.append((lbl, c.get("days_to_expiry")))
+                # Absolute expiry as a POSIX timestamp (from the persisted cert_extra
+                # not_after) so Grafana/Alertmanager can alert on the exact date and
+                # chart the renewal cliff — not just the relative day count above.
+                if c.get("type") == "cert" and c.get("not_after_ts") is not None:
+                    cert_na_s.append((lbl, c.get("not_after_ts")))
             _prom_metric(out, "homelab_uptime_up", "gauge",
                          "Uptime check current state (1=up, 0=down; unknown omitted)", up_s)
             _prom_metric(out, "homelab_uptime_latency_ms", "gauge",
@@ -11709,6 +11714,9 @@ def _extra_metrics_text():
             if cert_s:
                 _prom_metric(out, "homelab_uptime_cert_days_remaining", "gauge",
                              "TLS certificate days remaining per cert check (negative = expired)", cert_s)
+            if cert_na_s:
+                _prom_metric(out, "homelab_uptime_cert_not_after_seconds", "gauge",
+                             "TLS certificate expiry as a POSIX timestamp (seconds) per cert check", cert_na_s)
     except Exception:
         pass
 
