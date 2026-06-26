@@ -12,7 +12,9 @@ ALL network is mocked — there is NO real outbound TLS in CI."""
 import os
 import sys
 import time
+import json
 import socket
+import sqlite3
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -318,6 +320,136 @@ class TestCertMetric(unittest.TestCase):
         body = self.c.get("/metrics").get_data(as_text=True)
         self.assertIn("homelab_uptime_cert_days_remaining", body)
         self.assertIn("-7", body)
+
+
+# ── cert_extra persistence + surfacing ───────────────────────────────────────
+class TestCertExtraPersist(unittest.TestCase):
+    def setUp(self):
+        _clean_db()
+
+    def _check(self, target="example.com:443", warn=21):
+        cid, err = app.create_uptime_check(
+            {"label": "cert", "type": "cert", "target": target, "cert_warn_days": warn})
+        self.assertIsNone(err)
+        return app.list_uptime_checks()[0]
+
+    def test_run_persists_cert_extra_and_state_surfaces_it(self):
+        check = self._check()
+        na = _not_after(47)
+        extra = {"not_after": na, "subject_cn": "example.com", "issuer_cn": "R3"}
+        with patch("app.probe_cert", return_value=(True, 12.0, 47, None, extra)):
+            app.run_uptime_check(check)
+        # raw column carries the JSON blob
+        with app.LOCK:
+            row = app.DB.execute(
+                "SELECT cert_extra FROM uptime_results WHERE check_id=? ORDER BY ts DESC LIMIT 1",
+                (check["id"],)).fetchone()
+        self.assertIsNotNone(row[0])
+        self.assertEqual(json.loads(row[0])["subject_cn"], "example.com")
+        # _uptime_state surfaces parsed fields
+        st = app._uptime_state(check["id"], int(time.time()))
+        self.assertEqual(st["not_after"], na)
+        self.assertEqual(st["subject_cn"], "example.com")
+        self.assertEqual(st["issuer_cn"], "R3")
+        self.assertEqual(st["not_after_ts"], int(app._parse_cert_not_after(na)))
+        # and uptime_overview carries them through {**c, **st}
+        ov = app.uptime_overview()["checks"][0]
+        self.assertEqual(ov["subject_cn"], "example.com")
+        self.assertEqual(ov["issuer_cn"], "R3")
+        self.assertEqual(ov["not_after"], na)
+
+    def test_handshake_failure_stores_null_cert_extra(self):
+        check = self._check()
+        with patch("app.probe_cert", return_value=(False, 12.0, None, "refused", {})):
+            app.run_uptime_check(check)
+        with app.LOCK:
+            row = app.DB.execute(
+                "SELECT cert_extra FROM uptime_results WHERE check_id=? ORDER BY ts DESC LIMIT 1",
+                (check["id"],)).fetchone()
+        self.assertIsNone(row[0])
+        st = app._uptime_state(check["id"], int(time.time()))
+        self.assertNotIn("not_after", st)
+        self.assertNotIn("subject_cn", st)
+
+    def test_old_row_without_cert_extra_reads_clean(self):
+        check = self._check()
+        # Simulate a pre-migration / older row: cert_extra NULL.
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry,cert_extra) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (check["id"], int(time.time()), 1, 9.0, None, None, 40, None))
+            app.DB.commit()
+        st = app._uptime_state(check["id"], int(time.time()))
+        self.assertEqual(st["days_to_expiry"], 40)
+        self.assertNotIn("not_after", st)
+        self.assertNotIn("issuer_cn", st)
+
+    def test_corrupt_cert_extra_omits_fields_no_crash(self):
+        check = self._check()
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry,cert_extra) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (check["id"], int(time.time()), 1, 9.0, None, None, 40, "{not json"))
+            app.DB.commit()
+        st = app._uptime_state(check["id"], int(time.time()))  # must not raise
+        self.assertNotIn("not_after", st)
+
+    def test_non_cert_check_unaffected(self):
+        cid, _ = app.create_uptime_check({"label": "h", "type": "http", "target": "http://x/"})
+        check = app.list_uptime_checks()[0]
+        with patch("app.probe_http", return_value=(True, 5.0, 200, None)):
+            app.run_uptime_check(check)
+        with app.LOCK:
+            row = app.DB.execute(
+                "SELECT cert_extra FROM uptime_results WHERE check_id=? ORDER BY ts DESC LIMIT 1",
+                (cid,)).fetchone()
+        self.assertIsNone(row[0])
+        st = app._uptime_state(cid, int(time.time()))
+        self.assertNotIn("not_after", st)
+
+
+class TestCertExtraMigration(unittest.TestCase):
+    def test_migration_adds_column_and_is_idempotent(self):
+        conn = sqlite3.connect(":memory:")
+        app._apply_schema_migrations(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(uptime_results)")}
+        self.assertIn("cert_extra", cols)
+        # Idempotent: re-running migrations must not raise (column already there).
+        app._apply_schema_migrations(conn)
+        cols2 = {r[1] for r in conn.execute("PRAGMA table_info(uptime_results)")}
+        self.assertIn("cert_extra", cols2)
+        conn.close()
+
+
+class TestCertExpiryAlertDetail(unittest.TestCase):
+    def test_alert_detail_includes_date_and_issuer(self):
+        na = _not_after(10)
+        na_ts = int(app._parse_cert_not_after(na))
+        rule = {"id": "r1", "name": "C", "enabled": True, "ctype": "cert_expiry",
+                "params": {"check_id": "any"}}
+        sig = {"uptime": [{"id": "c1", "label": "MyCert", "enabled": True,
+                           "state": "up", "type": "cert", "cert_warn": True,
+                           "days_to_expiry": 10, "cert_warn_days": 21,
+                           "subject_cn": "example.com", "issuer_cn": "R3",
+                           "not_after_ts": na_ts}]}
+        active, title, detail = app._eval_rule(rule, sig)
+        self.assertTrue(active)
+        self.assertIn("R3", detail)             # issuer
+        self.assertIn("example.com", detail)    # subject CN
+        self.assertIn(time.strftime("%Y-%m-%d", time.gmtime(na_ts)), detail)  # exact date
+
+    def test_alert_detail_graceful_without_extra(self):
+        rule = {"id": "r1", "name": "C", "enabled": True, "ctype": "cert_expiry",
+                "params": {"check_id": "any"}}
+        sig = {"uptime": [{"id": "c1", "label": "Bare", "enabled": True,
+                           "state": "up", "type": "cert", "cert_warn": True,
+                           "days_to_expiry": 5, "cert_warn_days": 21}]}
+        active, title, detail = app._eval_rule(rule, sig)
+        self.assertTrue(active)
+        self.assertIn("Bare", title)
+        self.assertNotIn("issued by", detail)
 
 
 # ── OFF/empty = no probes ────────────────────────────────────────────────────

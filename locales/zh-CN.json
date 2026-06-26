@@ -79,6 +79,8 @@
   "uptime.cert_expires": "证书到期",
   "uptime.cert_expires_in": "{n} 天后",
   "uptime.cert_expired": "已过期 {n} 天",
+  "uptime.cert_issuer": "颁发者",
+  "uptime.cert_subject": "主题",
   "uptime.disabled": "已停用",
   "uptime.pause": "暂停",
   "uptime.resume": "恢复",

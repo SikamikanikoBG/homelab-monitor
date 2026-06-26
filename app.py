@@ -249,7 +249,10 @@ _HOST_MIGRATIONS = ("poll_timeout INTEGER", "poll_fails INTEGER DEFAULT 0", "pol
 # cert_warn_days: per-check TLS expiry warning window (cert checks only). days_to_expiry:
 # the cert's days-to-expiry recorded on each cert probe. Both NULL for http/tcp checks.
 _UPTIME_CHECKS_MIGRATIONS = ("cert_warn_days INTEGER",)
-_UPTIME_RESULTS_MIGRATIONS = ("days_to_expiry INTEGER",)
+# cert_extra: JSON blob of the cert probe's public metadata (not_after string,
+# subject_cn, issuer_cn, expiring) recorded on each cert probe; NULL for http/tcp
+# results and for pre-migration rows. Surfaced (read) by _uptime_state.
+_UPTIME_RESULTS_MIGRATIONS = ("days_to_expiry INTEGER", "cert_extra TEXT")
 # Which API key pushed a run (for per-key attribution); added to the runs table.
 _RUNS_MIGRATIONS = ("key_id TEXT",)
 
@@ -5262,9 +5265,21 @@ def _eval_rule(rule, signals):
         else:
             title = f"Cert expiring — {label} ({dtxt} left)"
             cn = first.get("subject_cn")
+            issuer = first.get("issuer_cn")
+            # Exact expiry date (UTC, day granularity) from the persisted notAfter —
+            # public cert metadata, safe to surface; the raw target stays redacted.
+            na_ts = first.get("not_after_ts")
+            date_txt = None
+            if na_ts is not None:
+                try:
+                    date_txt = time.strftime("%Y-%m-%d", time.gmtime(na_ts))
+                except (ValueError, OverflowError):
+                    date_txt = None
             detail = (f"TLS cert for '{label}' expires in {dtxt}"
+                      + (f" on {date_txt}" if date_txt else "")
                       + (f" (warns at {thr}d)" if thr is not None else "")
-                      + (f"; subject CN {cn}" if cn else "") + ".")
+                      + (f"; subject CN {cn}" if cn else "")
+                      + (f"; issued by {issuer}" if issuer else "") + ".")
         return True, title, detail
     return False, None, None
 
@@ -11207,21 +11222,30 @@ def run_uptime_check(check):
     ctype = check["type"]
     timeout = min(int(check.get("timeout_sec") or 10), _UPTIME_MAX_TIMEOUT)
     days_to_expiry = None
+    cert_extra_json = None
     if ctype == "tcp":
         up, latency, code, err = probe_tcp(check["target"], timeout)
     elif ctype == "cert":
-        up, latency, days_to_expiry, err, _extra = probe_cert(
+        up, latency, days_to_expiry, err, extra = probe_cert(
             check["target"], timeout, check.get("cert_warn_days"))
         code = None
+        # Persist the public cert metadata (issuer/subject CN, exact notAfter) so
+        # the UI + cert_expiry alert can show the date — not just a day count.
+        # NULL when the probe yielded nothing (handshake failure → extra == {}).
+        if extra:
+            try:
+                cert_extra_json = json.dumps(extra)
+            except (TypeError, ValueError):
+                cert_extra_json = None
     else:
         up, latency, code, err = probe_http(check["target"], timeout, check.get("expected_status"))
     ts = int(time.time())
     if not _DB_MAINTENANCE:
         try:
             with LOCK:
-                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry) "
-                           "VALUES(?,?,?,?,?,?,?)",
-                           (check["id"], ts, 1 if up else 0, latency, code, err, days_to_expiry))
+                DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry,cert_extra) "
+                           "VALUES(?,?,?,?,?,?,?,?)",
+                           (check["id"], ts, 1 if up else 0, latency, code, err, days_to_expiry, cert_extra_json))
                 # Per-check ring buffer: keep only the newest CAP rows. Trim by rowid
                 # (monotonic + unique) so it's exact even when many results share a
                 # second — a ts-based MIN() would under-trim on timestamp collisions.
@@ -11246,7 +11270,7 @@ def _uptime_state(check_id, now, window=86400):
             "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? AND ts>=? "
             "ORDER BY ts", (check_id, since)).fetchall()
         last = DB.execute(
-            "SELECT ts,up,latency_ms,code,err,days_to_expiry FROM uptime_results WHERE check_id=? "
+            "SELECT ts,up,latency_ms,code,err,days_to_expiry,cert_extra FROM uptime_results WHERE check_id=? "
             "ORDER BY ts DESC LIMIT 1", (check_id,)).fetchone()
     total = len(rows)
     up_n = sum(1 for r in rows if r[1])
@@ -11254,6 +11278,7 @@ def _uptime_state(check_id, now, window=86400):
     state = "unknown"
     last_latency = last_checked = last_err = last_code = None
     days_to_expiry = None
+    cert_extra = None
     if last:
         state = "up" if last[1] else "down"
         last_checked = last[0]
@@ -11261,13 +11286,35 @@ def _uptime_state(check_id, now, window=86400):
         last_code = last[3]
         last_err = last[4]
         days_to_expiry = last[5]
+        cert_extra = last[6]
     # Heartbeat strip: most recent up-to-_STATHIST_CELLS results, oldest→newest,
     # carrying only {up, ts} — same visual language as the /status bars.
     strip = [{"up": bool(r[1]), "t": r[0]} for r in rows[-_STATHIST_CELLS:]]
-    return {"state": state, "uptime": uptime, "window_total": total,
-            "last_latency_ms": last_latency, "last_checked": last_checked,
-            "last_code": last_code, "last_err": last_err,
-            "days_to_expiry": days_to_expiry, "strip": strip}
+    out = {"state": state, "uptime": uptime, "window_total": total,
+           "last_latency_ms": last_latency, "last_checked": last_checked,
+           "last_code": last_code, "last_err": last_err,
+           "days_to_expiry": days_to_expiry, "strip": strip}
+    # Surface the persisted cert metadata (issuer/subject CN + exact expiry date)
+    # for cert checks. Defensive: NULL / corrupt / pre-migration rows → omit the
+    # fields entirely so older rows + non-cert checks read cleanly. The raw notAfter
+    # is public cert metadata (not a secret); the connection target stays redacted.
+    if cert_extra:
+        try:
+            ce = json.loads(cert_extra)
+        except (ValueError, TypeError):
+            ce = None
+        if isinstance(ce, dict):
+            na = ce.get("not_after")
+            if na:
+                out["not_after"] = na
+                na_ts = _parse_cert_not_after(na)
+                if na_ts is not None:
+                    out["not_after_ts"] = int(na_ts)
+            if ce.get("subject_cn"):
+                out["subject_cn"] = ce["subject_cn"]
+            if ce.get("issuer_cn"):
+                out["issuer_cn"] = ce["issuer_cn"]
+    return out
 
 def uptime_overview(window=86400):
     """All checks + their current state. The user-facing private payload."""

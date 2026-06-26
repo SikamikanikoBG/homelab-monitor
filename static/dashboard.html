@@ -4410,10 +4410,28 @@ function upCard(c){
   let meta;
   if(isCert){
     const d = c.days_to_expiry;
-    const expTxt = (d==null) ? '—'
-                 : (d<0) ? I18N.tf('uptime.cert_expired','expired {n}d ago',{n:Math.abs(d)})
-                 : I18N.tf('uptime.cert_expires_in','in {n}d',{n:d});
+    const dTxt = (d==null) ? null
+               : (d<0) ? I18N.tf('uptime.cert_expired','expired {n}d ago',{n:Math.abs(d)})
+               : I18N.tf('uptime.cert_expires_in','in {n}d',{n:d});
+    // Exact expiry date from the persisted notAfter (POSIX), shown alongside the
+    // day count: "expires Aug 14 2026 · 49d". Graceful when fields are absent
+    // (pre-migration / older rows): falls back to the day count or em-dash.
+    let dateTxt = null;
+    if(c.not_after_ts!=null){
+      try{ const dt=new Date(c.not_after_ts*1000);
+        if(!isNaN(dt)) dateTxt=dt.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
+      }catch(e){}
+    }
+    let expTxt;
+    if(dateTxt && dTxt) expTxt = `${dateTxt} · ${dTxt}`;
+    else expTxt = dTxt || dateTxt || '—';
+    // Issuer (and subject CN if it differs from the label/target) — public cert
+    // metadata, esc()'d, omitted entirely when not persisted.
+    let certMeta = '';
+    if(c.issuer_cn) certMeta += `<span>${esc(I18N.t('uptime.cert_issuer','Issuer'))}: <b>${esc(c.issuer_cn)}</b></span>`;
+    if(c.subject_cn) certMeta += `<span>${esc(I18N.t('uptime.cert_subject','Subject'))}: <b>${esc(c.subject_cn)}</b></span>`;
     meta = `<span>${esc(I18N.t('uptime.cert_expires','Cert expires'))}: <b>${esc(expTxt)}</b></span>
+      ${certMeta}
       <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
       <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>`;
   } else {

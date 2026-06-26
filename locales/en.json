@@ -52,6 +52,8 @@
   "uptime.cert_expires": "Cert expires",
   "uptime.cert_expires_in": "in {n}d",
   "uptime.cert_expired": "expired {n}d ago",
+  "uptime.cert_issuer": "Issuer",
+  "uptime.cert_subject": "Subject",
   "uptime.disabled": "disabled",
   "uptime.pause": "Pause",
   "uptime.resume": "Resume",
