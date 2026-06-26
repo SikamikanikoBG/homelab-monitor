@@ -239,8 +239,43 @@ class TestForecastEndpoint(unittest.TestCase):
 
     def test_cost_projection_disabled_without_price(self):
         app.save_settings({"kwh_price": "", "currency": "$"})
+        cm = app.app.test_client().get("/api/forecast").get_json()["cost_month"]
+        self.assertFalse(cm["enabled"])
+        # cost_cum is omitted entirely on the disabled path (cost tile absent anyway)
+        self.assertNotIn("cost_cum", cm)
+
+    def test_cost_cum_series_present_bounded_and_shaped(self):
+        # Seed this-month samples (one per ~half hour) and a price -> cost_cum should be
+        # a non-empty, monotonically non-decreasing list of numbers, capped at one point
+        # per elapsed day (<= 31), with the last point ~= month_to_date.
+        now = int(time.time())
+        lt = time.localtime(now)
+        month_start = int(time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+        with app.LOCK:
+            app.DB.execute("DELETE FROM samples WHERE ts>=?", (month_start,))
+            ts = month_start + 3600
+            while ts < now:
+                app.DB.execute("INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp) "
+                               "VALUES(?,?,?,?,?,?)", (ts, 0, 0, 0, 200, 0))
+                ts += app.INTERVAL * 30
+            app.DB.commit()
+        app.save_settings({"kwh_price": "0.30", "currency": "€", "tariff_mode": "single"})
+        cm = app.app.test_client().get("/api/forecast").get_json()["cost_month"]
+        self.assertTrue(cm["enabled"])
+        cc = cm["cost_cum"]
+        self.assertIsInstance(cc, list)
+        self.assertGreater(len(cc), 0)
+        self.assertLessEqual(len(cc), 31)                      # bounded: one point per day
+        self.assertTrue(all(isinstance(x, (int, float)) for x in cc))
+        self.assertEqual(cc, sorted(cc))                       # cumulative -> non-decreasing
+        # latest cumulative point should track month-to-date closely
+        self.assertAlmostEqual(cc[-1], cm["month_to_date"], delta=0.01)
+
+    def test_forecast_existing_keys_unchanged(self):
+        # cost_cum is purely additive: the established top-level keys still exist.
         j = app.app.test_client().get("/api/forecast").get_json()
-        self.assertFalse(j["cost_month"]["enabled"])
+        for k in ("now", "disk", "cost_month", "anomalies", "vram"):
+            self.assertIn(k, j)
 
     def test_cost_projection_enabled_with_price(self):
         # Seed this-month samples and set a price -> projection should be enabled

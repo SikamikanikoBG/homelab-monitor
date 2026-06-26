@@ -6864,7 +6864,23 @@ def _cost_projection(cur, ctx, now):
             tot += (w or 0) * kwh_per * _price_at(ctx, ts)
         return tot
 
+    # Cumulative month-to-date cost series, bucketed by calendar day, derived from the
+    # SAME month rows the projection sums — no extra query, no new poll. Each point is
+    # the running spend through the end of that day; the latest point ≈ month_to_date.
+    # Bounded to one point per elapsed day (≤ 31), already tiny for any sparkline.
+    def cost_cum_series(start, end):
+        per_day = {}            # day-index (since month_start) -> that day's cost
+        for ts, w in cur.execute(f"SELECT ts, {_TOTAL_W_EXPR} w FROM samples WHERE ts>=? AND ts<?", (start, end)):
+            d = int((ts - start) // 86400)
+            per_day[d] = per_day.get(d, 0.0) + (w or 0) * kwh_per * _price_at(ctx, ts)
+        out, run = [], 0.0
+        for d in range(0, (max(per_day) + 1) if per_day else 0):
+            run += per_day.get(d, 0.0)
+            out.append(round(run, 4))
+        return out
+
     mtd = cost_between(month_start, now)
+    cost_cum = cost_cum_series(month_start, now)
     have_data = cur.execute("SELECT 1 FROM samples WHERE ts>=? LIMIT 1", (month_start,)).fetchone() is not None
     projected = mtd / elapsed_days * days_in_month if elapsed_days > 0 else 0.0
 
@@ -6883,6 +6899,8 @@ def _cost_projection(cur, ctx, now):
         "elapsed_days": round(elapsed_days, 1), "days_in_month": round(days_in_month),
         "last_month": round(last_cost, 2) if have_last else None,
         "delta_pct": delta_pct, "collecting": not have_data,
+        # cumulative MTD trend (one point per elapsed day) for the hero cost sparkline
+        "cost_cum": cost_cum,
     }
 
 # ── Anomaly detection (z-score on the GPU/power history) ──────────────────────

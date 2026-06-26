@@ -5558,6 +5558,13 @@ function _heroKpi(v, unit, label, sub, tone, opts){
 const HK_SPK_W=120, HK_SPK_H=20, HK_SPK_PAD=2.5, HK_SPK_MAX=48;
 // Reuse the already-fetched chart series (D.total.power / .util) — no new fetch/poll.
 function _hkSeries(key){
+  // cost_cum rides /api/forecast (already polled), not the chart series in D.total
+  if(key==='cost_cum'){
+    const cm=(typeof FORECAST!=='undefined' && FORECAST && FORECAST.cost_month) ? FORECAST.cost_month : null;
+    const src = cm && Array.isArray(cm.cost_cum) ? cm.cost_cum : null;
+    if(!src || !src.length) return [];
+    return src.slice(-HK_SPK_MAX).map(v=>Number(v)).filter(v=>Number.isFinite(v));
+  }
   const t=(typeof D!=='undefined' && D && D.total) ? D.total : null;
   if(!t) return [];
   const src = key==='gpu_power' ? t.power : key==='gpu_util' ? t.util : null;
@@ -5839,10 +5846,11 @@ function renderHero(){
     const dp=cm.delta_pct;
     let sub='';
     if(dp!=null && cm.last_month!=null) sub=(dp>0?'▲ ':(dp<0?'▼ ':''))+Math.abs(dp)+'% '+I18N.t('hero.vs_last','vs last month');
-    else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:cm.elapsed_days,t:cm.days_in_month});
+    else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:Math.round(+cm.elapsed_days||0),t:cm.days_in_month});
     kpis.push(_heroKpi(cur+(+cm.projected_month||0).toFixed(2),'',
       I18N.t('hero.cost_proj','Projected cost'),sub,'',
-      {link:'costs',aria:I18N.t('hero.kpi_cost_aria','View cost breakdown')}));
+      {link:'costs',aria:I18N.t('hero.kpi_cost_aria','View cost breakdown'),
+       spark:'cost_cum',hue:'var(--ok)'}));
   }
   // disk-fill ETA: surface the soonest filling mount (if any)
   const disks=(fc.disk||[]).filter(d=>d.status==='filling'&&d.eta_days!=null);
