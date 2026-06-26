@@ -6663,10 +6663,36 @@ async function explainAnomaly(it, i, btn){
 // by both the stream and non-stream paths, so the final DOM is identical. j is
 // the parsed terminal frame (or non-stream JSON): {source,explanation,facts,
 // llm_status,model}. XSS-safe: explanation + facts all via esc().
+function _explainSevChip(sev){
+  const M={
+    info:    {c:'info', k:'explain.sev_info',     d:'Info'},
+    warning: {c:'warn', k:'explain.sev_warning',  d:'Warning'},
+    critical:{c:'crit', k:'explain.sev_critical', d:'Critical'},
+  };
+  const m=M[sev]; if(!m) return '';
+  return ' <span class="chip '+m.c+'" style="font-size:11px;padding:1px 7px">'+esc(I18N.t(m.k,m.d))+'</span>';
+}
+// One-click CTA for a structured explain's suggested action: copies the action
+// text to the clipboard (reuses copyText). XSS-safe — action stored via dataset,
+// label via esc(). Delegated click handler is wired once below.
+function _explainActionCTA(action){
+  if(!action) return '';
+  return '<div style="margin-top:6px"><button type="button" class="reco-link" data-explain-action="'
+    +esc(action)+'">'+esc(I18N.t('explain.copy_action','Copy suggested action'))+'</button>'
+    +' <span class="muted" style="font-size:11.5px">'+esc(action)+'</span></div>';
+}
+document.addEventListener('click',function(e){
+  const b=e.target&&e.target.closest&&e.target.closest('[data-explain-action]');
+  if(!b) return;
+  const a=b.getAttribute('data-explain-action')||'';
+  copyText(a).then(function(ok){
+    toast(ok?'ok':'warn', ok?I18N.t('explain.copied','Suggested action copied'):I18N.t('explain.copy_fail','Could not copy'));
+  });
+});
 function _copilotRenderExplain(out,j){
   if(!out||!j) return;
   if(j.source==='llm' && j.explanation){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div>'+_copilotInferenceChip(j.inference)+'</div></div>';
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:13.5px">'+esc(j.explanation)+_explainSevChip(j.severity)+'</div>'+_explainActionCTA(j.action)+_copilotInferenceChip(j.inference)+'</div></div>';
   }else{
     const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
     out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'

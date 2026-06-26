@@ -8125,7 +8125,7 @@ def api_models():
     })
 
 
-def _ollama_generate(prompt, timeout=None, capture=None):
+def _ollama_generate(prompt, timeout=None, capture=None, fmt=None):
     """Call the local ollama /api/generate (non-streaming). Returns (text, error)
     where exactly one is non-None. Never raises. `error` is a short machine code:
     'disabled' | 'no_model' | 'unreachable' | 'bad_response'.
@@ -8133,14 +8133,23 @@ def _ollama_generate(prompt, timeout=None, capture=None):
     `capture`, when a list, has this call's throughput metrics dict (from
     `_llm_metrics_from_response`, or None) appended — lets a caller build the
     per-inference cost chip WITHOUT changing the (text, error) return shape that
-    six callers rely on."""
+    six callers rely on.
+
+    `fmt`, when set, is ollama's structured-output `format` field — pass either
+    the string "json" or a JSON-Schema dict; the returned `text` is then the raw
+    JSON string the model produced (caller parses it). When fmt is None the
+    request body is byte-for-byte identical to before, so the six prose callers
+    are unaffected."""
     if not COPILOT_ENABLED:
         return None, "disabled"
     url = COPILOT_OLLAMA_URL + "/api/generate"
-    body = json.dumps({
+    _payload = {
         "model": COPILOT_MODEL, "prompt": prompt, "stream": False,
         "options": {"temperature": 0.2, "num_predict": 220},
-    }).encode("utf-8")
+    }
+    if fmt is not None:
+        _payload["format"] = fmt
+    body = json.dumps(_payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
@@ -9546,6 +9555,87 @@ def _explain_prompt(facts):
         "FACTS:\n- " + "\n- ".join(facts) + "\n\nLIKELY CAUSE:")
 
 
+# JSON-Schema for ollama structured output — a typed explain object. ollama
+# accepts a JSON-Schema in the request's `format` field and constrains decoding
+# to it (small models like gemma3:1b honour it best-effort, hence the prose
+# fallback in `_explain_structured`).
+EXPLAIN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "explanation": {"type": "string"},
+        "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+        "action": {"type": "string"},
+    },
+    "required": ["explanation", "severity"],
+}
+_EXPLAIN_SEVERITIES = ("info", "warning", "critical")
+
+
+def _explain_structured_prompt(facts):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "A metric just deviated from its normal range. Using ONLY the facts below "
+        "(live readings from the lab around that moment — do not invent anything), "
+        "return a JSON object with: \"explanation\" (1-2 short plain-English "
+        "sentences naming the most likely cause; say it's unclear if the facts "
+        "don't point to one), \"severity\" (one of \"info\", \"warning\", "
+        "\"critical\" — how concerning this looks), and \"action\" (one short, "
+        "concrete next step the operator could take, or \"\" if none). No "
+        "markdown.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n")
+
+
+def _explain_structured(facts, capture=None):
+    """Ask the LLM for a TYPED explain object via ollama JSON mode, parse it
+    defensively, and return (dict, error). On success the dict is
+    {'explanation','severity','action'} with severity clamped to the allowed
+    set and action either a non-empty string or None.
+
+    Graceful degrade: if the LLM is down/unreachable, or returns no text, or the
+    text isn't valid JSON, or lacks a usable explanation (small models may ignore
+    the schema), we fall back to the EXISTING plain-prose explain so the answer is
+    never worse than today. Returns (None, error_code) only when even the prose
+    fallback yields nothing (LLM fully down) — the caller then uses the
+    deterministic facts. Never raises. `capture`, when a list, receives exactly
+    one metrics dict — the one for the call whose text we actually return — so the
+    per-inference cost chip stays accurate across the structured→prose fallback."""
+    _scap = []
+    text, err = _ollama_generate(
+        _explain_structured_prompt(facts), capture=_scap, fmt=EXPLAIN_SCHEMA)
+    if text is not None:
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            expl = obj.get("explanation")
+            if isinstance(expl, str) and expl.strip():
+                sev = obj.get("severity")
+                if not (isinstance(sev, str) and sev.lower() in _EXPLAIN_SEVERITIES):
+                    sev = "info"
+                else:
+                    sev = sev.lower()
+                act = obj.get("action")
+                if not (isinstance(act, str) and act.strip()):
+                    act = None
+                else:
+                    act = act.strip()
+                if isinstance(capture, list):
+                    capture.append(_scap[0] if _scap else None)
+                return {"explanation": expl.strip(), "severity": sev,
+                        "action": act}, None
+        # Got text but it wasn't usable structured JSON → prose fallback below.
+    # Either the LLM is down (err set) or it ignored the schema → plain prose.
+    _pcap = []
+    ptext, perr = _ollama_generate(
+        _explain_prompt(facts), capture=_pcap)
+    if ptext is not None:
+        if isinstance(capture, list):
+            capture.append(_pcap[0] if _pcap else None)
+        return {"explanation": ptext, "severity": None, "action": None}, None
+    return None, (err or perr or "unreachable")
+
+
 @app.route("/api/copilot/explain", methods=["POST"])
 def api_copilot_explain():
     """Explain a single anomaly/point in plain English via the local LLM, grounded
@@ -9563,9 +9653,17 @@ def api_copilot_explain():
     out = {"now": now, "model": COPILOT_MODEL, "key": ctx.get("key"),
            "facts": facts, "context": ctx, "enabled": COPILOT_ENABLED}
     _cap = []
-    text, err = _ollama_generate(_explain_prompt(facts), capture=_cap)
-    if text is not None:
-        out.update({"explanation": text, "source": "llm", "llm_status": "ok"})
+    # Structured (JSON-mode) explain: typed {explanation,severity,action} that
+    # powers the severity chip + action CTA. Falls back to plain prose internally
+    # when the small model ignores the schema, so this is never worse than prose.
+    res, err = _explain_structured(facts, capture=_cap)
+    if res is not None:
+        out.update({"explanation": res["explanation"], "source": "llm",
+                    "llm_status": "ok"})
+        if res.get("severity"):
+            out["severity"] = res["severity"]
+        if res.get("action"):
+            out["action"] = res["action"]
         inf = _inference_cost(_cap[0] if _cap else None, now)
         if inf:
             out["inference"] = inf

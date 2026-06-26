@@ -215,6 +215,201 @@ class TestExplainEndpointGraceful(unittest.TestCase):
         self.assertTrue(r.get_json()["facts"])
 
 
+class TestOllamaJsonMode(unittest.TestCase):
+    """The additive `fmt` arg on _ollama_generate puts ollama's structured-output
+    `format` field in the request body when set, and leaves the body byte-for-byte
+    unchanged when not — so the six existing prose callers are unaffected."""
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        self._url = app.COPILOT_OLLAMA_URL
+        app.COPILOT_ENABLED = True
+        self._orig = app.urllib.request.urlopen
+        self._bodies = []
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app.COPILOT_OLLAMA_URL = self._url
+        app.urllib.request.urlopen = self._orig
+
+    def _patch(self, response_text):
+        captured = self._bodies
+
+        class _Resp:
+            def __enter__(self_):
+                return self_
+
+            def __exit__(self_, *a):
+                return False
+
+            def read(self_):
+                return json.dumps({"response": response_text}).encode("utf-8")
+
+        def fake(req, timeout=None):
+            captured.append(json.loads(req.data.decode("utf-8")))
+            return _Resp()
+
+        app.urllib.request.urlopen = fake
+
+    def test_default_path_has_no_format(self):
+        self._patch("hello prose")
+        txt, err = app._ollama_generate("hi")
+        self.assertEqual(txt, "hello prose")
+        self.assertIsNone(err)
+        self.assertNotIn("format", self._bodies[0])
+
+    def test_fmt_adds_format_to_body(self):
+        self._patch('{"explanation":"x","severity":"info"}')
+        txt, err = app._ollama_generate("hi", fmt=app.EXPLAIN_SCHEMA)
+        self.assertIsNone(err)
+        self.assertIn("format", self._bodies[0])
+        self.assertEqual(self._bodies[0]["format"], app.EXPLAIN_SCHEMA)
+
+
+class TestExplainStructured(unittest.TestCase):
+    """_explain_structured parses ollama JSON-mode output into a typed dict, clamps
+    severity, makes action optional, and falls back to plain prose (never worse than
+    today) when the model ignores the schema or the LLM is down."""
+
+    FACTS = ["At 2026-01-01 12:00, GPU power draw showed a spike."]
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+        self._orig = app._ollama_generate
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app._ollama_generate = self._orig
+
+    def _stub(self, struct=None, struct_err=None, prose=None, prose_err=None):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if fmt is not None:
+                if isinstance(capture, list):
+                    capture.append({"tok": 1})
+                return struct, struct_err
+            if isinstance(capture, list):
+                capture.append({"tok": 2})
+            return prose, prose_err
+        app._ollama_generate = fake
+
+    def test_valid_json_returns_typed_dict(self):
+        self._stub(struct=json.dumps(
+            {"explanation": "GPU job started.", "severity": "warning",
+             "action": "Check the training run."}))
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "warning")
+        self.assertEqual(res["action"], "Check the training run.")
+        self.assertIn("GPU", res["explanation"])
+
+    def test_severity_clamped_to_allowed(self):
+        self._stub(struct=json.dumps(
+            {"explanation": "x", "severity": "EXTREME"}))
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "info")     # garbage → default
+        self.assertIsNone(res["action"])              # missing → None
+
+    def test_empty_action_becomes_none(self):
+        self._stub(struct=json.dumps(
+            {"explanation": "x", "severity": "info", "action": "   "}))
+        res, _ = app._explain_structured(self.FACTS)
+        self.assertIsNone(res["action"])
+
+    def test_garbage_json_falls_back_to_prose(self):
+        self._stub(struct="this is not json at all",
+                   prose="A plain prose explanation.")
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["explanation"], "A plain prose explanation.")
+        self.assertIsNone(res["severity"])            # prose has no severity
+        self.assertIsNone(res["action"])
+
+    def test_missing_explanation_falls_back_to_prose(self):
+        self._stub(struct=json.dumps({"severity": "critical"}),
+                   prose="Prose instead.")
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["explanation"], "Prose instead.")
+
+    def test_llm_down_returns_error_no_crash(self):
+        self._stub(struct=None, struct_err="unreachable",
+                   prose=None, prose_err="unreachable")
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(res)
+        self.assertEqual(err, "unreachable")
+
+    def test_capture_gets_winning_call_metrics(self):
+        self._stub(struct=json.dumps({"explanation": "x", "severity": "info"}))
+        cap = []
+        app._explain_structured(self.FACTS, capture=cap)
+        self.assertEqual(cap, [{"tok": 1}])           # structured call metrics
+
+
+class TestExplainEndpointStructured(unittest.TestCase):
+    """/api/copilot/explain carries severity/action when structured parsing
+    succeeds, and omits them gracefully (prose / facts) otherwise."""
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+        self._orig = app._ollama_generate
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app._ollama_generate = self._orig
+
+    def _point(self):
+        return {"key": "gpu_power", "value": 280, "baseline": 90, "z": 4.2,
+                "unit": "W", "direction": "spike"}
+
+    def test_structured_fields_present(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if isinstance(capture, list):
+                capture.append(None)
+            if fmt is not None:
+                return json.dumps({"explanation": "A model spun up.",
+                                   "severity": "warning",
+                                   "action": "Inspect the job."}), None
+            return "prose", None
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/explain", json=self._point())
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "llm")
+        self.assertEqual(j["severity"], "warning")
+        self.assertEqual(j["action"], "Inspect the job.")
+        self.assertEqual(j["explanation"], "A model spun up.")
+
+    def test_prose_fallback_omits_structured_fields(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if isinstance(capture, list):
+                capture.append(None)
+            if fmt is not None:
+                return "not json", None
+            return "Just prose here.", None
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/explain", json=self._point())
+        j = r.get_json()
+        self.assertEqual(j["source"], "llm")
+        self.assertEqual(j["explanation"], "Just prose here.")
+        self.assertNotIn("severity", j)
+        self.assertNotIn("action", j)
+
+    def test_llm_down_returns_facts_not_500(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            return None, "unreachable"
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/explain", json=self._point())
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")
+        self.assertEqual(j["llm_status"], "unreachable")
+        self.assertNotIn("severity", j)
+
+
 class TestAskRouting(unittest.TestCase):
     """The ask-box's deterministic retrieval/routing: entity detection, topic
     keyword routing, targeted retrieval, sources, bounds, fallback + degrade,

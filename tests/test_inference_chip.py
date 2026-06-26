@@ -134,12 +134,12 @@ class TestEndpointsCarryInference(unittest.TestCase):
         app.save_settings(self._saved)
         app.COPILOT_ENABLED = self._en
 
-    def _fake_ok(self, prompt, timeout=None, capture=None):
+    def _fake_ok(self, prompt, timeout=None, capture=None, fmt=None):
         if isinstance(capture, list):
             capture.append(_metrics())
         return "an answer", None
 
-    def _fake_down(self, prompt, timeout=None, capture=None):
+    def _fake_down(self, prompt, timeout=None, capture=None, fmt=None):
         if isinstance(capture, list):
             capture.append(None)
         return None, "unreachable"
