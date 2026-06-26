@@ -833,5 +833,168 @@ class TestExplainStream(unittest.TestCase):
         self.assertEqual(j["key"], "gpu_power")
 
 
+class TestDigestStream(unittest.TestCase):
+    """Streaming in-dashboard digest endpoint (/api/copilot/digest/stream):
+    builds the SAME deterministic context/facts/prompt as the non-stream endpoint
+    PLUS the deterministic digest sections, then streams the LLM's narrative.
+    Mirrors TestAskStream/TestExplainStream. The scheduled-delivery path
+    (build_digest/send_digest) is NOT exercised here — only the on-demand stream."""
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = False   # default: deterministic no-LLM path
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        with app.LOCK:
+            app.DB.execute("DELETE FROM settings WHERE key IN ('webhook_url','telegram_token')")
+            app.DB.commit()
+
+    def _post_stream(self):
+        return self.c.post("/api/copilot/digest/stream", json={})
+
+    def test_stream_emits_tokens_then_done_with_sections(self):
+        def fake_stream(prompt, timeout=None):
+            self.assertIn("DIGEST:", prompt)          # digest prompt assembled
+            self.assertIn("FACTS:", prompt)           # facts grounded
+            yield ("token", "The lab ")
+            yield ("token", "is calm.")
+            yield ("done", {"text": "The lab is calm.", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream()
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "text/event-stream")
+        frames = _parse_sse(r.get_data())
+        toks = [d["t"] for (ev, d) in frames if ev == "token"]
+        self.assertEqual("".join(toks), "The lab is calm.")
+        done = [d for (ev, d) in frames if ev == "done"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]["source"], "llm")
+        self.assertEqual(done[0]["llm_status"], "ok")
+        self.assertEqual(done[0]["digest"], "The lab is calm.")
+        self.assertIsInstance(done[0]["facts"], list)
+        self.assertIn("sections", done[0])            # deterministic brief carried
+        self.assertIsInstance(done[0]["sections"], list)
+        self.assertIn("context", done[0])
+        self.assertIn("model", done[0])
+
+    def test_stream_terminal_matches_nonstream_shape(self):
+        # done frame must carry the same top-level keys the non-stream endpoint
+        # returns (plus the additive `sections`), so the UI terminal render works.
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "x")
+            yield ("done", {"text": "x", "metrics": None})
+        nonstream = self.c.get("/api/copilot/digest").get_json()
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            frames = _parse_sse(self._post_stream().get_data())
+        finally:
+            app._ollama_generate_stream = orig
+        done = [d for (ev, d) in frames if ev == "done"][0]
+        for k in ("now", "model", "facts", "context", "enabled",
+                  "digest", "source", "llm_status"):
+            self.assertIn(k, done, "done frame missing key %r" % k)
+            self.assertIn(k, nonstream, "non-stream missing key %r" % k)
+
+    def test_stream_llm_error_at_start_carries_sections(self):
+        # LLM down → terminal error frame still carries the deterministic
+        # sections + facts (digest invariant: the brief stands alone).
+        def fake_stream(prompt, timeout=None):
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream()
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        self.assertFalse([f for f in frames if f[0] == "token"])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertEqual(err[0]["llm_status"], "unreachable")
+        self.assertTrue(err[0]["digest"])             # facts summary, never empty
+        self.assertTrue(err[0]["facts"])
+        self.assertIn("sections", err[0])             # sections present even down
+
+    def test_stream_llm_error_mid_stream_terminates_gracefully(self):
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "partial ")
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            frames = _parse_sse(self._post_stream().get_data())
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual([d["t"] for (ev, d) in frames if ev == "token"], ["partial "])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertIn("sections", err[0])
+
+    def test_stream_disabled_llm_emits_facts_terminal(self):
+        # COPILOT_ENABLED False (setUp) → real generator yields ('error','disabled').
+        r = self._post_stream()
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        term = [(ev, d) for (ev, d) in frames if ev in ("done", "error")]
+        self.assertEqual(len(term), 1)
+        self.assertEqual(term[0][0], "error")
+        self.assertEqual(term[0][1]["llm_status"], "disabled")
+        self.assertEqual(term[0][1]["source"], "facts")
+        self.assertTrue(term[0][1]["digest"])
+        self.assertIn("sections", term[0][1])
+
+    def test_stream_bad_payload_emits_terminal_not_500(self):
+        r = self.c.post("/api/copilot/digest/stream", data="not json",
+                        content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        term = [(ev, d) for (ev, d) in frames if ev in ("done", "error")]
+        self.assertEqual(len(term), 1)               # always exactly one terminal
+        self.assertIn("sections", term[0][1])
+
+    def test_stream_no_secret_in_streamed_bytes(self):
+        with app.LOCK:
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('webhook_url','https://hooks.example/SECRETTOKEN')")
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('telegram_token','BOTSECRET123')")
+            app.DB.commit()
+
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "fine")
+            yield ("done", {"text": "fine", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            body = self._post_stream().get_data(as_text=True)
+            self.assertNotIn("SECRETTOKEN", body)
+            self.assertNotIn("BOTSECRET123", body)
+            self.assertNotIn("COPILOT_OLLAMA_URL", body)
+            self.assertNotIn("11434", body)           # ollama URL/port never streamed
+        finally:
+            app._ollama_generate_stream = orig
+
+    def test_nonstream_digest_still_intact(self):
+        # The additive stream must not have changed the original endpoint shape.
+        r = self.c.get("/api/copilot/digest")
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")        # LLM off → facts fallback
+        self.assertEqual(j["llm_status"], "disabled")
+        self.assertTrue(j["digest"])
+        self.assertIn("facts", j)
+        # The non-stream endpoint is byte-for-byte unchanged: it must NOT have
+        # grown a `sections` key (that's additive on the stream terminal only).
+        self.assertNotIn("sections", j)
+
+
 if __name__ == "__main__":
     unittest.main()

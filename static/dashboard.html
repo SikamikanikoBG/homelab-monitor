@@ -6875,17 +6875,35 @@ function renderCopilot(){
     if(TAB==='overview' && typeof renderHero==='function') renderHero();
   }
   if(j.source==='llm'){
-    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:14px">'+digest+'</div></div></div>';
+    body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1"><div class="d" style="font-size:14px">'+digest+'</div>'+_copilotDigestSections(j.sections)+'</div></div>';
   }else{
     // Graceful state: clear note + the deterministic facts so it's never empty.
     const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
-    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
+    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div style="flex:1">'
       +'<div class="t">'+esc(_copilotStatusNote(j.llm_status))+'</div>'
       +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
+      +_copilotDigestSections(j.sections)
       +'</div></div>';
   }
   // The ask-box only makes sense when the LLM can actually reason over free text.
   if(ask) ask.hidden = !(j.llm_status==='ok');
+}
+// Render the deterministic digest sections (the structured brief that stands
+// alone even with the LLM down). `sections` is a list of [header,[lines]] pairs
+// from the backend; empty/absent → nothing. XSS-safe: every header + line via esc().
+function _copilotDigestSections(sections){
+  if(!Array.isArray(sections) || !sections.length) return '';
+  let html='<div class="copilot-sections" style="margin-top:9px">';
+  sections.forEach(sec=>{
+    if(!Array.isArray(sec) || sec.length<2) return;
+    const header=sec[0], lines=Array.isArray(sec[1])?sec[1]:[];
+    if(!lines.length) return;
+    html+='<div style="margin-top:7px"><div class="muted" style="font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase">'+esc(String(header))+'</div>'
+      +'<ul style="margin:3px 0 0;padding-left:18px;line-height:1.55;font-size:13px">'
+      +lines.map(l=>'<li>'+esc(String(l))+'</li>').join('')+'</ul></div>';
+  });
+  html+='</div>';
+  return html;
 }
 async function loadCopilot(force){
   if(CURRENT_HOST!=='local'){ const c=document.getElementById('copilotcard'); if(c) c.hidden=true; return; }
@@ -6895,9 +6913,64 @@ async function loadCopilot(force){
   if(body && !COPILOT) body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1">'
     +'<div class="t" style="font-weight:400;color:var(--mut);font-size:13px">'+I18N.t('copilot.loading','Thinking…')+'</div>'
     +'<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div></div></div>';
+  // Stream the narrative live (types in under a caret); on ANY start/stream
+  // failure fall back to the existing non-stream /api/copilot/digest fetch.
+  await _copilotDigestStream(body);
+}
+// Non-stream digest — the graceful fallback used when streaming can't start/fails.
+async function _copilotDigestNonStream(body){
   try{ COPILOT=await(await fetch('/api/copilot/digest')).json(); COPILOT_AT=Date.now(); }
   catch(e){ if(body) body.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
   renderCopilot();
+}
+// Live token-streaming digest via SSE over fetch()+ReadableStream. Mirrors
+// _copilotAskStream / _copilotExplainStream exactly: appends narrative tokens as
+// they arrive (typing feel) under a blinking caret, then renders the terminal
+// frame (narrative + deterministic sections) via renderCopilot. ANY failure to
+// start/stream → falls back to the non-stream /api/copilot/digest so the panel
+// always fills. XSS-safe: tokens via textContent, terminal values via esc().
+async function _copilotDigestStream(body){
+  if(!body) return _copilotDigestNonStream(body);
+  let resp;
+  try{
+    resp=await fetch('/api/copilot/digest/stream',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:'{}'});
+  }catch(e){ return _copilotDigestNonStream(body); }
+  if(!resp.ok || !resp.body || !resp.body.getReader){ return _copilotDigestNonStream(body); }
+  const reduce=(function(){try{return matchMedia('(prefers-reduced-motion:reduce)').matches;}catch(_){return false;}})();
+  body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1">'
+    +'<div class="d" style="font-size:14px"><span class="copilot-stream-txt"></span>'
+    +(reduce?'':'<span class="copilot-cursor" aria-hidden="true"></span>')+'</div></div></div>';
+  const txt=body.querySelector('.copilot-stream-txt');
+  let buf='', gotToken=false, terminal=null;
+  const dec=new TextDecoder(); const reader=resp.body.getReader();
+  let sse='';
+  function handleFrame(frame){
+    let ev='message', data='';
+    frame.split('\n').forEach(l=>{
+      if(l.indexOf('event:')===0) ev=l.slice(6).trim();
+      else if(l.indexOf('data:')===0) data+=l.slice(5).trim();
+    });
+    if(!data) return;
+    let obj; try{ obj=JSON.parse(data); }catch(_){ return; }
+    if(ev==='token'){ gotToken=true; buf+=(obj.t||''); if(txt) txt.textContent=buf; }
+    else if(ev==='done'||ev==='error'){ terminal=obj; }
+  }
+  try{
+    for(;;){
+      const {value,done}=await reader.read();
+      if(done) break;
+      sse+=dec.decode(value,{stream:true});
+      let idx;
+      while((idx=sse.indexOf('\n\n'))>=0){ handleFrame(sse.slice(0,idx)); sse=sse.slice(idx+2); }
+    }
+    if(sse.trim()) handleFrame(sse);
+  }catch(e){
+    if(!gotToken && !terminal) return _copilotDigestNonStream(body);
+  }
+  if(terminal){ COPILOT=terminal; COPILOT_AT=Date.now(); renderCopilot(); return; }
+  if(gotToken){ COPILOT={source:'llm',digest:buf,llm_status:'ok',model:(COPILOT&&COPILOT.model)||''}; COPILOT_AT=Date.now(); renderCopilot(); return; }
+  return _copilotDigestNonStream(body);
 }
 // Render a final ask result object (the shape returned by /api/copilot/ask OR
 // the SSE done/error frame). Centralised so the streaming + non-stream paths

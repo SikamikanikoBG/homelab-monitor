@@ -9153,6 +9153,88 @@ def api_copilot_explain_stream():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/api/copilot/digest/stream", methods=["POST"])
+def api_copilot_digest_stream():
+    """Streaming sibling of /api/copilot/digest (SSE). Builds the SAME
+    deterministic context + facts + prompt as the non-stream endpoint (so the
+    streamed and non-stream narratives match), AND assembles the deterministic
+    digest sections (reused from the scheduled-digest builder, _digest_sections),
+    then streams the local LLM's narrative token-by-token. Additive: the
+    non-stream endpoint is the graceful fallback the UI drops to on any stream
+    failure; the scheduled-delivery path (build_digest/send_digest) is untouched.
+
+    SSE events:
+      • event: token   data: {"t": "<chunk>"}          (0..N, as they arrive)
+      • event: done    data: {"digest","source":"llm","llm_status":"ok",
+                              "sections","now","model","facts","context","enabled"}
+      • event: error   data: {"digest":<facts summary>,"source":"facts",
+                              "llm_status":<code>,"sections","now","model","facts",
+                              "context","enabled"}
+    Always one terminal event (done OR error); never hangs, never 500s once the
+    stream has begun. The deterministic sections render even with the LLM down
+    (the digest invariant: sections stand alone, never empty). Facts/telemetry
+    only — no settings/URLs/tokens streamed. Context + sections + prompt are
+    assembled BEFORE the generator body so no lock is held across the stream."""
+    now = int(time.time())
+    # Context + facts + prompt + deterministic sections assembled here (OUTSIDE
+    # the generator), identical to the non-stream endpoint, so no lock is held
+    # while tokens stream and the terminal payload matches /api/copilot/digest's
+    # byte-shape (plus the additive deterministic `sections`).
+    ctx = _copilot_context(now)
+    facts = _copilot_facts(ctx)
+    prompt = _copilot_digest_prompt(facts)
+    try:
+        sections = _digest_sections(now)
+    except Exception as e:
+        print("digest stream sections error:", e, flush=True)
+        sections = []
+    base = {"now": now, "model": COPILOT_MODEL, "facts": facts,
+            "context": ctx, "enabled": COPILOT_ENABLED, "sections": sections}
+
+    def gen():
+        acc = []
+        try:
+            for kind, val in _ollama_generate_stream(prompt):
+                if kind == "token":
+                    acc.append(val)
+                    yield _sse("token", {"t": val})
+                elif kind == "done":
+                    out = dict(base)
+                    out.update({"digest": val.get("text") or "".join(acc),
+                                "source": "llm", "llm_status": "ok"})
+                    yield _sse("done", out)
+                    return
+                elif kind == "error":
+                    # LLM unavailable (start or mid-stream): hand back the
+                    # deterministic fact summary as the digest, with the
+                    # standalone sections, same as the non-stream path. Never
+                    # 500 — terminal error frame, then close.
+                    out = dict(base)
+                    out.update({"digest": " ".join(facts),
+                                "source": "facts", "llm_status": val})
+                    yield _sse("error", out)
+                    return
+        except Exception as e:
+            print("copilot digest stream gen error:", type(e).__name__, flush=True)
+            try:
+                out = dict(base)
+                out.update({"digest": " ".join(facts),
+                            "source": "facts", "llm_status": "unreachable"})
+                yield _sse("error", out)
+            except Exception:
+                pass
+            return
+        # Stream ended without a terminal frame (shouldn't happen) — emit a facts
+        # terminal so the client never waits forever.
+        out = dict(base)
+        out.update({"digest": " ".join(facts),
+                    "source": "facts", "llm_status": "bad_response"})
+        yield _sse("error", out)
+
+    return Response(stream_with_context(gen()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ── Proactive Recommendations (E1) ─────────────────────────────────────────────
 # The AI Lab Cockpit doesn't just SHOW state — it tells you what to DO. A ranked,
 # actionable to-do list derived from the lab's OWN live signals (forecasts,
