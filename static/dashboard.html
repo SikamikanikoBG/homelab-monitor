@@ -219,6 +219,27 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hero-kpi .l{color:var(--mut);font-size:11.5px;margin-top:3px;text-transform:uppercase;letter-spacing:.03em}
 .hero-kpi .s{color:var(--mut);font-size:11.5px;margin-top:2px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Deep-link KPI tiles: each tile that maps to a detail tab becomes an accessible button-like
+   surface (keyboard-activable, focus ring, hover lift). Non-link tiles render unchanged. */
+.hero-kpi.link{cursor:pointer;position:relative;border-radius:0;
+  transition:transform .12s ease,background .12s ease}
+.hero-kpi.link:hover{transform:translateY(-1px);background:color-mix(in srgb,var(--info) 6%,transparent)}
+.hero-kpi.link:focus-visible{outline:2px solid var(--info);outline-offset:-2px;border-radius:8px}
+.hero-kpi.link .l{display:flex;align-items:center;gap:5px}
+.hero-kpi.link .l .go{flex:none;font-size:11px;opacity:0;transform:translateX(-2px);
+  transition:opacity .12s ease,transform .12s ease;color:var(--info)}
+.hero-kpi.link:hover .l .go,.hero-kpi.link:focus-visible .l .go{opacity:.85;transform:translateX(0)}
+@media(prefers-reduced-motion:reduce){.hero-kpi.link{transition:none}
+  .hero-kpi.link:hover{transform:none}.hero-kpi.link .l .go{transition:none}}
+/* Inline KPI sparkline: trailing trend behind the value, reusing the same series/colours
+   as the arc-gauge sparkline. aria-hidden (the tile's aria-label carries value+context). */
+.hero-kpi .ksp{display:block;width:100%;height:20px;margin-top:7px;overflow:visible}
+.hero-kpi .ksp[hidden]{display:none}
+.hero-kpi .ksp .sp-area{fill:color-mix(in srgb,var(--ksh,var(--info)) 13%,transparent);stroke:none}
+.hero-kpi .ksp .sp-line{fill:none;stroke:var(--ksh,var(--info));stroke-width:1.5;
+  stroke-linecap:round;stroke-linejoin:round}
+.hero-kpi .ksp .sp-last{fill:var(--ksh,var(--info));stroke:var(--card);stroke-width:1.5}
+@media(max-width:380px){.hero-kpi .ksp{display:none}}
 /* ── Anomaly-aware arc gauges: live GPU dials whose ring colour is driven by the
    z-score anomaly state (normal=ok, |z|≥3 amber, |z|≥6 red). Pure inline SVG. */
 .hero-gauges{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;align-items:stretch;
@@ -5506,11 +5527,79 @@ async function loadHero(force){
   }
   renderHero();
 }
-function _heroKpi(v, unit, label, sub, tone){
-  return `<div class="hero-kpi"><div class="v${tone?' '+tone:''}">${esc(v)}`
+// opts (all optional): {link:'gpu'|'costs'|'disks', scroll:'#elemId',
+//   aria:'View GPU details', spark:'gpu_power'|'gpu_util', hue:'var(--…)'}
+// When `link` is set the tile becomes an accessible button (role/tabindex/aria),
+// keyboard-activable, with a chevron affordance. Wiring happens after innerHTML
+// in _heroWireKpis() (delegation-free, idempotent). Pure presentation, no LLM.
+function _heroKpi(v, unit, label, sub, tone, opts){
+  opts=opts||{};
+  const linkAttrs = opts.link
+    ? ` class="hero-kpi link" role="button" tabindex="0"`
+      +` data-hk-link="${esc(opts.link)}"`
+      +(opts.scroll?` data-hk-scroll="${esc(opts.scroll)}"`:'')
+      +(opts.aria?` aria-label="${esc(opts.aria)}"`:'')
+    : ` class="hero-kpi"`;
+  const go = opts.link ? `<span class="go" aria-hidden="true">›</span>` : '';
+  let spark='';
+  if(opts.spark){
+    const style = opts.hue?` style="--ksh:${esc(opts.hue)}"`:'';
+    spark=`<svg class="ksp" data-hk-spark="${esc(opts.spark)}"${style}`
+      +` viewBox="0 0 ${HK_SPK_W} ${HK_SPK_H}" preserveAspectRatio="none"`
+      +` aria-hidden="true" focusable="false" hidden></svg>`;
+  }
+  return `<div${linkAttrs}><div class="v${tone?' '+tone:''}">${esc(v)}`
     +(unit?`<span class="u">${esc(unit)}</span>`:'')+`</div>`
-    +`<div class="l">${esc(label)}</div>`
-    +(sub?`<div class="s">${esc(sub)}</div>`:'')+`</div>`;
+    +`<div class="l">${esc(label)}${go}</div>`
+    +(sub?`<div class="s">${esc(sub)}</div>`:'')
+    +spark+`</div>`;
+}
+// KPI sparkline geometry (its own viewBox; CSS stretches to the tile width).
+const HK_SPK_W=120, HK_SPK_H=20, HK_SPK_PAD=2.5, HK_SPK_MAX=48;
+// Reuse the already-fetched chart series (D.total.power / .util) — no new fetch/poll.
+function _hkSeries(key){
+  const t=(typeof D!=='undefined' && D && D.total) ? D.total : null;
+  if(!t) return [];
+  const src = key==='gpu_power' ? t.power : key==='gpu_util' ? t.util : null;
+  if(!Array.isArray(src) || !src.length) return [];
+  return src.slice(-HK_SPK_MAX).map(v=>Number(v)).filter(v=>Number.isFinite(v));
+}
+// Paint each tile's <svg.ksp> from its series. Degrades gracefully: <2 points → stay
+// hidden (never a broken axis or error). Pure numeric path → XSS-safe.
+function _hkPaintSparklines(){
+  const host=document.getElementById('hero-kpis'); if(!host) return;
+  host.querySelectorAll('.ksp[data-hk-spark]').forEach(svg=>{
+    const data=_hkSeries(svg.getAttribute('data-hk-spark'));
+    if(data.length<2){ svg.hidden=true; svg.innerHTML=''; return; }
+    const W=HK_SPK_W,H=HK_SPK_H,pad=HK_SPK_PAD,n=data.length;
+    const mn=Math.min(...data), mx=Math.max(...data), span=(mx-mn)||1, innerH=H-pad*2;
+    const X=i=> n===1?W/2 : pad+(W-pad*2)*(i/(n-1));
+    const Y=v=> (mx===mn)?H/2 : (H-pad)-((v-mn)/span)*innerH;
+    let line='', area='M'+pad.toFixed(2)+' '+(H-pad).toFixed(2);
+    for(let i=0;i<n;i++){ const x=X(i).toFixed(2), y=Y(data[i]).toFixed(2);
+      line+=(i?'L':'M')+x+' '+y+' '; area+=' L'+x+' '+y; }
+    area+=' L'+(W-pad).toFixed(2)+' '+(H-pad).toFixed(2)+' Z';
+    svg.innerHTML=`<path class="sp-area" d="${area}"/><path class="sp-line" d="${line.trim()}"/>`
+      +`<circle class="sp-last" cx="${X(n-1).toFixed(2)}" cy="${Y(data[n-1]).toFixed(2)}" r="2.1"/>`;
+    svg.hidden=false;
+  });
+}
+// Wire deep-link tiles: click + Enter/Space → existing showTab(), optional scroll-into-view.
+// Idempotent (re-run each render); never triggers an LLM call.
+function _heroGoTab(tab, scrollSel){
+  if(typeof showTab==='function') showTab(tab); else location.hash='#'+tab;
+  if(scrollSel) _heroScroll(scrollSel.replace(/^#/,''));
+}
+function _heroWireKpis(){
+  const host=document.getElementById('hero-kpis'); if(!host) return;
+  host.querySelectorAll('.hero-kpi.link[data-hk-link]').forEach(el=>{
+    if(el._hkWired) return; el._hkWired=true;
+    const go=()=>_heroGoTab(el.getAttribute('data-hk-link'), el.getAttribute('data-hk-scroll'));
+    el.addEventListener('click', go);
+    el.addEventListener('keydown', ev=>{
+      if(ev.key==='Enter' || ev.key===' ' || ev.key==='Spacebar'){ ev.preventDefault(); go(); }
+    });
+  });
 }
 // ── Anomaly-aware arc gauges ──────────────────────────────────────────────────
 // A 270° SVG arc (stroke-dasharray sweep) per series. The *value* rides the
@@ -5736,9 +5825,13 @@ function renderHero(){
     const util=Math.round(g.util||0);
     const tone = util>=85?'warn':'';
     kpis.push(_heroKpi(util,'%',I18N.t('hero.gpu_busy','GPU busy'),
-      util>=5?I18N.t('hero.gpu_active','active'):I18N.t('hero.gpu_idle','idle'),tone));
+      util>=5?I18N.t('hero.gpu_active','active'):I18N.t('hero.gpu_idle','idle'),tone,
+      {link:'gpu',aria:I18N.t('hero.kpi_gpu_aria','View GPU details'),
+       spark:'gpu_util',hue:'var(--info)'}));
     const pw=Math.round(g.power||0);
-    if(pw>0||g.power!=null) kpis.push(_heroKpi(pw,'W',I18N.t('hero.power','GPU power draw'),''));
+    if(pw>0||g.power!=null) kpis.push(_heroKpi(pw,'W',I18N.t('hero.power','GPU power draw'),'',
+      '',{link:'gpu',aria:I18N.t('hero.kpi_power_aria','View GPU power details'),
+          spark:'gpu_power',hue:'#a371f7'}));
   }
   const cm=fc.cost_month||{};
   if(cm.enabled){
@@ -5748,7 +5841,8 @@ function renderHero(){
     if(dp!=null && cm.last_month!=null) sub=(dp>0?'▲ ':(dp<0?'▼ ':''))+Math.abs(dp)+'% '+I18N.t('hero.vs_last','vs last month');
     else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:cm.elapsed_days,t:cm.days_in_month});
     kpis.push(_heroKpi(cur+(+cm.projected_month||0).toFixed(2),'',
-      I18N.t('hero.cost_proj','Projected cost'),sub));
+      I18N.t('hero.cost_proj','Projected cost'),sub,'',
+      {link:'costs',aria:I18N.t('hero.kpi_cost_aria','View cost breakdown')}));
   }
   // disk-fill ETA: surface the soonest filling mount (if any)
   const disks=(fc.disk||[]).filter(d=>d.status==='filling'&&d.eta_days!=null);
@@ -5759,11 +5853,15 @@ function renderHero(){
     else if(days<60){v=Math.round(days);u=I18N.t('hero.days','days');}
     else {v=Math.round(days/30);u=I18N.t('hero.months','months');}
     const tone=days<14?'crit':(days<60?'warn':'');
-    kpis.push(_heroKpi('~'+v,u,I18N.t('hero.disk_eta','Disk fills in'),d.mount,tone));
+    kpis.push(_heroKpi('~'+v,u,I18N.t('hero.disk_eta','Disk fills in'),d.mount,tone,
+      {link:'disks',scroll:'#diskfc-card',aria:I18N.t('hero.kpi_disk_aria','View disk forecast')}));
   } else if((fc.disk||[]).length){
-    kpis.push(_heroKpi('—','',I18N.t('hero.disk_eta','Disk fills in'),I18N.t('forecast.stable','stable')));
+    kpis.push(_heroKpi('—','',I18N.t('hero.disk_eta','Disk fills in'),I18N.t('forecast.stable','stable'),'',
+      {link:'disks',scroll:'#diskfc-card',aria:I18N.t('hero.kpi_disk_aria','View disk forecast')}));
   }
   document.getElementById('hero-kpis').innerHTML = kpis.join('');
+  _heroWireKpis();          // make deep-link tiles click/keyboard activable
+  _hkPaintSparklines();     // draw inline sparklines from already-fetched series
 
   // anomaly-aware arc gauges (live GPU dials; ring colour = z-score anomaly state)
   renderHeroGauges(g, fc);
