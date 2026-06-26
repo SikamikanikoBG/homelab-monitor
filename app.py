@@ -9075,6 +9075,84 @@ def api_copilot_explain():
     return jsonify(out)
 
 
+@app.route("/api/copilot/explain/stream", methods=["POST"])
+def api_copilot_explain_stream():
+    """Streaming sibling of /api/copilot/explain (SSE). Builds the SAME
+    deterministic explain context + facts + prompt as the non-stream endpoint
+    (so streamed and non-stream explanations match), then streams the local
+    LLM's likely-cause explanation token-by-token. Additive: the non-stream
+    endpoint is the graceful fallback the UI drops to on any stream failure.
+
+    SSE events:
+      • event: token   data: {"t": "<chunk>"}          (0..N, as they arrive)
+      • event: done    data: {"explanation","source":"llm","llm_status":"ok",
+                              "now","key","facts","context","model","enabled"}
+      • event: error   data: {"source":"facts","llm_status":<code>,
+                              "explanation":<facts summary>,"now","key",
+                              "facts","context","model","enabled"}
+    Always one terminal event (done OR error); never hangs, never 500s once the
+    stream has begun. Facts/telemetry only — no settings/URLs/tokens streamed.
+    The context assembly happens BEFORE the generator body so no lock is held
+    across the stream."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    now = int(time.time())
+    # Context + facts + prompt assembled here (OUTSIDE the generator), identical
+    # to the non-stream endpoint, so no lock is held while tokens stream and the
+    # terminal payload matches /api/copilot/explain byte-shape.
+    ctx = _explain_context(payload, now)
+    facts = _explain_facts(ctx)
+    prompt = _explain_prompt(facts)
+    base = {"now": now, "model": COPILOT_MODEL, "key": ctx.get("key"),
+            "facts": facts, "context": ctx, "enabled": COPILOT_ENABLED}
+
+    def gen():
+        acc = []
+        try:
+            for kind, val in _ollama_generate_stream(prompt):
+                if kind == "token":
+                    acc.append(val)
+                    yield _sse("token", {"t": val})
+                elif kind == "done":
+                    out = dict(base)
+                    out.update({"explanation": val.get("text") or "".join(acc),
+                                "source": "llm", "llm_status": "ok"})
+                    yield _sse("done", out)
+                    return
+                elif kind == "error":
+                    # LLM unavailable (start or mid-stream): hand back the
+                    # deterministic facts as the explanation, same as the
+                    # non-stream path. Never 500 — terminal error, then close.
+                    out = dict(base)
+                    out.update({"explanation": " ".join(facts),
+                                "source": "facts", "llm_status": val})
+                    yield _sse("error", out)
+                    return
+        except Exception as e:
+            print("copilot explain stream gen error:", type(e).__name__, flush=True)
+            try:
+                out = dict(base)
+                out.update({"explanation": " ".join(facts),
+                            "source": "facts", "llm_status": "unreachable"})
+                yield _sse("error", out)
+            except Exception:
+                pass
+            return
+        # Stream ended without a terminal frame (shouldn't happen) — emit a facts
+        # terminal so the client never waits forever.
+        out = dict(base)
+        out.update({"explanation": " ".join(facts),
+                    "source": "facts", "llm_status": "bad_response"})
+        yield _sse("error", out)
+
+    return Response(stream_with_context(gen()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ── Proactive Recommendations (E1) ─────────────────────────────────────────────
 # The AI Lab Cockpit doesn't just SHOW state — it tells you what to DO. A ranked,
 # actionable to-do list derived from the lab's OWN live signals (forecasts,

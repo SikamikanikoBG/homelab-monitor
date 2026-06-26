@@ -4284,19 +4284,8 @@ async function explainRibbonCell(c){
   const payload={key:c.key, ts:c.ts||null, value:Math.round(c.value*10)/10,
                  baseline:Math.round(c.baseline*10)/10, z:Math.round(c.z*10)/10,
                  unit:c.unit, direction:(c.z>0?'spike':'dip'), magnitude:Math.round(Math.abs(c.value-c.baseline)*10)/10};
-  let j;
-  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
-  catch(e){ if(out) out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
   if(!out) return;
-  if(j.source==='llm' && j.explanation){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
-  }else{
-    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
-    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
-      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
-      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')+'</div></div>';
-  }
+  await _copilotExplainStream(payload,out);
 }
 // Read a theme token at draw time so charts re-colour with the theme.
 const cv = n => (getComputedStyle(document.documentElement).getPropertyValue(n)||'').trim() || '#888';
@@ -6419,22 +6408,84 @@ async function explainAnomaly(it, i, btn){
   out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
   const payload={key:it.key, ts:it.ts||null, value:it.value, baseline:it.baseline,
                  z:it.z, unit:it.unit, direction:it.direction, magnitude:it.magnitude};
-  let j;
-  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
-  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; ANOM_EXPLAIN_BUSY[i]=false; return; }
+  await _copilotExplainStream(payload,out);
+  out.dataset.done='1';
+  ANOM_EXPLAIN_BUSY[i]=false;
+}
+// Terminal render for an "explain this spike" result — shared by every explain
+// call site (anomaly card / ribbon cell / incident member / incident drawer) and
+// by both the stream and non-stream paths, so the final DOM is identical. j is
+// the parsed terminal frame (or non-stream JSON): {source,explanation,facts,
+// llm_status,model}. XSS-safe: explanation + facts all via esc().
+function _copilotRenderExplain(out,j){
+  if(!out||!j) return;
   if(j.source==='llm' && j.explanation){
     out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
   }else{
-    // graceful: status note + the deterministic facts so it's never a dead end
     const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
     out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
       +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
-      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
-      +'</div></div>';
+      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')+'</div></div>';
   }
-  out.dataset.done='1';
-  ANOM_EXPLAIN_BUSY[i]=false;
+}
+// Non-stream explain — the graceful fallback used when streaming can't start/fails.
+// Returns the parsed JSON (or null on network failure, after rendering the muted note).
+async function _copilotExplainNonStream(payload,out){
+  let j;
+  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ if(out) out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return null; }
+  _copilotRenderExplain(out,j);
+  return j;
+}
+// Live token-streaming "explain this spike" via SSE over fetch()+ReadableStream —
+// mirrors _copilotAskStream exactly. Explicit-trigger only (the caller fires it on
+// a click). Appends tokens as they arrive (typing feel) under a blinking caret,
+// then renders the terminal frame via _copilotRenderExplain. ANY failure to
+// start/stream → falls back to the non-stream /api/copilot/explain so the user
+// always gets an explanation. XSS-safe: tokens via textContent, terminal via esc().
+async function _copilotExplainStream(payload,out){
+  if(!out) return;
+  let resp;
+  try{
+    resp=await fetch('/api/copilot/explain/stream',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  }catch(e){ return _copilotExplainNonStream(payload,out); }
+  if(!resp.ok || !resp.body || !resp.body.getReader){ return _copilotExplainNonStream(payload,out); }
+  const reduce=(function(){try{return matchMedia('(prefers-reduced-motion:reduce)').matches;}catch(_){return false;}})();
+  out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div style="flex:1">'
+    +'<div class="d" style="font-size:13.5px"><span class="copilot-stream-txt"></span>'
+    +(reduce?'':'<span class="copilot-cursor" aria-hidden="true"></span>')+'</div></div></div>';
+  const txt=out.querySelector('.copilot-stream-txt');
+  let buf='', gotToken=false, terminal=null;
+  const dec=new TextDecoder(); const reader=resp.body.getReader();
+  let sse='';
+  function handleFrame(frame){
+    let ev='message', data='';
+    frame.split('\n').forEach(l=>{
+      if(l.indexOf('event:')===0) ev=l.slice(6).trim();
+      else if(l.indexOf('data:')===0) data+=l.slice(5).trim();
+    });
+    if(!data) return;
+    let obj; try{ obj=JSON.parse(data); }catch(_){ return; }
+    if(ev==='token'){ gotToken=true; buf+=(obj.t||''); if(txt) txt.textContent=buf; }
+    else if(ev==='done'||ev==='error'){ terminal=obj; }
+  }
+  try{
+    for(;;){
+      const {value,done}=await reader.read();
+      if(done) break;
+      sse+=dec.decode(value,{stream:true});
+      let idx;
+      while((idx=sse.indexOf('\n\n'))>=0){ handleFrame(sse.slice(0,idx)); sse=sse.slice(idx+2); }
+    }
+    if(sse.trim()) handleFrame(sse);
+  }catch(e){
+    if(!gotToken && !terminal) return _copilotExplainNonStream(payload,out);
+  }
+  if(terminal){ _copilotRenderExplain(out,terminal); return terminal; }
+  if(gotToken){ const j={source:'llm',explanation:buf}; _copilotRenderExplain(out,j); return j; }
+  return _copilotExplainNonStream(payload,out);
 }
 function _explainStatusNote(s, model){
   const m={
@@ -6595,19 +6646,7 @@ async function explainIncidentMember(ref){
   out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
   const payload={key:m.series, ts:m.last_seen||null, value:m.peak_value, baseline:m.baseline,
                  z:m.peak_z, unit:m.unit, direction:m.direction, magnitude:Math.abs(m.peak_z)};
-  let j;
-  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
-  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; INC_EXPLAIN_BUSY[iid]=false; return; }
-  if(j.source==='llm' && j.explanation){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
-  }else{
-    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
-    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
-      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
-      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
-      +'</div></div>';
-  }
+  await _copilotExplainStream(payload,out);
   out.dataset.done='1'; INC_EXPLAIN_BUSY[iid]=false;
 }
 // ── Incident detail drawer (next_ai) ──────────────────────────────────────────
@@ -6773,19 +6812,7 @@ async function _incdExplain(inc, mi, btn){
   out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
   const payload={key:m.series, ts:m.last_seen||null, value:m.peak_value, baseline:m.baseline,
                  z:m.peak_z, unit:m.unit, direction:m.direction, magnitude:Math.abs(m.peak_z||0)};
-  let j;
-  try{ j=await(await fetch('/api/copilot/explain',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
-  catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; INCD_WHY_BUSY[k]=false; return; }
-  if(j.source==='llm' && j.explanation){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧠</div><div><div class="d" style="font-size:13.5px">'+esc(j.explanation)+'</div></div></div>';
-  }else{
-    const facts=(j.facts||[]).map(f=>'<li>'+esc(f)+'</li>').join('');
-    out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div>'
-      +'<div class="t">'+esc(_explainStatusNote(j.llm_status, j.model))+'</div>'
-      +(facts?'<ul class="d" style="margin:6px 0 0;padding-left:18px;line-height:1.6">'+facts+'</ul>':'')
-      +'</div></div>';
-  }
+  await _copilotExplainStream(payload,out);
   out.dataset.done='1'; INCD_WHY_BUSY[k]=false;
 }
 function closeIncidentDrawer(){

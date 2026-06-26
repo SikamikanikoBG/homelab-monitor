@@ -663,5 +663,175 @@ class TestAskStream(unittest.TestCase):
         self.assertEqual(j["llm_status"], "disabled")
 
 
+class TestExplainStream(unittest.TestCase):
+    """Streaming 'explain this spike' endpoint (/api/copilot/explain/stream):
+    builds the SAME deterministic explain context/facts/prompt as the non-stream
+    endpoint, then streams the LLM's likely-cause. Mirrors TestAskStream."""
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = False   # default: deterministic no-LLM path
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        # Remove any settings planted by the no-secret test so shared DB state
+        # doesn't leak into later suites (e.g. digest channel detection).
+        with app.LOCK:
+            app.DB.execute("DELETE FROM settings WHERE key IN ('webhook_url','telegram_token')")
+            app.DB.commit()
+
+    def _point(self, **kw):
+        p = {"key": "gpu_power", "value": 280, "baseline": 90, "z": 4.2,
+             "unit": "W", "direction": "spike", "magnitude": 190}
+        p.update(kw)
+        return p
+
+    def _post_stream(self, payload):
+        return self.c.post("/api/copilot/explain/stream", json=payload)
+
+    def test_stream_emits_tokens_then_done(self):
+        def fake_stream(prompt, timeout=None):
+            self.assertIn("LIKELY CAUSE:", prompt)   # explain prompt assembled
+            self.assertIn("GPU power draw", prompt)   # explain facts grounded
+            yield ("token", "Inference ")
+            yield ("token", "load spiked.")
+            yield ("done", {"text": "Inference load spiked.", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream(self._point())
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "text/event-stream")
+        frames = _parse_sse(r.get_data())
+        toks = [d["t"] for (ev, d) in frames if ev == "token"]
+        self.assertEqual("".join(toks), "Inference load spiked.")
+        done = [d for (ev, d) in frames if ev == "done"]
+        self.assertEqual(len(done), 1)
+        # Terminal payload shape matches the non-stream /api/copilot/explain.
+        self.assertEqual(done[0]["source"], "llm")
+        self.assertEqual(done[0]["llm_status"], "ok")
+        self.assertEqual(done[0]["explanation"], "Inference load spiked.")
+        self.assertEqual(done[0]["key"], "gpu_power")
+        self.assertIsInstance(done[0]["facts"], list)
+        self.assertIn("context", done[0])
+        self.assertIn("model", done[0])
+
+    def test_stream_terminal_matches_nonstream_shape(self):
+        # done frame must carry the same top-level keys the non-stream endpoint
+        # returns (so the UI terminal render is identical).
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "x")
+            yield ("done", {"text": "x", "metrics": None})
+        nonstream = self.c.post("/api/copilot/explain", json=self._point()).get_json()
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            frames = _parse_sse(self._post_stream(self._point()).get_data())
+        finally:
+            app._ollama_generate_stream = orig
+        done = [d for (ev, d) in frames if ev == "done"][0]
+        for k in ("now", "model", "key", "facts", "context", "enabled",
+                  "explanation", "source", "llm_status"):
+            self.assertIn(k, done, "done frame missing key %r" % k)
+            self.assertIn(k, nonstream)
+
+    def test_stream_llm_error_at_start_emits_terminal_facts(self):
+        def fake_stream(prompt, timeout=None):
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            r = self._post_stream(self._point())
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        self.assertFalse([f for f in frames if f[0] == "token"])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertEqual(err[0]["llm_status"], "unreachable")
+        self.assertTrue(err[0]["explanation"])   # deterministic facts summary
+        self.assertTrue(err[0]["facts"])
+
+    def test_stream_llm_error_mid_stream_terminates_gracefully(self):
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "partial ")
+            yield ("error", "unreachable")
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            frames = _parse_sse(self._post_stream(self._point()).get_data())
+        finally:
+            app._ollama_generate_stream = orig
+        self.assertEqual([d["t"] for (ev, d) in frames if ev == "token"], ["partial "])
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["source"], "facts")
+
+    def test_stream_disabled_llm_emits_facts_terminal(self):
+        # COPILOT_ENABLED False (setUp) → real generator yields ('error','disabled').
+        r = self._post_stream(self._point())
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        err = [d for (ev, d) in frames if ev == "error"]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["llm_status"], "disabled")
+        self.assertEqual(err[0]["source"], "facts")
+        self.assertTrue(err[0]["explanation"])
+
+    def test_stream_empty_payload_emits_terminal_not_500(self):
+        # No usable point → still a terminal frame (facts), never a 500.
+        r = self._post_stream({})
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        term = [(ev, d) for (ev, d) in frames if ev in ("done", "error")]
+        self.assertEqual(len(term), 1)
+        self.assertEqual(term[0][0], "error")     # LLM off → facts terminal
+        self.assertTrue(term[0][1]["facts"])
+
+    def test_stream_bad_payload_emits_terminal_not_500(self):
+        r = self.c.post("/api/copilot/explain/stream", data="not json",
+                        content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        frames = _parse_sse(r.get_data())
+        self.assertTrue([f for f in frames if f[0] in ("done", "error")])
+
+    def test_stream_no_secret_in_streamed_bytes(self):
+        with app.LOCK:
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('webhook_url','https://hooks.example/SECRETTOKEN')")
+            app.DB.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('telegram_token','BOTSECRET123')")
+            app.DB.commit()
+
+        def fake_stream(prompt, timeout=None):
+            yield ("token", "fine")
+            yield ("done", {"text": "fine", "metrics": None})
+        orig = app._ollama_generate_stream
+        app._ollama_generate_stream = fake_stream
+        try:
+            for pt in (self._point(), self._point(key="gpu_temp", unit="°C"),
+                       self._point(key="power_draw"), {}):
+                body = self._post_stream(pt).get_data(as_text=True)
+                self.assertNotIn("SECRETTOKEN", body)
+                self.assertNotIn("BOTSECRET123", body)
+                self.assertNotIn("COPILOT_OLLAMA_URL", body)
+                self.assertNotIn("11434", body)   # ollama URL/port never streamed
+        finally:
+            app._ollama_generate_stream = orig
+
+    def test_nonstream_explain_still_intact(self):
+        # The additive stream must not have changed the original endpoint shape.
+        r = self.c.post("/api/copilot/explain", json=self._point())
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")        # LLM off → facts fallback
+        self.assertEqual(j["llm_status"], "disabled")
+        self.assertTrue(j["explanation"])
+        self.assertEqual(j["key"], "gpu_power")
+
+
 if __name__ == "__main__":
     unittest.main()

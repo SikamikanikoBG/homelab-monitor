@@ -12,7 +12,7 @@ release notes.
 
 **🧠 Lab Copilot — local LLM, no cloud**
 - **Daily NL digest + ask-box** (`/api/copilot/digest`, `/api/copilot/ask`) — the on-box ollama phrases your real metrics (GPU, biggest model, disk-fill ETA, cost projection, top anomaly) in plain English. Graceful when no LLM is present (never 500s).
-- **"Explain this spike"** (`/api/copilot/explain`) — click any anomaly/incident member and the Copilot reads the surrounding samples/models/power to give a 1–2 sentence cause.
+- **"Explain this spike"** (`/api/copilot/explain` + SSE `/api/copilot/explain/stream`) — click any anomaly/incident member and the Copilot reads the surrounding samples/models/power to give a 1–2 sentence cause, now typed in live token-by-token as the local LLM generates it (graceful fallback to the non-stream path + deterministic facts when the LLM is down).
 - **"What's broken?" one-keystroke triage** (⌘K) — scores every container by badness, opens the worst one's log drawer, and auto-fires the LLM log summary.
 - **Container log tail + "Summarize errors"** — Dozzle-style log viewing over the read-only Docker socket plus one-click local-LLM triage of error/warn lines.
 - **Scheduled NL digest push** — once a day at a chosen time the digest goes out through your existing alert channel; edge-triggered exactly once/day, fails safe.
