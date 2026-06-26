@@ -4597,7 +4597,7 @@ def notify_scan():
 # re-arms cleanly once the condition clears (last_state). Snooze suppresses a rule
 # until snoozed_until. Every fire (and every test) appends to alert_history (capped
 # at the last ~200 rows). This only sends data OUT — it never touches the host.
-_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident", "uptime_down"}
+_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident", "uptime_down", "cert_expiry"}
 _ALERT_HISTORY_CAP = 200
 # Rule ids that already have a "suppressed (maintenance)" history row for their
 # CURRENT contiguous suppressed-fire span. Edge-trigger so a long window with an
@@ -4676,6 +4676,24 @@ def _validate_rule(body):
                 row = DB.execute("SELECT 1 FROM uptime_checks WHERE id=?", (cid,)).fetchone()
             if not row:
                 return None, "Unknown uptime check. Pick an existing check or 'any'."
+            params = {**params, "check_id": cid}
+    elif ctype == "cert_expiry":
+        # Fires while a TLS-cert check is in its pre-expiry warn window (cert_warn).
+        # Target a specific cert check by id, or "any"/none to fire for ANY cert
+        # check currently warning. A specific id must exist AND be a cert-type check
+        # (an http/tcp check has no expiry to warn on).
+        cid = params.get("check_id")
+        if cid in (None, "", "any"):
+            params = {**params, "check_id": "any"}
+        else:
+            if not isinstance(cid, str):
+                return None, "check_id must be a check id string or 'any'."
+            with LOCK:
+                row = DB.execute("SELECT type FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+            if not row:
+                return None, "Unknown uptime check. Pick an existing cert check or 'any'."
+            if row[0] != "cert":
+                return None, "cert_expiry rules target a TLS-cert check. Pick a cert-type check or 'any'."
             params = {**params, "check_id": cid}
     return {"name": name, "ctype": ctype, "channel": channel, "level": level,
             "cooldown_min": cooldown, "params": params,
@@ -5046,7 +5064,8 @@ def _alert_entity(rule, title):
 # "GPU VRAM …", "… incident …", "Uptime …"), so a glob targeting the entity matches
 # both fire and recovery for the same rule.
 _CTYPE_SUBJECT = {"anomaly": "anomaly", "disk_eta": "disk", "vram_eta": "vram",
-                  "cost_budget": "cost", "incident": "incident", "uptime_down": "uptime"}
+                  "cost_budget": "cost", "incident": "incident", "uptime_down": "uptime",
+                  "cert_expiry": "cert"}
 
 def _recovery_entity(rule):
     """Matchable entity for a recovery notice — rule name + ctype subject keyword,
@@ -5209,6 +5228,44 @@ def _eval_rule(rule, signals):
         title = f"Uptime DOWN — {label}"
         detail = f"Uptime check '{label}' is DOWN." + (f" {tail}" if tail else "")
         return True, title, detail
+    if ct == "cert_expiry":
+        # Fires while a TLS-cert check is UP but inside its pre-expiry warn window
+        # (uptime_overview sets cert_warn=True iff state=='up' and days_to_expiry<=
+        # the check's cert_warn_days). We deliberately require state=='up' so we
+        # never double-fire with uptime_down once a cert hard-expires / the host
+        # goes down — that's uptime_down's territory. Reads the already-computed
+        # per-check states from the shared bundle; targets are _redact_target'd
+        # upstream and we surface only the label, day counts, and subject CN.
+        want = (p.get("check_id") or "any")
+        checks = signals.get("uptime") or []
+        warning = [c for c in checks
+                   if c.get("type") == "cert" and c.get("enabled")
+                   and c.get("state") == "up" and c.get("cert_warn")]
+        if want != "any":
+            warning = [c for c in warning if c.get("id") == want]
+        if not warning:
+            return False, None, None
+        # Soonest-to-expire first, so the headline names the most urgent cert.
+        warning.sort(key=lambda c: (c.get("days_to_expiry") if c.get("days_to_expiry") is not None else 1 << 30))
+        first = warning[0]
+        n = len(warning)
+        label = str(first.get("label") or first.get("id") or "cert")
+        d = first.get("days_to_expiry")
+        dtxt = f"~{d}d" if d is not None else "soon"
+        thr = first.get("cert_warn_days")
+        if want == "any" and n > 1:
+            labels = [str(c.get("label") or c.get("id") or "?") for c in warning]
+            head = ", ".join(labels[:4]) + (f" +{n - 4} more" if n > 4 else "")
+            title = f"Certs expiring — {n} within warn window"
+            detail = (f"{n} TLS certs nearing expiry: {head}. Soonest: '{label}' in {dtxt}"
+                      + (f" (warns at {thr}d)" if thr is not None else "") + ".")
+        else:
+            title = f"Cert expiring — {label} ({dtxt} left)"
+            cn = first.get("subject_cn")
+            detail = (f"TLS cert for '{label}' expires in {dtxt}"
+                      + (f" (warns at {thr}d)" if thr is not None else "")
+                      + (f"; subject CN {cn}" if cn else "") + ".")
+        return True, title, detail
     return False, None, None
 
 def _uptime_down_reason(c):
@@ -5258,11 +5315,12 @@ def evaluate_rules(signals=None):
         except Exception as e:
             print("evaluate_rules signal error:", e, flush=True)
             return 0
-    # Defense-in-depth: uptime_down rules need per-check states. If a caller passed a
-    # pre-built bundle (e.g. the collector) that omitted "uptime", back-fill it here so
-    # the rule can never silently go dead. uptime_overview() takes LOCK itself, so this
-    # runs outside any held lock. Only pays the read when such a rule is actually enabled.
-    if "uptime" not in signals and any(r["ctype"] == "uptime_down" for r in rules):
+    # Defense-in-depth: uptime_down AND cert_expiry rules need per-check states. If a
+    # caller passed a pre-built bundle (e.g. the collector) that omitted "uptime",
+    # back-fill it here so the rule can never silently go dead. uptime_overview() takes
+    # LOCK itself, so this runs outside any held lock. Only pays the read when such a
+    # rule is actually enabled.
+    if "uptime" not in signals and any(r["ctype"] in ("uptime_down", "cert_expiry") for r in rules):
         try:
             signals["uptime"] = uptime_overview().get("checks", [])
         except Exception as e:

@@ -740,5 +740,192 @@ class TestUptimeDownEngineIntegration(unittest.TestCase):
         pt.assert_called()
 
 
+# ── cert_expiry: WARNs while a cert check is up-but-inside its pre-expiry window ──
+def SIG_CERT(cid="cc1", state="up", enabled=True, label="example.com:443",
+             cert_warn=True, days=12, warn_days=30, subject_cn="example.com"):
+    """A cert-type check row as uptime_overview().checks would emit it."""
+    return {"uptime": [{"id": cid, "label": label, "type": "cert", "enabled": enabled,
+                        "state": state, "cert_warn": cert_warn, "days_to_expiry": days,
+                        "cert_warn_days": warn_days, "subject_cn": subject_cn,
+                        "last_code": None, "last_err": None}]}
+
+
+class TestCertExpiryValidation(unittest.TestCase):
+    def setUp(self):
+        _clean_db(); _clean_uptime()
+
+    def tearDown(self):
+        _clean_db(); _clean_uptime()
+
+    def test_any_mode_default(self):
+        clean, err = app._validate_rule({"name": "c", "ctype": "cert_expiry", "params": {}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], "any")
+
+    def test_existing_cert_check_ok(self):
+        cid, _ = app.create_uptime_check({"label": "x", "type": "cert", "target": "example.com:443"})
+        clean, err = app._validate_rule({"name": "c", "ctype": "cert_expiry",
+                                         "params": {"check_id": cid}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], cid)
+
+    def test_non_cert_check_id_rejected(self):
+        cid, _ = app.create_uptime_check({"label": "x", "type": "tcp", "target": "h:1"})
+        _, err = app._validate_rule({"name": "c", "ctype": "cert_expiry",
+                                     "params": {"check_id": cid}})
+        self.assertIsNotNone(err)
+
+    def test_unknown_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "c", "ctype": "cert_expiry",
+                                     "params": {"check_id": "nope"}})
+        self.assertIsNotNone(err)
+
+    def test_garbage_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "c", "ctype": "cert_expiry",
+                                     "params": {"check_id": 123}})
+        self.assertIsNotNone(err)
+
+
+class TestCertExpiryEval(unittest.TestCase):
+    def _rule(self, **kw):
+        base = {"id": "r1", "name": "C", "enabled": True, "ctype": "cert_expiry",
+                "params": {"check_id": "any"}, "channel": "all", "level": "warning",
+                "cooldown_min": 60, "last_fired_at": None, "last_state": None,
+                "snoozed_until": None}
+        base.update(kw)
+        return base
+
+    def test_fires_in_warn_window(self):
+        fired, title, detail = app._eval_rule(
+            self._rule(params={"check_id": "cc1"}), SIG_CERT(cid="cc1", days=12))
+        self.assertTrue(fired)
+        self.assertIn("example.com", title)
+        self.assertIn("12d", detail)
+        self.assertIn("30d", detail)  # warn threshold surfaced
+
+    def test_no_fire_outside_window(self):
+        # days_to_expiry > warn_days -> uptime_overview sets cert_warn False -> no fire
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "cc1"}), SIG_CERT(cid="cc1", cert_warn=False, days=90))
+        self.assertFalse(fired)
+
+    def test_no_double_fire_when_hard_down(self):
+        # A hard-expired / unreachable cert reads state 'down' (uptime_down's job).
+        # cert_expiry requires state 'up', so it stays quiet — no double notification.
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "cc1"}),
+            SIG_CERT(cid="cc1", state="down", cert_warn=False))
+        self.assertFalse(fired)
+
+    def test_targeted_missing_check_no_fire(self):
+        fired, *_ = app._eval_rule(
+            self._rule(params={"check_id": "gone"}), SIG_CERT(cid="cc1"))
+        self.assertFalse(fired)
+
+    def test_any_mode_ignores_non_cert_check(self):
+        # An http/tcp check in the bundle must never satisfy a cert_expiry rule.
+        sig = {"uptime": [{"id": "u1", "label": "API", "type": "tcp", "enabled": True,
+                           "state": "up", "cert_warn": True}]}
+        fired, *_ = app._eval_rule(self._rule(), sig)
+        self.assertFalse(fired)
+
+    def test_any_mode_ignores_disabled_check(self):
+        fired, *_ = app._eval_rule(self._rule(), SIG_CERT(enabled=False))
+        self.assertFalse(fired)
+
+    def test_any_mode_lists_multiple_soonest_first(self):
+        sig = {"uptime": [
+            {"id": "a", "label": "a.com", "type": "cert", "enabled": True, "state": "up",
+             "cert_warn": True, "days_to_expiry": 20, "cert_warn_days": 30},
+            {"id": "b", "label": "b.com", "type": "cert", "enabled": True, "state": "up",
+             "cert_warn": True, "days_to_expiry": 3, "cert_warn_days": 30}]}
+        fired, title, detail = app._eval_rule(self._rule(), sig)
+        self.assertTrue(fired)
+        self.assertIn("2", title)            # count of 2
+        self.assertIn("b.com", detail)       # soonest named
+        self.assertIn("3d", detail)
+
+    def test_detail_is_credential_safe(self):
+        # Detail surfaces only label/day counts/subject CN — never the raw target.
+        sig = SIG_CERT(cid="cc1", label="prod-api", subject_cn="prod-api.internal")
+        fired, _, detail = app._eval_rule(self._rule(params={"check_id": "cc1"}), sig)
+        self.assertTrue(fired)
+        self.assertNotIn("secret", detail.lower())
+        self.assertNotIn("://", detail)
+
+
+class TestCertExpiryEngineIntegration(unittest.TestCase):
+    """Shared engine: cooldown, recovery edge, maintenance, and the uptime back-fill."""
+    def setUp(self):
+        _clean_db(); _clean_uptime(); _clean_maint()
+        app._MAINT_SUPPRESS_LOGGED.clear()
+        app.save_settings({"discord_webhook_url": "", "telegram_token": "",
+                           "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
+        self.cid, _ = app.create_uptime_check({"label": "example.com:443", "type": "cert",
+                                               "target": "example.com:443"})
+
+    def tearDown(self):
+        app.save_settings({"ntfy_topic": ""})
+        _clean_db(); _clean_uptime(); _clean_maint()
+
+    def _state(self, rid):
+        with app.LOCK:
+            return app.DB.execute("SELECT last_state FROM alert_rules WHERE id=?", (rid,)).fetchone()[0]
+
+    def test_fires_in_window(self):
+        app.create_rule({"name": "c", "ctype": "cert_expiry", "params": {"check_id": self.cid},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_CERT(cid=self.cid, days=10)), 1)
+        pt.assert_called()
+
+    def test_no_fire_outside_window(self):
+        app.create_rule({"name": "c", "ctype": "cert_expiry", "params": {"check_id": self.cid},
+                         "enabled": True, "cooldown_min": 60})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_CERT(cid=self.cid, cert_warn=False, days=90)), 0)
+        pt.assert_not_called()
+
+    def test_recovery_on_renew(self):
+        # Renew cert -> days back above warn -> cert_warn False -> rule clears -> ONE recovery.
+        rid, _ = app.create_rule({"name": "c", "ctype": "cert_expiry",
+                                  "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")):
+            app.evaluate_rules(SIG_CERT(cid=self.cid, days=5))   # fire
+        self.assertEqual(self._state(rid), "active")
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(SIG_CERT(cid=self.cid, cert_warn=False, days=365))  # renewed
+        self.assertEqual(pt.call_count, 1)
+        self.assertEqual(self._state(rid), "clear")
+        self.assertTrue(any(h["status"] == "recovered" for h in app.list_alert_history()))
+
+    def test_suppressed_during_maintenance(self):
+        rid, _ = app.create_rule({"name": "c", "ctype": "cert_expiry",
+                                  "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 60})
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_CERT(cid=self.cid, days=5)), 0)
+        pt.assert_not_called()
+        self.assertIsNone(self._state(rid))
+
+    def test_backfill_when_bundle_omits_uptime(self):
+        """Regression guard (same class of bug that bit uptime_down): a cert_expiry
+        rule must still evaluate when a pre-built bundle omits 'uptime' — the engine
+        back-fills per-check states from the DB."""
+        app.create_rule({"name": "c", "ctype": "cert_expiry",
+                         "params": {"check_id": self.cid}, "enabled": True, "cooldown_min": 0})
+        ts = int(time.time())
+        with app.LOCK:
+            # state 'up' with a near days_to_expiry -> cert_warn True at overview time.
+            app.DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err,days_to_expiry) "
+                           "VALUES(?,?,?,?,?,?,?)", (self.cid, ts, 1, 5.0, None, None, 7))
+            app.DB.commit()
+        collector_sig = {"anomalies": {"items": []}, "incidents": []}
+        self.assertNotIn("uptime", collector_sig)
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(collector_sig), 1)
+        pt.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()
