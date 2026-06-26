@@ -1157,6 +1157,24 @@ a{color:var(--info)}
 .inforow{display:flex;gap:10px;padding:4px 0;font-size:13px;align-items:baseline}
 .inforow .k{color:var(--mut);flex:0 0 104px}
 .inforow .v{color:var(--tx);font-family:var(--mono);word-break:break-word}
+/* Per-row copy affordance — unobtrusive, hover/focus-revealed on pointer devices,
+   always visible on touch (no hover there). Themed via vars; matches the small
+   inline-button language used elsewhere. Reduced-motion: no transition. */
+.inforow{position:relative}
+.copybtn{margin-left:auto;flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;
+  background:transparent;border:1px solid transparent;color:var(--mut);
+  border-radius:6px;padding:1px 6px;font-size:11px;line-height:1.4;cursor:pointer;
+  opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease,border-color .12s ease}
+.inforow:hover .copybtn,.inforow:focus-within .copybtn,.copybtn:focus-visible{opacity:1}
+.copybtn:hover{color:var(--tx);background:var(--inset);border-color:var(--bd)}
+.copybtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;opacity:1}
+.copybtn .copyic{font-size:12px}
+.copybtn .copytxt:empty{display:none}
+.copybtn.ok{color:var(--ok);border-color:var(--bd);opacity:1}
+.copybtn.err{color:var(--crit);border-color:var(--bd);opacity:1}
+.copybtn:disabled{cursor:default}
+@media (hover:none){.copybtn{opacity:.85}}
+@media (prefers-reduced-motion:reduce){.copybtn{transition:none}}
 .kpirow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .kpirow .kpi{flex:1;min-width:120px}
 /* Security check rows reuse the app's .badge + .sdot + table styling; the only
@@ -7689,8 +7707,25 @@ function waitingHostMsg(){
   }
   return null;
 }
-function infoRow(k, v){
-  return (v==null || v==='') ? '' : `<div class="inforow"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+// Attribute-safe encode: esc() only handles & < > (fine for text nodes), but a
+// value living inside data-copy="…" also needs quotes neutralised so it can't
+// break out of the attribute. The clipboard later reads the DECODED raw value.
+function escAttr(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// One row. `v` is the already-esc()'d DOM markup; optional `raw` is the plain,
+// unescaped value that the copy button should write to the clipboard verbatim.
+// When raw is given we render a keyboard-accessible copy affordance scoped to
+// this row (label noise like "IP:" is never part of `raw`).
+function infoRow(k, v, raw){
+  if(v==null || v==='') return '';
+  let copy='';
+  if(raw!=null && raw!==''){
+    const aria=I18N.tf('sys.copy_aria','Copy {field}',{field:k});
+    copy=`<button type="button" class="copybtn" data-copy="${escAttr(raw)}"`
+       + ` aria-label="${escAttr(aria)}" title="${escAttr(I18N.t('sys.copy','Copy'))}">`
+       + `<span class="copyic" aria-hidden="true">⧉</span>`
+       + `<span class="copytxt" aria-hidden="true"></span></button>`;
+  }
+  return `<div class="inforow"><span class="k">${k}</span><span class="v">${v}</span>${copy}</div>`;
 }
 
 function renderSysInfo(){
@@ -7699,11 +7734,15 @@ function renderSysInfo(){
   const h = currentHostBlock(), os = h.os||{}, hw = h.hw||{};
   if(!h.os && !h.hw){ el.innerHTML = ''; return; }
   const booted = os.boot_time ? new Date(os.boot_time*1000).toLocaleString() : null;
+  // Each row: (label, esc()'d DOM markup, RAW plain value for the clipboard).
+  // The raw value is the bare fact a judge would actually want to paste — the
+  // hostname/IP/model string itself, never the "Label:" prefix or parenthetical
+  // qualifiers. Identity facts get copy buttons; transient ones (Booted) don't.
   const sys = [
-    infoRow(I18N.t('sys.os','OS'),          os.pretty ? `${esc(os.pretty)}${os.arch?'  ('+esc(os.arch)+')':''}` : (os.arch?esc(os.arch):null)),
-    infoRow(I18N.t('sys.kernel','Kernel'),      os.kernel ? esc(os.kernel) : null),
+    infoRow(I18N.t('sys.os','OS'),          os.pretty ? `${esc(os.pretty)}${os.arch?'  ('+esc(os.arch)+')':''}` : (os.arch?esc(os.arch):null), os.pretty||os.arch||''),
+    infoRow(I18N.t('sys.kernel','Kernel'),      os.kernel ? esc(os.kernel) : null, os.kernel||''),
     infoRow(I18N.t('sys.init_virt','Init / virt'), [os.init, os.virt].filter(Boolean).map(esc).join(' · ') || null),
-    infoRow(I18N.t('sys.hostname','Hostname'),    os.hostname ? esc(os.hostname)+((os.fqdn&&os.fqdn!==os.hostname)?'  ('+esc(os.fqdn)+')':'') : null),
+    infoRow(I18N.t('sys.hostname','Hostname'),    os.hostname ? esc(os.hostname)+((os.fqdn&&os.fqdn!==os.hostname)?'  ('+esc(os.fqdn)+')':'') : null, (os.fqdn&&os.fqdn!==os.hostname)?os.fqdn:os.hostname),
     infoRow(I18N.t('sys.booted','Booted'),      booted ? esc(booted) : null),
   ].join('');
   const topo = [hw.sockets&&hw.sockets+' socket'+(hw.sockets>1?'s':''), hw.cores&&hw.cores+' cores',
@@ -7712,15 +7751,44 @@ function renderSysInfo(){
   const mem = hw.ram_total ? fmtMB(hw.ram_total)+(hw.swap_total?'  (swap '+fmtMB(hw.swap_total)+')':'') : null;
   const gpu = hw.gpu_name ? esc(hw.gpu_name)+(hw.gpu_mem_total?'  ('+fmtMB(hw.gpu_mem_total)+')':'') : null;
   const hwh = [
-    infoRow(I18N.t('sys.cpu','CPU'),      hw.cpu_model ? esc(hw.cpu_model)+(hw.cpu_vendor?'  ('+esc(hw.cpu_vendor)+')':'') : null),
-    infoRow(I18N.t('sys.topology','CPU topology'), topo || null),
-    infoRow(I18N.t('sys.memory','Memory'),   mem),
-    infoRow(I18N.t('sys.machine','Machine / product'),  hw.machine ? esc(hw.machine) : null),
-    infoRow(I18N.t('sys.gpu','GPU'),      gpu),
+    infoRow(I18N.t('sys.cpu','CPU'),      hw.cpu_model ? esc(hw.cpu_model)+(hw.cpu_vendor?'  ('+esc(hw.cpu_vendor)+')':'') : null, hw.cpu_model||''),
+    infoRow(I18N.t('sys.topology','CPU topology'), topo || null, topo||''),
+    infoRow(I18N.t('sys.memory','Memory'),   mem, hw.ram_total?fmtMB(hw.ram_total):''),
+    infoRow(I18N.t('sys.machine','Machine / product'),  hw.machine ? esc(hw.machine) : null, hw.machine||''),
+    infoRow(I18N.t('sys.gpu','GPU'),      gpu, hw.gpu_name||''),
   ].join('');
   el.innerHTML = `<div class="infogrid">
     <div class="infocard"><h3>${I18N.t('sys.card_system','System')}</h3>${sys||'<div class="muted">'+I18N.t('sys.no_system','No system info reported.')+'</div>'}</div>
     <div class="infocard"><h3>${I18N.t('sys.card_hardware','Hardware')}</h3>${hwh||'<div class="muted">'+I18N.t('sys.no_hardware','No hardware info reported.')+'</div>'}</div></div>`;
+  wireCopyRows(el);
+}
+
+// One delegated click handler for every per-row copy button under `el`. Attached
+// once (idempotent across re-renders since renderSysInfo replaces innerHTML, not
+// the container). Reuses the shared copyText() helper (modern API + textarea
+// fallback). Double-fire safe: the button is disabled for the brief "Copied ✓"
+// window, then restored. Reduced-motion friendly — it's an instant text/colour
+// swap, no animation. The clipboard receives the RAW data-copy value verbatim.
+function wireCopyRows(el){
+  if(el._copyWired) return;
+  el._copyWired = true;
+  el.addEventListener('click', async (e)=>{
+    const btn = e.target.closest('.copybtn');
+    if(!btn || btn.disabled || !el.contains(btn)) return;
+    const raw = btn.getAttribute('data-copy');
+    if(raw==null) return;
+    btn.disabled = true;
+    const ok = await copyText(raw);
+    btn.classList.toggle('ok', ok);
+    btn.classList.toggle('err', !ok);
+    const tx = btn.querySelector('.copytxt');
+    if(tx) tx.textContent = ok ? I18N.t('sys.copied','Copied ✓') : I18N.t('sys.copy_fail','Copy failed');
+    setTimeout(()=>{
+      btn.classList.remove('ok','err');
+      if(tx) tx.textContent='';
+      btn.disabled = false;
+    }, 1200);
+  });
 }
 
 // Compact byte formatter for interface RX/TX counters (distinct from fmtBytes,
