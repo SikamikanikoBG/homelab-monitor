@@ -927,5 +927,232 @@ class TestCertExpiryEngineIntegration(unittest.TestCase):
         pt.assert_called()
 
 
+# ── slo_burn: fires while a check is burning its SLO error budget / over budget ──
+def _SLO(data_sufficient=True, over_budget=False, burn_1h=0.0, burn_6h=0.0,
+         budget_consumed_pct=0.0, target=0.999, window_days_actual=30.0):
+    return {"data_sufficient": data_sufficient, "over_budget": over_budget,
+            "burn_1h": burn_1h, "burn_6h": burn_6h,
+            "budget_consumed_pct": budget_consumed_pct, "target": target,
+            "window_days_actual": window_days_actual}
+
+
+def SIG_SLO(cid="s1", enabled=True, label="API", ctype="http", slo=None):
+    """An uptime check row carrying a `slo` sub-object, as uptime_overview emits."""
+    return {"uptime": [{"id": cid, "label": label, "type": ctype, "enabled": enabled,
+                        "state": "up", "slo": slo if slo is not None else _SLO()}]}
+
+
+class TestSloBurnValidation(unittest.TestCase):
+    def setUp(self):
+        _clean_db(); _clean_uptime()
+
+    def tearDown(self):
+        _clean_db(); _clean_uptime()
+
+    def test_any_mode_default_threshold(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn", "params": {}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], "any")
+        self.assertEqual(clean["params"]["burn_threshold"], 1.0)
+
+    def test_existing_check_ok_any_type(self):
+        cid, _ = app.create_uptime_check({"label": "x", "type": "tcp", "target": "h:1"})
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                         "params": {"check_id": cid}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["check_id"], cid)
+
+    def test_unknown_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                     "params": {"check_id": "nope"}})
+        self.assertIsNotNone(err)
+
+    def test_garbage_check_id_rejected(self):
+        _, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                     "params": {"check_id": 123}})
+        self.assertIsNotNone(err)
+
+    def test_custom_burn_threshold_kept(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                         "params": {"burn_threshold": 2.5}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["burn_threshold"], 2.5)
+
+    def test_garbage_burn_threshold_falls_back(self):
+        clean, _ = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                       "params": {"burn_threshold": "fast"}})
+        self.assertEqual(clean["params"]["burn_threshold"], 1.0)
+        clean, _ = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                       "params": {"burn_threshold": -3}})
+        self.assertEqual(clean["params"]["burn_threshold"], 1.0)
+
+
+class TestSloBurnEval(unittest.TestCase):
+    def _rule(self, **kw):
+        base = {"id": "r1", "name": "S", "enabled": True, "ctype": "slo_burn",
+                "params": {"check_id": "any", "burn_threshold": 1.0}, "channel": "all",
+                "level": "warning", "cooldown_min": 60, "last_fired_at": None,
+                "last_state": None, "snoozed_until": None}
+        base.update(kw)
+        return base
+
+    def test_fires_when_over_budget(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(over_budget=True, budget_consumed_pct=140.0, burn_1h=0.2))
+        fired, title, detail = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertTrue(fired)
+        self.assertIn("API", title)
+        self.assertIn("140", detail)
+        self.assertIn("OVER BUDGET", detail)
+
+    def test_fires_when_burn_at_threshold(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=1.0, budget_consumed_pct=30.0))
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1", "burn_threshold": 1.0}), sig)
+        self.assertTrue(fired)
+
+    def test_no_fire_when_sparse_even_if_numbers_bad(self):
+        # data_sufficient False -> NEVER fire, however bad the internal numbers look.
+        sig = SIG_SLO(cid="s1", slo=_SLO(data_sufficient=False, over_budget=True,
+                                         budget_consumed_pct=900.0, burn_1h=50.0))
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertFalse(fired)
+
+    def test_no_fire_within_budget_and_below_threshold(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(over_budget=False, burn_1h=0.5, budget_consumed_pct=20.0))
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertFalse(fired)
+
+    def test_custom_threshold_respected(self):
+        # burn 1.5 with threshold 2.0 -> no fire; threshold 1.0 -> fires.
+        sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=1.5, budget_consumed_pct=40.0))
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1", "burn_threshold": 2.0}), sig)
+        self.assertFalse(fired)
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1", "burn_threshold": 1.0}), sig)
+        self.assertTrue(fired)
+
+    def test_no_fire_disabled_check(self):
+        sig = SIG_SLO(cid="s1", enabled=False, slo=_SLO(over_budget=True, budget_consumed_pct=200.0))
+        fired, *_ = app._eval_rule(self._rule(), sig)
+        self.assertFalse(fired)
+
+    def test_targeted_missing_check_no_fire(self):
+        fired, *_ = app._eval_rule(self._rule(params={"check_id": "gone", "burn_threshold": 1.0}),
+                                   SIG_SLO(cid="s1", slo=_SLO(over_budget=True)))
+        self.assertFalse(fired)
+
+    def test_any_mode_lists_multiple_worst_first(self):
+        sig = {"uptime": [
+            {"id": "a", "label": "a.svc", "type": "http", "enabled": True, "state": "up",
+             "slo": _SLO(burn_1h=1.2, budget_consumed_pct=60.0)},
+            {"id": "b", "label": "b.svc", "type": "http", "enabled": True, "state": "up",
+             "slo": _SLO(over_budget=True, budget_consumed_pct=300.0, burn_1h=2.0)}]}
+        fired, title, detail = app._eval_rule(self._rule(), sig)
+        self.assertTrue(fired)
+        self.assertIn("2", title)
+        self.assertIn("b.svc", detail)   # over-budget worst named first
+
+    def test_missing_slo_guard_no_crash_no_fire(self):
+        # An uptime entry WITHOUT a `slo` sub-object must not crash or fire.
+        sig = {"uptime": [{"id": "s1", "label": "API", "type": "http",
+                           "enabled": True, "state": "up"}]}
+        fired, *_ = app._eval_rule(self._rule(), sig)
+        self.assertFalse(fired)
+
+    def test_detail_is_credential_safe(self):
+        sig = SIG_SLO(cid="s1", label="prod-api",
+                      slo=_SLO(over_budget=True, budget_consumed_pct=150.0, burn_1h=3.0))
+        fired, _, detail = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertTrue(fired)
+        self.assertNotIn("://", detail)
+        self.assertNotIn("secret", detail.lower())
+
+
+class TestSloBurnEngineIntegration(unittest.TestCase):
+    """Shared engine: cooldown, recovery edge, maintenance, and the uptime back-fill."""
+    def setUp(self):
+        _clean_db(); _clean_uptime(); _clean_maint()
+        app._MAINT_SUPPRESS_LOGGED.clear()
+        app.save_settings({"discord_webhook_url": "", "telegram_token": "",
+                           "telegram_chat_id": "", "webhook_url": "", "ntfy_topic": "hlm-test"})
+        self.cid, _ = app.create_uptime_check({"label": "svc", "type": "http",
+                                               "target": "http://h/health"})
+
+    def tearDown(self):
+        app.save_settings({"ntfy_topic": ""})
+        _clean_db(); _clean_uptime(); _clean_maint()
+
+    def _state(self, rid):
+        with app.LOCK:
+            return app.DB.execute("SELECT last_state FROM alert_rules WHERE id=?", (rid,)).fetchone()[0]
+
+    def _sig(self, **kw):
+        s = SIG_SLO(cid=self.cid, **kw)
+        return s
+
+    def test_fires_over_budget(self):
+        app.create_rule({"name": "s", "ctype": "slo_burn",
+                         "params": {"check_id": self.cid, "burn_threshold": 1.0},
+                         "enabled": True, "cooldown_min": 60})
+        sig = self._sig(slo=_SLO(over_budget=True, budget_consumed_pct=120.0))
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(sig), 1)
+        pt.assert_called()
+
+    def test_no_fire_when_healthy(self):
+        app.create_rule({"name": "s", "ctype": "slo_burn",
+                         "params": {"check_id": self.cid, "burn_threshold": 1.0},
+                         "enabled": True, "cooldown_min": 60})
+        sig = self._sig(slo=_SLO(over_budget=False, burn_1h=0.0, budget_consumed_pct=0.0))
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(sig), 0)
+        pt.assert_not_called()
+
+    def test_recovery_when_budget_recovers(self):
+        rid, _ = app.create_rule({"name": "s", "ctype": "slo_burn",
+                                  "params": {"check_id": self.cid, "burn_threshold": 1.0},
+                                  "enabled": True, "cooldown_min": 0})
+        with patch("app._post_text", return_value=(200, b"")):
+            app.evaluate_rules(self._sig(slo=_SLO(over_budget=True, budget_consumed_pct=200.0)))
+        self.assertEqual(self._state(rid), "active")
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            app.evaluate_rules(self._sig(slo=_SLO(over_budget=False, burn_1h=0.0,
+                                                  budget_consumed_pct=10.0)))
+        self.assertEqual(pt.call_count, 1)   # exactly one recovery notice
+        self.assertEqual(self._state(rid), "clear")
+        self.assertTrue(any(h["status"] == "recovered" for h in app.list_alert_history()))
+
+    def test_suppressed_during_maintenance(self):
+        rid, _ = app.create_rule({"name": "s", "ctype": "slo_burn",
+                                  "params": {"check_id": self.cid, "burn_threshold": 1.0},
+                                  "enabled": True, "cooldown_min": 60})
+        sig = self._sig(slo=_SLO(over_budget=True, budget_consumed_pct=150.0))
+        with patch("app._in_maintenance", return_value=(True, None)), \
+             patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(sig), 0)
+        pt.assert_not_called()
+        self.assertIsNone(self._state(rid))
+
+    def test_backfill_when_bundle_omits_uptime(self):
+        """Regression guard: a slo_burn rule must still evaluate when a pre-built
+        bundle omits 'uptime' — the engine back-fills per-check states (incl. the
+        slo sub-object) from the DB."""
+        app.create_rule({"name": "s", "ctype": "slo_burn",
+                         "params": {"check_id": self.cid, "burn_threshold": 0.01},
+                         "enabled": True, "cooldown_min": 0})
+        # Seed enough up/down rows so data_sufficient is True AND budget is consumed.
+        now = int(time.time())
+        with app.LOCK:
+            for i in range(app._SLO_MIN_SAMPLES + 5):
+                ts = now - (app._SLO_WINDOW_SEC) + i * 3600
+                up = 0 if i % 2 == 0 else 1   # ~50% failure -> way over budget
+                app.DB.execute("INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                               "VALUES(?,?,?,?,?,?)", (self.cid, ts, up, 5.0, None, None))
+            app.DB.commit()
+        collector_sig = {"anomalies": {"items": []}, "incidents": []}
+        self.assertNotIn("uptime", collector_sig)
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(collector_sig), 1)
+        pt.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()

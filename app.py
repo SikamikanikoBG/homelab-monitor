@@ -4621,7 +4621,7 @@ def notify_scan():
 # re-arms cleanly once the condition clears (last_state). Snooze suppresses a rule
 # until snoozed_until. Every fire (and every test) appends to alert_history (capped
 # at the last ~200 rows). This only sends data OUT — it never touches the host.
-_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident", "uptime_down", "cert_expiry"}
+_RULE_TYPES = {"anomaly", "disk_eta", "vram_eta", "cost_budget", "incident", "uptime_down", "cert_expiry", "slo_burn"}
 _ALERT_HISTORY_CAP = 200
 # Rule ids that already have a "suppressed (maintenance)" history row for their
 # CURRENT contiguous suppressed-fire span. Edge-trigger so a long window with an
@@ -4719,6 +4719,30 @@ def _validate_rule(body):
             if row[0] != "cert":
                 return None, "cert_expiry rules target a TLS-cert check. Pick a cert-type check or 'any'."
             params = {**params, "check_id": cid}
+    elif ctype == "slo_burn":
+        # Fires while a check is burning its SLO error budget too fast or is over
+        # budget. SLO applies to ANY check type (http/tcp/cert). Target a specific
+        # check by id, or "any"/none to fire for ANY check breaching. An optional
+        # numeric burn_threshold (default 1.0 = the budget-sustaining rate) sets the
+        # burn_1h trip point; garbage/absent falls back to the default.
+        cid = params.get("check_id")
+        if cid in (None, "", "any"):
+            params = {**params, "check_id": "any"}
+        else:
+            if not isinstance(cid, str):
+                return None, "check_id must be a check id string or 'any'."
+            with LOCK:
+                row = DB.execute("SELECT 1 FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+            if not row:
+                return None, "Unknown uptime check. Pick an existing check or 'any'."
+            params = {**params, "check_id": cid}
+        try:
+            bt = float(params.get("burn_threshold"))
+            if not (bt > 0):
+                raise ValueError
+        except (TypeError, ValueError):
+            bt = 1.0
+        params = {**params, "burn_threshold": bt}
     return {"name": name, "ctype": ctype, "channel": channel, "level": level,
             "cooldown_min": cooldown, "params": params,
             "enabled": 1 if body.get("enabled") else 0}, None
@@ -5089,7 +5113,7 @@ def _alert_entity(rule, title):
 # both fire and recovery for the same rule.
 _CTYPE_SUBJECT = {"anomaly": "anomaly", "disk_eta": "disk", "vram_eta": "vram",
                   "cost_budget": "cost", "incident": "incident", "uptime_down": "uptime",
-                  "cert_expiry": "cert"}
+                  "cert_expiry": "cert", "slo_burn": "slo"}
 
 def _recovery_entity(rule):
     """Matchable entity for a recovery notice — rule name + ctype subject keyword,
@@ -5302,6 +5326,70 @@ def _eval_rule(rule, signals):
                       + (f"; subject CN {cn}" if cn else "")
                       + (f"; issued by {issuer}" if issuer else "") + ".")
         return True, title, detail
+    if ct == "slo_burn":
+        # Fires when an ENABLED check is burning its SLO error budget too fast or is
+        # already over budget — the actionable teeth on the per-check `slo` sub-object
+        # that uptime_overview already computes. The data_sufficient gate is ESSENTIAL:
+        # a brand-new check with a handful of samples must NEVER alarm, however bad its
+        # raw failure fraction reads. Reads the shared bundle; we surface only the
+        # label, budget %, burn rate, target, and observed window — credential-safe
+        # (the raw target is _redact_target'd upstream and never touched here).
+        try:
+            thr = float((p or {}).get("burn_threshold"))
+            if not (thr > 0):
+                raise ValueError
+        except (TypeError, ValueError):
+            thr = 1.0
+        want = (p.get("check_id") or "any")
+        checks = signals.get("uptime") or []
+        def _breaching(c):
+            slo = c.get("slo") or {}
+            if not c.get("enabled") or not slo.get("data_sufficient"):
+                return False
+            b1 = slo.get("burn_1h")
+            return bool(slo.get("over_budget") or (b1 is not None and b1 >= thr))
+        breaching = [c for c in checks if _breaching(c)]
+        if want != "any":
+            breaching = [c for c in breaching if c.get("id") == want]
+        if not breaching:
+            return False, None, None
+        # Worst-first: over-budget checks lead, then by budget consumed, then burn.
+        def _sev(c):
+            slo = c.get("slo") or {}
+            return (1 if slo.get("over_budget") else 0,
+                    slo.get("budget_consumed_pct") or 0.0,
+                    slo.get("burn_1h") or 0.0)
+        breaching.sort(key=_sev, reverse=True)
+        first = breaching[0]
+        n = len(breaching)
+        label = str(first.get("label") or first.get("id") or "check")
+        fslo = first.get("slo") or {}
+        bc = fslo.get("budget_consumed_pct")
+        bctxt = f"{_reco_num(bc)}%" if bc is not None else "?"
+        b1 = fslo.get("burn_1h")
+        b6 = fslo.get("burn_6h")
+        tgt = fslo.get("target")
+        tgt_txt = f"{_reco_num(round(tgt * 100, 3))}%" if tgt is not None else "?"
+        wda = fslo.get("window_days_actual")
+        burn_txt = (f"{_reco_num(b1)}×" if b1 is not None else "?")
+        if want == "any" and n > 1:
+            labels = [str(c.get("label") or c.get("id") or "?") for c in breaching]
+            head = ", ".join(labels[:4]) + (f" +{n - 4} more" if n > 4 else "")
+            title = f"SLO burn — {n} checks breaching budget"
+            detail = (f"{n} uptime checks over budget / burning fast: {head}. "
+                      f"Worst: '{label}' (budget {bctxt} used, burn {burn_txt}/h"
+                      + (f", {_reco_num(b6)}×/6h" if b6 is not None else "")
+                      + f", SLO target {tgt_txt}"
+                      + (f", observed {wda}d" if wda else "") + ").")
+        else:
+            title = f"SLO burn — {label} (budget {bctxt} used, burn {burn_txt})"
+            detail = (f"Uptime check '{label}' is burning its SLO error budget: "
+                      f"budget {bctxt} used, burn {burn_txt} over the last hour"
+                      + (f" ({_reco_num(b6)}× over 6h)" if b6 is not None else "")
+                      + f", SLO target {tgt_txt}"
+                      + (f", observed over {wda}d" if wda else "")
+                      + (" — OVER BUDGET." if fslo.get("over_budget") else "."))
+        return True, title, detail
     return False, None, None
 
 def _uptime_down_reason(c):
@@ -5356,7 +5444,7 @@ def evaluate_rules(signals=None):
     # back-fill it here so the rule can never silently go dead. uptime_overview() takes
     # LOCK itself, so this runs outside any held lock. Only pays the read when such a
     # rule is actually enabled.
-    if "uptime" not in signals and any(r["ctype"] in ("uptime_down", "cert_expiry") for r in rules):
+    if "uptime" not in signals and any(r["ctype"] in ("uptime_down", "cert_expiry", "slo_burn") for r in rules):
         try:
             signals["uptime"] = uptime_overview().get("checks", [])
         except Exception as e:
