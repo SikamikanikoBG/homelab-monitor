@@ -255,6 +255,10 @@ _UPTIME_CHECKS_MIGRATIONS = ("cert_warn_days INTEGER",)
 _UPTIME_RESULTS_MIGRATIONS = ("days_to_expiry INTEGER", "cert_extra TEXT")
 # Which API key pushed a run (for per-key attribution); added to the runs table.
 _RUNS_MIGRATIONS = ("key_id TEXT",)
+# energy_wh: per-inference GPU energy (Wh) = eval_duration_s × live GPU power W / 3600,
+# stamped when a copilot generation is captured (NULL when GPU power/timing absent or
+# for pre-migration rows). Powers the "local vs cloud" inference-savings rollup.
+_LLM_SAMPLES_MIGRATIONS = ("energy_wh REAL",)
 
 def _data_dir():
     return os.path.dirname(os.path.abspath(DB_PATH)) or "."
@@ -308,6 +312,11 @@ def _apply_schema_migrations(conn):
     for col in _UPTIME_RESULTS_MIGRATIONS:
         try:
             conn.execute(f"ALTER TABLE uptime_results ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in _LLM_SAMPLES_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE llm_samples ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     # Migrate a legacy single instance-wide api_key (the previous design) into the
@@ -4206,6 +4215,12 @@ SETTING_DEFAULTS = {
     "night_end":           "06:00",    # local time-of-day "HH:MM"
     "country":             "",         # ISO-3166 alpha-2 — UI prefill memo only; backend never resolves it
     "system_idle_watts":   "",         # optional operator baseline (mainboard/fans/PSU/disks); blank => "other" omitted, never a guessed wall figure
+    # ── Local-vs-cloud inference savings (E1) ──────────────────────────────────
+    # The $/1k OUTPUT tokens a comparable hosted API would charge (GPT-4o-mini-tier
+    # default). Used ONLY to price the cloud-equivalent of LOCAL generations in the
+    # AI Models savings card. Empty/0 => the cloud comparison gracefully hides, just
+    # like an empty kwh_price hides the cost card. Never affects the Costs tab.
+    "cloud_cost_per_1k":   "0.15",     # $ per 1k output tokens (hosted-API reference rate)
     # ── Integrations / experiment-tracking API (push/pull) ────────────────────
     "api_key":             "",         # Bearer/X-API-Key for run ingest; empty => not generated (ingest fail-closed)
     "mlflow_uri":          "",         # MLflow tracking server base (blank = off)
@@ -7530,18 +7545,40 @@ def _llm_metrics_from_response(data, model=None):
     }
 
 
+def _sample_energy_wh(m, gpu_w=None):
+    """This generation's GPU energy in Wh = eval_duration_s × current GPU power W / 3600
+    — the SAME formula `_inference_cost` uses, so the savings rollup can never
+    contradict the per-inference cost chip. `gpu_w` defaults to the live LATEST
+    snapshot's total power (the source the cost attribution reads). Returns None
+    when timing or GPU power is unavailable (graceful → old rows / no-GPU stay NULL).
+    Pure given gpu_w; takes no LOCK and makes no network call. Never raises."""
+    try:
+        eval_ns = m.get("eval_duration_ns") if isinstance(m, dict) else None
+        if not eval_ns or eval_ns <= 0:
+            return None
+        if gpu_w is None:
+            gpu_w = LATEST.get("power") or 0
+        gpu_w = float(gpu_w or 0)
+        if gpu_w <= 0:
+            return None
+        return round((eval_ns / 1e9) * gpu_w / 3600.0, 4)
+    except (TypeError, ValueError):
+        return None
+
+
 def _persist_llm_sample(m):
     """Append one real throughput measurement to llm_samples and trim the ring.
     Writes under the global LOCK (the DB-write discipline every other table
     follows) — and is called OUTSIDE _LLM_LOCK so the two locks never nest.
     Never raises; a DB error here must never break the copilot path."""
     try:
+        energy_wh = _sample_energy_wh(m)  # NULL when GPU power/timing absent
         with LOCK:
             DB.execute(
-                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count) "
-                "VALUES(?,?,?,?,?,?)",
+                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count,energy_wh) "
+                "VALUES(?,?,?,?,?,?,?)",
                 (m["ts"], m.get("model"), m.get("tps"), m.get("ttft_ms"),
-                 m.get("prompt_tps"), m.get("eval_count")))
+                 m.get("prompt_tps"), m.get("eval_count"), energy_wh))
             # Retention: drop rows past the global window, then cap to the ring
             # size so a chatty copilot can't grow the table without bound.
             DB.execute("DELETE FROM llm_samples WHERE ts < ?", (m["ts"] - RETENTION,))
@@ -7737,6 +7774,88 @@ def _apply_usage_to_models(models, usage):
             m["last_tps"] = None
             m["avg_ttft_ms"] = None
     return models
+
+
+# Default window for the local-vs-cloud savings rollup: 30d, the demo-headline span
+# (matches the registry usage window). Bounded by RETENTION upstream.
+_LLM_SAVINGS_WINDOW = int(os.environ.get("COPILOT_SAVINGS_WINDOW_DAYS", "30")) * 86400
+
+
+def _llm_savings(now=None, window=None):
+    """The headline "local vs cloud" inference-savings rollup over a window (30d
+    default). One cheap aggregate read over llm_samples under the global LOCK
+    (the existing DB-read discipline; MUST be called OUTSIDE any held LOCK).
+
+    Returns a dict:
+        {window_days, tokens, local_energy_kwh, local_cost, cloud_cost, saved,
+         cloud_per_1k, currency}
+    or None when there are NO samples in the window (so the UI hides the card).
+
+    • tokens            = SUM(eval_count)               — local tokens generated
+    • local_energy_kwh  = SUM(energy_wh)/1000           — measured GPU energy (NULL rows skip)
+    • local_cost        = local_energy_kwh × per-kWh    — null when no tariff (cost disabled)
+                          (tariff via _cost_ctx/_price_at — the SAME source of truth as the
+                           Costs tab, so this can NEVER contradict it)
+    • cloud_cost        = tokens/1000 × cloud_per_1k    — null when the cloud rate is unset/0
+    • saved             = cloud_cost − local_cost       — when both present (the delta);
+                          the UI uses cloud_cost as the headline number when local_cost is null.
+
+    All money rounded sensibly. Never raises — None on any error / no samples."""
+    now = int(now or time.time())
+    win = _LLM_SAVINGS_WINDOW if window is None else window
+    cutoff = now - win
+    try:
+        with LOCK:
+            row = DB.execute(
+                "SELECT COUNT(*), COALESCE(SUM(eval_count),0), SUM(energy_wh) "
+                "FROM llm_samples WHERE ts >= ?", (cutoff,)).fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    tokens = int(row[1] or 0)
+    energy_wh = row[2]  # SUM is NULL only when every in-window row is NULL
+    # Cloud-equivalent: tokens/1000 × $/1k. Null when the rate is unset/0.
+    cloud_per_1k = None
+    cloud_cost = None
+    try:
+        raw = (get_settings().get("cloud_cost_per_1k") or "").strip()
+        rate = float(raw) if raw != "" else 0.0
+        if rate > 0:
+            cloud_per_1k = rate
+            cloud_cost = round((tokens / 1000.0) * rate, 2)
+    except (TypeError, ValueError):
+        cloud_per_1k = None
+    # Local energy cost: measured GPU energy × the tariff (same source as Costs tab).
+    # Null when no tariff is configured (cost-disabled host) or no priced rows.
+    local_energy_kwh = None
+    local_cost = None
+    if energy_wh is not None and energy_wh > 0:
+        local_energy_kwh = round(energy_wh / 1000.0, 5)
+        try:
+            ctx = _cost_ctx()
+            price = _price_at(ctx, now)  # per-kWh at the current band
+            if price and price > 0:
+                local_cost = round(local_energy_kwh * price, 4)
+        except Exception:
+            local_cost = None
+    saved = None
+    if cloud_cost is not None and local_cost is not None:
+        saved = round(cloud_cost - local_cost, 2)
+    try:
+        currency = _cost_ctx().get("currency") or "$"
+    except Exception:
+        currency = "$"
+    return {
+        "window_days": int(win // 86400),
+        "tokens": tokens,
+        "local_energy_kwh": local_energy_kwh,
+        "local_cost": local_cost,
+        "cloud_cost": cloud_cost,
+        "saved": saved,
+        "cloud_per_1k": cloud_per_1k,
+        "currency": currency,
+    }
 
 
 def _llm_resident_models():
@@ -8163,6 +8282,9 @@ def api_llm():
         # Sparse tok/s trend — one point per real copilot generation. Empty list
         # (honest) until a generation has run; never 500.
         "history": _llm_history(limit),
+        # Local-vs-cloud inference savings rollup (30d). null when no samples yet;
+        # cloud/local money fields self-hide when the rate/tariff is unset.
+        "savings": _llm_savings(),
     })
 
 

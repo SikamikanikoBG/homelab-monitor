@@ -2165,6 +2165,13 @@ h2 .hic{ opacity:.9 }
         <div class="cap" style="margin-top:4px" data-i18n-html="costset.baseline_cap">GPU and CPU-package power are <b>measured</b>. Wall power is never guessed. Set a flat baseline here only if you want an "Other" band on the Costs chart for the rest of the box.</div>
       </div>
 
+      <div style="max-width:340px">
+        <div class="flabel" data-i18n="set.cloud_per_1k">Cloud reference rate ($/1k output tokens)</div>
+        <input type="number" id="al_cloud_per_1k" min="0" step="0.0001" placeholder="e.g. 0.15"
+               class="field">
+        <div class="cap" style="margin-top:4px" data-i18n-html="costset.cloud_cap">Used only to price the <b>cloud-equivalent</b> of your <b>local</b> LLM generations in the AI Models "Local vs cloud" card — what a hosted API (GPT-4o-mini-tier ≈ 0.15) would have charged for the same tokens. Leave blank to hide the comparison.</div>
+      </div>
+
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
         <button class="rb on" id="al_save_costs" data-i18n="btn.save">Save</button>
       </div>
@@ -4553,6 +4560,7 @@ async function loadAlerts(){
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
+  { const cp=document.getElementById('al_cloud_per_1k'); if(cp) cp.value = s.cloud_cost_per_1k||''; }
   document.getElementById('al_night_start').value = s.night_start||'22:00';
   document.getElementById('al_night_end').value   = s.night_end||'06:00';
   const idleW=document.getElementById('al_idle_w'); if(idleW) idleW.value = s.system_idle_watts||'';
@@ -4671,6 +4679,7 @@ async function saveAlerts(){
     night_start:      document.getElementById('al_night_start').value || '22:00',
     night_end:        document.getElementById('al_night_end').value   || '06:00',
     system_idle_watts: (document.getElementById('al_idle_w')||{}).value || '',
+    cloud_cost_per_1k: ((document.getElementById('al_cloud_per_1k')||{}).value||'').trim(),
     mlflow_uri:        (document.getElementById('al_mlflow_uri')||{}).value || '',
     country:          document.getElementById('al_country').value,
     smtp_host:        (document.getElementById('al_smtp_host')||{}).value?.trim()||'',
@@ -7465,7 +7474,51 @@ function renderLlm(j){
   }else{
     resHtml='<div class="muted" style="margin-top:14px">'+I18N.t('llm.no_resident','No models resident in VRAM right now — ollama unloads them after the keep-alive window.')+'</div>';
   }
-  body.innerHTML=head+spark+resHtml;
+  body.innerHTML=head+_llmSavings(j.savings)+spark+resHtml;
+}
+// Local-vs-cloud inference savings card — the headline AI-native cost number.
+// Pure display (no LLM call). Graceful: no samples => '' (hidden); no cloud rate
+// => prompt to set it + show tokens/local cost; no tariff => tokens + cloud-equiv.
+// XSS-safe (esc) — labels via I18N, values are numbers we format ourselves.
+function _llmSavings(s){
+  if(!s || !s.tokens) return '';
+  const cur=esc(s.currency||'$');
+  const money=v=>cur+(Number(v).toFixed(2));
+  // Tokens, compact (2.4M / 18.3k / 412).
+  const tk=s.tokens;
+  let tokStr;
+  if(tk>=1e6) tokStr=(tk/1e6).toFixed(tk>=1e7?0:1)+'M';
+  else if(tk>=1e4) tokStr=(tk/1e3).toFixed(0)+'k';
+  else if(tk>=1e3) tokStr=(tk/1e3).toFixed(1)+'k';
+  else tokStr=String(tk);
+  const days=s.window_days||30;
+  const tip=I18N.t('llm.sav_tip','Estimate. Cloud cost = tokens × your configurable cloud rate. Local energy = GPU power × generation time, priced at your kWh tariff.');
+  // Headline: prefer the "saved" delta when we have both; else cloud-equivalent; else just tokens+local.
+  let headV, headL;
+  if(s.saved!=null){ headV='≈ '+money(s.saved); headL=I18N.t('llm.sav_saved','saved vs cloud'); }
+  else if(s.cloud_cost!=null){ headV='≈ '+money(s.cloud_cost); headL=I18N.t('llm.sav_cloud_eq','cloud-equivalent cost'); }
+  else { headV=tokStr; headL=I18N.t('llm.sav_tokens_local','tokens generated locally'); }
+  // Sub-badges: tokens, cloud-equiv, local energy cost — only when known.
+  const sub=[
+    '<span class="badge">'+I18N.tf('llm.sav_tokens','{n} tokens',{n:tokStr})+'</span>',
+    s.cloud_cost!=null ? '<span class="badge warn">'+I18N.tf('llm.sav_cloud','cloud ≈ {v}',{v:money(s.cloud_cost)})+'</span>' : '',
+    s.local_cost!=null ? '<span class="badge ok">'+I18N.tf('llm.sav_local','local energy ≈ {v}',{v:money(s.local_cost)})+'</span>' : '',
+  ].filter(Boolean).join(' ');
+  // Hint line when something's missing so the user can light up the full story.
+  let hint='';
+  if(s.cloud_cost==null){
+    hint='<div class="d" style="margin-top:7px">'+I18N.t('llm.sav_set_rate','Set a cloud $/1k-token rate in Settings → Costs to see what these tokens would cost on a hosted API.')+'</div>';
+  } else if(s.local_cost==null){
+    hint='<div class="d" style="margin-top:7px">'+I18N.t('llm.sav_no_tariff','Add a kWh price in Settings → Costs to also price your local GPU energy and show the net saving.')+'</div>';
+  }
+  return '<div class="ins ok" style="margin:14px 0 2px" title="'+esc(tip)+'">'
+    +'<div class="ic">💸</div><div style="flex:1">'
+    +'<div class="t">'+I18N.tf('llm.sav_title','Local vs cloud · last {d}d',{d:days})+'</div>'
+    +'<div class="kpi" style="text-align:left;padding:6px 0 2px">'
+    +'<div class="v" style="font-size:30px">'+esc(headV)+'</div>'
+    +'<div class="l">'+esc(headL)+'</div></div>'
+    +(sub?'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'+sub+'</div>':'')
+    +hint+'</div></div>';
 }
 // Hand-rolled tok/s sparkline (no new dep). SVG polyline, latest point
 // emphasised, accessible: role=img + aria-label summary AND a visually-hidden

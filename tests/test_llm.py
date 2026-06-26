@@ -260,6 +260,172 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(app._LLM_LAST["tps"], 60.0)
 
 
+class TestEnergyMigration(unittest.TestCase):
+    def test_migration_adds_energy_wh_and_idempotent(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        app._apply_schema_migrations(conn)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_samples)").fetchall()]
+        self.assertIn("energy_wh", cols)
+        # Re-running must not raise (duplicate-column is swallowed) and not dup.
+        app._apply_schema_migrations(conn)
+        cols2 = [r[1] for r in conn.execute("PRAGMA table_info(llm_samples)").fetchall()]
+        self.assertEqual(cols2.count("energy_wh"), 1)
+
+    def test_existing_columns_unchanged(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        app._apply_schema_migrations(conn)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_samples)").fetchall()]
+        for c in ("ts", "model", "tps", "ttft_ms", "prompt_tps", "eval_count"):
+            self.assertIn(c, cols)
+
+
+class TestEnergyPersist(unittest.TestCase):
+    def setUp(self):
+        self._saved = app._LLM_LAST
+        self._power = app.LATEST.get("power")
+        _clear_llm_samples()
+
+    def tearDown(self):
+        app._LLM_LAST = self._saved
+        app.LATEST["power"] = self._power
+        _clear_llm_samples()
+
+    def _last_energy(self):
+        with app.LOCK:
+            return app.DB.execute(
+                "SELECT energy_wh FROM llm_samples ORDER BY ts DESC LIMIT 1").fetchone()[0]
+
+    def test_energy_persisted_when_gpu_power_present(self):
+        app.LATEST["power"] = 300.0   # 300 W
+        app._capture_llm_metrics(SAMPLE_GEN)  # eval_duration 2.0 s
+        # 2.0 s × 300 W / 3600 = 0.16667 Wh
+        e = self._last_energy()
+        self.assertIsNotNone(e)
+        self.assertAlmostEqual(e, 2.0 * 300.0 / 3600.0, places=3)
+
+    def test_energy_null_when_no_gpu_power(self):
+        app.LATEST["power"] = 0
+        app._capture_llm_metrics(SAMPLE_GEN)
+        self.assertIsNone(self._last_energy())
+
+    def test_energy_null_when_no_timing(self):
+        # _sample_energy_wh on a metrics dict lacking duration → None.
+        self.assertIsNone(app._sample_energy_wh({"eval_count": 10}, gpu_w=300))
+        self.assertIsNone(app._sample_energy_wh({}, gpu_w=300))
+
+    def test_sample_energy_matches_inference_cost_formula(self):
+        m = app._llm_metrics_from_response(SAMPLE_GEN, "gemma3:1b")
+        saved = app.LATEST.get("power")
+        try:
+            app.LATEST["power"] = 250.0
+            e = app._sample_energy_wh(m)
+            inf = app._inference_cost(m)
+        finally:
+            app.LATEST["power"] = saved
+        self.assertAlmostEqual(e, inf["energy_wh"], places=3)
+
+
+class TestSavings(unittest.TestCase):
+    def setUp(self):
+        _clear_llm_samples()
+        self._settings_backup = {
+            k: app.get_settings().get(k)
+            for k in ("cloud_cost_per_1k", "kwh_price", "tariff_mode", "kwh_price_night")
+        }
+
+    def tearDown(self):
+        _clear_llm_samples()
+        app.save_settings(self._settings_backup)
+
+    def _seed(self, rows):
+        # rows: list of (eval_count, energy_wh)
+        now = int(time.time())
+        with app.LOCK:
+            for i, (ec, ewh) in enumerate(rows):
+                app.DB.execute(
+                    "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count,energy_wh) "
+                    "VALUES(?,?,?,?,?,?,?)", (now - i, "m", 50.0, 100.0, None, ec, ewh))
+            app.DB.commit()
+
+    def test_none_when_no_samples(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15"})
+        self.assertIsNone(app._llm_savings())
+
+    def test_tokens_and_cloud_cost(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": ""})
+        self._seed([(1000, 1.0), (1000, 1.0)])  # 2000 tokens
+        s = app._llm_savings()
+        self.assertEqual(s["tokens"], 2000)
+        # 2000/1000 × 0.15 = 0.30
+        self.assertAlmostEqual(s["cloud_cost"], 0.30, places=2)
+        # No tariff → local cost + saved are null (graceful).
+        self.assertIsNone(s["local_cost"])
+        self.assertIsNone(s["saved"])
+
+    def test_no_cloud_rate_hides_cloud(self):
+        app.save_settings({"cloud_cost_per_1k": "", "kwh_price": ""})
+        self._seed([(500, 0.5)])
+        s = app._llm_savings()
+        self.assertEqual(s["tokens"], 500)
+        self.assertIsNone(s["cloud_cost"])
+        self.assertIsNone(s["saved"])
+
+    def test_local_cost_and_saved_with_tariff(self):
+        # tariff path: cost is disabled live, so prove it here.
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": "0.30",
+                          "tariff_mode": "single"})
+        # 10000 tokens, 50 Wh total local energy = 0.05 kWh
+        self._seed([(10000, 50.0)])
+        s = app._llm_savings()
+        self.assertEqual(s["tokens"], 10000)
+        # cloud = 10 × 0.15 = 1.50
+        self.assertAlmostEqual(s["cloud_cost"], 1.50, places=2)
+        # local = 0.05 kWh × 0.30 = 0.015
+        self.assertAlmostEqual(s["local_cost"], 0.015, places=3)
+        # saved = 1.50 − 0.015 = 1.485 → rounds to 1.49 (cloud rounds to 2dp first)
+        self.assertAlmostEqual(s["saved"], round(1.50 - 0.015, 2), places=2)
+        self.assertEqual(s["window_days"], 30)
+
+    def test_null_energy_rows_skip_local_cost(self):
+        # Pre-migration rows have NULL energy_wh → local cost stays null even with tariff.
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": "0.30"})
+        self._seed([(1000, None), (1000, None)])
+        s = app._llm_savings()
+        self.assertEqual(s["tokens"], 2000)
+        self.assertIsNone(s["local_energy_kwh"])
+        self.assertIsNone(s["local_cost"])
+        self.assertIsNone(s["saved"])
+        self.assertAlmostEqual(s["cloud_cost"], 0.30, places=2)
+
+    def test_savings_in_api_llm(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15"})
+        self._seed([(1000, 1.0)])
+        saved_en, saved_url = app.COPILOT_ENABLED, app.COPILOT_OLLAMA_URL
+        try:
+            app.COPILOT_ENABLED = True
+            app.COPILOT_OLLAMA_URL = "http://127.0.0.1:1"
+            j = app.app.test_client().get("/api/llm").get_json()
+        finally:
+            app.COPILOT_ENABLED, app.COPILOT_OLLAMA_URL = saved_en, saved_url
+        self.assertIn("savings", j)
+        self.assertIsNotNone(j["savings"])
+        self.assertEqual(j["savings"]["tokens"], 1000)
+
+
+class TestCloudSetting(unittest.TestCase):
+    def test_default_and_round_trip(self):
+        self.assertIn("cloud_cost_per_1k", app.SETTING_DEFAULTS)
+        self.assertEqual(app.SETTING_DEFAULTS["cloud_cost_per_1k"], "0.15")
+        backup = app.get_settings().get("cloud_cost_per_1k")
+        try:
+            app.save_settings({"cloud_cost_per_1k": "0.42"})
+            self.assertEqual(app.get_settings()["cloud_cost_per_1k"], "0.42")
+        finally:
+            app.save_settings({"cloud_cost_per_1k": backup})
+
+
 class TestPromExport(unittest.TestCase):
     def setUp(self):
         self.c = app.app.test_client()
