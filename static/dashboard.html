@@ -147,6 +147,20 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .imgck-res.warn{color:var(--warn)} .imgck-res.err{color:var(--crit)}
 .imgck-res.busy{color:var(--mut)} .imgck-res.unknown{color:var(--mut)}
 @media(prefers-reduced-motion:reduce){.imgck{transition:none}}
+/* "Check all" sweep toolbar (Containers tab) */
+.checkall-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 2px}
+.checkall-btn{margin-left:0;font-size:11px;padding:3px 11px}
+.checkall-btn .ca-label{display:inline-flex;align-items:center;gap:5px}
+.checkall-btn.busy .ca-label::before{content:"";width:9px;height:9px;border-radius:50%;
+  border:2px solid currentColor;border-top-color:transparent;display:inline-block;
+  animation:ca-spin .7s linear infinite}
+.checkall-stop{margin-left:0;font-size:11px;padding:3px 11px}
+.checkall-stop:hover:not(:disabled){color:var(--crit);border-color:var(--crit)}
+.checkall-rollup{font-size:11px;font-weight:600;color:var(--mut);padding:2px 0}
+.checkall-rollup.ok{color:var(--ok)} .checkall-rollup.info{color:var(--info)}
+.checkall-rollup.warn{color:var(--warn)}
+@keyframes ca-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.checkall-btn.busy .ca-label::before{animation:none}}
 .reco-act b{color:var(--tx);font-weight:600}
 /* Recommendations panel: ranked, actionable to-do rows (reuses .ins severity borders). */
 .reco-item{flex-direction:column;gap:7px}
@@ -1639,6 +1653,20 @@ h2 .hic{ opacity:.9 }
 <!-- ───────── Containers ───────── -->
 <section data-tab="containers" hidden>
   <div class="card"><h2 data-i18n="containers.title">📦 Docker containers</h2>
+    <div class="checkall-bar">
+      <button type="button" id="checkall-btn" class="imgck checkall-btn" onclick="checkAllImages()"
+        title="Check every running container for an upstream image update — one at a time, awareness only"
+        data-i18n-attr="title:ct.checkall_title;aria-label:ct.checkall_aria"
+        aria-label="Check all running containers for image updates">
+        <span class="ca-label" data-i18n="ct.checkall">Check all</span>
+      </button>
+      <button type="button" id="checkall-stop" class="imgck checkall-stop" onclick="checkAllStop()" hidden
+        title="Stop the sweep" data-i18n-attr="title:ct.checkall_stop_title">
+        <span data-i18n="ct.checkall_stop">Stop</span>
+      </button>
+      <span id="checkall-rollup" class="checkall-rollup" hidden></span>
+      <span id="checkall-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
+    </div>
     <div class="grid" id="ctkpis"></div>
     <table style="margin-top:14px"><thead><tr>
       <th data-i18n="col.container">Container</th><th data-i18n="col.state">State</th>
@@ -8336,38 +8364,101 @@ function openLogDrawer(name){
 // "Check now" — POST a single bounded, on-demand upstream image re-check for one
 // container and render the fresh result in-place. AWARENESS ONLY (the endpoint
 // never pulls/restarts). Works even if the background poll is OFF.
+// Returns a Promise resolving to a small outcome the "Check all" sweep reads:
+//   {outcome:'update_available'|'up_to_date'|'unknown'|'gone'|'error', rate_limited:bool}
+// The in-place row render (the only place that paints the chip) lives here, so
+// the per-row button and the sweep share one render path — no duplication.
 function checkImageNow(name, btn){
   const res = document.querySelector('.imgck-res[data-ctckres="'+(window.CSS&&CSS.escape?CSS.escape(name):name)+'"]')
     || (btn && btn.parentElement && btn.parentElement.querySelector('.imgck-res'));
   if(btn){ btn.disabled=true; btn.classList.add('busy'); }
   if(res){ res.className='imgck-res busy'; res.textContent=' '+I18N.t('ct.checking','checking…'); }
-  fetch('/api/images/updates/check',{method:'POST',headers:{'Content-Type':'application/json'},
+  return fetch('/api/images/updates/check',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({container:name})})
     .then(r=>r.json().then(j=>({ok:r.ok,j})))
     .then(({ok,j})=>{
       if(btn){ btn.disabled=false; btn.classList.remove('busy'); }
-      if(!res) return;
       if(!ok || (j&&j.error==='no_such_container')){
-        res.className='imgck-res err'; res.textContent=' '+I18N.t('ct.check_gone','container not found'); return;
+        if(res){ res.className='imgck-res err'; res.textContent=' '+I18N.t('ct.check_gone','container not found'); }
+        return {outcome:'gone', rate_limited:false};
       }
       if(j && j.rate_limited){
-        res.className='imgck-res warn';
-        res.textContent=' ⏳ '+I18N.t('ct.check_ratelimited','rate-limited — try later'); return;
+        if(res){ res.className='imgck-res warn';
+          res.textContent=' ⏳ '+I18N.t('ct.check_ratelimited','rate-limited — try later'); }
+        return {outcome:'error', rate_limited:true};
       }
       const st=(j&&j.status)||'unknown';
-      let cls='imgck-res unknown', icon='?', label=I18N.t('ct.check_unknown','unknown');
-      if(st==='update_available'){ cls='imgck-res info'; icon='⬆'; label=I18N.t('ct.update_available','update'); }
-      else if(st==='up_to_date'){ cls='imgck-res ok'; icon='✓'; label=I18N.t('ct.up_to_date','up to date'); }
+      let cls='imgck-res unknown', icon='?', label=I18N.t('ct.check_unknown','unknown'), outcome='unknown';
+      if(st==='update_available'){ cls='imgck-res info'; icon='⬆'; label=I18N.t('ct.update_available','update'); outcome='update_available'; }
+      else if(st==='up_to_date'){ cls='imgck-res ok'; icon='✓'; label=I18N.t('ct.up_to_date','up to date'); outcome='up_to_date'; }
       else if(j&&j.reason==='digest-pinned'){ label=I18N.t('ct.check_pinned','digest-pinned'); }
       const when=(j&&j.checked_at)?' · '+relTime(j.checked_at):'';
-      res.className=cls;
-      res.textContent=' '+icon+' '+label+when;
-      if(j&&j.reason==='error'){ res.title=I18N.t('ct.check_error','could not reach the registry'); }
+      if(res){
+        res.className=cls;
+        res.textContent=' '+icon+' '+label+when;
+        if(j&&j.reason==='error'){ res.title=I18N.t('ct.check_error','could not reach the registry'); }
+      }
+      return {outcome, rate_limited:false};
     })
     .catch(()=>{
       if(btn){ btn.disabled=false; btn.classList.remove('busy'); }
       if(res){ res.className='imgck-res err'; res.textContent=' '+I18N.t('ct.check_error','could not reach the registry'); }
+      return {outcome:'error', rate_limited:false};
     });
+}
+// "Check all" — sequential, single-in-flight sweep over the rendered RUNNING
+// containers (one row has a .imgck button each). Awareness-only — it just fires
+// the same per-container GET the row button does, one at a time. Halts hard the
+// moment any check is rate-limited (the live arena saw Docker Hub 429s), so we
+// never keep hammering the registry. Explicit click only — never auto-run.
+var CHECKALL = {running:false, cancel:false};
+function checkAllAnnounce(msg){ const a=document.getElementById('checkall-status'); if(a) a.textContent=msg; }
+function checkAllSetBtn(running){
+  const b=document.getElementById('checkall-btn'); if(!b) return;
+  b.disabled=running; b.classList.toggle('busy',running);
+  b.setAttribute('aria-busy', running?'true':'false');
+  const lbl=b.querySelector('.ca-label');
+  if(lbl) lbl.textContent = running ? I18N.t('ct.checkall_running','Checking…') : I18N.t('ct.checkall','Check all');
+}
+function checkAllStop(){ CHECKALL.cancel=true; }
+async function checkAllImages(){
+  if(CHECKALL.running) return;
+  const btns = Array.prototype.slice.call(document.querySelectorAll('#cttbl .imgck[data-ctcheck]'));
+  if(!btns.length){ checkAllAnnounce(I18N.t('ct.checkall_none','No running containers to check')); return; }
+  CHECKALL.running=true; CHECKALL.cancel=false;
+  checkAllSetBtn(true);
+  const stop=document.getElementById('checkall-stop'); if(stop) stop.hidden=false;
+  const total=btns.length;
+  let upToDate=0, updates=0, unknown=0, halted=false;
+  for(let i=0;i<btns.length;i++){
+    if(CHECKALL.cancel) break;
+    const btn=btns[i], name=btn.dataset.ctcheck;
+    checkAllAnnounce(I18N.tf('ct.checkall_progress','Checking {i}/{n}…',{i:i+1,n:total}));
+    // Single-in-flight: await fully resolves (DOM repainted) before the next.
+    const r = await checkImageNow(name, btn);
+    if(r.rate_limited){ halted=true; break; }
+    if(r.outcome==='update_available') updates++;
+    else if(r.outcome==='up_to_date') upToDate++;
+    else unknown++;
+    // Gentle inter-request spacing — be polite to Docker Hub's anon limit.
+    if(i<btns.length-1 && !CHECKALL.cancel) await new Promise(res=>setTimeout(res,400));
+  }
+  CHECKALL.running=false;
+  checkAllSetBtn(false);
+  if(stop) stop.hidden=true;
+  // Aggregate rollup — compact, on-brand.
+  const roll=I18N.tf('ct.checkall_rollup','{ok} up-to-date · {upd} updates available · {unk} unknown',
+    {ok:upToDate,upd:updates,unk:unknown});
+  let suffix='';
+  if(halted) suffix=' — '+I18N.t('ct.checkall_ratelimited','stopped: rate-limited — try again later');
+  else if(CHECKALL.cancel) suffix=' — '+I18N.t('ct.checkall_stopped','stopped');
+  const out=document.getElementById('checkall-rollup');
+  if(out){
+    out.hidden=false;
+    out.className='checkall-rollup'+(halted?' warn':(updates>0?' info':' ok'));
+    out.textContent=roll+suffix;
+  }
+  checkAllAnnounce(roll+suffix);
 }
 function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; } }
 function closeLogDrawer(){ stopLogStream(); document.getElementById('logdrawer').hidden=true; LOG_NAME=null; hideLogSummary(); }
