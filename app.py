@@ -266,7 +266,18 @@ def _data_dir_writable():
 
 def _open_db_connection(path):
     conn = sqlite3.connect(path, check_same_thread=False)
+    # WAL lets the many reader threads (collector, host_poller, uptime_worker,
+    # mqtt_worker, image_update_worker + request threads) read without blocking
+    # the single writer. Host-mounted-volume safe: the -wal/-shm sidecars live
+    # alongside gpu.db in /data and are checkpointed on clean close; a restore
+    # path explicitly clears them (db_backup.remove_wal_sidecars).
     conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout turns a momentarily-held file lock from an instant
+    # "database is locked" error into a short wait (up to 5s) for the lock to
+    # free — strictly more robust under concurrency, and the fix for the
+    # transient test-suite lock flake. Applies to every connection we open
+    # (live app.DB and the shared test handle, same code path).
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 def _apply_schema_migrations(conn):
