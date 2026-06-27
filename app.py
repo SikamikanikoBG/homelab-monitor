@@ -9538,9 +9538,17 @@ def api_copilot_ask():
            "facts": facts, "sources": used, "routing": routing,
            "enabled": COPILOT_ENABLED}
     _cap = []
-    text, err = _ollama_generate(_copilot_ask_prompt(facts, question), capture=_cap)
-    if text is not None:
-        out.update({"answer": text, "source": "llm", "llm_status": "ok"})
+    # Structured (JSON-mode) ask: typed {answer,severity,action} that powers the
+    # severity chip + suggested-action CTA (same surface as "Explain this spike").
+    # Falls back to plain prose internally when the small model ignores the schema,
+    # so this is never worse than prose. ONE structured call on the hot path.
+    res, err = _ask_structured(facts, question, capture=_cap)
+    if res is not None:
+        out.update({"answer": res["answer"], "source": "llm", "llm_status": "ok"})
+        if res.get("severity"):
+            out["severity"] = res["severity"]
+        if res.get("action"):
+            out["action"] = res["action"]
         inf = _inference_cost(_cap[0] if _cap else None, now)
         if inf:
             out["inference"] = inf
@@ -9899,6 +9907,88 @@ def _explain_structured(facts, capture=None):
         if isinstance(capture, list):
             capture.append(_pcap[0] if _pcap else None)
         return {"explanation": ptext, "severity": None, "action": None}, None
+    return None, (err or perr or "unreachable")
+
+
+# JSON-Schema for the ask-box's structured answer — mirrors EXPLAIN_SCHEMA so the
+# ask result can carry the same severity chip + suggested-action CTA as "Explain
+# this spike". ollama constrains JSON-mode decoding to this; small models honour it
+# best-effort, hence the prose fallback in `_ask_structured`.
+ASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+        "action": {"type": "string"},
+    },
+    "required": ["answer", "severity"],
+}
+
+
+def _ask_structured_prompt(facts, question):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Answer the user's question using ONLY the facts below — these are live "
+        "readings from their lab; do not invent anything. Return a JSON object "
+        "with: \"answer\" (1-3 short plain-English sentences answering the "
+        "question; if the facts don't contain the answer, say so plainly), "
+        "\"severity\" (one of \"info\", \"warning\", \"critical\" — how "
+        "concerning the situation is for the operator), and \"action\" (one "
+        "short, concrete next step the operator could take, or \"\" if none). "
+        "No markdown.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n\n"
+        "QUESTION: " + question.strip() + "\n")
+
+
+def _ask_structured(facts, question, capture=None):
+    """Ask the LLM for a TYPED ask answer via ollama JSON mode, parse it
+    defensively, and return (dict, error). Mirrors `_explain_structured`. On
+    success the dict is {'answer','severity','action'} with severity clamped to
+    the allowed set and action either a non-empty string or None.
+
+    Graceful degrade: if the LLM is down/unreachable, returns no text, the text
+    isn't valid JSON, or lacks a usable answer (small models may ignore the
+    schema), we fall back to the EXISTING plain-prose ask (`_copilot_ask_prompt`)
+    so the answer is never worse than today. Returns (None, error_code) only when
+    even the prose fallback yields nothing (LLM fully down) — the caller then uses
+    the deterministic routed facts. Never raises. ONE structured call (then at most
+    one prose call on fallback), no LOCK held across the call. `capture`, when a
+    list, receives exactly one metrics dict — for the call whose text we actually
+    return — so the per-inference cost chip stays accurate across the fallback."""
+    _scap = []
+    text, err = _ollama_generate(
+        _ask_structured_prompt(facts, question), capture=_scap, fmt=ASK_SCHEMA)
+    if text is not None:
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            ans = obj.get("answer")
+            if isinstance(ans, str) and ans.strip():
+                sev = obj.get("severity")
+                if not (isinstance(sev, str) and sev.lower() in _EXPLAIN_SEVERITIES):
+                    sev = "info"
+                else:
+                    sev = sev.lower()
+                act = obj.get("action")
+                if not (isinstance(act, str) and act.strip()):
+                    act = None
+                else:
+                    act = act.strip()
+                if isinstance(capture, list):
+                    capture.append(_scap[0] if _scap else None)
+                return {"answer": ans.strip(), "severity": sev,
+                        "action": act}, None
+        # Got text but it wasn't usable structured JSON → prose fallback below.
+    # Either the LLM is down (err set) or it ignored the schema → plain prose.
+    _pcap = []
+    ptext, perr = _ollama_generate(
+        _copilot_ask_prompt(facts, question), capture=_pcap)
+    if ptext is not None:
+        if isinstance(capture, list):
+            capture.append(_pcap[0] if _pcap else None)
+        return {"answer": ptext, "severity": None, "action": None}, None
     return None, (err or perr or "unreachable")
 
 

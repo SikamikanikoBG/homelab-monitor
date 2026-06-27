@@ -442,6 +442,222 @@ class TestExplainEndpointStructured(unittest.TestCase):
         self.assertNotIn("severity", j)
 
 
+class TestAskStructured(unittest.TestCase):
+    """_ask_structured parses ollama JSON-mode output into a typed ask dict, clamps
+    severity, makes action optional, and falls back to the EXISTING plain-prose ask
+    (never worse than today) when the model ignores the schema or the LLM is down.
+    Mirrors TestExplainStructured."""
+
+    FACTS = ["GPU now: 60% util, 65C, 200W.", "chroma: Up 3 hours, 1500 MB RAM."]
+    Q = "is anything wrong?"
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+        self._orig = app._ollama_generate
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app._ollama_generate = self._orig
+
+    def _stub(self, struct=None, struct_err=None, prose=None, prose_err=None):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if fmt is not None:
+                if isinstance(capture, list):
+                    capture.append({"tok": 1})
+                return struct, struct_err
+            if isinstance(capture, list):
+                capture.append({"tok": 2})
+            return prose, prose_err
+        app._ollama_generate = fake
+
+    def test_valid_json_returns_typed_dict(self):
+        self._stub(struct=json.dumps(
+            {"answer": "GPU is hot but within range.", "severity": "warning",
+             "action": "Check the fan curve."}))
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "warning")
+        self.assertEqual(res["action"], "Check the fan curve.")
+        self.assertIn("GPU", res["answer"])
+
+    def test_severity_clamped_to_allowed(self):
+        self._stub(struct=json.dumps({"answer": "x", "severity": "EXTREME"}))
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "info")     # garbage → default
+        self.assertIsNone(res["action"])              # missing → None
+
+    def test_empty_action_becomes_none(self):
+        self._stub(struct=json.dumps(
+            {"answer": "x", "severity": "info", "action": "   "}))
+        res, _ = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(res["action"])
+
+    def test_garbage_json_falls_back_to_prose(self):
+        self._stub(struct="this is not json at all",
+                   prose="A plain prose answer.")
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["answer"], "A plain prose answer.")
+        self.assertIsNone(res["severity"])            # prose has no severity
+        self.assertIsNone(res["action"])
+
+    def test_missing_answer_falls_back_to_prose(self):
+        self._stub(struct=json.dumps({"severity": "critical"}),
+                   prose="Prose instead.")
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["answer"], "Prose instead.")
+
+    def test_llm_down_returns_error_no_crash(self):
+        self._stub(struct=None, struct_err="unreachable",
+                   prose=None, prose_err="unreachable")
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(res)
+        self.assertEqual(err, "unreachable")
+
+    def test_capture_gets_winning_call_metrics(self):
+        self._stub(struct=json.dumps({"answer": "x", "severity": "info"}))
+        cap = []
+        app._ask_structured(self.FACTS, self.Q, capture=cap)
+        self.assertEqual(cap, [{"tok": 1}])           # structured call metrics
+
+    def test_prose_fallback_capture_uses_prose_metrics(self):
+        # When the structured call yields bad JSON and we fall back to prose, the
+        # captured metrics must be the PROSE call's (the text we actually return).
+        self._stub(struct="not json", prose="Prose.")
+        cap = []
+        app._ask_structured(self.FACTS, self.Q, capture=cap)
+        self.assertEqual(cap, [{"tok": 2}])
+
+    def test_non_dict_top_level_falls_back_to_prose(self):
+        # A JSON LIST (valid JSON, wrong top-level shape) → clean prose fallback.
+        self._stub(struct=json.dumps([{"answer": "nope"}]),
+                   prose="Prose after a list payload.")
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["answer"], "Prose after a list payload.")
+        self.assertIsNone(res["severity"])
+        self.assertIsNone(res["action"])
+
+    def test_non_string_severity_defaults_to_info(self):
+        # severity arriving as a NUMBER must not be lowercased → defaults to info.
+        self._stub(struct=json.dumps(
+            {"answer": "Numeric severity.", "severity": 42}))
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "info")
+        self.assertEqual(res["answer"], "Numeric severity.")
+
+    def test_dict_action_becomes_none(self):
+        # action arriving as a DICT (not a string) → None, no crash.
+        self._stub(struct=json.dumps(
+            {"answer": "Dict action.", "severity": "info",
+             "action": {"do": "something"}}))
+        res, err = app._ask_structured(self.FACTS, self.Q)
+        self.assertIsNone(err)
+        self.assertIsNone(res["action"])
+        self.assertEqual(res["answer"], "Dict action.")
+
+    def test_one_structured_call_on_success(self):
+        # Success path must make exactly ONE generate call (structured), not a
+        # structured-then-always-prose double call on the hot path.
+        calls = []
+
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            calls.append("struct" if fmt is not None else "prose")
+            if isinstance(capture, list):
+                capture.append({"tok": 1})
+            return json.dumps({"answer": "ok", "severity": "info"}), None
+        app._ollama_generate = fake
+        app._ask_structured(self.FACTS, self.Q)
+        self.assertEqual(calls, ["struct"])
+
+    def test_uses_ask_schema_format(self):
+        seen = {}
+
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            seen["fmt"] = fmt
+            return json.dumps({"answer": "ok", "severity": "info"}), None
+        app._ollama_generate = fake
+        app._ask_structured(self.FACTS, self.Q)
+        self.assertEqual(seen["fmt"], app.ASK_SCHEMA)
+
+
+class TestAskEndpointStructured(unittest.TestCase):
+    """/api/copilot/ask carries severity/action when structured parsing succeeds,
+    and omits them gracefully (prose / facts) otherwise — keeping the existing
+    answer/source/llm_status/sources/routing/facts contract intact."""
+
+    def setUp(self):
+        self._en = app.COPILOT_ENABLED
+        app.COPILOT_ENABLED = True
+        self._orig = app._ollama_generate
+        self.c = app.app.test_client()
+
+    def tearDown(self):
+        app.COPILOT_ENABLED = self._en
+        app._ollama_generate = self._orig
+
+    def test_structured_fields_present(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if isinstance(capture, list):
+                capture.append(None)
+            if fmt is not None:
+                return json.dumps({"answer": "Disk /backup fills in ~10 days.",
+                                   "severity": "warning",
+                                   "action": "Prune old backups."}), None
+            return "prose", None
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/ask", json={"question": "is anything wrong?"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "llm")
+        self.assertEqual(j["llm_status"], "ok")
+        self.assertEqual(j["severity"], "warning")
+        self.assertEqual(j["action"], "Prune old backups.")
+        self.assertIn("Disk", j["answer"])
+        # existing contract preserved
+        self.assertIn("sources", j)
+        self.assertIn("routing", j)
+        self.assertIn("facts", j)
+
+    def test_prose_fallback_omits_structured_fields(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            if isinstance(capture, list):
+                capture.append(None)
+            if fmt is not None:
+                return "not json", None
+            return "Just prose here.", None
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/ask", json={"question": "is anything wrong?"})
+        j = r.get_json()
+        self.assertEqual(j["source"], "llm")
+        self.assertEqual(j["answer"], "Just prose here.")
+        self.assertNotIn("severity", j)
+        self.assertNotIn("action", j)
+
+    def test_llm_down_returns_facts_summary_not_500(self):
+        def fake(prompt, timeout=None, capture=None, fmt=None):
+            return None, "unreachable"
+        app._ollama_generate = fake
+        r = self.c.post("/api/copilot/ask", json={"question": "is the gpu healthy?"})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["source"], "facts")
+        self.assertEqual(j["llm_status"], "unreachable")
+        self.assertNotIn("severity", j)
+        self.assertNotIn("action", j)
+
+    def test_empty_question_graceful(self):
+        r = self.c.post("/api/copilot/ask", json={"question": "   "})
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j["llm_status"], "no_question")
+        self.assertNotIn("severity", j)
+
+
 class TestAskRouting(unittest.TestCase):
     """The ask-box's deterministic retrieval/routing: entity detection, topic
     keyword routing, targeted retrieval, sources, bounds, fallback + degrade,

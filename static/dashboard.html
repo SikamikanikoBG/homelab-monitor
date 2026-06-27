@@ -7437,7 +7437,11 @@ async function _copilotDigestStream(body){
 function _copilotRenderAnswer(out,j){
   const srcLine=_copilotSourcesLine(j.sources);
   if(j.source==='llm' && j.answer){
-    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+'</div>'+srcLine+_copilotInferenceChip(j.inference)+'</div></div>';
+    // Structured ask (non-stream) carries severity/action — reuse the explain
+    // chip/CTA helpers so ask + explain look identical. Both gracefully render ''
+    // when the fields are absent (e.g. the streamed prose terminal frame), so the
+    // typing UX is unchanged when there's no structured payload.
+    out.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">💬</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.answer)+_explainSevChip(j.severity)+'</div>'+_explainActionCTA(j.action)+srcLine+_copilotInferenceChip(j.inference)+'</div></div>';
   }else if(j.facts_summary){
     // LLM unavailable but routing still pulled live facts — show them (never a dead end).
     out.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">📊</div><div style="flex:1"><div class="d" style="font-size:14px">'+esc(j.facts_summary)+'</div>'
