@@ -3778,6 +3778,10 @@ SETTING_DEFAULTS = {
     "brief_time":          "08:00",    # local time-of-day "HH:MM" to send
     "brief_channel":       "",         # one of: email|discord|telegram|ntfy|slack|webhook (must be configured)
     "brief_theme":         "dark",     # "dark" | "light" — palette for the HTML brief
+    # ── Status page (#166) — public read-only "is everything up?" page ──────────
+    "status_page_enabled": "0",        # "0" / "1"
+    "status_page_title":   "Service Status",  # page heading
+    "status_page_checks":  "*",        # "*" = all enabled checks, or comma-separated check IDs
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 
@@ -7031,6 +7035,57 @@ def api_maintenance_one(wid):
     """Delete a maintenance window."""
     delete_maintenance_window(wid)
     return jsonify({"ok": True})
+
+@app.route("/status")
+def status_page():
+    """Public read-only status page — no auth required."""
+    s = get_settings()
+    if s.get("status_page_enabled") != "1":
+        return "Status page is not enabled.", 404
+    return app.send_static_file("status.html")
+
+@app.route("/api/status")
+def api_status():
+    """Public JSON status — only safe, check-level data. No host internals."""
+    s = get_settings()
+    if s.get("status_page_enabled") != "1":
+        return jsonify({"ok": False, "error": "Status page not enabled"}), 404
+    title   = s.get("status_page_title") or "Service Status"
+    allowed = s.get("status_page_checks") or "*"
+    now     = int(time.time())
+    checks  = []
+    for c in uptime_overview().get("checks", []):
+        if not c.get("enabled"):
+            continue
+        if allowed != "*":
+            ids = [x.strip() for x in allowed.split(",")]
+            if c["id"] not in ids:
+                continue
+        checks.append({
+            "id":           c["id"],
+            "label":        c["label"],
+            "type":         c["type"],
+            "state":        c.get("state", "unknown"),
+            "uptime":       c.get("uptime"),
+            "uptime7":      c.get("uptime7"),
+            "last_latency_ms": c.get("last_latency_ms"),
+            "last_checked": c.get("last_checked"),
+            "strip":        c.get("strip", []),
+            "cert_days_remaining": c.get("cert_days_remaining"),
+            "cert_status":  c.get("cert_status"),
+            "in_maintenance": c.get("in_maintenance", False),
+        })
+    overall = "operational"
+    if any(c["state"] == "down" and not c["in_maintenance"] for c in checks):
+        overall = "degraded"
+    elif any(c["in_maintenance"] for c in checks):
+        overall = "maintenance"
+    return jsonify({
+        "title":   title,
+        "overall": overall,
+        "checks":  checks,
+        "now":     now,
+    })
 
 @app.route("/api/update/app", methods=["POST"])
 def api_update_app():

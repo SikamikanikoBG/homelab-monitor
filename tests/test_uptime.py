@@ -724,3 +724,86 @@ class TestMaintenanceWindows(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Status page API ───────────────────────────────────────────────────────────
+
+class TestStatusPageApi(unittest.TestCase):
+    def setUp(self):
+        _clean_db()
+        with app.LOCK:
+            app.DB.execute("DELETE FROM maintenance_windows")
+            app.DB.commit()
+        app._NOTIFIED.clear()
+
+    def test_api_status_disabled_returns_404(self):
+        with app.app.test_client() as client:
+            with patch.object(app, "get_settings", return_value={
+                **app.SETTING_DEFAULTS, "status_page_enabled": "0"
+            }):
+                r = client.get("/api/status")
+                self.assertEqual(r.status_code, 404)
+
+    def test_api_status_enabled_returns_200(self):
+        with app.app.test_client() as client:
+            with patch.object(app, "get_settings", return_value={
+                **app.SETTING_DEFAULTS,
+                "status_page_enabled": "1",
+                "status_page_title": "My Lab",
+                "status_page_checks": "*",
+            }):
+                r = client.get("/api/status")
+                self.assertEqual(r.status_code, 200)
+                j = r.get_json()
+                self.assertEqual(j["title"], "My Lab")
+                self.assertIn("overall", j)
+                self.assertIn("checks", j)
+
+    def test_api_status_overall_degraded_when_check_down(self):
+        cid, _ = app.create_uptime_check({
+            "label": "test", "type": "http",
+            "target": "http://example.com",
+            "interval_sec": 60, "timeout_sec": 10
+        })
+        now = int(time.time())
+        with app.LOCK:
+            for i in range(3):
+                app.DB.execute(
+                    "INSERT INTO uptime_results(check_id,ts,up,latency_ms) VALUES(?,?,?,?)",
+                    (cid, now - i*60, 0, None)
+                )
+            app.DB.commit()
+        with app.app.test_client() as client:
+            with patch.object(app, "get_settings", return_value={
+                **app.SETTING_DEFAULTS,
+                "status_page_enabled": "1",
+                "status_page_title": "Status",
+                "status_page_checks": "*",
+            }):
+                r = client.get("/api/status")
+                j = r.get_json()
+                self.assertEqual(j["overall"], "degraded")
+
+    def test_api_status_filters_by_check_id(self):
+        cid1, _ = app.create_uptime_check({
+            "label": "public", "type": "http",
+            "target": "http://example.com",
+            "interval_sec": 60, "timeout_sec": 10
+        })
+        cid2, _ = app.create_uptime_check({
+            "label": "private", "type": "http",
+            "target": "http://internal.lan",
+            "interval_sec": 60, "timeout_sec": 10
+        })
+        with app.app.test_client() as client:
+            with patch.object(app, "get_settings", return_value={
+                **app.SETTING_DEFAULTS,
+                "status_page_enabled": "1",
+                "status_page_title": "Status",
+                "status_page_checks": cid1,
+            }):
+                r = client.get("/api/status")
+                j = r.get_json()
+                ids = [c["id"] for c in j["checks"]]
+                self.assertIn(cid1, ids)
+                self.assertNotIn(cid2, ids)

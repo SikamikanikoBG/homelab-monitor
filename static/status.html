@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Service Status</title>
+<style>
+:root{
+  --bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;
+  --ok:#3fb950;--okbg:#0d1117;--warn:#d29922;--warnbg:#161b22;
+  --crit:#f85149;--critbg:#161b22;--accent:#d29922;--inset:#0d1117;
+  --hover:#1c2128;
+}
+@media(prefers-color-scheme:light){
+  :root{
+    --bg:#f6f8fa;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;
+    --ok:#1a7f37;--okbg:#dafbe1;--warn:#9a6700;--warnbg:#fff8c5;
+    --crit:#cf222e;--critbg:#ffebe9;--inset:#f6f8fa;--hover:#eaeef2;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:0 0 60px}
+a{color:var(--accent);text-decoration:none}
+.wrap{max-width:860px;margin:0 auto;padding:0 16px}
+header{padding:40px 0 24px;border-bottom:1px solid var(--bd);margin-bottom:32px}
+.logo{font-size:13px;color:var(--mut);margin-bottom:8px;letter-spacing:.04em;text-transform:uppercase}
+h1{font-size:26px;font-weight:700;margin-bottom:12px}
+.overall{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;border:1px solid transparent}
+.overall.operational{background:var(--okbg);color:var(--ok);border-color:var(--ok)}
+.overall.degraded{background:var(--critbg);color:var(--crit);border-color:var(--crit)}
+.overall.maintenance{background:#0d1117;color:#58a6ff;border-color:#58a6ff55}
+.overall.unknown{background:var(--inset);color:var(--mut);border-color:var(--bd)}
+.dot{width:10px;height:10px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px}
+.card-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.sdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:var(--mut)}
+.sdot.up{background:var(--ok)} .sdot.down{background:var(--crit)}
+.label{font-weight:600;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid transparent;letter-spacing:.03em;white-space:nowrap}
+.pill.up{background:var(--okbg);color:var(--ok);border-color:var(--ok)}
+.pill.down{background:var(--critbg);color:var(--crit);border-color:var(--crit)}
+.pill.maint{background:#0d1117;color:#58a6ff;border-color:#58a6ff55}
+.pill.unknown{color:var(--mut);border-color:var(--bd)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mut);margin:8px 0 6px}
+.meta b{color:var(--tx)}
+.uphb{display:flex;gap:2px;height:28px;align-items:flex-end;margin:8px 0 4px}
+.uphb .cell{flex:1;border-radius:2px;min-width:3px;height:100%}
+.uphb .cell.ok{background:var(--ok);opacity:.7}
+.uphb .cell.down{background:var(--crit);opacity:.85}
+.uphb .cell.unknown{background:var(--bd)}
+.cert{font-size:11px;color:var(--mut);margin-top:4px}
+.cert b.ok{color:var(--ok)} .cert b.warn{color:var(--warn)} .cert b.crit{color:var(--crit)}
+.section-label{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:28px 0 10px}
+.ts{font-size:12px;color:var(--mut);margin-top:32px;text-align:center}
+.empty{text-align:center;color:var(--mut);padding:60px 0;font-size:15px}
+.err{text-align:center;color:var(--crit);padding:60px 0;font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">🛰️ homelab-monitor</div>
+    <h1 id="title">Service Status</h1>
+    <div class="overall unknown" id="overall"><span class="dot"></span><span id="overall-label">Loading…</span></div>
+  </header>
+  <div class="section-label">Monitored services</div>
+  <div class="grid" id="grid"></div>
+  <p class="ts" id="ts"></p>
+</div>
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function relTime(ts){
+  const d=Math.floor(Date.now()/1000)-ts;
+  if(d<60) return d+'s ago';
+  if(d<3600) return Math.floor(d/60)+'m ago';
+  if(d<86400) return Math.floor(d/3600)+'h ago';
+  return Math.floor(d/86400)+'d ago';
+}
+function heartbeat(strip){
+  if(!strip||!strip.length) return '';
+  return `<div class="uphb">${strip.map(c=>`<div class="cell ${c.up?'ok':'down'}"></div>`).join('')}</div>`;
+}
+function card(c){
+  const st=c.in_maintenance?'maint':c.state||'unknown';
+  const dotcls=c.in_maintenance?'':c.state==='up'?'up':c.state==='down'?'down':'';
+  const pillLabel=c.in_maintenance?'🔧 Maintenance':c.state==='up'?'Operational':c.state==='down'?'Degraded':'Unknown';
+  const up=c.uptime!=null?c.uptime+'%':'—';
+  const up7=c.uptime7!=null?c.uptime7+'%':'—';
+  const lat=c.last_latency_ms!=null?Math.round(c.last_latency_ms)+' ms':'—';
+  const cert=c.cert_days_remaining!=null
+    ?`<div class="cert">TLS cert: <b class="${esc(c.cert_status||'ok')}">${esc(c.cert_days_remaining)}d remaining</b></div>`:'';
+  const checked=c.last_checked?`<span>Checked <b>${esc(relTime(c.last_checked))}</b></span>`:'';
+  return `<div class="card">
+    <div class="card-head">
+      <span class="sdot ${esc(dotcls)}"></span>
+      <span class="label">${esc(c.label)}</span>
+      <span class="pill ${esc(st)}">${esc(pillLabel)}</span>
+    </div>
+    ${heartbeat(c.strip)}
+    <div class="meta">
+      <span>24h <b>${esc(up)}</b></span>
+      <span>7d <b>${esc(up7)}</b></span>
+      <span>Latency <b>${esc(lat)}</b></span>
+      ${checked}
+    </div>
+    ${cert}
+  </div>`;
+}
+async function load(){
+  const grid=document.getElementById('grid');
+  const overall=document.getElementById('overall');
+  const overallLabel=document.getElementById('overall-label');
+  try{
+    const j=await(await fetch('/api/status')).json();
+    if(!j.ok===false && j.error){ grid.innerHTML=`<p class="err">${esc(j.error)}</p>`; return; }
+    document.getElementById('title').textContent=j.title||'Service Status';
+    document.title=j.title||'Service Status';
+    const checks=j.checks||[];
+    if(!checks.length){ grid.innerHTML='<p class="empty">No public checks configured.</p>'; }
+    else{ grid.innerHTML=checks.map(card).join(''); }
+    const ov=j.overall||'unknown';
+    overall.className='overall '+ov;
+    overallLabel.textContent=ov==='operational'?'✅ All systems operational'
+      :ov==='degraded'?'🔴 Some systems degraded'
+      :ov==='maintenance'?'🔧 Maintenance in progress'
+      :'⬜ Status unknown';
+    const ts=document.getElementById('ts');
+    ts.textContent='Last updated '+relTime(j.now)+' · Refreshes every 30s';
+  }catch(e){
+    grid.innerHTML='<p class="err">Could not load status. Is the server running?</p>';
+  }
+  setTimeout(load, 30000);
+}
+load();
+</script>
+</body>
+</html>
