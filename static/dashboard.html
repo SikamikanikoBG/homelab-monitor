@@ -2082,6 +2082,11 @@ h2 .hic{ opacity:.9 }
         Mute outbound alert notifications during a scheduled window — a nightly docker-pull restart cycle, or planned maintenance.
         Alerting is paused (not changed): an alarm that begins and ends inside a window never notifies, but anything still active when the window ends fires normally afterward. This never touches the host.</p>
       <div id="maint_banner" class="ins warning" style="display:none" role="status" aria-live="polite"></div>
+      <div id="maint_next" class="ins" style="display:none" role="status" aria-live="polite"></div>
+      <div id="maint_quick" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
+        <button class="rb" id="m_quickmute" data-i18n="maint.quick_btn">🔕 Mute alerts for 1h</button>
+        <button class="rb on" id="m_unmute" style="display:none" data-i18n="maint.unmute_btn">Unmute now</button>
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;max-width:880px;align-items:end">
         <div style="grid-column:1/-1">
           <div class="flabel" data-i18n="maint.f_label">Label</div>
@@ -5019,14 +5024,39 @@ function maintSummary(w){
   const t=w.end_ts?new Date(w.end_ts*1000).toLocaleString():'?';
   return I18N.t('maint.sum_oneoff','One-off ')+esc(f)+' → '+esc(t);
 }
+function maintWhen(ts){
+  if(!ts) return '';
+  const d=new Date(ts*1000), now=new Date();
+  const t=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const sameDay = d.toDateString()===now.toDateString();
+  const tomorrow = new Date(now.getTime()+86400000);
+  if(sameDay) return I18N.tf('maint.when_today','today {t}',{t});
+  if(d.toDateString()===tomorrow.toDateString()) return I18N.tf('maint.when_tomorrow','tomorrow {t}',{t});
+  return d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
 async function loadMaintenance(){
   let j; try{ j=await(await fetch('/api/alerts/maintenance')).json(); }catch(e){ return; }
   const banner=document.getElementById('maint_banner');
+  const nextEl=document.getElementById('maint_next');
+  const unmuteBtn=document.getElementById('m_unmute');
+  const quickBtn=document.getElementById('m_quickmute');
   if(j.active){
-    const until = j.until ? new Date(j.until*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    const until = j.ends_at ? new Date(j.ends_at*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
     banner.textContent = I18N.tf('maint.active_until','🔕 Maintenance active — alerts muted until {until}', {until});
     banner.style.display='';
-  } else { banner.style.display='none'; }
+    unmuteBtn.style.display=''; quickBtn.style.display='none';
+  } else {
+    banner.style.display='none';
+    unmuteBtn.style.display='none'; quickBtn.style.display='';
+  }
+  // Next-upcoming window within ~24h.
+  if(!j.active && j.next_start && (j.next_start - Date.now()/1000) <= 86400){
+    const when = maintWhen(j.next_start);
+    const ends = j.next_end ? new Date(j.next_end*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    nextEl.textContent = I18N.tf('maint.next','Next maintenance: {when}–{ends} ({label})',
+      {when, ends, label:j.next_label||''});
+    nextEl.style.display='';
+  } else { nextEl.style.display='none'; }
   const box=document.getElementById('maint_list');
   if(!(j.windows||[]).length){ box.innerHTML='<p class="cap">'+I18N.t('maint.none','No maintenance windows — alerts are never muted.')+'</p>'; return; }
   box.innerHTML = j.windows.map(w=>
@@ -5140,6 +5170,19 @@ document.getElementById('r_add').onclick = addRule;
 document.getElementById('r_test_btn').onclick = testRuleChannel;
 document.getElementById('m_kind').onchange = maintKindVisibility;
 document.getElementById('m_add').onclick = addMaintenance;
+document.getElementById('m_quickmute').onclick = async()=>{
+  let j; try{ j=await(await fetch('/api/alerts/maintenance/quickmute',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({minutes:60})})).json(); }
+  catch(e){ showAlertStatus('critical','Could not mute: '+e); return; }
+  if(j.ok){ showAlertStatus('ok',I18N.t('maint.muted','Alerts muted for 1h.')); loadMaintenance(); }
+  else showAlertStatus('critical', j.error||'Could not mute.');
+};
+document.getElementById('m_unmute').onclick = async()=>{
+  let j; try{ j=await(await fetch('/api/alerts/maintenance/unmute',{method:'POST'})).json(); }
+  catch(e){ showAlertStatus('critical','Could not unmute: '+e); return; }
+  if(j.ok){ showAlertStatus('ok',I18N.t('maint.unmuted','Alerts unmuted.')); loadMaintenance(); }
+  else showAlertStatus('critical','Could not unmute.');
+};
 document.getElementById('rt_add').onclick = addRoute;
 
 // ── Backup (settings) tab ─────────────────────────────────────────────────────

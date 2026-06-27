@@ -5021,6 +5021,59 @@ def _in_maintenance(now=None):
                 latest_end = ends
     return active, latest_end
 
+def _next_window_start(w, now):
+    """For an ENABLED window, the soonest FUTURE start≥now and its end as epochs,
+    or None. One-off: start_ts if > now. Recurring: project the next occurrence's
+    local-time start (today's HH:MM if still future, else tomorrow's). Returns
+    (start_ts, end_ts) or None. Local-time projection (mktime), never UTC."""
+    if not w["enabled"]:
+        return None
+    if w["recurring"]:
+        sm = _parse_hhmm(w["daily_start"])
+        em = _parse_hhmm(w["daily_end"])
+        if sm is None or em is None:
+            return None
+        lt = time.localtime(now)
+        midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                    0, 0, 0, 0, 0, -1)))  # local 00:00 today
+        cur_min = lt.tm_hour * 60 + lt.tm_min
+        # Today's start if it hasn't passed yet, else tomorrow's.
+        if sm * 60 > now - midnight:
+            start = midnight + sm * 60
+        else:
+            start = midnight + 86400 + sm * 60
+        # End is start's HH:MM + duration (wrap adds a day to the end side).
+        span = (em - sm) if em > sm else (em + 1440 - sm)
+        return start, start + span * 60
+    if w["start_ts"] is not None and w["start_ts"] > now:
+        return w["start_ts"], w["end_ts"]
+    return None
+
+def _maint_status(now=None):
+    """Glanceable maintenance summary (pure, read-only).
+    {active, ends_at, next_start, next_end, next_label, next_recurring}.
+    active/ends_at = is any window active now + latest active end.
+    next_* = the soonest FUTURE window start (≥now) across enabled windows."""
+    if now is None:
+        now = int(time.time())
+    active, ends_at = _in_maintenance(now)
+    best = None  # (start, end, label, recurring)
+    for w in list_maintenance():
+        nxt = _next_window_start(w, now)
+        if nxt is None:
+            continue
+        start, end = nxt
+        if best is None or start < best[0]:
+            best = (start, end, w["label"], bool(w["recurring"]))
+    return {
+        "active": active,
+        "ends_at": ends_at,
+        "next_start": best[0] if best else None,
+        "next_end": best[1] if best else None,
+        "next_label": best[2] if best else None,
+        "next_recurring": best[3] if best else None,
+    }
+
 # ── Notification routing rules ────────────────────────────────────────────────
 # Route a firing alert to a specific channel when its entity/subject glob-matches
 # AND its level is at/above the route's min_level. Evaluated in `priority` order
@@ -13488,8 +13541,59 @@ def api_maintenance():
         if err:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "id": mid}), 201
-    active, until = _in_maintenance()
-    return jsonify({"windows": list_maintenance(), "active": active, "until": until})
+    return jsonify({"windows": list_maintenance(), **_maint_status()})
+
+# Marker label for click-created quick-mute one-offs (so "Unmute now" can find them).
+_QUICKMUTE_LABEL = "Quick mute"
+_QUICKMUTE_MAX_SECONDS = 24 * 3600
+
+@app.route("/api/alerts/maintenance/status")
+def api_maintenance_status():
+    """Glanceable status for the UI banner (active / next-upcoming). Read-only."""
+    return jsonify(_maint_status())
+
+@app.route("/api/alerts/maintenance/quickmute", methods=["POST"])
+def api_maintenance_quickmute():
+    """Explicit one-click silence: create a one-off window now→now+duration.
+    Only mutes OUTBOUND alerts (same contract as any window); off until clicked."""
+    body = request.get_json(silent=True) or {}
+    secs = body.get("seconds")
+    if secs is None and body.get("minutes") is not None:
+        try:
+            secs = int(float(body.get("minutes")) * 60)
+        except (TypeError, ValueError):
+            secs = None
+    if secs is None:
+        secs = 3600
+    try:
+        secs = int(secs)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid duration."}), 400
+    if secs <= 0:
+        return jsonify({"ok": False, "error": "Duration must be positive."}), 400
+    secs = min(secs, _QUICKMUTE_MAX_SECONDS)  # clamp to ≤24h
+    now = int(time.time())
+    mins = max(1, round(secs / 60))
+    label = f"{_QUICKMUTE_LABEL} ({mins}m)" if mins != 60 else f"{_QUICKMUTE_LABEL} (1h)"
+    mid, err = create_maintenance({"label": label, "recurring": False,
+                                   "start_ts": now, "end_ts": now + secs})
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    win = next((w for w in list_maintenance() if w["id"] == mid), None)
+    return jsonify({"ok": True, "id": mid, "window": win, **_maint_status()}), 201
+
+@app.route("/api/alerts/maintenance/unmute", methods=["POST"])
+def api_maintenance_unmute():
+    """Cancel the active quick-mute(s): delete any currently-active one-off window
+    whose label marks it as a quick-mute. Explicit action; touches nothing else."""
+    now = int(time.time())
+    removed = []
+    for w in list_maintenance():
+        if (not w["recurring"] and (w["label"] or "").startswith(_QUICKMUTE_LABEL)
+                and _window_active(w, now)[0]):
+            if delete_maintenance(w["id"]):
+                removed.append(w["id"])
+    return jsonify({"ok": True, "removed": removed, **_maint_status()})
 
 @app.route("/api/alerts/maintenance/<mid>", methods=["PATCH", "DELETE"])
 def api_maintenance_one(mid):

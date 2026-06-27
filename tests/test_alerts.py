@@ -431,6 +431,173 @@ class TestInMaintenance(unittest.TestCase):
         self.assertFalse(app._in_maintenance(now - 600)[0])
 
 
+class TestMaintStatus(unittest.TestCase):
+    def setUp(self):
+        _clean_maint()
+
+    def tearDown(self):
+        _clean_maint()
+
+    def _at(self, hh, mm, base=None):
+        """An epoch whose localtime is hh:mm (today by default)."""
+        lt = list(time.localtime(base if base is not None else time.time()))
+        lt[3], lt[4], lt[5] = hh, mm, 0
+        lt[8] = -1
+        return int(time.mktime(time.struct_time(tuple(lt))))
+
+    def test_none_all_none(self):
+        s = app._maint_status(int(time.time()))
+        self.assertFalse(s["active"])
+        self.assertIsNone(s["ends_at"])
+        self.assertIsNone(s["next_start"])
+        self.assertIsNone(s["next_end"])
+        self.assertIsNone(s["next_label"])
+        self.assertIsNone(s["next_recurring"])
+
+    def test_oneoff_future_is_next(self):
+        now = int(time.time())
+        app.create_maintenance({"label": "planned", "recurring": False,
+                                "start_ts": now + 7200, "end_ts": now + 9000})
+        s = app._maint_status(now)
+        self.assertFalse(s["active"])
+        self.assertEqual(s["next_start"], now + 7200)
+        self.assertEqual(s["next_end"], now + 9000)
+        self.assertEqual(s["next_label"], "planned")
+        self.assertFalse(s["next_recurring"])
+
+    def test_oneoff_past_not_next(self):
+        now = int(time.time())
+        app.create_maintenance({"label": "old", "recurring": False,
+                                "start_ts": now - 9000, "end_ts": now - 7200})
+        s = app._maint_status(now)
+        self.assertIsNone(s["next_start"])
+
+    def test_active_reports_active_and_ends_at(self):
+        now = int(time.time())
+        app.create_maintenance({"label": "p", "recurring": False,
+                                "start_ts": now - 60, "end_ts": now + 1800})
+        s = app._maint_status(now)
+        self.assertTrue(s["active"])
+        self.assertEqual(s["ends_at"], now + 1800)
+
+    def test_recurring_next_today(self):
+        # A recurring window later today → next_start is today's HH:MM.
+        now = self._at(10, 0)
+        app.create_maintenance({"label": "nightly", "recurring": True,
+                                "daily_start": "14:00", "daily_end": "14:30"})
+        s = app._maint_status(now)
+        self.assertEqual(s["next_start"], self._at(14, 0, now))
+        self.assertEqual(s["next_end"], self._at(14, 30, now))
+        self.assertEqual(s["next_label"], "nightly")
+        self.assertTrue(s["next_recurring"])
+
+    def test_recurring_next_tomorrow(self):
+        # Window already passed today → next_start projects to tomorrow.
+        now = self._at(20, 0)
+        app.create_maintenance({"label": "nightly", "recurring": True,
+                                "daily_start": "02:00", "daily_end": "02:30"})
+        s = app._maint_status(now)
+        self.assertEqual(s["next_start"], self._at(2, 0, now) + 86400)
+        self.assertEqual(s["next_end"], self._at(2, 30, now) + 86400)
+
+    def test_recurring_overnight_wrap_next(self):
+        # 23:00–01:00, at midday: next start is today 23:00, end tomorrow 01:00.
+        now = self._at(12, 0)
+        app.create_maintenance({"label": "ovn", "recurring": True,
+                                "daily_start": "23:00", "daily_end": "01:00"})
+        s = app._maint_status(now)
+        self.assertEqual(s["next_start"], self._at(23, 0, now))
+        self.assertEqual(s["next_end"], self._at(23, 0, now) + 7200)  # +2h
+
+    def test_picks_soonest_of_many(self):
+        now = int(time.time())
+        app.create_maintenance({"label": "far", "recurring": False,
+                                "start_ts": now + 10000, "end_ts": now + 11000})
+        app.create_maintenance({"label": "soon", "recurring": False,
+                                "start_ts": now + 500, "end_ts": now + 600})
+        s = app._maint_status(now)
+        self.assertEqual(s["next_label"], "soon")
+
+
+class TestQuickMute(unittest.TestCase):
+    def setUp(self):
+        _clean_db()
+        _clean_maint()
+        app._MAINT_SUPPRESS_LOGGED.clear()
+
+    def tearDown(self):
+        _clean_db()
+        _clean_maint()
+
+    def test_quickmute_creates_active_hour_window(self):
+        c = app.app.test_client()
+        r = c.post("/api/alerts/maintenance/quickmute", json={})
+        self.assertEqual(r.status_code, 201)
+        j = r.get_json()
+        self.assertTrue(j["ok"])
+        self.assertTrue(j["active"])
+        now = int(time.time())
+        self.assertAlmostEqual(j["ends_at"], now + 3600, delta=10)
+        # _in_maintenance agrees it's active.
+        self.assertTrue(app._in_maintenance(now)[0])
+
+    def test_quickmute_minutes_param(self):
+        c = app.app.test_client()
+        r = c.post("/api/alerts/maintenance/quickmute", json={"minutes": 15})
+        j = r.get_json()
+        now = int(time.time())
+        self.assertAlmostEqual(j["ends_at"], now + 900, delta=10)
+
+    def test_quickmute_clamps_absurd_duration(self):
+        c = app.app.test_client()
+        r = c.post("/api/alerts/maintenance/quickmute", json={"seconds": 99 * 24 * 3600})
+        j = r.get_json()
+        now = int(time.time())
+        self.assertAlmostEqual(j["ends_at"], now + 24 * 3600, delta=10)
+
+    def test_quickmute_rejects_nonpositive(self):
+        c = app.app.test_client()
+        self.assertEqual(c.post("/api/alerts/maintenance/quickmute",
+                                json={"seconds": 0}).status_code, 400)
+
+    def test_quickmute_suppresses_a_rule(self):
+        app.create_rule({"name": "a", "ctype": "anomaly", "params": {"series": "any"},
+                         "enabled": True, "cooldown_min": 60})
+        c = app.app.test_client()
+        c.post("/api/alerts/maintenance/quickmute", json={})
+        with patch("app._post_text", return_value=(200, b"")) as pt:
+            self.assertEqual(app.evaluate_rules(SIG_ANOMALY), 0)
+        pt.assert_not_called()
+
+    def test_unmute_deletes_active_quickmute(self):
+        c = app.app.test_client()
+        c.post("/api/alerts/maintenance/quickmute", json={})
+        self.assertTrue(app._in_maintenance()[0])
+        r = c.post("/api/alerts/maintenance/unmute")
+        j = r.get_json()
+        self.assertTrue(j["ok"])
+        self.assertEqual(len(j["removed"]), 1)
+        self.assertFalse(app._in_maintenance()[0])
+        self.assertFalse(j["active"])
+
+    def test_unmute_leaves_recurring_windows_alone(self):
+        app.create_maintenance({"label": "nightly", "recurring": True,
+                                "daily_start": "02:00", "daily_end": "02:30"})
+        c = app.app.test_client()
+        c.post("/api/alerts/maintenance/quickmute", json={})
+        c.post("/api/alerts/maintenance/unmute")
+        ws = app.list_maintenance()
+        self.assertEqual(len(ws), 1)
+        self.assertTrue(ws[0]["recurring"])
+
+    def test_status_endpoint(self):
+        c = app.app.test_client()
+        c.post("/api/alerts/maintenance/quickmute", json={})
+        j = c.get("/api/alerts/maintenance/status").get_json()
+        self.assertTrue(j["active"])
+        self.assertIn("ends_at", j)
+
+
 class TestMaintenanceMutesAlerting(unittest.TestCase):
     """Suppression + arm/disarm preservation. Channel send + maintenance state mocked."""
     def setUp(self):
