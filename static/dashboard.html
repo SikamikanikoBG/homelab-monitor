@@ -933,6 +933,8 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
 .btn-mini.danger:hover{border-color:var(--crit)}
+.btn-mini.on{color:var(--ok);border-color:var(--okbd);background:var(--okbg)}
+.btn-mini.on:hover{border-color:var(--ok)}
 /* ── Uptime checks ── */
 .upgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:13px}
 .upcard{background:var(--inset);border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:10px;padding:13px 14px;display:flex;flex-direction:column;gap:9px}
@@ -4565,9 +4567,11 @@ function upCard(c){
       <span>${esc(I18N.t('uptime.latency','Latency'))}: <b>${lat}</b></span>
       <span>${esc(I18N.t('uptime.checked','Checked'))}: <b>${esc(relTime(c.last_checked))}</b></span>`;
   }
+  const pubBadge = c.public ? `<span class="badge ok" title="${esc(I18N.t('uptime.public_on','Visible on the public status page'))}" style="margin-left:6px">${esc(I18N.t('uptime.public_badge','Public'))}</span>` : '';
+  const pubBtnTxt = c.public ? I18N.t('uptime.public_hide','Hide from status page') : I18N.t('uptime.public_show','Show on status page');
   return `<div class="upcard ${cls}" data-id="${esc(c.id)}">
     <div class="uphead">
-      <div class="uplabel">${esc(c.label)}${c.enabled?'':' <span class="cap">('+esc(I18N.t('uptime.disabled','disabled'))+')</span>'}</div>
+      <div class="uplabel">${esc(c.label)}${c.enabled?'':' <span class="cap">('+esc(I18N.t('uptime.disabled','disabled'))+')</span>'}${pubBadge}</div>
       ${badge}
     </div>
     <div class="uptarget">${esc(tgt)}</div>
@@ -4579,6 +4583,7 @@ function upCard(c){
     ${err}
     <div class="upactions">
       <button type="button" class="btn-mini" data-act="toggle" data-id="${esc(c.id)}" data-en="${c.enabled?1:0}">${esc(c.enabled?I18N.t('uptime.pause','Pause'):I18N.t('uptime.resume','Resume'))}</button>
+      <button type="button" class="btn-mini${c.public?' on':''}" data-act="public" data-id="${esc(c.id)}" data-pub="${c.public?1:0}" title="${esc(I18N.t('uptime.public_help','Opt this check in to the public /status page — off by default. Only the label, host (no credentials) and uptime are shown; never the raw target or error detail.'))}">${esc(pubBtnTxt)}</button>
       <button type="button" class="btn-mini danger" data-act="del" data-id="${esc(c.id)}" data-label="${esc(c.label)}">${esc(I18N.t('uptime.delete','Delete'))}</button>
     </div>
   </div>`;
@@ -4596,6 +4601,8 @@ async function loadUptime(){
       if(act==='del'){
         if(!confirm(I18N.tf('uptime.confirm_del','Delete check "{n}"?',{n:b.dataset.label}))) return;
         upDelete(id);
+      } else if(act==='public'){
+        upSetPublic(id, b.dataset.pub!=='1');
       } else {
         upToggle(id, b.dataset.en!=='1');
       }
@@ -4611,6 +4618,11 @@ async function upDelete(id){
 }
 async function upToggle(id, enabled){
   try{ await fetch('/api/uptime/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}); }catch(e){}
+  loadUptime();
+}
+async function upSetPublic(id, pub){
+  if(pub && !confirm(I18N.t('uptime.public_confirm','Show this check on the PUBLIC /status page? Only its label, host (credentials stripped) and uptime/incident timings become visible to anyone with the link — never the raw target or error detail. You can hide it again anytime.'))) return;
+  try{ await fetch('/api/uptime/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({public:pub})}); }catch(e){}
   loadUptime();
 }
 function upSyncTypeUI(){

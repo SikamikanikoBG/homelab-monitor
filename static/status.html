@@ -112,6 +112,62 @@ body.demo .demo-pill{display:inline-flex}
 .ribbon .rbaxis{display:flex;justify-content:space-between;margin-top:6px;color:var(--mut);font-size:11px}
 @media(max-width:520px){ .ribbon .day{flex:0 0 5px} .ribbon .rbbar{height:30px} }
 @media(prefers-reduced-motion:reduce){ .ribbon .day{transition:none} .ribbon .day:hover{transform:none} }
+/* ── Monitors (per-service rows, opt-in) + per-service detail page ── */
+.mons{display:flex;flex-direction:column;gap:10px}
+.mon{display:block;border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:14px 16px;
+  position:relative;overflow:hidden;transition:border-color .15s,transform .12s;color:inherit}
+.mon::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--mut)}
+.mon.up::before{background:var(--ok)}.mon.down::before{background:var(--crit)}.mon.unknown::before{background:var(--bd)}
+a.mon:hover{border-color:var(--mut);transform:translateY(-1px)}
+a.mon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mon .mhead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.mon .mname{font-weight:700;font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mon .mname .mhost{display:block;color:var(--mut);font-size:12px;font-weight:500;font-family:var(--mono);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mon .mright{display:flex;align-items:center;gap:10px;flex:none}
+.mon .mpct{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--tx)}
+.badge{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;border:1px solid var(--bd);white-space:nowrap}
+.badge.up,.badge.ok{color:var(--ok);border-color:var(--okbd);background:var(--okbg)}
+.badge.down,.badge.crit{color:var(--crit);border-color:var(--critbd);background:var(--critbg)}
+.badge.unknown,.badge.info{color:var(--mut)}
+.mon .chev{color:var(--mut);flex:none}
+/* compact 90-day daily bar reused inside a monitor row + the detail page */
+.dbar{display:flex;gap:2px;align-items:stretch;height:26px;margin-top:11px;overflow:hidden}
+.dbar .day{flex:1 0 0;min-width:0;border-radius:2px;background:var(--bd);transition:transform .12s}
+.dbar .day.ok{background:var(--ok)}.dbar .day.warn{background:var(--warn)}.dbar .day.crit{background:var(--crit)}
+.dbar .day.nodata{background:var(--bd);opacity:.4}
+.dbar .day:hover{transform:scaleY(1.1)}
+@media(prefers-reduced-motion:reduce){ .dbar .day{transition:none} .dbar .day:hover{transform:none} }
+/* back link + detail header */
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--mut);font-size:13px;font-weight:600;margin:18px 0 2px}
+.back:hover{color:var(--accent)}
+.dwins{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:6px 0 4px}
+.dwin{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:14px 16px;text-align:left}
+.dwin .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.dwin .v.na{color:var(--mut)}
+.dwin .l{margin-top:4px;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+@media(max-width:520px){ .dwins{grid-template-columns:repeat(2,1fr)} }
+.card{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:16px}
+.spark{width:100%;height:72px;display:block;overflow:visible}
+.spark .ln{fill:none;stroke:var(--info);stroke-width:1.6;vector-effect:non-scaling-stroke}
+.spark .ar{fill:var(--info);opacity:.10}
+.sparknote{color:var(--mut);font-size:12px;font-style:italic;padding:18px 0;text-align:center}
+/* incident feed */
+.inc{display:flex;flex-direction:column;gap:0}
+.inc .day{padding:12px 0;border-top:1px solid var(--bd)}
+.inc .day:first-child{border-top:0}
+.inc .dlabel{font-size:12px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.inc .row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:5px 0;flex-wrap:wrap}
+.inc .rl{display:flex;align-items:baseline;gap:8px;min-width:0}
+.inc .dot{width:7px;height:7px;border-radius:50%;background:var(--crit);flex:none;align-self:center}
+.inc .dot.ongoing{box-shadow:0 0 0 3px var(--critbg)}
+.inc .reason{font-weight:600;font-size:14px}
+.inc .when{color:var(--mut);font-size:12.5px;font-variant-numeric:tabular-nums}
+.inc .dur{color:var(--mut);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.inc .code{font-family:var(--mono);font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:5px;padding:0 5px;margin-left:6px}
+.inc .ongo{color:var(--crit);font-weight:700}
+.empty{color:var(--mut);font-size:13px;font-style:italic;padding:16px 0;text-align:center}
+[hidden]{display:none!important}
 /* footer */
 .foot{margin-top:30px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12.5px}
 .foot .spacer{flex:1}
@@ -155,20 +211,54 @@ body.offline-state .offline{display:block}
 
   <div class="offline" role="alert" data-i18n="status.offline">Status unavailable — retrying…</div>
 
-  <section class="hero" id="hero" aria-live="polite">
-    <div class="orb"><span class="ring"></span><span class="core"></span></div>
-    <div class="htxt">
-      <h1 id="bannerText" class="skel">All systems operational</h1>
-      <div class="hsub" id="bannerSub"><span class="skel">Last updated just now</span></div>
+  <!-- ── INDEX VIEW ── -->
+  <div id="indexView">
+    <section class="hero" id="hero" aria-live="polite">
+      <div class="orb"><span class="ring"></span><span class="core"></span></div>
+      <div class="htxt">
+        <h1 id="bannerText" class="skel">All systems operational</h1>
+        <div class="hsub" id="bannerSub"><span class="skel">Last updated just now</span></div>
+      </div>
+    </section>
+
+    <div class="kpis" id="kpis" aria-label="Headline stats"></div>
+
+    <div class="ribbon" id="ribbon" hidden></div>
+
+    <div class="sect" data-i18n="status.title">Lab status</div>
+    <div class="tiles" id="tiles"></div>
+
+    <div id="monsSect" hidden>
+      <div class="sect" data-i18n="status.monitors">Monitors</div>
+      <div class="mons" id="mons"></div>
     </div>
-  </section>
 
-  <div class="kpis" id="kpis" aria-label="Headline stats"></div>
+    <div id="incSect" hidden>
+      <div class="sect" data-i18n="status.incidents">Past incidents</div>
+      <div class="inc card" id="incFeed"></div>
+    </div>
+  </div>
 
-  <div class="ribbon" id="ribbon" hidden></div>
-
-  <div class="sect" data-i18n="status.title">Lab status</div>
-  <div class="tiles" id="tiles"></div>
+  <!-- ── DETAIL VIEW (per-service) ── -->
+  <div id="detailView" hidden>
+    <a class="back" href="/status" id="backLink">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      <span data-i18n="status.detail.back">All monitors</span>
+    </a>
+    <section class="hero" id="dHero" aria-live="polite">
+      <div class="orb"><span class="ring"></span><span class="core"></span></div>
+      <div class="htxt">
+        <h1 id="dName" class="skel">Service</h1>
+        <div class="hsub" id="dSub"></div>
+      </div>
+    </section>
+    <div class="dwins" id="dWins"></div>
+    <div class="ribbon" id="dRibbon" hidden></div>
+    <div class="sect" data-i18n="status.detail.latency">Response time</div>
+    <div class="card"><div id="dSpark"></div></div>
+    <div class="sect" data-i18n="status.incidents">Past incidents</div>
+    <div class="inc card" id="dInc"></div>
+  </div>
 
   <div class="foot">
     <span class="auto"><span class="ld"></span><span data-i18n="status.auto">Auto-refreshing</span></span>
@@ -272,6 +362,106 @@ function render(d){
   // tiles
   const tl=document.getElementById('tiles'); tl.innerHTML='';
   (d.tiles||[]).forEach(t=>tl.appendChild(tile(t)));
+
+  // opt-in per-service monitors + cross-service incident feed
+  monitors(d.monitors||[]);
+}
+// State (up/down/unknown) → badge class + i18n label.
+const MON_LBL={up:'status.detail.up',down:'status.detail.down',unknown:'status.detail.unknown'};
+function monitors(mons){
+  const sect=document.getElementById('monsSect');
+  const box=document.getElementById('mons');
+  box.innerHTML='';
+  if(!mons.length){ sect.hidden=true; document.getElementById('incSect').hidden=true; return; }
+  sect.hidden=false;
+  mons.forEach(m=>{
+    const a=document.createElement('a');
+    a.className='mon '+(m.state||'unknown');
+    a.href='/status/'+encodeURIComponent(m.id);
+    a.addEventListener('click',ev=>{ if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.button) return; ev.preventDefault(); navTo('/status/'+m.id); });
+    const head=document.createElement('div'); head.className='mhead';
+    const nm=document.createElement('div'); nm.className='mname';
+    nm.appendChild(document.createTextNode(m.label||'—'));
+    if(m.host){ const h=document.createElement('span'); h.className='mhost'; h.textContent=m.host; nm.appendChild(h); }
+    const right=document.createElement('div'); right.className='mright';
+    if(m.uptime!=null){ const p=document.createElement('span'); p.className='mpct'; p.textContent=m.uptime+'%'; right.appendChild(p); }
+    const b=document.createElement('span'); b.className='badge '+(m.state||'unknown');
+    b.textContent=I18N.t(MON_LBL[m.state]||'status.detail.unknown', m.state||'unknown'); right.appendChild(b);
+    const chev=document.createElement('span'); chev.className='chev';
+    chev.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+    right.appendChild(chev);
+    head.appendChild(nm); head.appendChild(right); a.appendChild(head);
+    a.appendChild(dailyBar(m.daily||[]));
+    a.setAttribute('aria-label',(m.label||'')+' · '+I18N.t(MON_LBL[m.state]||'status.detail.unknown')+(m.uptime!=null?' · '+m.uptime+'%':''));
+    box.appendChild(a);
+  });
+  // cross-service incident feed (aggregate from each monitor's incidents)
+  const all=[];
+  mons.forEach(m=>(m.incidents||[]).forEach(i=>all.push(Object.assign({label:m.label,id:m.id},i))));
+  incidentFeed(document.getElementById('incFeed'), all, true);
+  document.getElementById('incSect').hidden = all.length===0;
+}
+// Compact 90-day daily bar (cells colored by worst state that day).
+function dailyBar(days){
+  const bar=document.createElement('div'); bar.className='dbar'; bar.setAttribute('aria-hidden','true');
+  if(!days.length){ return bar; }
+  days.forEach(c=>{
+    const s=(c.s==null?-1:c.s);
+    const el=document.createElement('span');
+    el.className='day '+(s<0?'nodata':HB_CLS[Math.max(0,Math.min(3,s))]);
+    const st=s<0?I18N.t('status.hb.nodata','No data'):I18N.t(HB_LBL[Math.max(0,Math.min(3,s))]);
+    let up=''; if(c.up!=null) up=' · '+Math.round(c.up*1000)/10+'% '+I18N.t('status.hb.uptime','uptime');
+    el.title=esc(c.d||'')+' · '+st+up;
+    bar.appendChild(el);
+  });
+  return bar;
+}
+// Local-date label for an epoch (privacy-safe: derived from timestamp only).
+function dateLabel(ts){ try{ return new Date(ts*1000).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }catch(e){ return ''; } }
+function timeLabel(ts){ try{ return new Date(ts*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } }
+function durLabel(sec){
+  sec=Math.max(0,Math.round(sec));
+  if(sec<60) return I18N.tf('status.dur.sec','{n}s',{n:sec});
+  if(sec<3600) return I18N.tf('status.dur.min','{n}m',{n:Math.floor(sec/60)});
+  if(sec<86400) return I18N.tf('status.dur.hour','{n}h {m}m',{n:Math.floor(sec/3600),m:Math.floor((sec%3600)/60)});
+  return I18N.tf('status.dur.day','{n}d {h}h',{n:Math.floor(sec/86400),h:Math.floor((sec%86400)/3600)});
+}
+// Date-grouped incident list. `withLabel` shows the service name (cross-service feed).
+function incidentFeed(box, incidents, withLabel){
+  box.innerHTML='';
+  if(!incidents.length){
+    const e=document.createElement('div'); e.className='empty';
+    e.textContent=I18N.t('status.incidents.none','No incidents recorded. Smooth sailing.');
+    box.appendChild(e); return;
+  }
+  incidents.sort((a,b)=>b.start-a.start);
+  let curDay=null, dayEl=null;
+  incidents.forEach(i=>{
+    const dl=dateLabel(i.start);
+    if(dl!==curDay){
+      curDay=dl;
+      dayEl=document.createElement('div'); dayEl.className='day';
+      const h=document.createElement('div'); h.className='dlabel'; h.textContent=dl; dayEl.appendChild(h);
+      box.appendChild(dayEl);
+    }
+    const row=document.createElement('div'); row.className='row';
+    const rl=document.createElement('div'); rl.className='rl';
+    const dot=document.createElement('span'); dot.className='dot'+(i.end==null?' ongoing':''); rl.appendChild(dot);
+    const reason=document.createElement('span'); reason.className='reason';
+    // PRIVACY: only the generic reason ("Down") + optional HTTP code — never err.
+    reason.textContent=(withLabel&&i.label?i.label+' · ':'')+I18N.t('status.incidents.down','Down');
+    rl.appendChild(reason);
+    if(i.code!=null){ const c=document.createElement('span'); c.className='code'; c.textContent='HTTP '+i.code; rl.appendChild(c); }
+    if(i.end==null){ const o=document.createElement('span'); o.className='ongo'; o.textContent=' · '+I18N.t('status.incidents.ongoing','Ongoing'); rl.appendChild(o); }
+    row.appendChild(rl);
+    const meta=document.createElement('div');
+    const when=document.createElement('span'); when.className='when';
+    when.textContent=timeLabel(i.start)+(i.end!=null?'–'+timeLabel(i.end):'');
+    const dur=document.createElement('span'); dur.className='dur'; dur.textContent=' · '+durLabel(i.duration_sec);
+    meta.appendChild(when); meta.appendChild(dur);
+    row.appendChild(meta);
+    dayEl.appendChild(row);
+  });
 }
 // Daily ribbon: oldest left → today right, cell colored by the worst state that
 // day. State rank → class (HB_CLS); -1 = no data (neutral). a11y: a real text
@@ -380,9 +570,115 @@ function heartbeat(h){
 }
 function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+/* ── Per-service detail page ── */
+function dwin(val,labelKey){
+  const el=document.createElement('div'); el.className='dwin';
+  const v=document.createElement('div'); v.className='v'+(val==null?' na':'');
+  v.textContent=(val==null)?'—':val+'%';
+  const l=document.createElement('div'); l.className='l'; l.textContent=I18N.t(labelKey);
+  el.appendChild(v); el.appendChild(l); return el;
+}
+// SVG latency sparkline from [{t,ms}] — no chart lib, mirrors the dashboard approach.
+function sparkline(series){
+  const box=document.createElement('div');
+  if(!series||series.length<2){
+    const n=document.createElement('div'); n.className='sparknote';
+    n.textContent=I18N.t('status.detail.nolat','Not enough response-time data yet.');
+    box.appendChild(n); return box;
+  }
+  const W=600,H=72,pad=4;
+  const xs=series.map(p=>p.t), ys=series.map(p=>p.ms);
+  const x0=Math.min(...xs), x1=Math.max(...xs);
+  const y0=0, y1=Math.max(...ys,1);
+  const sx=t=>(x1===x0)?W/2:pad+(t-x0)/(x1-x0)*(W-2*pad);
+  const sy=v=>H-pad-(v-y0)/(y1-y0)*(H-2*pad);
+  let line='', area='M '+sx(xs[0]).toFixed(1)+' '+(H-pad);
+  series.forEach((p,i)=>{ const X=sx(p.t).toFixed(1),Y=sy(p.ms).toFixed(1); line+=(i?' L ':'M ')+X+' '+Y; area+=' L '+X+' '+Y; });
+  area+=' L '+sx(xs[xs.length-1]).toFixed(1)+' '+(H-pad)+' Z';
+  const avg=Math.round(ys.reduce((a,b)=>a+b,0)/ys.length);
+  const svg='<svg class="spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="'+
+    esc(I18N.tf('status.detail.lata11y','Response time, average {n} ms, peak {p} ms',{n:avg,p:Math.round(y1)}))+'">'+
+    '<path class="ar" d="'+area+'"/><path class="ln" d="'+line+'"/></svg>';
+  box.innerHTML=svg;
+  const cap=document.createElement('div'); cap.className='hb hbsum'; cap.style.marginTop='9px';
+  const a=document.createElement('span'); a.innerHTML='<b>'+esc(avg)+'</b> '+esc(I18N.t('status.detail.avgms','ms avg'));
+  const b=document.createElement('span'); b.textContent=I18N.tf('status.detail.peakms','{n} ms peak',{n:Math.round(y1)});
+  cap.appendChild(a); cap.appendChild(b); box.appendChild(cap);
+  return box;
+}
+let detailId=null, detailData=null;
+async function loadDetail(id){
+  detailId=id;
+  try{
+    const r=await fetch('/api/status/'+encodeURIComponent(id),{cache:'no-cache'});
+    if(r.status===404){ navTo('/status'); return; }
+    if(!r.ok) throw new Error('http '+r.status);
+    detailData=await r.json();
+    document.body.classList.remove('offline-state');
+    renderDetail(detailData);
+  }catch(e){
+    document.body.classList.add('offline-state');
+  }
+}
+function renderDetail(d){
+  const map={up:'ok',down:'down',unknown:''};
+  const hero=document.getElementById('dHero'); hero.className='hero '+(map[d.state]||'');
+  const nm=document.getElementById('dName'); nm.classList.remove('skel'); nm.textContent=d.label||'—';
+  const sub=document.getElementById('dSub'); sub.innerHTML='';
+  const dot=document.createElement('span'); dot.className='dot '+(d.state==='up'?'ok':(d.state==='down'?'crit':''));
+  const stTx=document.createElement('span'); stTx.innerHTML='<span class="dot '+(d.state==='up'?'ok':(d.state==='down'?'crit':''))+'"></span>'+esc(I18N.t(MON_LBL[d.state]||'status.detail.unknown'));
+  sub.appendChild(stTx);
+  if(d.host){ const sep=document.createElement('span'); sep.textContent='·'; sep.style.opacity='.5'; sub.appendChild(sep);
+    const h=document.createElement('span'); h.style.fontFamily='var(--mono)'; h.textContent=d.host; sub.appendChild(h); }
+  if(d.up_since!=null){ const sep=document.createElement('span'); sep.textContent='·'; sep.style.opacity='.5'; sub.appendChild(sep);
+    const u=document.createElement('span'); const since=Math.max(0,(d.now||0)-d.up_since);
+    u.textContent=(d.state==='up'?I18N.t('status.detail.upfor','Up for'):I18N.t('status.detail.downfor','Down for'))+' '+durLabel(since); sub.appendChild(u); }
+  if(d.cert_days!=null){ const sep=document.createElement('span'); sep.textContent='·'; sep.style.opacity='.5'; sub.appendChild(sep);
+    const cd=document.createElement('span'); cd.textContent=I18N.tf('status.detail.cert','cert {n}d',{n:d.cert_days}); sub.appendChild(cd); }
+  // uptime windows
+  const w=d.uptime||{}; const box=document.getElementById('dWins'); box.innerHTML='';
+  box.appendChild(dwin(w['24h'],'status.detail.win24h'));
+  box.appendChild(dwin(w['7d'],'status.detail.win7d'));
+  box.appendChild(dwin(w['30d'],'status.detail.win30d'));
+  box.appendChild(dwin(w['90d'],'status.detail.win90d'));
+  // 90-day daily ribbon (reuse the full ribbon presentation)
+  const rb=document.getElementById('dRibbon');
+  rb.hidden=false; rb.innerHTML='';
+  const head=document.createElement('div'); head.className='rbhead';
+  const left=document.createElement('div'); left.className='rbpct';
+  if(w['90d']!=null) left.innerHTML=esc(w['90d'])+'% <small>'+esc(I18N.tf('status.ribbon.over','uptime over the last {n} days',{n:d.span||90}))+'</small>';
+  else { left.className='rbnote'; left.textContent=I18N.t('status.ribbon.collecting','Collecting daily uptime history…'); }
+  head.appendChild(left); rb.appendChild(head);
+  const bar=dailyBar(d.daily||[]); bar.className='rbbar'; bar.style.height='34px'; rb.appendChild(bar);
+  const axis=document.createElement('div'); axis.className='rbaxis';
+  const ax=document.createElement('span'); ax.textContent=I18N.tf('status.ribbon.daysago','{n} days ago',{n:d.span||90});
+  const bx=document.createElement('span'); bx.textContent=I18N.t('status.ribbon.today','Today');
+  axis.appendChild(ax); axis.appendChild(bx); rb.appendChild(axis);
+  // latency sparkline
+  const sp=document.getElementById('dSpark'); sp.innerHTML=''; sp.appendChild(sparkline(d.response_series||[]));
+  // per-service incidents
+  incidentFeed(document.getElementById('dInc'), d.incidents||[], false);
+  document.title=(d.label?d.label+' · ':'')+'Lab status · HomeLab Monitor';
+}
+
+/* ── Client-side routing (/status ↔ /status/<id>) ── */
+function currentId(){ const m=location.pathname.match(/^\/status\/([^\/?#]+)/); return m?decodeURIComponent(m[1]):null; }
+function showView(detail){
+  document.getElementById('indexView').hidden=detail;
+  document.getElementById('detailView').hidden=!detail;
+}
+function navTo(path){ history.pushState({},'',path); route(); }
+function route(){
+  const id=currentId();
+  if(id){ showView(true); loadDetail(id); }
+  else{ showView(false); detailId=null; load(); document.title='Lab status · HomeLab Monitor'; }
+}
+window.addEventListener('popstate',route);
+
 /* ── Fetch + auto-refresh ── */
 let timer=null;
 async function load(){
+  if(currentId()) return;   // detail view owns the fetch loop while open
   try{
     const r=await fetch('/api/status',{cache:'no-cache'});
     if(!r.ok) throw new Error('http '+r.status);
@@ -393,17 +689,23 @@ async function load(){
 }
 /* tick the "last updated" label every second without re-fetching */
 setInterval(()=>{
-  if(!lastData) return;
+  if(currentId()||!lastData) return;
   const u=document.getElementById('updatedLine'); if(!u) return;
   const age=Math.max(0, Math.floor(Date.now()/1000) - (lastData.updated||0));
   u.textContent=I18N.tf('status.updated','Last updated {ago}',{ago:ago(age)});
 },1000);
 
+function refresh(){ if(currentId()){ if(detailId) loadDetail(detailId); } else load(); }
+
+document.getElementById('backLink').addEventListener('click',ev=>{
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.button) return; ev.preventDefault(); navTo('/status');
+});
+
 (async()=>{
   await I18N.init();
-  await load();
-  timer=setInterval(load, 20000);
-  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) load(); });
+  route();
+  timer=setInterval(refresh, 20000);
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
 })();
 </script>
 </body></html>

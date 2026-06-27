@@ -248,7 +248,10 @@ _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL
 _HOST_MIGRATIONS = ("poll_timeout INTEGER", "poll_fails INTEGER DEFAULT 0", "poll_calibrated_at INTEGER")
 # cert_warn_days: per-check TLS expiry warning window (cert checks only). days_to_expiry:
 # the cert's days-to-expiry recorded on each cert probe. Both NULL for http/tcp checks.
-_UPTIME_CHECKS_MIGRATIONS = ("cert_warn_days INTEGER",)
+# public: per-check opt-in flag for the public /status surface (0=private by
+# default; old rows read as 0). A check appears on the public page ONLY when its
+# operator explicitly opts it in AND it is enabled — see _public_check_detail.
+_UPTIME_CHECKS_MIGRATIONS = ("cert_warn_days INTEGER", "public INTEGER NOT NULL DEFAULT 0")
 # cert_extra: JSON blob of the cert probe's public metadata (not_after string,
 # subject_cn, issuer_cn, expiring) recorded on each cert probe; NULL for http/tcp
 # results and for pre-migration rows. Surfaced (read) by _uptime_state.
@@ -11723,9 +11726,10 @@ _uptime_due = {}               # check_id -> next monotonic due time (scheduler 
 
 def _uptime_row_to_dict(r):
     cols = ("id", "label", "type", "target", "interval_sec", "timeout_sec",
-            "expected_status", "enabled", "created_at", "cert_warn_days")
+            "expected_status", "enabled", "created_at", "cert_warn_days", "public")
     d = dict(zip(cols, r))
     d["enabled"] = bool(d["enabled"])
+    d["public"] = bool(d.get("public"))
     return d
 
 _CRED_RE = re.compile(r"(://)[^/\s:@]+:[^/\s@]+@")
@@ -11741,7 +11745,7 @@ def _redact_target(s):
 def list_uptime_checks():
     with LOCK:
         rows = DB.execute(
-            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,enabled,created_at,cert_warn_days "
+            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,enabled,created_at,cert_warn_days,public "
             "FROM uptime_checks ORDER BY created_at").fetchall()
     return [_uptime_row_to_dict(r) for r in rows]
 
@@ -11816,7 +11820,9 @@ def _validate_uptime_check(body):
     return {"label": label, "type": ctype, "target": target,
             "interval_sec": interval, "timeout_sec": timeout,
             "expected_status": expected, "cert_warn_days": cert_warn_days,
-            "enabled": 1 if body.get("enabled", True) else 0}, None
+            "enabled": 1 if body.get("enabled", True) else 0,
+            # Opt-in public-status visibility — OFF unless explicitly requested.
+            "public": 1 if body.get("public", False) else 0}, None
 
 def _parse_host_port(target):
     """Parse 'host:port' (the tcp check target). Returns (host, port) or (None, None).
@@ -11910,10 +11916,10 @@ def create_uptime_check(body):
     with LOCK:
         DB.execute(
             "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
-            "expected_status,enabled,created_at,cert_warn_days) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "expected_status,enabled,created_at,cert_warn_days,public) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (cid, clean["label"], clean["type"], clean["target"], clean["interval_sec"],
              clean["timeout_sec"], clean["expected_status"], clean["enabled"],
-             int(time.time()), clean["cert_warn_days"]))
+             int(time.time()), clean["cert_warn_days"], clean["public"]))
         DB.commit()
     _uptime_due.pop(cid, None)   # probe promptly on next scheduler pass
     return cid, None
@@ -11925,23 +11931,38 @@ def update_uptime_check(cid, body):
         return False, "not found"
     if not body:
         return False, "empty update"
-    # Quick enable/disable toggle without full revalidation.
-    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+    # Quick enable/disable and/or public-toggle without full revalidation. A
+    # body limited to {enabled, public} (either or both) is a lightweight flag
+    # flip — the public flag is opt-in and never changes from a full edit unless
+    # explicitly present, so this keeps the toggles independent of the config form.
+    if body and set(body.keys()) <= {"enabled", "public"}:
+        sets, params = [], []
+        if "enabled" in body:
+            sets.append("enabled=?"); params.append(1 if body.get("enabled") else 0)
+        if "public" in body:
+            sets.append("public=?"); params.append(1 if body.get("public") else 0)
+        params.append(cid)
         with LOCK:
-            DB.execute("UPDATE uptime_checks SET enabled=? WHERE id=?",
-                       (1 if body.get("enabled") else 0, cid))
+            DB.execute(f"UPDATE uptime_checks SET {','.join(sets)} WHERE id=?", params)
             DB.commit()
         return True, None
     clean, err = _validate_uptime_check(body)
     if err:
         return False, err
+    # A full config edit must NOT silently change public visibility: only flip
+    # the public flag when the body explicitly carries it; otherwise preserve the
+    # check's current value (opt-in stays sticky across ordinary edits).
+    if "public" not in body:
+        with LOCK:
+            row = DB.execute("SELECT public FROM uptime_checks WHERE id=?", (cid,)).fetchone()
+        clean["public"] = int(row[0]) if row and row[0] is not None else 0
     with LOCK:
         DB.execute(
             "UPDATE uptime_checks SET label=?,type=?,target=?,interval_sec=?,timeout_sec=?,"
-            "expected_status=?,enabled=?,cert_warn_days=? WHERE id=?",
+            "expected_status=?,enabled=?,cert_warn_days=?,public=? WHERE id=?",
             (clean["label"], clean["type"], clean["target"], clean["interval_sec"],
              clean["timeout_sec"], clean["expected_status"], clean["enabled"],
-             clean["cert_warn_days"], cid))
+             clean["cert_warn_days"], clean["public"], cid))
         DB.commit()
     _uptime_due.pop(cid, None)   # re-probe with new config promptly
     return True, None
@@ -12345,6 +12366,15 @@ def build_public_status():
     # Aggregated ints/floats + a date string ONLY (no names/topology/secrets).
     daily = _status_daily(now)
 
+    # Opt-in per-component monitors (public+enabled uptime checks only). Each row
+    # carries a label + credential-stripped host + derived numbers — NEVER the raw
+    # target/err/internals. Empty when nothing is opted in (default state).
+    try:
+        monitors = _public_monitors(now)
+    except Exception as e:
+        print("public monitors error:", e, flush=True)
+        monitors = []
+
     return {
         "status": _STATUS_BANNER.get(worst, "operational"),
         "updated": HEALTH["at"] or now,
@@ -12361,7 +12391,239 @@ def build_public_status():
         "uptime_90d": daily["uptime"],
         "uptime_days": daily["total_days"],
         "uptime_span": daily["span"],
+        "monitors": monitors,
     }
+
+# ── Per-service PUBLIC status (opt-in, privacy-first) ─────────────────────────
+# The highest-risk leak surface: a per-check public detail page. Everything below
+# exposes ONLY a label + a credential-stripped host (and non-default port), plus
+# derived/aggregate numbers. NEVER the raw target, NEVER a full URL with userinfo/
+# path/query, NEVER the raw err string (which can embed internal hostnames/paths
+# even post-redaction). Incident reasons are reduced to "Down" + optional HTTP code.
+_PUBLIC_DAILY_DAYS    = _DAILY_RIBBON_DAYS   # 90-day per-component daily ribbon
+_PUBLIC_LATENCY_PTS   = 120                  # downsample the latency sparkline to ≤N
+_PUBLIC_INCIDENTS_MAX = 50                   # cap incidents returned per component
+
+def _public_host(check):
+    """Derive a PUBLIC-safe host string from a check's target: host (and :port when
+    non-default for the check type), with ANY credentials stripped. Never returns a
+    scheme, userinfo, path, or query — only host[:port]. Falls back to '' if the
+    target can't be parsed (never leaks the raw target)."""
+    ctype = (check.get("type") or "http").strip().lower()
+    target = check.get("target") or ""
+    try:
+        if ctype == "http":
+            u = urllib.parse.urlsplit(target)
+            host = u.hostname or ""
+            if not host:
+                return ""
+            port = u.port
+            default = 443 if u.scheme == "https" else 80
+            if port and port != default:
+                return f"{host}:{port}"
+            return host
+        if ctype == "cert":
+            host, port = _parse_cert_target(target)
+            if not host:
+                return ""
+            if port and port != _UPTIME_CERT_DEFAULT_PORT:
+                return f"{host}:{port}"
+            return host
+        # tcp — host:port is the whole point; show the port (no default to hide).
+        host, port = _parse_host_port(target)
+        if not host:
+            return ""
+        return f"{host}:{port}" if port else host
+    except Exception:
+        return ""
+
+def _public_daily_cells(rows, now, days=_PUBLIC_DAILY_DAYS):
+    """Roll (ts, up) result rows into a per-CALENDAR-DAY ribbon for ONE check:
+    [{d:'YYYY-MM-DD', up: up-fraction 0..1 or None, s: 0(ok)/2(some down)/3(all
+    down)/-1(no data)} ...] oldest→newest. Mirrors _status_daily's honest 'no
+    data' handling (never fakes green)."""
+    agg = {}   # day -> [up_count, total]
+    for ts, up in rows:
+        if ts is None:
+            continue
+        day = time.strftime("%Y-%m-%d", time.localtime(ts))
+        a = agg.get(day)
+        if a is None:
+            agg[day] = [1 if up else 0, 1]
+        else:
+            a[1] += 1
+            if up:
+                a[0] += 1
+    today_mid = time.mktime(time.strptime(
+        time.strftime("%Y-%m-%d", time.localtime(now)), "%Y-%m-%d"))
+    cells = []
+    for i in range(days - 1, -1, -1):
+        day = time.strftime("%Y-%m-%d", time.localtime(today_mid - i * 86400))
+        a = agg.get(day)
+        if a is None:
+            cells.append({"d": day, "up": None, "s": -1})
+        else:
+            upc, tot = a
+            frac = round(upc / tot, 4) if tot else None
+            if upc == tot:
+                s = 0
+            elif upc == 0:
+                s = 3
+            else:
+                s = 2
+            cells.append({"d": day, "up": frac, "s": s})
+    return cells
+
+def _uptime_pct_window(rows, now, window):
+    """up% over the last `window` seconds from ascending (ts, up) rows, or None."""
+    since = now - window
+    total = up = 0
+    for ts, u in rows:
+        if ts is None or ts < since:
+            continue
+        total += 1
+        if u:
+            up += 1
+    return round(100.0 * up / total, 2) if total else None
+
+def _public_incidents(rows, now, cap=_PUBLIC_INCIDENTS_MAX):
+    """Reconstruct down-periods from ascending (ts, up, code) rows. Returns the
+    most-recent `cap` incidents, newest→oldest, each:
+      {start, end|None (None=ongoing), duration_sec|None, code|None, reason}
+    PRIVACY: reason is the generic 'Down' (never the raw err); code is the HTTP
+    status only when present. No targets, no err strings, no internals."""
+    incidents = []
+    cur = None   # {start, last_ts, code}
+    for r in rows:
+        ts, up = r[0], r[1]
+        code = r[2] if len(r) > 2 else None
+        if ts is None:
+            continue
+        if not up:
+            if cur is None:
+                cur = {"start": ts, "last_ts": ts, "code": code}
+            else:
+                cur["last_ts"] = ts
+                if code is not None:
+                    cur["code"] = code   # keep the latest seen status code
+        else:
+            if cur is not None:
+                incidents.append({
+                    "start": cur["start"], "end": ts,
+                    "duration_sec": max(0, ts - cur["start"]),
+                    "code": cur["code"], "reason": "Down"})
+                cur = None
+    if cur is not None:   # still down at the end of the window → ongoing
+        incidents.append({
+            "start": cur["start"], "end": None,
+            "duration_sec": max(0, now - cur["start"]),
+            "code": cur["code"], "reason": "Down"})
+    incidents.reverse()   # newest first
+    return incidents[:cap]
+
+def _public_check_detail(cid, now=None):
+    """PUBLIC, privacy-safe detail for ONE uptime check, or None when the check is
+    not public+enabled (caller 404s). Single bounded 90-day query over the per-check
+    result ring. Exposes label + credential-stripped host + derived/aggregate
+    numbers ONLY — never the raw target/err/internals (see module note above)."""
+    now = int(time.time()) if now is None else int(now)
+    with LOCK:
+        crow = DB.execute(
+            "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,"
+            "enabled,created_at,cert_warn_days,public FROM uptime_checks WHERE id=?",
+            (cid,)).fetchone()
+    if not crow:
+        return None
+    check = _uptime_row_to_dict(crow)
+    if not (check["public"] and check["enabled"]):
+        return None
+    since = now - _PUBLIC_DAILY_DAYS * 86400 - 86400
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up,latency_ms,code FROM uptime_results WHERE check_id=? AND ts>=? "
+            "ORDER BY ts", (cid, since)).fetchall()
+        last = DB.execute(
+            "SELECT ts,up,days_to_expiry FROM uptime_results WHERE check_id=? "
+            "ORDER BY ts DESC LIMIT 1", (cid,)).fetchone()
+    tu = [(r[0], r[1]) for r in rows]                    # (ts, up)
+    tuc = [(r[0], r[1], r[3]) for r in rows]             # (ts, up, code)
+    state = "unknown"
+    cert_days = None
+    if last:
+        state = "up" if last[1] else "down"
+        cert_days = last[2]
+    # up_since: ts of the first sample in the current contiguous run of same-state.
+    up_since = None
+    if last:
+        cur_up = bool(last[1])
+        for ts, up in reversed(tu):
+            if bool(up) == cur_up:
+                up_since = ts
+            else:
+                break
+    # Latency series, downsampled to ≤_PUBLIC_LATENCY_PTS (uptime samples only —
+    # a 'down' has no meaningful latency). Stride-decimate, keep last point.
+    lat = [(r[0], r[2]) for r in rows if r[1] and r[2] is not None]
+    if len(lat) > _PUBLIC_LATENCY_PTS:
+        # Stride-decimate to exactly _PUBLIC_LATENCY_PTS points, anchoring the last
+        # bucket on the final sample so the most recent latency is always shown.
+        n = len(lat)
+        idx = sorted({min(n - 1, int(round(i * (n - 1) / (_PUBLIC_LATENCY_PTS - 1))))
+                      for i in range(_PUBLIC_LATENCY_PTS)})
+        lat = [lat[i] for i in idx]
+    response_series = [{"t": int(t), "ms": round(ms, 1)} for t, ms in lat]
+    out = {
+        "id": check["id"],
+        "label": check["label"],
+        "host": _public_host(check),
+        "type": check["type"],
+        "state": state,
+        "up_since": up_since,
+        "now": now,
+        "uptime": {
+            "24h": _uptime_pct_window(tu, now, 86400),
+            "7d":  _uptime_pct_window(tu, now, 7 * 86400),
+            "30d": _uptime_pct_window(tu, now, 30 * 86400),
+            "90d": _uptime_pct_window(tu, now, 90 * 86400),
+        },
+        "daily": _public_daily_cells(tu, now),
+        "response_series": response_series,
+        "incidents": _public_incidents(tuc, now),
+        "span": _PUBLIC_DAILY_DAYS,
+    }
+    if check["type"] == "cert" and cert_days is not None:
+        out["cert_days"] = int(cert_days)
+    return out
+
+def _public_monitors(now):
+    """The per-component rows for the public INDEX: public+enabled checks only,
+    each {id, label, host, type, state, uptime (current 90d%), daily (90 cells),
+    incidents (recent, generic)}. Privacy-identical to _public_check_detail."""
+    mons = []
+    for c in list_uptime_checks():
+        if not (c.get("public") and c.get("enabled")):
+            continue
+        since = now - _PUBLIC_DAILY_DAYS * 86400 - 86400
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts,up,code FROM uptime_results WHERE check_id=? AND ts>=? ORDER BY ts",
+                (c["id"], since)).fetchall()
+        tu = [(r[0], r[1]) for r in rows]
+        tuc = [(r[0], r[1], r[2]) for r in rows]
+        state = "unknown"
+        if tu:
+            state = "up" if tu[-1][1] else "down"
+        mons.append({
+            "id": c["id"],
+            "label": c["label"],
+            "host": _public_host(c),
+            "type": c["type"],
+            "state": state,
+            "uptime": _uptime_pct_window(tu, now, 90 * 86400),
+            "daily": _public_daily_cells(tu, now),
+            "incidents": _public_incidents(tuc, now, cap=10),
+        })
+    return mons
 
 @app.route("/api/status")
 def api_status():
@@ -12378,11 +12640,32 @@ def api_status():
                         "counts": {"services": 0, "containers": 0,
                                    "monitored": 0, "problems": 0},
                         "daily": [], "uptime_90d": None,
-                        "uptime_days": 0, "uptime_span": _DAILY_RIBBON_DAYS})
+                        "uptime_days": 0, "uptime_span": _DAILY_RIBBON_DAYS,
+                        "monitors": []})
+
+@app.route("/api/status/<cid>")
+def api_status_detail(cid):
+    """Public per-service detail. 404 unless the check is public AND enabled (and
+    the status page is on). Privacy-safe: host-only, generic incidents, no targets
+    /err/internals — see _public_check_detail."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        detail = _public_check_detail(cid)
+    except Exception as e:
+        print("status detail error:", e, flush=True)
+        return ("Not found", 404)
+    if detail is None:
+        return ("Not found", 404)
+    return jsonify(detail)
 
 @app.route("/status")
-def status_page():
-    """Unauthenticated, self-contained public status page (HTML)."""
+@app.route("/status/<cid>")
+def status_page(cid=None):
+    """Unauthenticated, self-contained public status page (HTML). The optional
+    /status/<cid> path is the per-service deep link — the same single-page app
+    handles routing client-side; the server just serves the shell either way (the
+    detail data itself is gated by /api/status/<cid>)."""
     if not STATUS_PAGE:
         return ("Status page disabled", 404)
     return app.send_static_file("status.html")
