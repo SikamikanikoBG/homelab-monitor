@@ -683,6 +683,20 @@ tr.reg-dead td{opacity:1}
 .incd-mem-st.settled{color:var(--ok);background:var(--okbg)}
 .incd-mem-vals{margin-top:8px;font-size:12px;color:var(--mut);font-family:var(--mono);line-height:1.5}
 .incd-mem-vals b{color:var(--tx)}
+/* Per-member trailing-trend sparkline (correlated-incidents differentiator).
+   Tinted by direction: spike→warn/crit, dip→info. Peak marker is a hollow dot
+   at the series extreme. Decorative (aria-hidden) — row text states peak/σ/baseline. */
+.incd-mem-spark{display:block;width:100%;height:26px;margin-top:9px;overflow:visible;--isp:var(--info)}
+.incd-mem-spark.spike{--isp:var(--warn)} .incd-mem-spark.spike.crit{--isp:var(--crit)}
+.incd-mem-spark.dip{--isp:var(--info)}
+.incd-mem-spark .sp-area{fill:color-mix(in srgb,var(--isp) 12%,transparent);stroke:none}
+.incd-mem-spark .sp-line{fill:none;stroke:var(--isp);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.incd-mem-spark .sp-peak{fill:var(--card);stroke:var(--isp);stroke-width:1.7}
+.incd-mem-spark .sp-peak-core{fill:var(--isp);stroke:none}
+.incd-mem-spark .sp-line{stroke-dasharray:var(--isplen,0);stroke-dashoffset:var(--isplen,0);
+  animation:incdSpDraw .55s ease-out forwards}
+@keyframes incdSpDraw{to{stroke-dashoffset:0}}
+@media(prefers-reduced-motion:reduce){.incd-mem-spark .sp-line{animation:none;stroke-dashoffset:0}}
 .incd-why{margin-top:9px}
 .incd-why-btn{font-size:12px;font-weight:600;color:var(--info);background:none;border:0;padding:2px 0;cursor:pointer}
 .incd-why-btn:hover{text-decoration:underline}
@@ -6996,6 +7010,64 @@ function _incdError(msg){
     '<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div><div class="t">'
     +esc(msg)+'</div></div></div>';
 }
+// ── Per-member trailing-trend sparkline ───────────────────────────────────────
+// Resolve a member's anomaly series key → the matching recent numeric array that's
+// ALREADY on the page (global D from /api/data) — zero new fetch/poll. Mirrors the
+// _ANOMALY_SERIES → chart-column mapping used by the GPU/host ribbons. Returns []
+// when no on-page array exists for that key (e.g. power_draw, a derived total) or
+// it has <2 finite points → the row renders exactly as today, no broken axis.
+const INCD_SPK_MAX=60;
+function _incdMemSeries(key){
+  const t=(typeof D!=='undefined' && D && D.total) ? D.total : null;
+  if(!t) return [];
+  let src=null;
+  switch(key){
+    case 'gpu_util':  src=t.util;  break;
+    case 'gpu_power': src=t.power; break;
+    case 'gpu_temp':  src=t.temp;  break;
+    case 'gpu_vram':  src=t.mem;   break;   // ribbon maps gpu_vram → D.total.mem
+    case 'cpu':       src=t.cpu;   break;
+    case 'load':      src=t.load1; break;
+    case 'ram':
+      // RAM% is derived (used/total) on this page — rebuild it the same way the host ribbon does
+      if(Array.isArray(t.ram_used) && Array.isArray(t.ram_total)){
+        src=t.ram_used.map((u,i)=> t.ram_total[i] ? Math.round(u/t.ram_total[i]*100) : 0);
+      }
+      break;
+    default: src=null;                        // power_draw / unknown → no on-page array → skip
+  }
+  if(!Array.isArray(src) || !src.length) return [];
+  return src.slice(-INCD_SPK_MAX).map(v=>Number(v)).filter(v=>Number.isFinite(v));
+}
+// Build a small inline-SVG sparkline string for one member row. Tinted via CSS class
+// (spike/dip + crit). Peak marker = hollow dot at the series max (spike) / min (dip)
+// — the visually-honest extreme that matches the row's "peak {v}" text. Pure numeric
+// path → XSS-safe; aria-hidden (decorative). '' when there's nothing meaningful to draw.
+const INCD_SPK_W=180, INCD_SPK_H=26, INCD_SPK_PAD=3;
+function _incdSparkline(data, direction, crit){
+  if(!Array.isArray(data) || data.length<2) return '';
+  const W=INCD_SPK_W,H=INCD_SPK_H,pad=INCD_SPK_PAD,n=data.length;
+  const mn=Math.min(...data), mx=Math.max(...data), span=(mx-mn)||1, innerH=H-pad*2;
+  const X=i=> n===1?W/2 : pad+(W-pad*2)*(i/(n-1));
+  const Y=v=> (mx===mn)?H/2 : (H-pad)-((v-mn)/span)*innerH;
+  let line='', area='M'+pad.toFixed(2)+' '+(H-pad).toFixed(2), len=0, px=null, py=null;
+  for(let i=0;i<n;i++){ const x=X(i), y=Y(data[i]);
+    if(px!==null){ len+=Math.hypot(x-px,y-py); } px=x; py=y;
+    const xs=x.toFixed(2), ys=y.toFixed(2);
+    line+=(i?'L':'M')+xs+' '+ys+' '; area+=' L'+xs+' '+ys; }
+  area+=' L'+(W-pad).toFixed(2)+' '+(H-pad).toFixed(2)+' Z';
+  // peak index: max for a spike, min for a dip (honest match to "peak {v}")
+  const spike=direction!=='dip';
+  let pi=0; for(let i=1;i<n;i++){ if(spike? data[i]>data[pi] : data[i]<data[pi]) pi=i; }
+  const cx=X(pi).toFixed(2), cy=Y(data[pi]).toFixed(2);
+  const cls='incd-mem-spark '+(spike?'spike':'dip')+(crit&&spike?' crit':'');
+  return '<svg class="'+cls+'" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" '
+    +'aria-hidden="true" focusable="false" style="--isplen:'+len.toFixed(1)+'">'
+    +'<path class="sp-area" d="'+area+'"/><path class="sp-line" d="'+line.trim()+'"/>'
+    +'<circle class="sp-peak" cx="'+cx+'" cy="'+cy+'" r="3.1"/>'
+    +'<circle class="sp-peak-core" cx="'+cx+'" cy="'+cy+'" r="1.3"/>'
+    +'</svg>';
+}
 function _incdRender(inc){
   _incdHeader(inc);
   const body=document.getElementById('incd-body');
@@ -7054,12 +7126,15 @@ function _incdRender(inc){
     const u=m.unit||'';
     const vals=I18N.tf('incd.m_vals','peak {v}{u} vs ~{b}{u} baseline',{v:m.peak_value,u:u,b:m.baseline});
     const seen=I18N.tf('incd.m_seen','first seen {f} · last {l}',{f:relTime(m.first_seen),l:relTime(m.last_seen)});
+    // trailing-trend sparkline from already-fetched page data (no fetch); '' degrades the row to today's layout
+    const spark=_incdSparkline(_incdMemSeries(m.series), m.direction, sev);
     return '<div class="incd-mem'+(m.active?'':' settled')+'">'
       +'<div class="incd-mem-h"><span class="arr '+(sp?'spike':'dip')+'">'+arrow+'</span>'
       +'<span class="incd-mem-nm">'+nm+'</span>'
       +'<span class="incd-mem-sig">'+esc(z)+'σ</span>'
       +'<span class="incd-mem-st '+stCls+'">'+esc(stTxt)+'</span></div>'
       +'<div class="incd-mem-vals">'+esc(vals)+'<br>'+esc(seen)+'</div>'
+      +spark
       +'<div class="incd-why"><button type="button" class="incd-why-btn" data-incd-why="'+mi+'">🧠 '
       +esc(I18N.t('incd.why','Why?'))+'</button>'
       +'<div class="incd-why-out" id="incd-why-'+mi+'" hidden style="margin-top:8px"></div></div>'
