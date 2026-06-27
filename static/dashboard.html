@@ -2027,9 +2027,25 @@ h2 .hic{ opacity:.9 }
           <div class="flabel" data-i18n="rules.f_upcheck">Uptime check</div>
           <select id="r_p_upcheck" class="field"></select>
         </div>
+        <div id="r_p_slopolicy_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_slopolicy">Burn-rate policy</div>
+          <select id="r_p_slopolicy" class="field">
+            <option value="single" data-i18n="rules.slopolicy_single">Single threshold</option>
+            <option value="multi_window" data-i18n="rules.slopolicy_multi">Multi-window (SRE)</option>
+          </select>
+        </div>
         <div id="r_p_burn_wrap" hidden>
           <div class="flabel" data-i18n="rules.f_burn">Burn-rate threshold (×)</div>
           <input type="number" id="r_p_burn" class="field" min="0" step="0.1" value="1.0">
+        </div>
+        <div id="r_p_fastburn_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_fastburn">Fast burn (page) — 1h ×</div>
+          <input type="number" id="r_p_fastburn" class="field" min="0" step="0.1" value="14.4">
+        </div>
+        <div id="r_p_slowburn_wrap" hidden>
+          <div class="flabel" data-i18n="rules.f_slowburn">Slow burn (ticket) — 6h ×</div>
+          <input type="number" id="r_p_slowburn" class="field" min="0" step="0.1" value="6">
+          <div class="muted" style="font-size:11px;margin-top:4px" data-i18n="rules.slowburn_hint">Fast = page-worthy (1h window); slow = ticket-worthy (6h window).</div>
         </div>
         <div>
           <div class="flabel" data-i18n="rules.f_channel">Channel</div>
@@ -4829,7 +4845,12 @@ function ruleParamsVisibility(){
   document.getElementById('r_p_budget_wrap').hidden = t!=='cost_budget';
   document.getElementById('r_p_incsev_wrap').hidden = t!=='incident';
   document.getElementById('r_p_upcheck_wrap').hidden = !(t==='uptime_down'||t==='cert_expiry'||t==='slo_burn');
-  document.getElementById('r_p_burn_wrap').hidden = t!=='slo_burn';
+  document.getElementById('r_p_slopolicy_wrap').hidden = t!=='slo_burn';
+  const pol=document.getElementById('r_p_slopolicy').value;
+  const multi = (t==='slo_burn' && pol==='multi_window');
+  document.getElementById('r_p_burn_wrap').hidden = !(t==='slo_burn' && pol==='single');
+  document.getElementById('r_p_fastburn_wrap').hidden = !multi;
+  document.getElementById('r_p_slowburn_wrap').hidden = !multi;
   // The check picker is shared: uptime_down/slo_burn list ALL checks, cert_expiry lists
   // only cert-type checks (an http/tcp check has no expiry to warn on; SLO applies to all).
   if(t==='uptime_down'||t==='cert_expiry'||t==='slo_burn') populateCheckPicker(t==='cert_expiry');
@@ -4864,6 +4885,10 @@ function ruleSummary(r){
   if(r.ctype==='slo_burn'){
     const cid=p.check_id||'any';
     const who=(cid==='any')?I18N.t('rules.up_any','any check'):(UPTIME_CHECK_LABELS[cid]||cid);
+    if(p.policy==='multi_window'){
+      const fb=(p.fast_burn!=null)?p.fast_burn:14.4, sb=(p.slow_burn!=null)?p.slow_burn:6;
+      return I18N.t('rules.sum_slo','SLO burn — ')+who+' ('+I18N.t('rules.slopolicy_multi','Multi-window (SRE)')+': ⚡'+fb+'× / 🐢'+sb+'×)';
+    }
     const bt=(p.burn_threshold!=null)?p.burn_threshold:1.0;
     return I18N.t('rules.sum_slo','SLO burn — ')+who+' (≥'+bt+'×)';
   }
@@ -5046,8 +5071,16 @@ async function addRule(){
   else if(t==='cost_budget') params={budget:parseFloat(document.getElementById('r_p_budget').value||'50')};
   else if(t==='incident')    params={severity:document.getElementById('r_p_incsev').value};
   else if(t==='uptime_down'||t==='cert_expiry') params={check_id:document.getElementById('r_p_upcheck').value||'any'};
-  else if(t==='slo_burn') params={check_id:document.getElementById('r_p_upcheck').value||'any',
-                                  burn_threshold:parseFloat(document.getElementById('r_p_burn').value||'1.0')};
+  else if(t==='slo_burn'){
+    const pol=document.getElementById('r_p_slopolicy').value;
+    params={check_id:document.getElementById('r_p_upcheck').value||'any', policy:pol};
+    if(pol==='multi_window'){
+      params.fast_burn=parseFloat(document.getElementById('r_p_fastburn').value||'14.4');
+      params.slow_burn=parseFloat(document.getElementById('r_p_slowburn').value||'6');
+    } else {
+      params.burn_threshold=parseFloat(document.getElementById('r_p_burn').value||'1.0');
+    }
+  }
   const body={
     name: document.getElementById('r_name').value.trim(),
     ctype: t, params,
@@ -5102,6 +5135,7 @@ async function loadAlertHistory(){
   });
 }
 document.getElementById('r_type').onchange = ruleParamsVisibility;
+document.getElementById('r_p_slopolicy').onchange = ruleParamsVisibility;
 document.getElementById('r_add').onclick = addRule;
 document.getElementById('r_test_btn').onclick = testRuleChannel;
 document.getElementById('m_kind').onchange = maintKindVisibility;

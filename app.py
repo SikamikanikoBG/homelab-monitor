@@ -4722,9 +4722,16 @@ def _validate_rule(body):
     elif ctype == "slo_burn":
         # Fires while a check is burning its SLO error budget too fast or is over
         # budget. SLO applies to ANY check type (http/tcp/cert). Target a specific
-        # check by id, or "any"/none to fire for ANY check breaching. An optional
-        # numeric burn_threshold (default 1.0 = the budget-sustaining rate) sets the
-        # burn_1h trip point; garbage/absent falls back to the default.
+        # check by id, or "any"/none to fire for ANY check breaching.
+        #
+        # Two policies:
+        #   "single"       (default, backward-compat): one numeric burn_threshold
+        #                  (default 1.0 = the budget-sustaining rate) trips on burn_1h.
+        #   "multi_window" (Google SRE multi-window burn-rate): a FAST tier
+        #                  (fast_burn, default 14.4×, 1h window → page) and a SLOW
+        #                  tier (slow_burn, default 6×, 6h window → ticket).
+        # Garbage/absent thresholds fall back to their defaults; an unknown policy is
+        # coerced to "single" so an old/typo'd rule can never go dead.
         cid = params.get("check_id")
         if cid in (None, "", "any"):
             params = {**params, "check_id": "any"}
@@ -4736,13 +4743,31 @@ def _validate_rule(body):
             if not row:
                 return None, "Unknown uptime check. Pick an existing check or 'any'."
             params = {**params, "check_id": cid}
-        try:
-            bt = float(params.get("burn_threshold"))
-            if not (bt > 0):
-                raise ValueError
-        except (TypeError, ValueError):
-            bt = 1.0
-        params = {**params, "burn_threshold": bt}
+        policy = params.get("policy")
+        if policy not in ("single", "multi_window"):
+            policy = "single"
+        if policy == "multi_window":
+            try:
+                fb = float(params.get("fast_burn"))
+                if not (fb > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                fb = 14.4
+            try:
+                sb = float(params.get("slow_burn"))
+                if not (sb > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                sb = 6.0
+            params = {**params, "policy": "multi_window", "fast_burn": fb, "slow_burn": sb}
+        else:
+            try:
+                bt = float(params.get("burn_threshold"))
+                if not (bt > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                bt = 1.0
+            params = {**params, "policy": "single", "burn_threshold": bt}
     return {"name": name, "ctype": ctype, "channel": channel, "level": level,
             "cooldown_min": cooldown, "params": params,
             "enabled": 1 if body.get("enabled") else 0}, None
@@ -5334,29 +5359,65 @@ def _eval_rule(rule, signals):
         # raw failure fraction reads. Reads the shared bundle; we surface only the
         # label, budget %, burn rate, target, and observed window — credential-safe
         # (the raw target is _redact_target'd upstream and never touched here).
-        try:
-            thr = float((p or {}).get("burn_threshold"))
-            if not (thr > 0):
-                raise ValueError
-        except (TypeError, ValueError):
-            thr = 1.0
+        # Multi-window (Google SRE) burn-rate policy distinguishes a FAST burn (1h
+        # window, page-worthy) from a SLOW burn (6h window, ticket-worthy); the
+        # legacy "single" policy keeps one burn_1h threshold. We never change the
+        # rule's configured dispatch level — the burn TIER is encoded in the
+        # title/detail (over_budget > fast > slow), and worst-first sort ranks them.
+        policy = (p or {}).get("policy")
+        if policy not in ("single", "multi_window"):
+            policy = "single"
+        if policy == "multi_window":
+            try:
+                fast_thr = float((p or {}).get("fast_burn"))
+                if not (fast_thr > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                fast_thr = 14.4
+            try:
+                slow_thr = float((p or {}).get("slow_burn"))
+                if not (slow_thr > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                slow_thr = 6.0
+            thr = None
+        else:
+            try:
+                thr = float((p or {}).get("burn_threshold"))
+                if not (thr > 0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                thr = 1.0
+            fast_thr = slow_thr = None
         want = (p.get("check_id") or "any")
         checks = signals.get("uptime") or []
-        def _breaching(c):
+        def _tier(c):
+            """Which burn tier a check trips, or None. Ranks over_budget(3) >
+            fast/1h(2) > slow/6h(1) > none(0). Never None/NaN-compares."""
             slo = c.get("slo") or {}
             if not c.get("enabled") or not slo.get("data_sufficient"):
-                return False
+                return 0
+            if slo.get("over_budget"):
+                return 3
             b1 = slo.get("burn_1h")
-            return bool(slo.get("over_budget") or (b1 is not None and b1 >= thr))
-        breaching = [c for c in checks if _breaching(c)]
+            b6 = slo.get("burn_6h")
+            if policy == "multi_window":
+                if b1 is not None and b1 >= fast_thr:
+                    return 2
+                if b6 is not None and b6 >= slow_thr:
+                    return 1
+                return 0
+            # single policy: one burn_1h threshold, no tiering
+            return 2 if (b1 is not None and b1 >= thr) else 0
+        breaching = [c for c in checks if _tier(c) > 0]
         if want != "any":
             breaching = [c for c in breaching if c.get("id") == want]
         if not breaching:
             return False, None, None
-        # Worst-first: over-budget checks lead, then by budget consumed, then burn.
+        # Worst-first: tier (over_budget > fast > slow), then budget consumed, then burn.
         def _sev(c):
             slo = c.get("slo") or {}
-            return (1 if slo.get("over_budget") else 0,
+            return (_tier(c),
                     slo.get("budget_consumed_pct") or 0.0,
                     slo.get("burn_1h") or 0.0)
         breaching.sort(key=_sev, reverse=True)
@@ -5372,23 +5433,40 @@ def _eval_rule(rule, signals):
         tgt_txt = f"{_reco_num(round(tgt * 100, 3))}%" if tgt is not None else "?"
         wda = fslo.get("window_days_actual")
         burn_txt = (f"{_reco_num(b1)}×" if b1 is not None else "?")
+        tier = _tier(first)
+        # Tier prefix on the title — credential-safe (label + numbers only).
+        if tier == 3:
+            prefix = "Over budget"
+        elif tier == 2 and policy == "multi_window":
+            prefix = f"⚡ Fast burn (page) — {label}: burn {burn_txt}/1h ≥ {_reco_num(fast_thr)}×"
+        elif tier == 1:
+            prefix = f"🐢 Slow burn (ticket) — {label}: {_reco_num(b6)}×/6h ≥ {_reco_num(slow_thr)}×"
+        else:
+            prefix = "SLO burn"
         if want == "any" and n > 1:
             labels = [str(c.get("label") or c.get("id") or "?") for c in breaching]
             head = ", ".join(labels[:4]) + (f" +{n - 4} more" if n > 4 else "")
             title = f"SLO burn — {n} checks breaching budget"
             detail = (f"{n} uptime checks over budget / burning fast: {head}. "
-                      f"Worst: '{label}' (budget {bctxt} used, burn {burn_txt}/h"
+                      f"Worst: {prefix} ('{label}', budget {bctxt} used, burn {burn_txt}/h"
                       + (f", {_reco_num(b6)}×/6h" if b6 is not None else "")
                       + f", SLO target {tgt_txt}"
                       + (f", observed {wda}d" if wda else "") + ").")
         else:
-            title = f"SLO burn — {label} (budget {bctxt} used, burn {burn_txt})"
+            if tier == 3:
+                title = f"Over budget — {label} (budget {bctxt} used, burn {burn_txt})"
+            elif tier in (2, 1) and policy == "multi_window":
+                title = prefix
+            else:
+                title = f"SLO burn — {label} (budget {bctxt} used, burn {burn_txt})"
             detail = (f"Uptime check '{label}' is burning its SLO error budget: "
                       f"budget {bctxt} used, burn {burn_txt} over the last hour"
                       + (f" ({_reco_num(b6)}× over 6h)" if b6 is not None else "")
                       + f", SLO target {tgt_txt}"
                       + (f", observed over {wda}d" if wda else "")
-                      + (" — OVER BUDGET." if fslo.get("over_budget") else "."))
+                      + (" — OVER BUDGET." if tier == 3 else
+                         (" — FAST BURN (page)." if (tier == 2 and policy == "multi_window") else
+                          (" — SLOW BURN (ticket)." if tier == 1 else "."))))
         return True, title, detail
     return False, None, None
 

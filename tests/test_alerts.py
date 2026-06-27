@@ -986,6 +986,42 @@ class TestSloBurnValidation(unittest.TestCase):
                                        "params": {"burn_threshold": -3}})
         self.assertEqual(clean["params"]["burn_threshold"], 1.0)
 
+    def test_policy_default_single(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn", "params": {}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["policy"], "single")
+        self.assertEqual(clean["params"]["burn_threshold"], 1.0)
+
+    def test_unknown_policy_coerced_to_single(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                         "params": {"policy": "wat", "burn_threshold": 2.0}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["policy"], "single")
+        self.assertEqual(clean["params"]["burn_threshold"], 2.0)
+
+    def test_multi_window_default_thresholds(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                         "params": {"policy": "multi_window"}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["policy"], "multi_window")
+        self.assertEqual(clean["params"]["fast_burn"], 14.4)
+        self.assertEqual(clean["params"]["slow_burn"], 6.0)
+
+    def test_multi_window_custom_thresholds_kept(self):
+        clean, err = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                         "params": {"policy": "multi_window",
+                                                    "fast_burn": 20, "slow_burn": 4}})
+        self.assertIsNone(err)
+        self.assertEqual(clean["params"]["fast_burn"], 20.0)
+        self.assertEqual(clean["params"]["slow_burn"], 4.0)
+
+    def test_multi_window_garbage_thresholds_fall_back(self):
+        clean, _ = app._validate_rule({"name": "s", "ctype": "slo_burn",
+                                       "params": {"policy": "multi_window",
+                                                  "fast_burn": "x", "slow_burn": -1}})
+        self.assertEqual(clean["params"]["fast_burn"], 14.4)
+        self.assertEqual(clean["params"]["slow_burn"], 6.0)
+
 
 class TestSloBurnEval(unittest.TestCase):
     def _rule(self, **kw):
@@ -1061,6 +1097,81 @@ class TestSloBurnEval(unittest.TestCase):
         sig = SIG_SLO(cid="s1", label="prod-api",
                       slo=_SLO(over_budget=True, budget_consumed_pct=150.0, burn_1h=3.0))
         fired, _, detail = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertTrue(fired)
+        self.assertNotIn("://", detail)
+        self.assertNotIn("secret", detail.lower())
+
+    # ── multi_window policy (Google SRE multi-window burn-rate) ──
+    def _mw(self, fast_burn=14.4, slow_burn=6.0, check_id="s1"):
+        return {"check_id": check_id, "policy": "multi_window",
+                "fast_burn": fast_burn, "slow_burn": slow_burn}
+
+    def test_mw_fires_on_fast_tier(self):
+        # burn_1h >= fast, burn_6h below slow -> FAST (page) tier.
+        sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=18.0, burn_6h=2.0, budget_consumed_pct=40.0))
+        fired, title, detail = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertTrue(fired)
+        self.assertIn("Fast burn", title)
+        self.assertIn("FAST BURN", detail)
+
+    def test_mw_fires_on_slow_tier(self):
+        # burn_6h >= slow, burn_1h below fast -> SLOW (ticket) tier.
+        sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=2.0, burn_6h=7.0, budget_consumed_pct=40.0))
+        fired, title, detail = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertTrue(fired)
+        self.assertIn("Slow burn", title)
+        self.assertIn("SLOW BURN", detail)
+
+    def test_mw_fires_on_over_budget(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(over_budget=True, burn_1h=1.0, burn_6h=1.0,
+                                         budget_consumed_pct=150.0))
+        fired, title, detail = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertTrue(fired)
+        self.assertIn("Over budget", title)
+        self.assertIn("OVER BUDGET", detail)
+
+    def test_mw_no_fire_both_below_within_budget(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(over_budget=False, burn_1h=2.0, burn_6h=3.0,
+                                         budget_consumed_pct=20.0))
+        fired, *_ = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertFalse(fired)
+
+    def test_mw_burn6h_none_only_1h_tier(self):
+        # burn_6h None -> slow tier never evaluated, no crash; 1h fast still trips.
+        sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=18.0, burn_6h=None, budget_consumed_pct=30.0))
+        fired, title, _ = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertTrue(fired)
+        self.assertIn("Fast burn", title)
+        # burn_6h None and 1h below fast -> no fire (no None-compare crash).
+        sig2 = SIG_SLO(cid="s1", slo=_SLO(burn_1h=3.0, burn_6h=None, budget_consumed_pct=30.0))
+        fired2, *_ = app._eval_rule(self._rule(params=self._mw()), sig2)
+        self.assertFalse(fired2)
+
+    def test_mw_data_sufficient_gate_blocks_sparse(self):
+        sig = SIG_SLO(cid="s1", slo=_SLO(data_sufficient=False, burn_1h=99.0, burn_6h=99.0,
+                                         over_budget=True, budget_consumed_pct=900.0))
+        fired, *_ = app._eval_rule(self._rule(params=self._mw()), sig)
+        self.assertFalse(fired)
+
+    def test_mw_worst_first_over_budget_then_fast_then_slow(self):
+        sig = {"uptime": [
+            {"id": "slow", "label": "slow.svc", "type": "http", "enabled": True, "state": "up",
+             "slo": _SLO(burn_1h=2.0, burn_6h=7.0, budget_consumed_pct=30.0)},
+            {"id": "fast", "label": "fast.svc", "type": "http", "enabled": True, "state": "up",
+             "slo": _SLO(burn_1h=20.0, burn_6h=2.0, budget_consumed_pct=40.0)},
+            {"id": "ob", "label": "ob.svc", "type": "http", "enabled": True, "state": "up",
+             "slo": _SLO(over_budget=True, burn_1h=1.0, burn_6h=1.0, budget_consumed_pct=200.0)}]}
+        fired, title, detail = app._eval_rule(
+            self._rule(params={"check_id": "any", "policy": "multi_window",
+                               "fast_burn": 14.4, "slow_burn": 6.0}), sig)
+        self.assertTrue(fired)
+        self.assertIn("3", title)
+        self.assertIn("ob.svc", detail)  # over-budget ranked worst-first
+
+    def test_mw_detail_credential_safe(self):
+        sig = SIG_SLO(cid="s1", label="prod-api",
+                      slo=_SLO(burn_1h=18.0, burn_6h=2.0, budget_consumed_pct=40.0))
+        fired, _, detail = app._eval_rule(self._rule(params=self._mw()), sig)
         self.assertTrue(fired)
         self.assertNotIn("://", detail)
         self.assertNotIn("secret", detail.lower())
