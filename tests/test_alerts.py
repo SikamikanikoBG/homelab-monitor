@@ -1040,6 +1040,18 @@ class TestSloBurnEval(unittest.TestCase):
         self.assertIn("140", detail)
         self.assertIn("OVER BUDGET", detail)
 
+    def test_single_over_budget_title_unchanged(self):
+        # Backward-compat: a single-policy slo_burn rule over budget MUST keep its
+        # legacy "SLO burn — ..." title (the multi_window "Over budget —" relabel
+        # must NOT leak into single mode).
+        sig = SIG_SLO(cid="s1", slo=_SLO(over_budget=True, budget_consumed_pct=140.0, burn_1h=0.2))
+        _, title, _ = app._eval_rule(self._rule(params={"check_id": "s1", "policy": "single"}), sig)
+        self.assertTrue(title.startswith("SLO burn —"))
+        self.assertNotIn("Over budget —", title)
+        # Pre-commit rule shape (no policy key) reads as single, same title.
+        _, title2, _ = app._eval_rule(self._rule(params={"check_id": "s1"}), sig)
+        self.assertTrue(title2.startswith("SLO burn —"))
+
     def test_fires_when_burn_at_threshold(self):
         sig = SIG_SLO(cid="s1", slo=_SLO(burn_1h=1.0, budget_consumed_pct=30.0))
         fired, *_ = app._eval_rule(self._rule(params={"check_id": "s1", "burn_threshold": 1.0}), sig)

@@ -5435,27 +5435,30 @@ def _eval_rule(rule, signals):
         burn_txt = (f"{_reco_num(b1)}×" if b1 is not None else "?")
         tier = _tier(first)
         # Tier prefix on the title — credential-safe (label + numbers only).
-        if tier == 3:
-            prefix = "Over budget"
-        elif tier == 2 and policy == "multi_window":
+        # ONLY the multi_window policy relabels by tier; the legacy "single" policy
+        # keeps its byte-for-byte title/detail (over_budget still surfaced via the
+        # "— OVER BUDGET." detail suffix exactly as before).
+        if policy == "multi_window" and tier == 3:
+            prefix = f"Over budget — '{label}'"
+        elif policy == "multi_window" and tier == 2:
             prefix = f"⚡ Fast burn (page) — {label}: burn {burn_txt}/1h ≥ {_reco_num(fast_thr)}×"
-        elif tier == 1:
+        elif policy == "multi_window" and tier == 1:
             prefix = f"🐢 Slow burn (ticket) — {label}: {_reco_num(b6)}×/6h ≥ {_reco_num(slow_thr)}×"
         else:
-            prefix = "SLO burn"
+            prefix = f"'{label}'"
         if want == "any" and n > 1:
             labels = [str(c.get("label") or c.get("id") or "?") for c in breaching]
             head = ", ".join(labels[:4]) + (f" +{n - 4} more" if n > 4 else "")
             title = f"SLO burn — {n} checks breaching budget"
             detail = (f"{n} uptime checks over budget / burning fast: {head}. "
-                      f"Worst: {prefix} ('{label}', budget {bctxt} used, burn {burn_txt}/h"
+                      f"Worst: {prefix} (budget {bctxt} used, burn {burn_txt}/h"
                       + (f", {_reco_num(b6)}×/6h" if b6 is not None else "")
                       + f", SLO target {tgt_txt}"
                       + (f", observed {wda}d" if wda else "") + ").")
         else:
-            if tier == 3:
+            if policy == "multi_window" and tier == 3:
                 title = f"Over budget — {label} (budget {bctxt} used, burn {burn_txt})"
-            elif tier in (2, 1) and policy == "multi_window":
+            elif policy == "multi_window" and tier in (2, 1):
                 title = prefix
             else:
                 title = f"SLO burn — {label} (budget {bctxt} used, burn {burn_txt})"
