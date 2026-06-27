@@ -5986,7 +5986,7 @@ function renderHero(){
     const dp=cm.delta_pct;
     let sub='';
     if(dp!=null && cm.last_month!=null) sub=(dp>0?'▲ ':(dp<0?'▼ ':''))+Math.abs(dp)+'% '+I18N.t('hero.vs_last','vs last month');
-    else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:Math.round(+cm.elapsed_days||0),t:cm.days_in_month});
+    else sub=I18N.tf('hero.days_in','{d}/{t} days in',{d:Math.floor(+cm.elapsed_days||0),t:cm.days_in_month});
     kpis.push(_heroKpi(cur+(+cm.projected_month||0).toFixed(2),'',
       I18N.t('hero.cost_proj','Projected cost'),sub,'',
       {link:'costs',aria:I18N.t('hero.kpi_cost_aria','View cost breakdown'),

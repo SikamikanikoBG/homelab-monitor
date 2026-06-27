@@ -346,6 +346,38 @@ class TestExplainStructured(unittest.TestCase):
         app._explain_structured(self.FACTS, capture=cap)
         self.assertEqual(cap, [{"tok": 1}])           # structured call metrics
 
+    def test_non_dict_top_level_falls_back_to_prose(self):
+        # A JSON LIST (valid JSON, wrong top-level shape) must not crash the dict
+        # parsing — isinstance(obj, dict) guards it → clean prose fallback.
+        self._stub(struct=json.dumps([{"explanation": "nope"}]),
+                   prose="Prose after a list payload.")
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["explanation"], "Prose after a list payload.")
+        self.assertIsNone(res["severity"])
+        self.assertIsNone(res["action"])
+
+    def test_non_string_severity_defaults_to_info(self):
+        # severity arriving as a NUMBER (42) must not be lowercased/compared as a
+        # string — the isinstance(sev, str) guard defaults it to "info".
+        self._stub(struct=json.dumps(
+            {"explanation": "Numeric severity.", "severity": 42}))
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertEqual(res["severity"], "info")
+        self.assertEqual(res["explanation"], "Numeric severity.")
+
+    def test_dict_action_becomes_none(self):
+        # action arriving as a DICT (not a string) must not be .strip()'d — the
+        # isinstance(act, str) guard turns it into None, no crash.
+        self._stub(struct=json.dumps(
+            {"explanation": "Dict action.", "severity": "info",
+             "action": {"do": "something"}}))
+        res, err = app._explain_structured(self.FACTS)
+        self.assertIsNone(err)
+        self.assertIsNone(res["action"])
+        self.assertEqual(res["explanation"], "Dict action.")
+
 
 class TestExplainEndpointStructured(unittest.TestCase):
     """/api/copilot/explain carries severity/action when structured parsing
