@@ -414,6 +414,129 @@ class TestSavings(unittest.TestCase):
         self.assertEqual(j["savings"]["tokens"], 1000)
 
 
+class TestSpend(unittest.TestCase):
+    """_llm_spend(now) — today/last7 partitioning across the local-midnight
+    boundary, spark7 ordering, graceful nulls, NULL-energy safety, /api/llm."""
+
+    def setUp(self):
+        _clear_llm_samples()
+        self._settings_backup = {
+            k: app.get_settings().get(k)
+            for k in ("cloud_cost_per_1k", "kwh_price", "tariff_mode", "kwh_price_night")
+        }
+        # A fixed reference "now" mid-afternoon so today's local window is wide.
+        lt = list(time.localtime())
+        lt[3], lt[4], lt[5] = 14, 0, 0  # 14:00:00 local
+        self.now = int(time.mktime(time.struct_time(lt)))
+        # Local midnight of today's date.
+        self.today_mid = time.mktime(time.strptime(
+            time.strftime("%Y-%m-%d", time.localtime(self.now)), "%Y-%m-%d"))
+
+    def tearDown(self):
+        _clear_llm_samples()
+        app.save_settings(self._settings_backup)
+
+    def _seed_at(self, ts, eval_count, energy_wh):
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count,energy_wh) "
+                "VALUES(?,?,?,?,?,?,?)", (int(ts), "m", 50.0, 100.0, None, eval_count, energy_wh))
+            app.DB.commit()
+
+    def test_today_vs_last7_partition_across_midnight(self):
+        app.save_settings({"cloud_cost_per_1k": "", "kwh_price": ""})
+        # Today: two rows comfortably after local midnight.
+        self._seed_at(self.today_mid + 3600, 100, 10.0)
+        self._seed_at(self.today_mid + 7200, 200, 20.0)
+        # Yesterday: just before today's local midnight (NOT today).
+        self._seed_at(self.today_mid - 60, 500, 50.0)
+        # 3 days ago: in last7 but not today.
+        self._seed_at(self.today_mid - 3 * 86400 + 3600, 400, 40.0)
+        sp = app._llm_spend(self.now)
+        # today = only the two post-midnight rows
+        self.assertEqual(sp["today"]["calls"], 2)
+        self.assertEqual(sp["today"]["tokens"], 300)
+        self.assertAlmostEqual(sp["today"]["energy_wh"], 30.0, places=2)
+        # last7 = today + yesterday + 3-days-ago = 4 rows
+        self.assertEqual(sp["last7"]["calls"], 4)
+        self.assertEqual(sp["last7"]["tokens"], 1200)
+        self.assertAlmostEqual(sp["last7"]["energy_wh"], 120.0, places=2)
+
+    def test_spark7_seven_ordered_buckets(self):
+        app.save_settings({"cloud_cost_per_1k": "", "kwh_price": ""})
+        self._seed_at(self.today_mid + 3600, 100, 10.0)
+        self._seed_at(self.today_mid - 2 * 86400 + 3600, 50, 5.0)
+        sp = app._llm_spend(self.now)
+        self.assertEqual(len(sp["spark7"]), 7)
+        days = [d["d"] for d in sp["spark7"]]
+        self.assertEqual(days, sorted(days))  # oldest → newest
+        self.assertEqual(days[-1], time.strftime("%Y-%m-%d", time.localtime(self.now)))
+        # No tariff → spark is energy_wh
+        self.assertEqual(sp["spark_metric"], "energy_wh")
+        self.assertAlmostEqual(sp["spark7"][-1]["v"], 10.0, places=2)  # today
+        self.assertAlmostEqual(sp["spark7"][4]["v"], 5.0, places=2)    # 2 days ago
+
+    def test_no_tariff_local_null_cloud_present(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": ""})
+        self._seed_at(self.today_mid + 3600, 2000, 30.0)
+        sp = app._llm_spend(self.now)
+        self.assertIsNone(sp["today"]["local_cost"])
+        self.assertAlmostEqual(sp["today"]["cloud_cost"], 0.30, places=2)  # 2000/1000×0.15
+        self.assertEqual(sp["spark_metric"], "energy_wh")
+
+    def test_tariff_sets_local_cost_and_cost_spark(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": "0.30",
+                          "tariff_mode": "single"})
+        self._seed_at(self.today_mid + 3600, 10000, 50.0)  # 0.05 kWh
+        sp = app._llm_spend(self.now)
+        self.assertAlmostEqual(sp["today"]["local_cost"], 0.015, places=3)
+        self.assertAlmostEqual(sp["today"]["cloud_cost"], 1.50, places=2)
+        self.assertEqual(sp["spark_metric"], "cost")
+        self.assertAlmostEqual(sp["spark7"][-1]["v"], 0.015, places=3)
+
+    def test_no_cloud_rate_hides_cloud(self):
+        app.save_settings({"cloud_cost_per_1k": "", "kwh_price": ""})
+        self._seed_at(self.today_mid + 3600, 500, 5.0)
+        sp = app._llm_spend(self.now)
+        self.assertIsNone(sp["today"]["cloud_cost"])
+
+    def test_null_energy_rows_no_nan(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": "0.30"})
+        self._seed_at(self.today_mid + 3600, 1000, None)
+        self._seed_at(self.today_mid + 7200, 1000, None)
+        sp = app._llm_spend(self.now)
+        self.assertEqual(sp["today"]["tokens"], 2000)
+        self.assertEqual(sp["today"]["energy_wh"], 0.0)  # NULL rows skipped, no NaN
+        self.assertIsNone(sp["today"]["local_cost"])     # no energy → no local cost
+        self.assertAlmostEqual(sp["today"]["cloud_cost"], 0.30, places=2)
+
+    def test_empty_today_zeros_not_crash(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15", "kwh_price": ""})
+        sp = app._llm_spend(self.now)
+        self.assertEqual(sp["today"]["calls"], 0)
+        self.assertEqual(sp["today"]["tokens"], 0)
+        self.assertEqual(sp["today"]["energy_wh"], 0.0)
+        self.assertEqual(len(sp["spark7"]), 7)
+
+    def test_spend_in_api_llm_and_savings_unchanged(self):
+        app.save_settings({"cloud_cost_per_1k": "0.15"})
+        self._seed_at(self.today_mid + 3600, 1000, 1.0)
+        saved_en, saved_url = app.COPILOT_ENABLED, app.COPILOT_OLLAMA_URL
+        try:
+            app.COPILOT_ENABLED = True
+            app.COPILOT_OLLAMA_URL = "http://127.0.0.1:1"
+            j = app.app.test_client().get("/api/llm").get_json()
+        finally:
+            app.COPILOT_ENABLED, app.COPILOT_OLLAMA_URL = saved_en, saved_url
+        self.assertIn("spend", j)
+        self.assertIn("today", j["spend"])
+        self.assertIn("last7", j["spend"])
+        self.assertEqual(len(j["spend"]["spark7"]), 7)
+        # existing savings block still present + correct
+        self.assertIn("savings", j)
+        self.assertEqual(j["savings"]["tokens"], 1000)
+
+
 class TestCloudSetting(unittest.TestCase):
     def test_default_and_round_trip(self):
         self.assertIn("cloud_cost_per_1k", app.SETTING_DEFAULTS)

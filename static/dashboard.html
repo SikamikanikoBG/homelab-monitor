@@ -7577,7 +7577,86 @@ function renderLlm(j){
   }else{
     resHtml='<div class="muted" style="margin-top:14px">'+I18N.t('llm.no_resident','No models resident in VRAM right now — ollama unloads them after the keep-alive window.')+'</div>';
   }
-  body.innerHTML=head+_llmSavings(j.savings)+spark+resHtml;
+  body.innerHTML=head+_llmSpend(j.spend)+_llmSavings(j.savings)+spark+resHtml;
+}
+// "Copilot spend today" card — compact rollup of TODAY's local inference energy +
+// cost + cloud-equivalent, with a tiny 7-day per-local-day sparkline. Pure display
+// (no LLM call). Graceful: no inference today => "no activity yet"; no tariff =>
+// energy + cloud-equiv, omit local €; no cloud rate => omit cloud. XSS-safe (esc).
+function _llmSpend(sp){
+  if(!sp || !sp.today) return '';
+  const t=sp.today;
+  const cur=esc(t.currency||'$');
+  const money=v=>cur+(Number(v).toFixed(2));
+  const tk=t.tokens||0;
+  let tokStr;
+  if(tk>=1e6) tokStr=(tk/1e6).toFixed(tk>=1e7?0:1)+'M';
+  else if(tk>=1e4) tokStr=(tk/1e3).toFixed(0)+'k';
+  else if(tk>=1e3) tokStr=(tk/1e3).toFixed(1)+'k';
+  else tokStr=String(tk);
+  const tip=I18N.t('llm.spend_tip','Today so far, in your local timezone. Energy = measured GPU power × generation time; priced at your kWh tariff. Cloud-equivalent = tokens × your configurable cloud rate.');
+  // No inference today yet → calm empty state (we can still show a 7-day trend).
+  if(!t.calls){
+    return '<div class="ins info" style="margin:14px 0 2px" title="'+esc(tip)+'">'
+      +'<div class="ic">⚡</div><div style="flex:1">'
+      +'<div class="t">'+I18N.t('llm.spend_title','Copilot spend today')+'</div>'
+      +'<div class="d" style="margin-top:4px">'+I18N.t('llm.spend_none','No Copilot activity today yet.')+'</div>'
+      +_llmSpendSpark(sp)+'</div></div>';
+  }
+  // Sub-badges: energy, cloud-equiv, local €, calls — only when known.
+  const sub=[
+    '<span class="badge">'+I18N.tf('llm.spend_tokens','{n} tokens',{n:tokStr})+'</span>',
+    '<span class="badge">'+I18N.tf('llm.spend_energy','{n} Wh',{n:Number(t.energy_wh||0).toFixed(2)})+'</span>',
+    t.local_cost!=null ? '<span class="badge ok">'+I18N.tf('llm.spend_local','local ≈ {v}',{v:money(t.local_cost)})+'</span>' : '',
+    t.cloud_cost!=null ? '<span class="badge warn">'+I18N.tf('llm.spend_cloud','cloud ≈ {v}',{v:money(t.cloud_cost)})+'</span>' : '',
+    '<span class="badge">'+I18N.tf('llm.spend_calls','{n} calls',{n:t.calls})+'</span>',
+  ].filter(Boolean).join(' ');
+  // Headline: prefer cloud-equivalent money, else local €, else energy.
+  let headV, headL;
+  if(t.cloud_cost!=null){ headV='≈ '+money(t.cloud_cost); headL=I18N.t('llm.spend_cloud_eq','cloud-equivalent today'); }
+  else if(t.local_cost!=null){ headV='≈ '+money(t.local_cost); headL=I18N.t('llm.spend_local_eq','local energy cost today'); }
+  else { headV=Number(t.energy_wh||0).toFixed(2)+' Wh'; headL=I18N.t('llm.spend_energy_eq','GPU energy today'); }
+  return '<div class="ins ok" style="margin:14px 0 2px" title="'+esc(tip)+'">'
+    +'<div class="ic">⚡</div><div style="flex:1">'
+    +'<div class="t">'+I18N.t('llm.spend_title','Copilot spend today')+'</div>'
+    +'<div class="kpi" style="text-align:left;padding:6px 0 2px">'
+    +'<div class="v" style="font-size:30px">'+esc(headV)+'</div>'
+    +'<div class="l">'+esc(headL)+'</div></div>'
+    +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'+sub+'</div>'
+    +_llmSpendSpark(sp)+'</div></div>';
+}
+// Tiny 7-day (per-local-day) spend sparkline — reuses the same hand-rolled SVG
+// polyline approach as _llmSpark (no new chart lib). Accessible: role=img + a
+// visually-hidden data table. XSS-safe (only numbers + i18n strings).
+function _llmSpendSpark(sp){
+  const days=(sp&&sp.spark7)||[];
+  if(days.length<2) return '';
+  const isCost=sp.spark_metric==='cost';
+  const cur=esc((sp.today&&sp.today.currency)||'$');
+  const unit=isCost?cur:'Wh';
+  const fmt=v=> isCost ? (cur+Number(v).toFixed(2)) : (Number(v).toFixed(2)+' Wh');
+  const vals=days.map(d=>Number(d.v)||0);
+  const lbl=isCost?I18N.t('llm.spend_trend_cost','7-day local cost'):I18N.t('llm.spend_trend_energy','7-day GPU energy');
+  const W=260,H=40,P=3;
+  const mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
+  const span=(mx-mn)||1, n=vals.length;
+  const x=i=> P + (i*(W-2*P))/(n-1);
+  const y=v=> H-P - ((v-mn)/span)*(H-2*P);
+  const poly=vals.map((v,i)=>x(i).toFixed(1)+','+y(v).toFixed(1)).join(' ');
+  const lx=x(n-1), ly=y(vals[n-1]);
+  const area='0,'+H+' '+poly+' '+W+','+H;
+  const summary=I18N.tf('llm.spend_trend_aria','{lbl} per day over {n} days: latest {cur}.',{lbl:lbl,n:n,cur:fmt(vals[n-1])});
+  const rows=days.map(d=>'<tr><td>'+esc(d.d)+'</td><td>'+esc(fmt(d.v))+'</td></tr>').join('');
+  return '<div class="llm-trend" style="margin-top:10px"><div class="muted" style="margin:4px 0 6px">'+esc(lbl)
+    +' <span style="font-weight:400">· '+I18N.tf('llm.spend_trend_latest','latest {v}',{v:fmt(vals[n-1])})+'</span></div>'
+    +'<svg class="llm-spark" viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none"'
+    +' role="img" aria-label="'+esc(summary)+'">'
+    +'<polyline points="'+area+'" fill="var(--llm-spark-fill,rgba(99,102,241,.12))" stroke="none"></polyline>'
+    +'<polyline points="'+poly+'" fill="none" stroke="var(--llm-spark,#6366f1)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"></polyline>'
+    +'<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="2.6" fill="var(--llm-spark,#6366f1)"><title>'+esc(fmt(vals[n-1]))+'</title></circle>'
+    +'</svg>'
+    +'<table class="vh"><caption>'+esc(summary)+'</caption><thead><tr><th>'+I18N.t('llm.col_day','Day')+'</th><th>'+esc(unit)+'</th></tr></thead><tbody>'+rows+'</tbody></table>'
+    +'</div>';
 }
 // Local-vs-cloud inference savings card — the headline AI-native cost number.
 // Pure display (no LLM call). Graceful: no samples => '' (hidden); no cloud rate

@@ -7956,6 +7956,127 @@ def _llm_savings(now=None, window=None):
     }
 
 
+def _llm_spend(now=None):
+    """"Copilot spend today" rollup — TODAY + last-7-local-days local-inference
+    energy/cost/cloud-equivalent, plus a per-local-day spark7 series for a tiny
+    7-day trend on the AI Models / LLM tab.
+
+    MIRRORS _llm_savings exactly (same tariff source via _cost_ctx/_price_at — the
+    ONE source of truth, so it can never contradict the Costs tab or the savings
+    KPI; same NULL-safe SUM(energy_wh); same graceful nulls). Pure stats over
+    already-stored llm_samples rows — NO new poll, NO ollama call, NO network.
+
+    "today"/days are bucketed by LOCAL calendar day (the SAME local-midnight
+    convention as the status daily-ribbon / Costs "today"), via time.localtime.
+
+    Returns:
+        {today:{tokens, energy_wh, local_cost, cloud_cost, currency, calls},
+         last7:{...same...},
+         spark7:[{d, v} ... 7 local days oldest→newest],
+         spark_metric: "cost"|"energy_wh"}
+
+    today/last7 are always present (zeros when no inference). Never raises — on
+    DB error returns the empty (zeros) shape. local_cost null when no tariff;
+    cloud_cost null when no cloud rate; NULL energy_wh rows skipped (no NaN)."""
+    now = int(now or time.time())
+    # Local midnight today, and the start of the 7-local-day window.
+    today_mid = time.mktime(time.strptime(
+        time.strftime("%Y-%m-%d", time.localtime(now)), "%Y-%m-%d"))
+    # Pull a touch wider than 7 days so an edge sample is captured regardless of
+    # tz/DST drift; we re-bucket by exact local day below.
+    win_start = int(today_mid - 6 * 86400 - 86400)
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts, eval_count, energy_wh FROM llm_samples WHERE ts >= ?",
+                (win_start,)).fetchall()
+    except Exception:
+        rows = []
+
+    # Aggregate per local calendar day: calls, tokens, energy_wh (NULL-safe).
+    per_day = {}  # 'YYYY-MM-DD' -> [calls, tokens, energy_wh_or_None]
+    for ts, ev, wh in rows:
+        day = time.strftime("%Y-%m-%d", time.localtime(ts))
+        a = per_day.get(day)
+        if a is None:
+            a = [0, 0, None]
+            per_day[day] = a
+        a[0] += 1
+        a[1] += int(ev or 0)
+        if wh is not None:
+            a[2] = (a[2] or 0.0) + wh
+
+    # Tariff + cloud rate resolved ONCE, AFTER releasing LOCK (no nesting), the
+    # same source as _llm_savings / the Costs tab.
+    cloud_rate = 0.0
+    try:
+        raw = (get_settings().get("cloud_cost_per_1k") or "").strip()
+        cloud_rate = float(raw) if raw != "" else 0.0
+    except (TypeError, ValueError):
+        cloud_rate = 0.0
+    try:
+        ctx = _cost_ctx()
+        price = _price_at(ctx, now)  # per-kWh at the current band
+        currency = ctx.get("currency") or "$"
+    except Exception:
+        price = None
+        currency = "$"
+    has_tariff = bool(price and price > 0)
+    has_cloud = cloud_rate > 0
+
+    def roll(day_list):
+        """Aggregate a set of local days into the {tokens,energy_wh,...} shape."""
+        calls = tokens = 0
+        energy_wh = None
+        for day in day_list:
+            a = per_day.get(day)
+            if not a:
+                continue
+            calls += a[0]
+            tokens += a[1]
+            if a[2] is not None:
+                energy_wh = (energy_wh or 0.0) + a[2]
+        local_cost = None
+        if has_tariff and energy_wh is not None and energy_wh > 0:
+            local_cost = round((energy_wh / 1000.0) * price, 4)
+        cloud_cost = None
+        if has_cloud:
+            cloud_cost = round((tokens / 1000.0) * cloud_rate, 2)
+        return {
+            "tokens": tokens,
+            "energy_wh": (round(energy_wh, 2) if energy_wh is not None else 0.0),
+            "local_cost": local_cost,
+            "cloud_cost": cloud_cost,
+            "currency": currency,
+            "calls": calls,
+        }
+
+    # The 7 local days oldest→newest off today's local midnight.
+    week_days = [time.strftime("%Y-%m-%d", time.localtime(today_mid - i * 86400))
+                 for i in range(6, -1, -1)]
+    today_day = week_days[-1]
+
+    # spark7 — the most demo-meaningful series: local_cost per day when a tariff
+    # is set, else energy_wh per day. One value per local day, in order.
+    spark_metric = "cost" if has_tariff else "energy_wh"
+    spark7 = []
+    for day in week_days:
+        a = per_day.get(day)
+        wh = (a[2] if a and a[2] is not None else 0.0)
+        if spark_metric == "cost":
+            v = round((wh / 1000.0) * price, 4)
+        else:
+            v = round(wh, 2)
+        spark7.append({"d": day, "v": v})
+
+    return {
+        "today": roll([today_day]),
+        "last7": roll(week_days),
+        "spark7": spark7,
+        "spark_metric": spark_metric,
+    }
+
+
 def _llm_resident_models():
     """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
     timeout, stdlib only. Returns (list, reachable). Each entry:
@@ -8392,6 +8513,10 @@ def api_llm():
         # Local-vs-cloud inference savings rollup (30d). null when no samples yet;
         # cloud/local money fields self-hide when the rate/tariff is unset.
         "savings": _llm_savings(),
+        # "Copilot spend today" rollup — today + last-7-local-days local energy/
+        # cost/cloud-equivalent + a per-local-day spark7 trend. Always present
+        # (zeros when no inference today); same tariff source as `savings`.
+        "spend": _llm_spend(),
     })
 
 
