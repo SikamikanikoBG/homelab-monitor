@@ -113,7 +113,7 @@ async function load(){
   const overallLabel=document.getElementById('overall-label');
   try{
     const j=await(await fetch('/api/status')).json();
-    if(!j.ok===false && j.error){ grid.innerHTML=`<p class="err">${esc(j.error)}</p>`; return; }
+    if(!j.ok && j.error){ grid.innerHTML=`<p class="err">${esc(j.error)}</p>`; return; }
     document.getElementById('title').textContent=j.title||'Service Status';
     document.title=j.title||'Service Status';
     const checks=j.checks||[];
