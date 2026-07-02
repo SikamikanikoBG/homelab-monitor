@@ -11,12 +11,17 @@
 --crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
 --canvas:#0a0e14;--inset:#0d1117;--hover:#161b22;--sel:#1c232e;--sb:#0b0f15;
 --okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--heat-lo:#1f6feb;--heat-mid:#d29922;--heat-hi:#f85149;
---llm-spark:#a78bfa;--llm-spark-fill:rgba(167,139,250,.14)}
+--llm-spark:#a78bfa;--llm-spark-fill:rgba(167,139,250,.14);
+/* Disk I/O read/write follow the shared tiers (read→info blue, write→warn amber)
+   so throughput colours match the reader/writer chips and adapt to both themes. */
+--dio-r:var(--info);--dio-w:var(--warn);--dio-rfill:color-mix(in srgb,var(--info) 14%,transparent);
+--elev:0 1px 2px rgba(1,4,9,.32),0 6px 20px rgba(1,4,9,.28)}
 [data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
 --crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
 --canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
 --okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--heat-lo:#54aeff;--heat-mid:#bf8700;--heat-hi:#cf222e;
---llm-spark:#6d4ad6;--llm-spark-fill:rgba(109,74,214,.10)}
+--llm-spark:#6d4ad6;--llm-spark-fill:rgba(109,74,214,.10);
+--elev:0 1px 2px rgba(27,31,36,.06),0 8px 24px rgba(27,31,36,.08)}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1140px;margin:0 auto;padding:22px 18px 70px}
 header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -128,24 +133,34 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .card-h h2{margin:0;flex:0 1 auto}
 .card-h .ch-space{flex:1}
 .card-h .ch-meta{font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--mut);font-family:var(--mono)}
+/* ── Unified tiered-chip recipe ────────────────────────────────────────────
+   One coherent family for every status pill/badge in the cockpit. A chip is a
+   full-radius pill with a soft tier tint (12% of the tier over transparent) and
+   a softened tier border (tier mixed 42% toward --bd). The same two mixes drive
+   .chip, .hero-status-chip, .gg-state, .dio-chip, .hero-inc, the spike-I/O
+   badges and the process-attribution chips, so they read as one system and
+   adapt to dark + light by construction — no hardcoded status colours, always
+   tabular-nums on the metrics they carry. */
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;
-  border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;line-height:1.4}
-.chip.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
-.chip.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
-.chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
-.chip.info{color:var(--info);border-color:var(--info)}
+  border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;line-height:1.4;font-variant-numeric:tabular-nums}
+.chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd));background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--bd));background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
+.chip.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 /* GPU vendor badge — one fixed class per known vendor (never derived from the
    raw name), plus a neutral fallback. Colour is a hint only; the text label
-   carries the meaning for a11y and colour-blind users. Tuned for dark+light. */
+   carries the meaning for a11y and colour-blind users. Mapped onto the status
+   tokens (nvidia→ok, amd→crit, intel→info) so it shares the chip family's soft
+   tint/border recipe and adapts to dark + light instead of hardcoding hex. */
 .vbadge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;
   letter-spacing:.03em;text-transform:uppercase;padding:1px 7px;border-radius:999px;
   border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;
-  line-height:1.5;vertical-align:middle}
+  line-height:1.5;vertical-align:middle;font-variant-numeric:tabular-nums}
 .vbadge .vdot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
-.vbadge.nvidia{color:#3fb950;border-color:#3fb95066;background:#3fb9501a}
-.vbadge.amd{color:#f85149;border-color:#f8514966;background:#f851491a}
-.vbadge.intel{color:#4c8dff;border-color:#4c8dff66;background:#4c8dff1a}
+.vbadge.nvidia{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd));background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.vbadge.amd{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
+.vbadge.intel{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .vbadge.unknown{color:var(--mut);border-color:var(--bd);background:var(--inset)}
 /* Per-container "Check now" — on-demand, awareness-only image re-check. */
 .imgck{display:inline-flex;align-items:center;font-size:10px;font-weight:600;line-height:1.4;
@@ -199,7 +214,7 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
    (operational/degraded/down) drives the orb + accent, reusing --ok/--warn/
    --crit so it matches the public /status banner, chips, incidents & anomalies. */
 .hero{--hue:var(--ok);--huebg:var(--okbg);position:relative;overflow:hidden;
-  padding:0;border:1px solid var(--bd);border-radius:14px;background:var(--card);margin:16px 0}
+  padding:0;border:1px solid var(--bd);border-radius:14px;background:var(--card);margin:16px 0;box-shadow:var(--elev)}
 .hero.degraded{--hue:var(--warn);--huebg:var(--warnbg)}
 .hero.down{--hue:var(--crit);--huebg:var(--critbg)}
 .hero-top{display:flex;align-items:center;gap:16px;padding:18px 20px;
@@ -218,9 +233,9 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
   color:var(--tx);margin:0 0 3px}
 .hero-headline .hsub{color:var(--mut);font-size:13px;line-height:1.45}
 .hero-status-chip{flex:none;align-self:flex-start}
-.hero-status-chip.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
-.hero-status-chip.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
-.hero-status-chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.hero-status-chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd));background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.hero-status-chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--bd));background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.hero-status-chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 /* KPI strip — tabular, calm, evenly divided */
 .hero-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   border-top:1px solid var(--bd)}
@@ -280,8 +295,9 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .gg-cap{font-size:11.5px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;
   text-align:center;line-height:1.3}
 .gg-state{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
-  padding:2px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--gh) 45%,var(--bd));
-  color:var(--gh);background:var(--ghbg);white-space:nowrap;max-width:100%}
+  padding:2px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--gh) 42%,var(--bd));
+  color:var(--gh);background:color-mix(in srgb,var(--gh) 12%,transparent);white-space:nowrap;max-width:100%;
+  font-variant-numeric:tabular-nums}
 .gg.idle .gg-state{color:var(--mut);border-color:var(--bd);background:transparent}
 .gg-state .si{font-size:11px;line-height:1;flex:none}
 .gg-state .st{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -314,10 +330,10 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
   padding:5px 12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);
   color:var(--mut);cursor:default;line-height:1.3;transition:border-color .14s ease,background .14s ease,transform .14s ease}
 .hero-inc .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
-.hero-inc.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--bd))}
+.hero-inc.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd))}
 .hero-inc.live{cursor:pointer}
-.hero-inc.live.warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
-.hero-inc.live.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.hero-inc.live.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--bd));background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.hero-inc.live.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 .hero-inc.live:hover{transform:translateY(-1px);filter:brightness(1.05)}
 .hero-inc.live:focus-visible{outline:2px solid var(--info);outline-offset:2px}
 .hero-inc.live.crit .dot{animation:hero-blink 1.4s steps(2,start) infinite}
@@ -347,6 +363,32 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
   .hero-kpi{padding:11px 14px}
   .hero-kpi:nth-child(odd){border-left:0}
   .hero-foot{padding:11px 14px}
+}
+/* ── Signature "cockpit wake-up" — one-time boot reveal ─────────────────────
+   The first time the Overview paints, the hero + cards rise into place in a
+   quick stagger and a single light sheen (tinted by the live status hue) sweeps
+   across the status hero. Played exactly once (JS adds .booted after the first
+   render), GPU-cheap (opacity/transform only), and fully collapsed under
+   prefers-reduced-motion. Nothing here touches layout or data. */
+@keyframes hl-rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes hl-sheen{from{transform:translateX(-130%) skewX(-12deg)}to{transform:translateX(130%) skewX(-12deg)}}
+section[data-tab="overview"].booted > .hero:not([hidden]),
+section[data-tab="overview"].booted > .card:not([hidden]){
+  animation:hl-rise .52s cubic-bezier(.22,.61,.36,1) both}
+section[data-tab="overview"].booted > .hero:not([hidden]){animation-delay:.02s}
+section[data-tab="overview"].booted > .card:nth-of-type(1):not([hidden]){animation-delay:.09s}
+section[data-tab="overview"].booted > .card:nth-of-type(2):not([hidden]){animation-delay:.15s}
+section[data-tab="overview"].booted > .card:nth-of-type(3):not([hidden]){animation-delay:.21s}
+section[data-tab="overview"].booted > .card:nth-of-type(4):not([hidden]){animation-delay:.27s}
+section[data-tab="overview"].booted > .card:nth-of-type(n+5):not([hidden]){animation-delay:.32s}
+section[data-tab="overview"].booted .hero::after{
+  content:'';position:absolute;inset:0;z-index:2;pointer-events:none;border-radius:14px;
+  background:linear-gradient(100deg,transparent 38%,color-mix(in srgb,var(--hue) 24%,transparent) 50%,transparent 62%);
+  transform:translateX(-130%) skewX(-12deg);animation:hl-sheen 1.05s ease-out .18s 1 both}
+@media(prefers-reduced-motion:reduce){
+  section[data-tab="overview"].booted > .hero,
+  section[data-tab="overview"].booted > .card{animation:none}
+  section[data-tab="overview"].booted .hero::after{display:none}
 }
 /* ── Incidents ─────────────────────────────────────────────────────────────
    A correlated incident reads as ONE event: a left severity rail, a header
@@ -682,8 +724,8 @@ tr.reg-dead td{opacity:1}
   color:var(--mut);flex:none}
 .incd-spikeio .vbadge{text-transform:none;letter-spacing:0;font-size:11px;font-weight:600;
   color:var(--tx);border-color:var(--bd);background:var(--card)}
-.incd-spikeio .vbadge.io-w{color:var(--crit);border-color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent)}
-.incd-spikeio .vbadge.io-r{color:var(--info);border-color:var(--info);background:color-mix(in srgb,var(--info) 10%,transparent)}
+.incd-spikeio .vbadge.io-w{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
+.incd-spikeio .vbadge.io-r{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .incd-spikeio .vbadge b{font-weight:700;font-family:var(--mono)}
 /* timeline */
 .incd-tl{position:relative;margin:0;padding:0 0 0 22px;list-style:none}
@@ -1381,17 +1423,19 @@ h2 .hic{ opacity:.9 }
 /* anomaly chip — mirrors the GPU gauge .gg-state colour treatment */
 .dio-chip{ --dc:var(--ok); margin-left:auto; flex:none; display:inline-flex; align-items:center; gap:5px;
            font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px;
-           border:1px solid color-mix(in srgb,var(--dc) 45%,var(--bd));
-           color:var(--dc); background:color-mix(in srgb,var(--dc) 12%,transparent); white-space:nowrap }
+           border:1px solid color-mix(in srgb,var(--dc) 42%,var(--bd));
+           color:var(--dc); background:color-mix(in srgb,var(--dc) 12%,transparent); white-space:nowrap;
+           font-variant-numeric:tabular-nums }
 .dio-chip.warn{ --dc:var(--warn) } .dio-chip.crit{ --dc:var(--crit) }
 .dio-chip.normal{ color:var(--mut); border-color:var(--bd); background:transparent; font-weight:600; opacity:.85 }
 /* per-process I/O attribution (Top writer / Top reader) — from /proc/<pid>/io */
 .dio-attr{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:2px 0 12px }
 .dio-attr-chip{ --ac:var(--mut); display:inline-flex; align-items:center; gap:7px;
                 font-size:12px; padding:5px 11px; border-radius:999px;
-                border:1px solid color-mix(in srgb,var(--ac) 40%,var(--bd));
-                background:color-mix(in srgb,var(--ac) 10%,transparent); max-width:100% }
-.dio-attr-chip.wr{ --ac:var(--warn) } .dio-attr-chip.rd{ --ac:var(--accent,#4c8dff) }
+                border:1px solid color-mix(in srgb,var(--ac) 42%,var(--bd));
+                background:color-mix(in srgb,var(--ac) 12%,transparent); max-width:100%;
+                font-variant-numeric:tabular-nums }
+.dio-attr-chip.wr{ --ac:var(--warn) } .dio-attr-chip.rd{ --ac:var(--info) }
 .dio-attr-l{ font-weight:600; color:var(--ac); white-space:nowrap }
 .dio-attr-n{ font-weight:700; color:var(--tx); overflow:hidden; text-overflow:ellipsis;
              white-space:nowrap; max-width:180px }
@@ -6174,6 +6218,9 @@ function renderHero(){
   if(TAB!=='overview') return;
   if(CURRENT_HOST!=='local'){ hero.hidden=true; return; }
   hero.hidden=false;
+  // Signature one-time "cockpit wake-up": stagger the Overview in on first paint.
+  if(!window.__hlBooted){ window.__hlBooted=true;
+    const ov=hero.closest('section[data-tab="overview"]'); if(ov) ov.classList.add('booted'); }
   const s=HERO_STATUS||{}, fc=FORECAST||{};
   const state=s.status||'operational';                 // operational | degraded | down
   hero.classList.remove('degraded','down');
