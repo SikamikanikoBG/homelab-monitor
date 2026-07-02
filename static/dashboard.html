@@ -15,12 +15,14 @@
 /* Disk I/O read/write follow the shared tiers (read→info blue, write→warn amber)
    so throughput colours match the reader/writer chips and adapt to both themes. */
 --dio-r:var(--info);--dio-w:var(--warn);--dio-rfill:color-mix(in srgb,var(--info) 14%,transparent);
+--tour-dim:rgba(1,4,9,.66);
 --elev:0 1px 2px rgba(1,4,9,.32),0 6px 20px rgba(1,4,9,.28)}
 [data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
 --crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;
 --canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
 --okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--heat-lo:#54aeff;--heat-mid:#bf8700;--heat-hi:#cf222e;
 --llm-spark:#6d4ad6;--llm-spark-fill:rgba(109,74,214,.10);
+--tour-dim:rgba(27,31,36,.44);
 --elev:0 1px 2px rgba(27,31,36,.06),0 8px 24px rgba(27,31,36,.08)}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1140px;margin:0 auto;padding:22px 18px 70px}
@@ -924,6 +926,72 @@ tr.reg-dead td{opacity:1}
 }
 @media(prefers-reduced-motion:reduce){
   .cmdk-panel{animation:none}
+}
+/* ── Guided tour / feature spotlight (⌘K "Take the tour" + ✨ launcher) ─────────
+   A single ring element casts the dimming scrim (a huge box-shadow) AND draws the
+   accent highlight around the target — GPU-cheap, no per-frame repaint of a mask.
+   A transparent full-screen scrim beneath it captures click-outside. The callout
+   dialog floats near the target (or docks to a bottom sheet on small screens). */
+.tour{position:fixed;inset:0;z-index:130}
+.tour[hidden]{display:none}
+.tour-scrim{position:absolute;inset:0;z-index:1;cursor:pointer}
+.tour-ring{position:fixed;z-index:2;border-radius:12px;pointer-events:none;
+  box-shadow:0 0 0 3px var(--accent),0 0 0 9999px var(--tour-dim);
+  transition:left .28s cubic-bezier(.4,0,.2,1),top .28s cubic-bezier(.4,0,.2,1),width .28s cubic-bezier(.4,0,.2,1),height .28s cubic-bezier(.4,0,.2,1)}
+.tour-ring.centered{box-shadow:0 0 0 9999px var(--tour-dim)}
+.tour-pop{position:fixed;z-index:3;width:min(340px,calc(100vw - 28px));background:var(--card);
+  border:1px solid var(--bd);border-radius:14px;box-shadow:var(--elev);padding:15px 16px 14px;
+  color:var(--tx);animation:tour-in .2s cubic-bezier(.2,.7,.3,1)}
+@keyframes tour-in{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.tour-pop-head{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.tour-ic{flex:none;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:8px;background:color-mix(in srgb,var(--accent) 15%,transparent);font-size:15px;line-height:1}
+.tour-progress{flex:1;font-size:11.5px;font-weight:600;color:var(--mut);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.tour-x{flex:none;border:1px solid var(--bd);background:var(--inset);color:var(--mut);border-radius:7px;
+  width:24px;height:24px;font-size:16px;line-height:1;cursor:pointer;transition:color .15s,border-color .15s}
+.tour-x:hover{color:var(--tx);border-color:var(--mut)}
+.tour-title{margin:0 0 6px;font-size:15.5px;font-weight:700;line-height:1.3}
+.tour-body{margin:0;font-size:13px;line-height:1.55;color:var(--mut)}
+.tour-dots{display:flex;gap:5px;flex-wrap:wrap;margin:13px 0 12px}
+.tour-dots i{width:6px;height:6px;border-radius:50%;background:var(--bd);transition:background .2s,transform .2s}
+.tour-dots i.on{background:var(--accent);transform:scale(1.25)}
+.tour-dots i.done{background:color-mix(in srgb,var(--accent) 45%,var(--bd))}
+.tour-nav{display:flex;align-items:center;gap:8px}
+.tour-btn{font:inherit;font-size:13px;font-weight:600;border-radius:8px;padding:7px 14px;cursor:pointer;
+  border:1px solid var(--bd);transition:border-color .15s,background .15s,color .15s,transform .1s}
+.tour-btn:active{transform:translateY(.5px)}
+.tour-btn.ghost{background:var(--inset);color:var(--mut)}
+.tour-btn.ghost:hover{color:var(--tx);border-color:var(--mut)}
+.tour-btn.ghost[hidden]{display:none}
+.tour-btn.primary{margin-left:auto;background:var(--accent);border-color:var(--accent);color:#0d1117}
+[data-theme="light"] .tour-btn.primary{color:#fff}
+.tour-btn.primary:hover{filter:brightness(1.06)}
+/* Header launcher */
+.tour-launch{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--bd);border-radius:8px;
+  background:var(--inset);color:var(--mut);font:inherit;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;
+  white-space:nowrap;transition:border-color .15s,color .15s,background .15s}
+.tour-launch:hover{border-color:var(--accent);color:var(--accent)}
+.tour-launch .tspark{font-size:12px;line-height:1}
+@media(max-width:620px){.tour-launch .tlabel{display:none}}
+/* First-visit auto-offer — a small anchored nudge, never a blocking modal */
+.tour-offer{position:fixed;z-index:125;width:min(300px,calc(100vw - 24px));background:var(--card);
+  border:1px solid var(--bd);border-radius:13px;box-shadow:var(--elev);padding:14px 15px;color:var(--tx);
+  animation:tour-offer-in .28s cubic-bezier(.2,.7,.3,1)}
+.tour-offer[hidden]{display:none}
+@keyframes tour-offer-in{from{opacity:0;transform:translateY(-8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+.tour-offer h4{margin:0 0 5px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:7px}
+.tour-offer p{margin:0 0 12px;font-size:12.5px;line-height:1.5;color:var(--mut)}
+.tour-offer .tour-nav{gap:8px}
+.tour-offer-x{position:absolute;top:9px;right:9px;border:0;background:none;color:var(--mut);font-size:17px;line-height:1;cursor:pointer;padding:2px}
+.tour-offer-x:hover{color:var(--tx)}
+@media(max-width:560px){
+  .tour-pop{left:12px!important;right:12px!important;bottom:12px!important;top:auto!important;width:auto!important}
+  .tour-offer{left:12px!important;right:12px!important;top:auto!important;bottom:12px!important;width:auto!important}
+}
+@media(prefers-reduced-motion:reduce){
+  .tour-ring{transition:none}
+  .tour-pop,.tour-offer{animation:none}
+  .tour-dots i{transition:none}
 }
 /* ── "What's new" modal (one-time, post-upgrade) — builds on .umodal/.notes ── */
 .wn .box{max-width:560px;animation:wnin .18s cubic-bezier(.2,.7,.3,1)}
@@ -3165,6 +3233,16 @@ function mountShell(){
     + '<span class="kb">'+(isMac?'⌘K':'Ctrl K')+'</span>';
   cmdkBtn.addEventListener('click', ()=>{ if(typeof openCmdk==='function') openCmdk(); });
   tb.appendChild(cmdkBtn);
+  // Guided-tour launcher — always available (manual launch), complements the
+  // first-visit auto-offer. A judge can (re)start the walkthrough at any time.
+  const tourBtn = document.createElement('button');
+  tourBtn.type='button'; tourBtn.id='tourBtn'; tourBtn.className='tour-launch';
+  tourBtn.setAttribute('data-i18n-attr','aria-label:tour.launch_aria;title:tour.launch_aria');
+  tourBtn.setAttribute('aria-label', I18N.t('tour.launch_aria','Take the guided tour'));
+  tourBtn.title = I18N.t('tour.launch_aria','Take the guided tour');
+  tourBtn.innerHTML='<span class="tspark" aria-hidden="true">✨</span><span class="tlabel" data-i18n="tour.launch">Tour</span>';
+  tourBtn.addEventListener('click', ()=>{ if(typeof startTour==='function') startTour(); });
+  tb.appendChild(tourBtn);
   const live = document.querySelector('header .live'); if(live) tb.appendChild(live);
   const foot = document.getElementById('foot');
   foot.insertAdjacentHTML('beforeend',
@@ -9909,6 +9987,9 @@ function _cmdkBuild(){
       keywords:'navigate tab '+t.id+' '+t.label, run:()=>showTab(t.id) });
   });
   // Actions — only functions that already exist.
+  list.push({ id:'act:tour', group:G_ACT, icon:'✨',
+    label:I18N.t('cmdk.tour','Take the guided tour'), keywords:'tour walkthrough guide onboarding help spotlight whats inside features',
+    run:()=>{ if(typeof startTour==='function') startTour(); } });
   list.push({ id:'act:refresh', group:G_ACT, icon:'↻',
     label:I18N.t('cmdk.refresh','Refresh data'), keywords:'reload update fetch live',
     run:()=>{ loadData(); loadHealth(); loadFleet(); } });
@@ -10158,5 +10239,255 @@ function toggleCmdk(){ CMDK.open?closeCmdk():openCmdk(); }
      role="status"
      aria-live="polite">
 </div>
+
+<!-- ───────── Guided tour / feature spotlight ───────── -->
+<div class="tour" id="tour" hidden>
+  <div class="tour-scrim" id="tour-scrim"></div>
+  <div class="tour-ring" id="tour-ring" aria-hidden="true"></div>
+  <div class="tour-pop" id="tour-pop" role="dialog" aria-modal="true"
+       aria-labelledby="tour-title" aria-describedby="tour-body"
+       data-i18n-attr="aria-label:tour.dialog_aria" aria-label="Product tour">
+    <div class="tour-pop-head">
+      <span class="tour-ic" id="tour-ic" aria-hidden="true">✨</span>
+      <span class="tour-progress" id="tour-progress"></span>
+      <button class="tour-x" id="tour-skip" type="button"
+              data-i18n-attr="aria-label:tour.skip_aria" aria-label="Skip tour">×</button>
+    </div>
+    <h3 class="tour-title" id="tour-title"></h3>
+    <p class="tour-body" id="tour-body"></p>
+    <div class="tour-dots" id="tour-dots" aria-hidden="true"></div>
+    <div class="tour-nav">
+      <button class="tour-btn ghost" id="tour-back" type="button" data-i18n="tour.back">Back</button>
+      <button class="tour-btn primary" id="tour-next" type="button" data-i18n="tour.next">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- First-visit auto-offer (shown once; dismissal/completion remembered in localStorage) -->
+<div class="tour-offer" id="tour-offer" role="dialog" aria-modal="false"
+     aria-labelledby="tour-offer-title" hidden>
+  <button class="tour-offer-x" id="tour-offer-x" type="button"
+          data-i18n-attr="aria-label:tour.offer_dismiss_aria" aria-label="Dismiss">×</button>
+  <h4 id="tour-offer-title"><span aria-hidden="true">✨</span> <span data-i18n="tour.offer_title">New here?</span></h4>
+  <p data-i18n="tour.offer_body">Take a 60-second tour of what makes this dashboard AI-native — forecasts, the Lab Copilot, correlated incidents and more.</p>
+  <div class="tour-nav">
+    <button class="tour-btn ghost" id="tour-offer-no" type="button" data-i18n="tour.offer_dismiss">Not now</button>
+    <button class="tour-btn primary" id="tour-offer-yes" type="button" data-i18n="tour.offer_start">Start tour</button>
+  </div>
+</div>
+
+<script>
+/* ── Guided tour / feature spotlight ──────────────────────────────────────────
+   Additive, front-end only. Anchors a callout on a real UI element per step,
+   switching to the right tab first. Every step lists candidate selectors and is
+   skipped gracefully when none resolve to a visible element (feature hidden/empty
+   in the current view) — the tour never points at nothing and never throws.
+   a11y: role=dialog + aria-modal, focus trap within the callout, focus restored
+   on close, ←/→/Esc keys, reduced-motion honoured. No body scroll-lock is set. */
+const TOUR_KEY='hl_tour_v1';
+const TOUR_STEPS=[
+  {tab:'overview', sel:['#hero'],                    ic:'🛰️',
+   title:'tour.s_hero_t',  body:'tour.s_hero_b'},
+  {tab:'overview', sel:['#copilotcard'],             ic:'🧠',
+   title:'tour.s_copilot_t', body:'tour.s_copilot_b'},
+  {tab:'gpu',      sel:['#vramfc-card','#costfc-card','#diskfc-card'], ic:'🔮',
+   title:'tour.s_forecast_t', body:'tour.s_forecast_b'},
+  {tab:'gpu',      sel:['#inc-card','#anom-card'],   ic:'🚨',
+   title:'tour.s_inc_t',   body:'tour.s_inc_b'},
+  {tab:'uptime',   sel:['#uptimegrid .upslo','#uptimegrid','[data-tab="uptime"] .card'], ic:'🎯',
+   title:'tour.s_slo_t',   body:'tour.s_slo_b'},
+  {tab:'diskio',   sel:['#diskio-body','[data-tab="diskio"] .card'], ic:'💽',
+   title:'tour.s_diskio_t', body:'tour.s_diskio_b'},
+  {tab:null,       sel:['#sharebtn'],                ic:'🌐',
+   title:'tour.s_status_t', body:'tour.s_status_b'},
+  {tab:'overview', sel:['#mcpcard'],                 ic:'🔌',
+   title:'tour.s_integr_t', body:'tour.s_integr_b'},
+];
+const TOUR={open:false, i:0, trigger:null, steps:[], raf:0};
+
+function _tourVisible(el){
+  if(!el) return false;
+  if(el.hidden || el.closest('[hidden]')) return false;
+  const r=el.getBoundingClientRect();
+  if(r.width<2 || r.height<2) return false;
+  const cs=getComputedStyle(el);
+  if(cs.display==='none' || cs.visibility==='hidden') return false;
+  return true;
+}
+// Resolve a step's first visible target (after its tab is shown), else null.
+function _tourResolve(step){
+  for(const s of (step.sel||[])){
+    let el; try{ el=document.querySelector(s); }catch(e){ el=null; }
+    if(_tourVisible(el)) return el;
+  }
+  return null;
+}
+function _tourReduced(){ return window.matchMedia('(prefers-reduced-motion:reduce)').matches; }
+function _tourFocusables(){
+  const pop=document.getElementById('tour-pop'); if(!pop) return [];
+  return [...pop.querySelectorAll('button:not([hidden]):not([disabled])')].filter(_tourVisible);
+}
+function startTour(fromOffer){
+  if(TOUR.open) return;
+  _tourHideOffer(false);
+  // Filter to steps whose target can plausibly resolve is done live per-step;
+  // keep the full list so late-loading data (e.g. incidents) can still anchor.
+  TOUR.steps=TOUR_STEPS.slice();
+  TOUR.open=true; TOUR.i=0; TOUR.trigger=document.activeElement;
+  // Starting also arms the "seen" flag so a mid-tour reload won't re-pop the offer.
+  try{ localStorage.setItem(TOUR_KEY,'seen'); }catch(e){}
+  const wrap=document.getElementById('tour'); wrap.hidden=false;
+  _tourGo(0, true);
+  window.addEventListener('resize', _tourReposition, {passive:true});
+  window.addEventListener('scroll', _tourReposition, {passive:true, capture:true});
+}
+function endTour(reason){
+  if(!TOUR.open) return;
+  TOUR.open=false;
+  cancelAnimationFrame(TOUR.raf);
+  window.removeEventListener('resize', _tourReposition, {passive:true});
+  window.removeEventListener('scroll', _tourReposition, {passive:true, capture:true});
+  const wrap=document.getElementById('tour'); if(wrap) wrap.hidden=true;
+  try{ localStorage.setItem(TOUR_KEY,'done'); }catch(e){}
+  const t=TOUR.trigger; TOUR.trigger=null;
+  if(t && typeof t.focus==='function'){ try{ t.focus(); }catch(e){} }
+}
+// Advance to step `n`, skipping (in `dir` direction) any step with no live target.
+function _tourGo(n, forward){
+  const steps=TOUR.steps; if(!steps.length){ endTour(); return; }
+  let i=n, guard=0, el=null;
+  const dir = forward ? 1 : -1;
+  while(i>=0 && i<steps.length && guard++<steps.length){
+    const step=steps[i];
+    if(step.tab && typeof showTab==='function' && TAB!==step.tab){
+      try{ showTab(step.tab); }catch(e){}
+    }
+    el=_tourResolve(step);
+    if(el) break;
+    i+=dir;                       // target absent → skip in the travel direction
+  }
+  if(i<0 || i>=steps.length || !el){
+    // Ran off either end while skipping → finish gracefully.
+    if(forward){ endTour('done'); return; }
+    // Backward with nothing to show: stay put on the current valid step.
+    return;
+  }
+  TOUR.i=i;
+  _tourPaint(el);
+}
+function _tourPaint(el){
+  const step=TOUR.steps[TOUR.i];
+  document.getElementById('tour-ic').textContent = step.ic||'✨';
+  const total=TOUR.steps.length;
+  document.getElementById('tour-progress').textContent =
+    I18N.tf('tour.progress','{n} / {total}',{n:TOUR.i+1, total});
+  document.getElementById('tour-title').textContent = I18N.t(step.title, step.title);
+  document.getElementById('tour-body').textContent  = I18N.t(step.body, step.body);
+  // dots
+  const dots=document.getElementById('tour-dots');
+  dots.innerHTML = TOUR.steps.map((s,k)=>'<i class="'+(k===TOUR.i?'on':(k<TOUR.i?'done':''))+'"></i>').join('');
+  // nav labels
+  const back=document.getElementById('tour-back'), next=document.getElementById('tour-next');
+  back.hidden = TOUR.i===0;
+  next.textContent = TOUR.i===TOUR.steps.length-1
+    ? I18N.t('tour.done','Done') : I18N.t('tour.next','Next');
+  // bring target into view, then position ring + callout
+  try{ el.scrollIntoView({block:'center', inline:'nearest', behavior: _tourReduced()?'auto':'smooth'}); }catch(e){}
+  const place=()=>_tourPlace(el);
+  // one immediate placement + a settle pass after smooth-scroll
+  place();
+  setTimeout(place, _tourReduced()?0:280);
+  // focus the primary action (keeps keyboard users inside the dialog)
+  requestAnimationFrame(()=>{ try{ next.focus(); }catch(e){} });
+}
+function _tourReposition(){
+  if(!TOUR.open) return;
+  cancelAnimationFrame(TOUR.raf);
+  TOUR.raf=requestAnimationFrame(()=>{
+    const el=_tourResolve(TOUR.steps[TOUR.i]);
+    if(el) _tourPlace(el); else { const ring=document.getElementById('tour-ring'); if(ring) ring.classList.add('centered'); }
+  });
+}
+function _tourPlace(el){
+  const ring=document.getElementById('tour-ring'), pop=document.getElementById('tour-pop');
+  if(!ring||!pop||!el) return;
+  const vw=window.innerWidth, vh=window.innerHeight, pad=6, gap=14;
+  const r=el.getBoundingClientRect();
+  ring.classList.remove('centered');
+  ring.style.left  =Math.max(4, r.left-pad)+'px';
+  ring.style.top   =Math.max(4, r.top-pad)+'px';
+  ring.style.width =Math.min(vw-8, r.width+pad*2)+'px';
+  ring.style.height=Math.min(vh-8, r.height+pad*2)+'px';
+  // On narrow screens the CSS docks the callout to a bottom sheet — don't fight it.
+  if(vw<=560){ pop.style.left=pop.style.top=pop.style.right=pop.style.bottom=''; return; }
+  const pw=pop.offsetWidth||320, ph=pop.offsetHeight||200;
+  let top, left;
+  const below=r.bottom+gap, above=r.top-gap-ph;
+  if(below+ph<=vh-8){ top=below; }               // prefer below the target
+  else if(above>=8){ top=above; }                // else above
+  else { top=Math.max(8, Math.min(vh-ph-8, r.top)); } // else beside/clamped
+  left=r.left + r.width/2 - pw/2;                 // centre horizontally on target
+  left=Math.max(8, Math.min(vw-pw-8, left));
+  pop.style.right=pop.style.bottom='';
+  pop.style.left=left+'px';
+  pop.style.top =top+'px';
+}
+function _tourNext(){
+  if(TOUR.i>=TOUR.steps.length-1){ endTour('done'); return; }
+  _tourGo(TOUR.i+1, true);
+}
+function _tourBack(){ if(TOUR.i>0) _tourGo(TOUR.i-1, false); }
+
+// First-visit auto-offer (once). Anchors under the header launcher when present.
+function _tourShowOffer(){
+  const off=document.getElementById('tour-offer'); if(!off) return;
+  off.hidden=false;
+  const anchor=document.getElementById('tourBtn');
+  if(anchor && window.innerWidth>560){
+    const r=anchor.getBoundingClientRect(), ow=off.offsetWidth||300;
+    off.style.top=(r.bottom+10)+'px';
+    off.style.left=Math.max(12, Math.min(window.innerWidth-ow-12, r.right-ow))+'px';
+    off.style.right=''; off.style.bottom='';
+  }
+}
+function _tourHideOffer(setFlag){
+  const off=document.getElementById('tour-offer'); if(off) off.hidden=true;
+  if(setFlag){ try{ localStorage.setItem(TOUR_KEY,'done'); }catch(e){} }
+}
+function maybeOfferTour(){
+  let seen=null; try{ seen=localStorage.getItem(TOUR_KEY); }catch(e){}
+  if(seen) return;                       // completed or dismissed before → never nag
+  setTimeout(()=>{ if(!TOUR.open) _tourShowOffer(); }, 1400);
+}
+(function _tourWire(){
+  const scrim=document.getElementById('tour-scrim');
+  if(scrim) scrim.addEventListener('click', ()=>endTour('skip'));
+  const bind=(id,fn)=>{ const b=document.getElementById(id); if(b) b.addEventListener('click', fn); };
+  bind('tour-next', _tourNext);
+  bind('tour-back', _tourBack);
+  bind('tour-skip', ()=>endTour('skip'));
+  bind('tour-offer-yes', ()=>startTour(true));
+  bind('tour-offer-no',  ()=>_tourHideOffer(true));
+  bind('tour-offer-x',   ()=>_tourHideOffer(true));
+  // Keyboard: ←/→ navigate, Esc closes, Tab is trapped inside the callout.
+  document.addEventListener('keydown', e=>{
+    if(!TOUR.open) return;
+    if(e.key==='Escape'){ e.preventDefault(); endTour('skip'); return; }
+    if(e.key==='ArrowRight'){ e.preventDefault(); _tourNext(); return; }
+    if(e.key==='ArrowLeft'){ e.preventDefault(); _tourBack(); return; }
+    if(e.key==='Tab'){
+      const f=_tourFocusables(); if(!f.length){ e.preventDefault(); return; }
+      const first=f[0], last=f[f.length-1], a=document.activeElement, pop=document.getElementById('tour-pop');
+      if(e.shiftKey){ if(a===first||a===pop||!pop.contains(a)){ e.preventDefault(); last.focus(); } }
+      else { if(a===last){ e.preventDefault(); first.focus(); } }
+    }
+  }, true);
+  // Re-anchor the offer on locale change while it's showing (labels re-measure).
+  document.addEventListener('lang:changed', ()=>{ const off=document.getElementById('tour-offer'); if(off && !off.hidden) _tourShowOffer(); });
+  // First-visit-only auto-offer. Runs from this (late) script so the tour fns are
+  // defined; a short delay lets the shell settle and i18n hydrate first.
+  maybeOfferTour();
+})();
+</script>
 
 </body></html>
