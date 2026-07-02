@@ -319,6 +319,8 @@
   "incd.ai_none": "尚无 AI 解释。",
   "inc.auto_explain": "自动解释新事件",
   "inc.auto_explain_tip": "开启后，新打开的事件会自动生成通俗易懂的 AI 解释（本地 LLM，不在指标采集路径上运行）。默认关闭。",
+  "inc.notify_cause": "通知可能原因",
+  "inc.notify_cause_tip": "开启后（且已开启自动解释），事件告警通知会附带一行“可能原因”，并在本地 LLM 解释完新事件后发送一次补充的“可能原因”告警。仅读取已缓存的解释——绝不在告警路径上运行 LLM。默认关闭。",
   "ribbon.title": "异常强度",
   "ribbon.quiet": "平静",
   "ribbon.elevated": "升高",

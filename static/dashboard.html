@@ -1613,6 +1613,10 @@ h2 .hic{ opacity:.9 }
         <input type="checkbox" id="inc-auto-explain">
         <span data-i18n="inc.auto_explain">Auto-explain new incidents</span>
       </label>
+      <label class="inc-auto" title="" id="inc-cause-wrap" hidden>
+        <input type="checkbox" id="inc-notify-cause">
+        <span data-i18n="inc.notify_cause">Notify probable cause</span>
+      </label>
     </div>
     <div id="inc-body"></div>
     <p class="cap" data-i18n="inc.cap">Anomalies that fire together are grouped into one correlated incident with a lifecycle — opening when the cluster trips and clearing once every member has settled back to normal. One incident, many signals.</p>
@@ -7122,10 +7126,12 @@ let INC_AUTO_INIT=false;
 async function _incAutoInit(){
   if(INC_AUTO_INIT) return; INC_AUTO_INIT=true;
   const wrap=document.getElementById('inc-auto-wrap'), cb=document.getElementById('inc-auto-explain');
+  const cwrap=document.getElementById('inc-cause-wrap'), ccb=document.getElementById('inc-notify-cause');
   if(!wrap||!cb) return;
   try{
     const s=(await(await fetch('/api/settings')).json()).settings||{};
     cb.checked = s.incident_auto_explain==='1';
+    if(ccb) ccb.checked = s.notify_ai_cause==='1';
   }catch(e){ /* leave OFF (default) */ }
   wrap.hidden=false;
   wrap.title=I18N.t('inc.auto_explain_tip','When on, newly-opened incidents get a plain-English AI explanation generated automatically (local LLM, off the metrics path). Off by default.');
@@ -7134,6 +7140,15 @@ async function _incAutoInit(){
       body:JSON.stringify({incident_auto_explain: cb.checked?'1':'0'})}); }
     catch(e){ cb.checked=!cb.checked; }
   };
+  if(cwrap&&ccb){
+    cwrap.hidden=false;
+    cwrap.title=I18N.t('inc.notify_cause_tip','When on (and auto-explain is on), the probable-cause one-liner is appended to incident alert notifications, and a one-time supplementary "probable cause" alert is sent once the local LLM has explained a fresh incident. Reads the cached explanation only — never runs the LLM on the alert path. Off by default.');
+    ccb.onchange=async()=>{
+      try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({notify_ai_cause: ccb.checked?'1':'0'})}); }
+      catch(e){ ccb.checked=!ccb.checked; }
+    };
+  }
 }
 let INC_EXPLAIN_BUSY={};
 function _incFindMember(ref){

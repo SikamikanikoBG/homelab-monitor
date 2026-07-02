@@ -292,6 +292,8 @@
   "incd.ai_none": "No AI explanation yet.",
   "inc.auto_explain": "Auto-explain new incidents",
   "inc.auto_explain_tip": "When on, newly-opened incidents get a plain-English AI explanation generated automatically (local LLM, off the metrics path). Off by default.",
+  "inc.notify_cause": "Notify probable cause",
+  "inc.notify_cause_tip": "When on (and auto-explain is on), the probable-cause one-liner is appended to incident alert notifications, and a one-time supplementary \"probable cause\" alert is sent once the local LLM has explained a fresh incident. Reads the cached explanation only — never runs the LLM on the alert path. Off by default.",
   "ribbon.title": "Anomaly intensity",
   "ribbon.quiet": "quiet",
   "ribbon.elevated": "elevated",

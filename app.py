@@ -272,7 +272,11 @@ _LLM_SAMPLES_MIGRATIONS = ("energy_wh REAL",)
 # (Explain/Regenerate, first-open one-shot) or the dedicated auto-explain worker —
 # NEVER on the metrics/collector poll path. Incident READS return these cached
 # fields with zero LLM calls. Old rows read as NULL (feature simply shows nothing).
-_INCIDENTS_MIGRATIONS = ("ai_explanation TEXT", "ai_explained_at INTEGER", "ai_model TEXT")
+# ai_cause_notified_at = unix ts the ONE supplementary "probable cause" notification
+# was sent for this incident (the auto-explain worker's at-most-once dedup flag);
+# NULL until sent / for old rows. Never involves the LLM — set on notification send.
+_INCIDENTS_MIGRATIONS = ("ai_explanation TEXT", "ai_explained_at INTEGER", "ai_model TEXT",
+                         "ai_cause_notified_at INTEGER")
 
 def _data_dir():
     return os.path.dirname(os.path.abspath(DB_PATH)) or "."
@@ -4410,6 +4414,14 @@ SETTING_DEFAULTS = {
     # no-op when the local LLM is unreachable. When "0" (default): zero new
     # behaviour — explanations are only ever produced by an explicit user action.
     "incident_auto_explain":     "0",        # "0" / "1" — master switch
+    # ── Probable-cause line in incident notifications (E1) — OFF by default ──────
+    # When "1", incident alert notifications carry a concise "🧠 Probable cause: …"
+    # line built from the CACHED ai_explanation (never generated on the dispatch/poll
+    # path), and — when incident_auto_explain is ALSO "1" — the dedicated auto-explain
+    # worker sends ONE supplementary "probable cause" notification per fresh incident
+    # after it persists an explanation (still-open, dedup'd, suppression-respecting).
+    # When "0" (default): notification behaviour is byte-identical to before.
+    "notify_ai_cause":           "0",        # "0" / "1" — opt-in
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass", "slack_webhook_url", "smtp_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
@@ -5396,6 +5408,36 @@ def dispatch_routed(s, level, title, detail, *, entity, default_channel):
             out.extend(dispatch_alert(s, level, title, detail, channel=default_channel))
     return out
 
+# ── AI probable-cause enrichment for incident notifications (E1) ──────────────
+# The one-liner is built ONLY from the incident's CACHED ai_explanation (the field
+# the auto-explain worker / explicit endpoint persists off the poll path). These
+# helpers are pure cache reads — they NEVER call the LLM — so the notification /
+# dispatch path stays LLM-free. Gated by the opt-in notify_ai_cause (default OFF).
+_INCIDENT_CAUSE_MAX = 240   # hard length cap for the cause line body
+
+def _incident_cause_text(inc):
+    """Sanitized, bounded probable-cause text from an incident's CACHED ai_explanation
+    (already label-only — series keys, no target/creds/raw err). Collapses whitespace,
+    re-redacts defensively, hard-caps length. Returns '' when nothing is cached.
+    Pure read — NEVER triggers LLM generation."""
+    cause = (inc.get("ai_explanation") or "").strip() if isinstance(inc, dict) else ""
+    if not cause:
+        return ""
+    cause = _redact_target(" ".join(cause.split()))
+    if len(cause) > _INCIDENT_CAUSE_MAX:
+        cause = cause[:_INCIDENT_CAUSE_MAX - 1].rstrip() + "…"
+    return cause
+
+def _incident_cause_line(inc, s=None):
+    """The "🧠 Probable cause: …" line to append to an incident notification, IFF the
+    notify_ai_cause opt-in is ON and a cached explanation exists; else ''. Cache-only,
+    never generates. `s` (settings) may be passed to avoid a re-read."""
+    s = s if s is not None else get_settings()
+    if s.get("notify_ai_cause") != "1":
+        return ""
+    cause = _incident_cause_text(inc)
+    return f"🧠 Probable cause: {cause}" if cause else ""
+
 def _eval_rule(rule, signals):
     """Evaluate one rule against the precomputed signal bundle. Returns
     (fired_bool, title, detail). Pure; no I/O, no recompute."""
@@ -5472,6 +5514,12 @@ def _eval_rule(rule, signals):
             sev = inc.get("severity", "warning")
             title = f"{sev.capitalize()} incident — {n} correlated anomal{'y' if n == 1 else 'ies'}"
             detail = f"{n} correlated anomal{'y' if n == 1 else 'ies'}: " + ", ".join(parts) + more + "."
+            # Append the CACHED probable-cause one-liner when opted in (notify_ai_cause).
+            # inc came from the signal bundle (list_incidents) — its ai_explanation is a
+            # pure cache read; this NEVER calls the LLM on the dispatch path.
+            cause = _incident_cause_line(inc)
+            if cause:
+                detail = f"{detail}\n{cause}"
             return True, title, detail
         return False, None, None
     if ct == "uptime_down":
@@ -5974,6 +6022,9 @@ def _incident_explain_worker():
             # the model when an explanation already exists).
             if get_settings().get("incident_auto_explain") == "1":
                 generate_incident_explanation(iid, force=False)
+                # Off-poll supplementary "probable cause" notification (opt-in,
+                # dedup'd, suppression-respecting). Cache read only — no LLM here.
+                _maybe_send_incident_cause(iid)
             last = time.time()
         except Exception as e:
             print("incident explain worker error:", e, flush=True)
@@ -6008,6 +6059,62 @@ def _enqueue_incident_explain(iid):
         _INCIDENT_EXPLAIN_Q.put(iid)
     except Exception as e:
         print("enqueue incident explain error:", e, flush=True)
+
+def _maybe_send_incident_cause(iid):
+    """Off-poll SUPPLEMENTARY "probable cause" notification — sent AT MOST ONCE per
+    incident by the auto-explain worker AFTER it persists an explanation. Runs ONLY on
+    the dedicated worker thread (never on collect()/health_scan()/dispatch), and only
+    when EVERY gate passes:
+      • both opt-ins ON  — notify_ai_cause=='1' AND incident_auto_explain=='1'
+      • notifications usable — ≥1 channel configured (same gate as the rule engine,
+        which fires the primary incident notification this supplements)
+      • the incident is still OPEN and has a CACHED explanation (pure read — no LLM)
+      • severity ≥ alert_min_level
+      • NO maintenance / quick-mute window active (same suppression as any alert)
+      • not already sent — an ATOMIC claim of ai_cause_notified_at (rowcount guard)
+    Reuses dispatch_alert, so a disabled/unconfigured channel is skipped exactly like
+    any other notification. Never calls the LLM (reads the cached field only); never
+    raises out."""
+    try:
+        s = get_settings()
+        if s.get("notify_ai_cause") != "1" or s.get("incident_auto_explain") != "1":
+            return
+        if not _configured_channels(s):
+            return
+        inc = get_incident(iid)          # cached read — zero LLM
+        if not inc or inc.get("state") != "open":
+            return
+        cause = _incident_cause_text(inc)
+        if not cause:
+            return
+        sev = inc.get("severity") or "warning"
+        level = "critical" if sev == "critical" else "warning"
+        if LEVELS.get(level, 0) < LEVELS.get(s.get("alert_min_level", "warning"), 1):
+            return
+        now = int(time.time())
+        # Maintenance / quick-mute window active → suppress like any other notification.
+        in_maint, _end = _in_maintenance(now)
+        if in_maint:
+            return
+        # Atomic at-most-once: CLAIM the send by stamping the dedup flag, but only while
+        # still open and not yet sent. rowcount==0 → someone already claimed it (or it
+        # closed) → send nothing. Guarantees no duplicate / no notification storm.
+        with LOCK:
+            cur = DB.execute(
+                "UPDATE incidents SET ai_cause_notified_at=? "
+                "WHERE id=? AND state='open' AND ai_cause_notified_at IS NULL",
+                (now, iid))
+            claimed = cur.rowcount
+            DB.commit()
+        if not claimed:
+            return
+        title = f"🧠 Probable cause — {sev.capitalize()} incident"
+        detail = f"🧠 Probable cause: {cause}"
+        for ch, ok, err in dispatch_alert(s, level, title, detail):
+            if not ok:
+                print(f"incident cause notify {ch} error:", err, flush=True)
+    except Exception as e:
+        print("incident cause notify error:", e, flush=True)
 
 def _incident_members(iid):
     """Member rows for one incident (caller holds LOCK or accepts a plain read)."""
