@@ -1374,6 +1374,18 @@ h2 .hic{ opacity:.9 }
            color:var(--dc); background:color-mix(in srgb,var(--dc) 12%,transparent); white-space:nowrap }
 .dio-chip.warn{ --dc:var(--warn) } .dio-chip.crit{ --dc:var(--crit) }
 .dio-chip.normal{ color:var(--mut); border-color:var(--bd); background:transparent; font-weight:600; opacity:.85 }
+/* per-process I/O attribution (Top writer / Top reader) — from /proc/<pid>/io */
+.dio-attr{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:2px 0 12px }
+.dio-attr-chip{ --ac:var(--mut); display:inline-flex; align-items:center; gap:7px;
+                font-size:12px; padding:5px 11px; border-radius:999px;
+                border:1px solid color-mix(in srgb,var(--ac) 40%,var(--bd));
+                background:color-mix(in srgb,var(--ac) 10%,transparent); max-width:100% }
+.dio-attr-chip.wr{ --ac:var(--warn) } .dio-attr-chip.rd{ --ac:var(--accent,#4c8dff) }
+.dio-attr-l{ font-weight:600; color:var(--ac); white-space:nowrap }
+.dio-attr-n{ font-weight:700; color:var(--tx); overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; max-width:180px }
+.dio-attr-r{ font-variant-numeric:tabular-nums; color:var(--mut); white-space:nowrap }
+.dio-attr-cap{ font-size:11px; color:var(--mut) }
 /* utilisation meter */
 .dio-util{ margin-bottom:13px }
 .dio-util-top{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:5px }
@@ -8581,6 +8593,25 @@ function renderDiskIo(){
     {v:busiest?busiest.util_pct.toFixed(0)+'%':'—', l:I18N.t('diskio.k_busiest','Busiest util'), s:busiest?esc(busiest.device):''},
   ];
   kpi.innerHTML=K.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
+  // Per-process I/O attribution — the "what was writing/reading heavily" answer,
+  // from /proc/<pid>/io (authed-only; comm names, sanitised). Omitted entirely when
+  // unavailable (no /proc/<pid>/io access on this host) so the tab is unchanged.
+  let attrHtml='';
+  const at=dio.attribution;
+  if(at && at.available && (at.top_writer || at.top_reader)){
+    const chip=(p,dir,cls)=>{
+      if(!p) return '';
+      const rate=fmtRate(dir==='w'?(p.write_b_s||0):(p.read_b_s||0));
+      const lbl=dir==='w'?I18N.t('diskio.top_writer','Top writer'):I18N.t('diskio.top_reader','Top reader');
+      return `<span class="dio-attr-chip ${cls}" title="${escAttr(lbl+': '+p.name+' — '+rate)}">`
+        +`<span class="dio-attr-l">${dir==='w'?'✍️':'📖'} ${esc(lbl)}</span>`
+        +`<b class="dio-attr-n">${esc(p.name)}</b>`
+        +`<span class="dio-attr-r">${esc(rate)}</span></span>`;
+    };
+    attrHtml=`<div class="dio-attr" role="group" aria-label="${escAttr(I18N.t('diskio.attr_aria','Per-process disk I/O attribution'))}">`
+      +chip(at.top_writer,'w','wr')+chip(at.top_reader,'r','rd')
+      +`<span class="dio-attr-cap">${esc(I18N.t('diskio.attr_cap','per-process, from /proc'))}</span></div>`;
+  }
   const fmtLat=v=>(v==null?'—':v.toFixed(2)+' ms');
   const hist={}; (DIO_HIST.devices||[]).forEach(d=>hist[d.device]=d);
   const stat=(v,unit,label,cls)=>`<div class="dio-stat ${cls||''}"><div class="dsv">${v}${unit?`<span class="u">${unit}</span>`:''}</div><div class="dsl">${label}</div></div>`;
@@ -8623,7 +8654,7 @@ function renderDiskIo(){
       +why+explainBox
       +`</article>`;
   }).join('');
-  body.innerHTML=`<div class="dio-grid">${cards}</div>`
+  body.innerHTML=attrHtml+`<div class="dio-grid">${cards}</div>`
     +`<p class="cap" style="margin-top:12px">`
     +I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and flow into the anomaly ribbon, incidents and alert rules.')+`</p>`;
   body.querySelectorAll('[data-dio-why]').forEach(btn=>{

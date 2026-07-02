@@ -3081,6 +3081,101 @@ def local_diagnostics():
 _PROC_PREV = {"total": None, "pids": {}}
 _PROC_PAGE_KB = (os.sysconf("SC_PAGE_SIZE") // 1024) if hasattr(os, "sysconf") else 4
 
+# ── Per-process disk-I/O attribution (the "what was writing heavily" answer) ────
+# Real block-layer bytes per process from /proc/<pid>/io (read_bytes/write_bytes —
+# the counters the kernel charges to actual device I/O, not page-cache hits). We
+# sample ONLY the bounded top-N candidate set the monitor already computes (by CPU
+# delta + by RAM), one small read each per poll — never a full /proc scan. Deltas
+# across polls give per-process read_B/s + write_B/s; prev state is keyed by pid and
+# guarded by the process start-time so a recycled pid can't inherit a stale counter.
+# /proc/<pid>/io needs matching privilege: unreadable (PermissionError/missing) →
+# degrade silently to no attribution (Linux-only; absent on the dev box / Windows).
+_PROC_IO_PREV = {}   # pid(str) -> (starttime:int, read_bytes:int, write_bytes:int, ts:float)
+
+def _fmt_bps(b):
+    """Human byte-rate for deterministic Copilot text: MB/s, KB/s or B/s. Never raises."""
+    try:
+        b = float(b or 0)
+    except (TypeError, ValueError):
+        return "0 B/s"
+    if b >= 1048576:
+        return "%.1f MB/s" % (b / 1048576.0)
+    if b >= 1024:
+        return "%.0f KB/s" % (b / 1024.0)
+    return "%d B/s" % int(b)
+
+def _read_proc_io(pid):
+    """Return (read_bytes, write_bytes) from /proc/<pid>/io, or None when it can't
+    be read (no privilege / pid gone / field absent). Never raises."""
+    try:
+        with open("/proc/%s/io" % pid) as f:
+            data = f.read()
+    except (OSError, ValueError):
+        return None
+    rb = wb = None
+    for line in data.splitlines():
+        if line.startswith("read_bytes:"):
+            try: rb = int(line.split(":", 1)[1])
+            except (ValueError, IndexError): pass
+        elif line.startswith("write_bytes:"):
+            try: wb = int(line.split(":", 1)[1])
+            except (ValueError, IndexError): pass
+    if rb is None or wb is None:
+        return None
+    return (rb, wb)
+
+def collect_proc_disk_io(candidates, now=None):
+    """Per-process disk read/write throughput for a BOUNDED candidate set.
+    `candidates`: iterable of (pid_str, comm, starttime) — the monitor's existing
+    top-by-CPU / top-by-RAM pids only, so cost stays O(top-N) reads, not O(all pids).
+    Reads /proc/<pid>/io for each, computes B/s from the delta vs the previous poll,
+    guarding pid reuse (start-time mismatch → reset) and counter resets/negatives
+    (→ drop the sample). Returns {"available": False} when /proc/<pid>/io is
+    unreadable for EVERY candidate (no privilege / non-Linux) so the feature is
+    simply absent; otherwise the top writer/reader plus short leader lists. Never
+    surfaces cmdline/argv — only the process comm (which the caller sanitises)."""
+    if now is None:
+        now = time.time()
+    rows, seen, any_readable = [], set(), False
+    for pid, comm, starttime in candidates:
+        pid = str(pid)
+        seen.add(pid)
+        io = _read_proc_io(pid)
+        if io is None:
+            continue
+        any_readable = True
+        rb, wb = io
+        prev = _PROC_IO_PREV.get(pid)
+        _PROC_IO_PREV[pid] = (starttime, rb, wb, now)
+        if not prev:
+            continue                                   # first poll for this pid: warm up
+        p_start, p_rb, p_wb, p_ts = prev
+        if p_start != starttime:
+            continue                                   # pid recycled → drop stale delta
+        dt = now - p_ts
+        if dt <= 0:
+            continue
+        d_rb, d_wb = rb - p_rb, wb - p_wb
+        if d_rb < 0 or d_wb < 0:
+            continue                                   # counter reset/wrap → skip
+        rows.append({"name": comm, "pid": int(pid),
+                     "read_b_s":  int(d_rb / dt),
+                     "write_b_s": int(d_wb / dt)})
+    # Prune prev state to the current candidate set so it can't grow unbounded.
+    for dead in [p for p in _PROC_IO_PREV if p not in seen]:
+        _PROC_IO_PREV.pop(dead, None)
+    if not any_readable:
+        return {"available": False}                    # no /proc/<pid>/io access at all
+    writers = sorted((r for r in rows if r["write_b_s"] > 0), key=lambda r: -r["write_b_s"])
+    readers = sorted((r for r in rows if r["read_b_s"]  > 0), key=lambda r: -r["read_b_s"])
+    return {
+        "available": True,
+        "top_writer": writers[0] if writers else None,
+        "top_reader": readers[0] if readers else None,
+        "writers": writers[:5],
+        "readers": readers[:5],
+    }
+
 def _total_cpu_jiffies():
     with open("/proc/stat") as f:
         parts = f.readline().split()[1:]   # cpu  user nice system idle iowait …
@@ -3098,6 +3193,9 @@ def collect_top_processes(top_n=10):
     prev_total = _PROC_PREV["total"]
     prev_pids  = _PROC_PREV["pids"]
     cur_pids, agg = {}, {}
+    # Per-pid meta kept only long enough to pick the bounded I/O-attribution set
+    # (top-N by CPU delta + top-N by RAM) — we do NOT read /proc/<pid>/io for all.
+    pid_meta = []   # (pid, comm, starttime, rss_kb, dcpu)
     for pid in pids:
         try:
             with open(f"/proc/{pid}/stat") as f:
@@ -3106,18 +3204,19 @@ def collect_top_processes(top_n=10):
             comm = stat[stat.find("(") + 1:rp]
             rest = stat[rp + 2:].split()         # fields from 'state' onward
             jiff = int(rest[11]) + int(rest[12]) # utime + stime
+            starttime = int(rest[19])            # field 22: start-time (pid-reuse guard)
             with open(f"/proc/{pid}/statm") as f:
                 rss_kb = int(f.read().split()[1]) * _PROC_PAGE_KB
         except (OSError, ValueError, IndexError):
             continue
         cur_pids[pid] = jiff
+        dpid = (jiff - prev_pids[pid]) if pid in prev_pids else 0
+        pid_meta.append((pid, comm, starttime, rss_kb, dpid if dpid > 0 else 0))
         a = agg.setdefault(comm, {"mem_kb": 0, "dcpu": 0, "count": 0})
         a["mem_kb"] += rss_kb
         a["count"]  += 1
-        if pid in prev_pids:
-            d = jiff - prev_pids[pid]
-            if d > 0:
-                a["dcpu"] += d
+        if dpid > 0:
+            a["dcpu"] += dpid
     _PROC_PREV["total"] = total
     _PROC_PREV["pids"]  = cur_pids
     ncpu = os.cpu_count() or 1
@@ -3127,9 +3226,22 @@ def collect_top_processes(top_n=10):
         cpu = (100.0 * a["dcpu"] / span * ncpu) if span > 0 else 0.0
         rows.append({"name": comm, "cpu_pct": round(cpu, 1),
                      "mem_mb": round(a["mem_kb"] / 1024), "count": a["count"]})
+    # Bounded candidate set for per-process I/O attribution: union of the top-N by
+    # CPU delta and top-N by RAM. This reuses the selection the monitor already runs
+    # (never a full-/proc io scan) and keeps the heavy-hitters that plausibly drive
+    # a disk spike in view across polls so their deltas accumulate.
+    cand = {}   # pid -> (pid, comm, starttime)
+    for m in sorted(pid_meta, key=lambda r: -r[4])[:top_n]:
+        cand[m[0]] = (m[0], m[1], m[2])
+    for m in sorted(pid_meta, key=lambda r: -r[3])[:top_n]:
+        cand[m[0]] = (m[0], m[1], m[2])
+    try:
+        proc_io = collect_proc_disk_io(list(cand.values()))
+    except Exception:
+        proc_io = {"available": False}
     return {"by_cpu": sorted(rows, key=lambda r: -r["cpu_pct"])[:top_n],
             "by_mem": sorted(rows, key=lambda r: -r["mem_mb"])[:top_n],
-            "ncpu": ncpu}
+            "ncpu": ncpu, "io": proc_io}
 
 # ── Experiments: training-run detection + GPU activity sessions ────────────────
 # Auto-recognise training / fine-tuning jobs from /proc cmdline, and reconstruct
@@ -9807,7 +9919,19 @@ def _ask_topic_facts(topics, q, ctx, now):
                 lines.append("{d}: {r} MB/s read, {w} MB/s write, {u}% util{l}.".format(
                     d=it.get("device"), r=it.get("read_mb_s"), w=it.get("write_mb_s"),
                     u=it.get("util_pct", 0), l=(" ("+", ".join(lat)+" latency)") if lat else ""))
-            # who might be driving it — top CPU consumers are the usual suspects
+            # Real per-process attribution when /proc/<pid>/io is readable: the
+            # actual block-layer write/read leaders — the precise "what was writing
+            # heavily" answer (cached read; no LLM call on this path).
+            attr = ((HEALTH.get("processes") or {}).get("io")) or {}
+            if attr.get("available"):
+                tw, tr = attr.get("top_writer"), attr.get("top_reader")
+                if tw:
+                    lines.append("Heaviest writer right now: {n} at {r}.".format(
+                        n=tw.get("name"), r=_fmt_bps(tw.get("write_b_s"))))
+                if tr:
+                    lines.append("Heaviest reader right now: {n} at {r}.".format(
+                        n=tr.get("name"), r=_fmt_bps(tr.get("read_b_s"))))
+            # who else might be driving it — top CPU consumers are the usual suspects
             # for heavy read/write bursts (a rough, honest proxy, not attribution).
             procs = ((HEALTH.get("processes") or {}).get("by_cpu") or [])[:3]
             if procs:
@@ -10275,6 +10399,12 @@ def _explain_context(point, now=None):
             ctx["disk_io"] = snap
             ctx["disk_io_summary"] = dio.get("summary")
             ctx["busy_procs"] = ((HEALTH.get("processes") or {}).get("by_cpu") or [])[:3]
+            _attr = ((HEALTH.get("processes") or {}).get("io")) or {}
+            if _attr.get("available"):
+                # Real per-process leaders (comm only) — precise I/O attribution
+                # for the explainer; cached read, never triggers an LLM call.
+                ctx["io_writers"] = _attr.get("writers") or []
+                ctx["io_readers"] = _attr.get("readers") or []
         except Exception:
             pass
     try:
@@ -10333,6 +10463,16 @@ def _explain_facts(c):
         p = r["power"][0]
         lines.append("Heaviest power-attributed entity then: {n} (~{w} W).".format(
             n=p.get("name"), w=p.get("watts")))
+    # Real per-process disk-I/O attribution (comm only) for disk_io spikes — the
+    # precise "what was writing/reading heavily" leaders, when /proc/<pid>/io read.
+    iw = (c.get("io_writers") or [])
+    if iw:
+        lines.append("Heaviest writer then: {n} ({r}).".format(
+            n=iw[0].get("name"), r=_fmt_bps(iw[0].get("write_b_s"))))
+    ir = (c.get("io_readers") or [])
+    if ir:
+        lines.append("Heaviest reader then: {n} ({r}).".format(
+            n=ir[0].get("name"), r=_fmt_bps(ir[0].get("read_b_s"))))
     if len(lines) == 1:
         lines.append("No surrounding samples or running-process detail is available for that moment.")
     return lines
@@ -13785,9 +13925,15 @@ def api_health():
                                     "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
-    disk_io = HEALTH.get("disk_io") or {"available": False, "warming_up": True,
+    disk_io = dict(HEALTH.get("disk_io") or {"available": False, "warming_up": True,
                                         "summary": {"total_read_mb_s": 0.0, "total_write_mb_s": 0.0},
-                                        "items": []}
+                                        "items": []})
+    # Per-process I/O attribution (Top writer/reader) — attach ONLY to this authed
+    # payload. It carries process comm (never cmdline/argv) and NEVER appears on the
+    # public /status surface (build_public_status doesn't read processes/disk_io).
+    _pio = (HEALTH.get("processes") or {}).get("io")
+    if _pio and _pio.get("available"):
+        disk_io["attribution"] = _pio
     update  = dict(HEALTH["update"] or {"available": False, "current": VERSION})
     # Let the frontend decide whether to show the one-click "Update now" button.
     # Set here (not baked into the cached collect_update payload) so toggling the
