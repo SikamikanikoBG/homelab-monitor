@@ -1,65 +1,333 @@
 {
-  "__inputs": [{ "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus" }],
-  "__requires": [{ "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }],
-  "title": "Homelab Monitor",
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "description": "Prometheus datasource scraping HomeLab Monitor /metrics", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" }
+  ],
+  "title": "HomeLab Monitor",
+  "description": "Full-fleet view built entirely on HomeLab Monitor's /metrics exporter: GPU (vendor-labelled via homelab_gpu_info join), host CPU/RAM, disk fill, machine power, containers/units, LLM throughput, energy cost, anomaly flags and external uptime/cert checks.",
   "uid": "homelab-monitor-v1",
+  "tags": ["homelab", "gpu", "prometheus"],
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
+  "editable": true,
+  "graphTooltip": 1,
   "refresh": "10s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-3h", "to": "now" },
+  "timezone": "",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "name": "gpu",
+        "label": "GPU",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(homelab_gpu_util_pct, gpu)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      },
+      {
+        "name": "mountpoint",
+        "label": "Mount",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(homelab_disk_fill_pct, mountpoint)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
   "panels": [
     {
-      "id": 1, "type": "gauge", "title": "GPU VRAM Used %",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "100 * homelab_gpu_vram_used_mb{gpu=\"gpu0\"} / homelab_gpu_vram_total_mb{gpu=\"gpu0\"}", "legendFormat": "VRAM %" }]
+      "id": 100, "type": "row", "title": "GPU",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false, "panels": []
     },
     {
-      "id": 2, "type": "gauge", "title": "GPU Utilisation %",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 95}] } },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_util_pct{gpu=\"gpu0\"}", "legendFormat": "GPU Util %" }]
+      "id": 1, "type": "stat", "title": "GPU (identity)",
+      "description": "GPU utilisation labelled by vendor + model via an on(gpu) group_left join against homelab_gpu_info.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 95 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "area", "textMode": "value_and_name" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_gpu_util_pct{gpu=~\"$gpu\"} * on(gpu) group_left(vendor, name) homelab_gpu_info", "legendFormat": "{{name}} ({{vendor}})" } ]
     },
     {
-      "id": 3, "type": "gauge", "title": "GPU Temp °C",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}] } },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_temp_c{gpu=\"gpu0\"}", "legendFormat": "Temp °C" }]
+      "id": 2, "type": "gauge", "title": "GPU VRAM Used %",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 6, "y": 1, "w": 5, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "100 * homelab_gpu_vram_used_mb{gpu=~\"$gpu\"} / homelab_gpu_vram_total_mb{gpu=~\"$gpu\"}", "legendFormat": "{{gpu}}" } ]
     },
     {
-      "id": 4, "type": "gauge", "title": "Host CPU %",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_cpu_pct", "legendFormat": "CPU %" }]
+      "id": 3, "type": "gauge", "title": "GPU Temp",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 11, "y": 1, "w": 5, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "celsius", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_gpu_temp_c{gpu=~\"$gpu\"}", "legendFormat": "{{gpu}}" } ]
     },
     {
-      "id": 5, "type": "gauge", "title": "Host RAM %",
-      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}] } },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_mem_used_pct", "legendFormat": "RAM %" }]
+      "id": 4, "type": "stat", "title": "GPU Power",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "watt", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null }, { "color": "orange", "value": 250 }, { "color": "red", "value": 340 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_gpu_power_w{gpu=~\"$gpu\"}", "legendFormat": "{{gpu}}" } ]
     },
     {
-      "id": 6, "type": "timeseries", "title": "GPU VRAM Over Time (MB)",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_vram_used_mb", "legendFormat": "VRAM Used (MB)" }]
+      "id": 5, "type": "stat", "title": "Total Machine Power",
+      "description": "GPU + CPU + DRAM watts from homelab_power_total_w.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "watt", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null }, { "color": "orange", "value": 300 }, { "color": "red", "value": 450 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_power_total_w", "legendFormat": "Total W" } ]
     },
     {
-      "id": 7, "type": "timeseries", "title": "GPU Utilisation & Temp",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "id": 6, "type": "timeseries", "title": "GPU Utilisation (by vendor / model)",
+      "description": "homelab_gpu_util_pct joined to homelab_gpu_info so each series is labelled by its real card name + vendor.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 7, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_gpu_util_pct{gpu=~\"$gpu\"} * on(gpu) group_left(vendor, name) homelab_gpu_info", "legendFormat": "{{name}} ({{vendor}})" } ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "GPU VRAM Used vs Total (MB)",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 12, "y": 7, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_util_pct", "legendFormat": "Util %" },
-        { "datasource": "${DS_PROMETHEUS}", "expr": "homelab_gpu_temp_c",   "legendFormat": "Temp °C" }
+        { "datasource": "${datasource}", "expr": "homelab_gpu_vram_used_mb{gpu=~\"$gpu\"}", "legendFormat": "used {{gpu}}" },
+        { "datasource": "${datasource}", "expr": "homelab_gpu_vram_total_mb{gpu=~\"$gpu\"}", "legendFormat": "total {{gpu}}" }
       ]
     },
     {
-      "id": 8, "type": "table", "title": "Disk Usage",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_host_disk_used_pct", "legendFormat": "{{mountpoint}}", "instant": true }]
+      "id": 8, "type": "timeseries", "title": "GPU Temp & Power",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 7 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*W.*" }, "properties": [ { "id": "unit", "value": "watt" }, { "id": "custom.axisPlacement", "value": "right" } ] }, { "matcher": { "id": "byRegexp", "options": ".*°C.*" }, "properties": [ { "id": "unit", "value": "celsius" } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": "${datasource}", "expr": "homelab_gpu_temp_c{gpu=~\"$gpu\"}", "legendFormat": "{{gpu}} °C" },
+        { "datasource": "${datasource}", "expr": "homelab_gpu_power_w{gpu=~\"$gpu\"}", "legendFormat": "{{gpu}} W" }
+      ]
     },
     {
-      "id": 9, "type": "table", "title": "Model VRAM Loaded (MB)",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
-      "targets": [{ "datasource": "${DS_PROMETHEUS}", "expr": "homelab_model_loaded_vram_mb", "legendFormat": "{{server}} / {{model}}", "instant": true }]
+      "id": 200, "type": "row", "title": "Host & Disk",
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }, "collapsed": false, "panels": []
+    },
+    {
+      "id": 10, "type": "gauge", "title": "Host CPU %",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 23, "w": 5, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_host_cpu_pct", "legendFormat": "CPU %" } ]
+    },
+    {
+      "id": 11, "type": "gauge", "title": "Host RAM %",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 5, "y": 23, "w": 5, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_host_mem_used_pct", "legendFormat": "RAM %" } ]
+    },
+    {
+      "id": 12, "type": "bargauge", "title": "Disk Fill % (per mount)",
+      "description": "homelab_disk_fill_pct — filesystem fill percentage per mountpoint.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 10, "y": 23, "w": 14, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient", "orientation": "horizontal" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_disk_fill_pct{mountpoint=~\"$mountpoint\"}", "legendFormat": "{{mountpoint}}", "instant": true } ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Machine Power Over Time (W)",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 29, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "watt", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_power_total_w", "legendFormat": "Total W" } ]
+    },
+    {
+      "id": 14, "type": "table", "title": "Disk Space Used / Total (bytes)",
+      "description": "homelab_disk_used_bytes and homelab_disk_total_bytes per mountpoint.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 12, "y": 29, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        { "datasource": "${datasource}", "expr": "homelab_disk_used_bytes{mountpoint=~\"$mountpoint\"}", "legendFormat": "{{mountpoint}}", "instant": true, "format": "table" },
+        { "datasource": "${datasource}", "expr": "homelab_disk_total_bytes{mountpoint=~\"$mountpoint\"}", "legendFormat": "{{mountpoint}}", "instant": true, "format": "table" }
+      ]
+    },
+    {
+      "id": 300, "type": "row", "title": "Containers & Units",
+      "gridPos": { "x": 0, "y": 36, "w": 24, "h": 1 }, "collapsed": false, "panels": []
+    },
+    {
+      "id": 20, "type": "stat", "title": "Containers Running",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 37, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [ { "datasource": "${datasource}", "expr": "count(homelab_container_state{state=\"running\"} == 1)", "legendFormat": "running" } ]
+    },
+    {
+      "id": 21, "type": "table", "title": "Containers (state)",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 6, "y": 37, "w": 9, "h": 8 },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_container_state == 1", "legendFormat": "{{name}} / {{state}}", "instant": true, "format": "table" } ]
+    },
+    {
+      "id": 22, "type": "table", "title": "Systemd Units",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 15, "y": 37, "w": 9, "h": 8 },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_systemd_unit_state", "legendFormat": "{{unit}} / {{state}}", "instant": true, "format": "table" } ]
+    },
+    {
+      "id": 400, "type": "row", "title": "LLM / AI Engine",
+      "gridPos": { "x": 0, "y": 45, "w": 24, "h": 1 }, "collapsed": false, "panels": []
+    },
+    {
+      "id": 30, "type": "stat", "title": "Resident Models",
+      "description": "homelab_llm_resident_models — models currently loaded in ollama.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 46, "w": 5, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_llm_resident_models", "legendFormat": "resident" } ]
+    },
+    {
+      "id": 31, "type": "timeseries", "title": "LLM Throughput (tokens/s)",
+      "description": "homelab_llm_tokens_per_second — latest real generation throughput (appears once a copilot generation has run).",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 5, "y": 46, "w": 10, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_llm_tokens_per_second", "legendFormat": "{{model}}" } ]
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "LLM Time-To-First-Token (ms)",
+      "description": "homelab_llm_ttft_ms — latest measured TTFT (appears once a copilot generation has run).",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 15, "y": 46, "w": 9, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_llm_ttft_ms", "legendFormat": "{{model}}" } ]
+    },
+    {
+      "id": 33, "type": "table", "title": "Loaded Model VRAM (MB)",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 52, "w": 12, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_model_loaded_vram_mb", "legendFormat": "{{server}} / {{model}}", "instant": true, "format": "table" } ]
+    },
+    {
+      "id": 34, "type": "table", "title": "Active Anomaly Flags",
+      "description": "homelab_anomaly_active — 1 when a monitored series is currently flagged anomalous.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 12, "y": 52, "w": 12, "h": 6 },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_anomaly_active == 1", "legendFormat": "{{series}} ({{direction}})", "instant": true, "format": "table" } ]
+    },
+    {
+      "id": 500, "type": "row", "title": "Cost & Uptime",
+      "gridPos": { "x": 0, "y": 58, "w": 24, "h": 1 }, "collapsed": false, "panels": []
+    },
+    {
+      "id": 40, "type": "stat", "title": "Energy Cost — Month To Date",
+      "description": "homelab_cost_month_to_date (emitted only when an energy price is configured).",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 59, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "textMode": "value_and_name" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_cost_month_to_date", "legendFormat": "{{currency}}" } ]
+    },
+    {
+      "id": 41, "type": "stat", "title": "Energy Cost — Projected Month",
+      "description": "homelab_cost_month_projected (emitted only when an energy price is configured).",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 6, "y": 59, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "textMode": "value_and_name" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_cost_month_projected", "legendFormat": "{{currency}}" } ]
+    },
+    {
+      "id": 42, "type": "stat", "title": "Uptime Checks Down",
+      "description": "homelab_uptime_checks_down / homelab_uptime_checks_total.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 12, "y": 59, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_uptime_checks_down", "legendFormat": "down" } ]
+    },
+    {
+      "id": 43, "type": "stat", "title": "Uptime Checks Total",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 18, "y": 59, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_uptime_checks_total", "legendFormat": "total" } ]
+    },
+    {
+      "id": 44, "type": "timeseries", "title": "Uptime Check Latency (ms)",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 64, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_uptime_latency_ms", "legendFormat": "{{check}}" } ]
+    },
+    {
+      "id": 45, "type": "table", "title": "Uptime & Ratio (per check)",
+      "description": "homelab_uptime_up (1=up) and homelab_uptime_uptime_ratio (0..1) per external check.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 12, "y": 64, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        { "datasource": "${datasource}", "expr": "homelab_uptime_up", "legendFormat": "{{check}} up", "instant": true, "format": "table" },
+        { "datasource": "${datasource}", "expr": "homelab_uptime_uptime_ratio", "legendFormat": "{{check}} ratio", "instant": true, "format": "table" }
+      ]
+    },
+    {
+      "id": 46, "type": "timeseries", "title": "TLS Certificate Days Remaining",
+      "description": "homelab_uptime_cert_days_remaining — per cert check; negative means expired.",
+      "datasource": "${datasource}",
+      "gridPos": { "x": 0, "y": 71, "w": 24, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "d", "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 14 }, { "color": "green", "value": 30 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": "${datasource}", "expr": "homelab_uptime_cert_days_remaining", "legendFormat": "{{check}}" } ]
     }
   ]
 }
