@@ -3757,6 +3757,12 @@ def _local_now_snapshot():
             "util":      (LATEST or {}).get("util", 0),
             "temp":      (LATEST or {}).get("temp", 0),
         }
+        # Additive vendor tag for the fleet-row badge — mirrors the probe.py
+        # remote shape. Representative = first card's vendor (single-vendor rigs
+        # are the common case; mixed rigs surface per-card vendors in the GPU tab).
+        _gl = (LATEST or {}).get("gpus") or []
+        if _gl and _gl[0].get("vendor"):
+            out["gpu"]["vendor"] = _gl[0]["vendor"]
     return out
 
 # ── Adaptive per-host poll timeout (issue #99) ────────────────────────────────
@@ -6018,6 +6024,21 @@ def _gpu_num(x):
     except ValueError:
         return 0.0
 
+def _gpu_vendor(name):
+    """Infer a GPU's vendor slug from its marketing name — mirrors the Windows
+    probe's VendorOf so the UI reads ONE `vendor` field regardless of host OS.
+    Returns exactly one of the fixed slugs {'nvidia','amd','intel','unknown'};
+    the UI maps these to fixed CSS classes, so an unexpected/blank name safely
+    falls back to the neutral 'unknown' chip (never trusts the raw string)."""
+    s = (name or "").lower()
+    if re.search(r"nvidia|geforce|quadro|tesla|rtx|gtx", s):
+        return "nvidia"
+    if re.search(r"radeon|instinct|firepro|vega|\bati\b|\bamd\b", s):
+        return "amd"
+    if re.search(r"intel|iris|\buhd\b|hd graphics|\barc\b|\bxe\b|igpu", s):
+        return "intel"
+    return "unknown"
+
 # Extra per-card telemetry the AI/DS crowd actually debugs with: memory-bandwidth
 # utilisation (mem-bound vs compute-bound), core/memory clocks, power limit (for
 # headroom), performance state, memory-junction temp, and the *throttle reasons*
@@ -6353,7 +6374,9 @@ def sample_once():
             if len(p) < 7:
                 continue
             u, mu, mt, pw, tp = (_gpu_num(x) for x in p[2:7])
-            gpus.append({"idx": int(_gpu_num(p[0])), "name": p[1] or f"GPU {p[0]}",
+            gname = p[1] or f"GPU {p[0]}"
+            gpus.append({"idx": int(_gpu_num(p[0])), "name": gname,
+                         "vendor": _gpu_vendor(gname) if p[1] else "nvidia",
                          "util": u, "mem_used": mu, "mem_total": mt, "power": pw, "temp": tp})
         if not gpus:
             raise ValueError("nvidia-smi returned no GPU rows")

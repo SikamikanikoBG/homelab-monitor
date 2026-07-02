@@ -205,7 +205,7 @@ class TestAmdMergeSampleOnce(unittest.TestCase):
         self._sample(nvidia_csv="0, NVIDIA GeForce RTX 3090, 25, 4000, 24576, 150, 55")
         gs = app.LATEST["gpus"]
         self.assertEqual(len(gs), 1)
-        self.assertNotIn("vendor", gs[0])      # NVIDIA cards have no vendor marker
+        self.assertEqual(gs[0]["vendor"], "nvidia")  # cross-vendor badge: NVIDIA path now tags vendor
         self.assertEqual(app.LATEST["util"], 25)
         self.assertTrue(app.LATEST["gpu_avail"])
 

@@ -370,6 +370,21 @@ def _smi_int(v):
         return 0
 
 
+def _gpu_vendor(name):
+    """Infer a GPU's vendor slug from its marketing name — kept byte-identical to
+    the hub's app.py._gpu_vendor and the Windows probe's VendorOf so every host,
+    regardless of OS, reports the SAME `vendor` field the UI reads. Returns one of
+    {'nvidia','amd','intel','unknown'}; anything unrecognised → 'unknown'."""
+    s = (name or "").lower()
+    if re.search(r"nvidia|geforce|quadro|tesla|rtx|gtx", s):
+        return "nvidia"
+    if re.search(r"radeon|instinct|firepro|vega|\bati\b|\bamd\b", s):
+        return "amd"
+    if re.search(r"intel|iris|\buhd\b|hd graphics|\barc\b|\bxe\b|igpu", s):
+        return "intel"
+    return "unknown"
+
+
 # Patched in tests to a fake sysfs tree; the live default is the real path.
 AMD_DRM_GLOB = "/sys/class/drm/card*/device"
 
@@ -472,6 +487,7 @@ def read_gpu():
                     return {"gpu": {
                         "count":     len(lines),
                         "name":      parts[4],
+                        "vendor":    _gpu_vendor(parts[4]) if parts[4] else "nvidia",
                         "mem_used":  _smi_int(parts[0]),   # MB
                         "mem_total": _smi_int(parts[1]),   # MB
                         "util":      _smi_int(parts[2]),   # %
@@ -487,6 +503,7 @@ def read_gpu():
             return {"gpu": {
                 "count":     len(amd),
                 "name":      g0["name"],
+                "vendor":    "amd",
                 "mem_used":  sum(g["mem_used"] for g in amd),
                 "mem_total": sum(g["mem_total"] for g in amd),
                 "util":      round(sum(g["util"] for g in amd) / len(amd)),

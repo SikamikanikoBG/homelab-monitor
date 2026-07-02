@@ -135,6 +135,18 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
 .chip.info{color:var(--info);border-color:var(--info)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* GPU vendor badge — one fixed class per known vendor (never derived from the
+   raw name), plus a neutral fallback. Colour is a hint only; the text label
+   carries the meaning for a11y and colour-blind users. Tuned for dark+light. */
+.vbadge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;
+  letter-spacing:.03em;text-transform:uppercase;padding:1px 7px;border-radius:999px;
+  border:1px solid var(--bd);background:var(--inset);color:var(--mut);white-space:nowrap;
+  line-height:1.5;vertical-align:middle}
+.vbadge .vdot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.vbadge.nvidia{color:#3fb950;border-color:#3fb95066;background:#3fb9501a}
+.vbadge.amd{color:#f85149;border-color:#f8514966;background:#f851491a}
+.vbadge.intel{color:#4c8dff;border-color:#4c8dff66;background:#4c8dff1a}
+.vbadge.unknown{color:var(--mut);border-color:var(--bd);background:var(--inset)}
 /* Per-container "Check now" — on-demand, awareness-only image re-check. */
 .imgck{display:inline-flex;align-items:center;font-size:10px;font-weight:600;line-height:1.4;
   padding:1px 7px;margin-left:7px;border-radius:999px;cursor:pointer;
@@ -2976,6 +2988,20 @@ function applyIcons(scope){
 }
 const sev = p => p>=90?'var(--crit)':p>=75?'var(--warn)':'var(--ok)';
 const esc = s => (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// GPU vendor badge. XSS-safe by construction: the incoming `vendor` string is
+// ONLY ever used to pick from a fixed allow-list of CSS classes/labels — an
+// unknown/absent value falls through to the neutral 'unknown' chip and the raw
+// string is never injected into the DOM. Returns '' when vendor is missing so
+// older payloads (no vendor field) render exactly as before (no badge).
+const GPU_VENDORS={nvidia:'NVIDIA',amd:'AMD',intel:'Intel',unknown:'Other'};
+function gpuVendorBadge(vendor){
+  if(!vendor) return '';
+  const key=String(vendor).toLowerCase();
+  const cls=GPU_VENDORS.hasOwnProperty(key)?key:'unknown';
+  const label=I18N.t('gpu.vendor_'+cls, GPU_VENDORS[cls]);
+  const title=I18N.tf('gpu.vendor_tip','GPU vendor: {v}',{v:label});
+  return `<span class="vbadge ${cls}" title="${escAttr(title)}" aria-label="${escAttr(title)}"><span class="vdot" aria-hidden="true"></span>${esc(label)}</span>`;
+}
 const ICON={critical:'⛔',warning:'⚠️',ok:'✅',info:'ℹ️'};
 function colorFor(n){ if(n==='system/other')return '#6b7280'; let h=0; for(const c of n) h=(h*31+c.charCodeAt(0))>>>0; return `hsl(${h%360} 62% 56%)`; }
 function fmtLabels(L){ if(!L.length)return[]; const md=(L[L.length-1]-L[0])>2*86400;
@@ -3209,9 +3235,13 @@ function renderData(){
 
   // GPU now
   const memPct=Math.round(n.mem_used/tot*100);
+  // Distinct GPU vendors present (from the per-card list) → badge(s) on the util
+  // KPI. Absent vendor (older payloads) → no badge, KPI unchanged.
+  const gvBadges=[...new Set((n.gpus||[]).map(g=>g&&g.vendor).filter(Boolean))]
+    .map(gpuVendorBadge).join(' ');
   document.getElementById('gpukpis').innerHTML=[
     {v:fmtMB(n.mem_used)+' <span style="font-size:13px;color:var(--mut)">/ '+fmtMB(tot)+'</span>',l:I18N.t('gpu.vram_in_use','VRAM in use'),s:I18N.tf('gpu.pct_full','{n}% full',{n:memPct})},
-    {v:Math.round(n.util)+'%',l:I18N.t('gpu.util_kpi','GPU util'),s:Math.round(n.power)+' W · '+Math.round(n.temp)+'°C'},
+    {v:Math.round(n.util)+'% '+gvBadges,l:I18N.t('gpu.util_kpi','GPU util'),s:Math.round(n.power)+' W · '+Math.round(n.temp)+'°C'},
   ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
   renderGpuDetail(n.gpu_extra||{}, n.power);
   renderPerGpu(n.gpus);
@@ -3309,7 +3339,7 @@ function renderPerGpu(gpus){
     const clk = g.clk_sm>0 ? ` · ${Math.round(g.clk_sm)} MHz` : '';
     const cap = g.power_limit>0 ? `/${Math.round(g.power_limit)} W cap` : '';
     return `<div class="gpucard">
-      <div class="gpucard-h"><b>GPU ${g.idx}</b> <span class="muted">${esc(g.name||'')}</span> ${thr}
+      <div class="gpucard-h"><b>GPU ${g.idx}</b> <span class="muted">${esc(g.name||'')}</span> ${gpuVendorBadge(g.vendor)} ${thr}
         <span class="gpucard-stats">${util}% util · ${Math.round(g.power||0)} W${cap}${clk} · ${Math.round(g.temp||0)}°C${g.pstate?' · '+esc(g.pstate):''}</span></div>
       <div class="gpucard-row"><span class="gpucard-lbl">${I18N.t('col.vram','VRAM')}</span>
         <span class="gpucard-bar"><span style="width:${memPct}%;background:${tint(memPct)}"></span></span>
@@ -6460,7 +6490,7 @@ function renderFleet(){
     // GPU: util% + VRAM, only when host has a GPU
     const g = h.gpu;
     const gpu = g
-      ? `<span class="pct">${g.util||0}%</span>` +
+      ? `<span class="pct">${g.util||0}% ${gpuVendorBadge(g.vendor)}</span>` +
         `<span class="abs">${fmtMBshort(g.mem_used)} / ${fmtMBshort(g.mem_total)} VRAM</span>`
       : '<span class="muted">—</span>';
     // Load 1m: number + denominator
@@ -8245,7 +8275,8 @@ function renderSysInfo(){
                 hw.threads&&hw.threads+' threads', hw.cpu_mhz_max&&'max '+(hw.cpu_mhz_max/1000).toFixed(2)+' GHz']
                .filter(Boolean).join(' · ');
   const mem = hw.ram_total ? fmtMB(hw.ram_total)+(hw.swap_total?'  (swap '+fmtMB(hw.swap_total)+')':'') : null;
-  const gpu = hw.gpu_name ? esc(hw.gpu_name)+(hw.gpu_mem_total?'  ('+fmtMB(hw.gpu_mem_total)+')':'') : null;
+  const gpuVend = (h.gpu && h.gpu.vendor) ? '  '+gpuVendorBadge(h.gpu.vendor) : '';
+  const gpu = hw.gpu_name ? esc(hw.gpu_name)+(hw.gpu_mem_total?'  ('+fmtMB(hw.gpu_mem_total)+')':'')+gpuVend : null;
   const hwh = [
     infoRow(I18N.t('sys.cpu','CPU'),      hw.cpu_model ? esc(hw.cpu_model)+(hw.cpu_vendor?'  ('+esc(hw.cpu_vendor)+')':'') : null, hw.cpu_model||''),
     infoRow(I18N.t('sys.topology','CPU topology'), topo || null, topo||''),
