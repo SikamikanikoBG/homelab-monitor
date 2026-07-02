@@ -42,6 +42,7 @@ MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
 _DISK_IO_RETENTION = 7 * 86400   # per-device disk-I/O history: dense, 7-day ring
+_PROC_IO_RETENTION = 72 * 3600   # per-process I/O ring: short, spike-attribution only
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 HOST_ROOT    = os.environ.get("HOST_ROOT", "/rootfs")          # host / mounted read-only (optional)
 PORT         = int(os.environ.get("PORT", "9800"))
@@ -164,6 +165,8 @@ CREATE TABLE IF NOT EXISTS disk_samples(ts INTEGER NOT NULL, mount TEXT NOT NULL
 CREATE INDEX IF NOT EXISTS idx_disk_ts ON disk_samples(mount, ts);
 CREATE TABLE IF NOT EXISTS disk_io_samples(ts INTEGER NOT NULL, device TEXT NOT NULL, read_mb_s REAL, write_mb_s REAL, util_pct REAL);
 CREATE INDEX IF NOT EXISTS idx_diskio_ts ON disk_io_samples(device, ts);
+CREATE TABLE IF NOT EXISTS proc_io_samples(ts INTEGER NOT NULL, pid INTEGER, comm TEXT, read_bps INTEGER, write_bps INTEGER);
+CREATE INDEX IF NOT EXISTS idx_procio_ts ON proc_io_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_gpus_ts   ON gpu_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_net_ts    ON net_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
@@ -6863,11 +6866,33 @@ def sample_once():
                                "VALUES(?,?,?,?,?)",
                                (ts, it["device"], it.get("read_mb_s"),
                                 it.get("write_mb_s"), it.get("util_pct")))
+            # Persist a BOUNDED per-process I/O ring: only the top-few writers +
+            # top-few readers from the attribution we already computed (comm only,
+            # never argv). Deduped by pid → at most ~6 rows/poll, not all ~20
+            # candidates. Feeds spike-time attribution (_proc_io_at); NEVER the
+            # public status surface. Rides the existing ~45s cadence (no new loop).
+            _pio = (HEALTH.get("processes") or {}).get("io") or {}
+            if _pio.get("available"):
+                _seen_pids, _pio_rows = set(), []
+                for _r in (sorted((_pio.get("writers") or []),
+                                  key=lambda r: -(r.get("write_b_s") or 0))[:3]
+                           + sorted((_pio.get("readers") or []),
+                                    key=lambda r: -(r.get("read_b_s") or 0))[:3]):
+                    _p = _r.get("pid")
+                    if _p in _seen_pids:
+                        continue
+                    _seen_pids.add(_p)
+                    _pio_rows.append((ts, _p, _r.get("name"),
+                                      int(_r.get("read_b_s") or 0), int(_r.get("write_b_s") or 0)))
+                if _pio_rows:
+                    DB.executemany("INSERT INTO proc_io_samples(ts,pid,comm,read_bps,write_bps) "
+                                   "VALUES(?,?,?,?,?)", _pio_rows)
         if ts % 360 < INTERVAL:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc", "disk_samples"):
                 DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
             DB.execute("DELETE FROM status_history WHERE ts<?", (ts - _STATHIST_RETENTION,))
             DB.execute("DELETE FROM disk_io_samples WHERE ts<?", (ts - _DISK_IO_RETENTION,))
+            DB.execute("DELETE FROM proc_io_samples WHERE ts<?", (ts - _PROC_IO_RETENTION,))
         if ts % 60 < INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             DB.execute("UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
                        "WHERE status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < ?",
@@ -10369,6 +10394,41 @@ def _explain_running(cur, ts):
     return {"models": models, "procs": procs, "power": power}
 
 
+def _proc_io_at(ts, window=120, limit=3):
+    """Spike-time per-process I/O attribution from the persisted `proc_io_samples`
+    ring: the heaviest writer(s)/reader(s) whose samples fall in the anomaly window
+    [ts-window, ts+window]. Returns {"available": True, "writers": [...],
+    "readers": [...]} (each item {"name", "read_b_s"/"write_b_s"} — the SAME shape
+    as the live attribution so the explainer consumes both uniformly), or None when
+    no history covers the window (caller then falls back to the live leader). Comm
+    only, bounded/windowed query, pure DB read — never triggers an LLM, never
+    raises. NOT exposed on any public surface."""
+    try:
+        ts = int(ts)
+    except (TypeError, ValueError):
+        return None
+    lo, hi = ts - window, ts + window
+    writers, readers = [], []
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            for comm, w in cur.execute(
+                    "SELECT comm, MAX(write_bps) w FROM proc_io_samples "
+                    "WHERE ts>=? AND ts<=? AND write_bps>0 "
+                    "GROUP BY comm ORDER BY w DESC LIMIT ?", (lo, hi, limit)):
+                writers.append({"name": comm, "write_b_s": int(w or 0)})
+            for comm, r in cur.execute(
+                    "SELECT comm, MAX(read_bps) r FROM proc_io_samples "
+                    "WHERE ts>=? AND ts<=? AND read_bps>0 "
+                    "GROUP BY comm ORDER BY r DESC LIMIT ?", (lo, hi, limit)):
+                readers.append({"name": comm, "read_b_s": int(r or 0)})
+    except Exception:
+        return None
+    if not writers and not readers:
+        return None
+    return {"available": True, "writers": writers, "readers": readers}
+
+
 def _explain_context(point, now=None):
     """Assemble the full deterministic context for an 'explain this spike' call
     from a (sanitised) anomaly/point payload. Pure reads; never raises."""
@@ -10399,12 +10459,23 @@ def _explain_context(point, now=None):
             ctx["disk_io"] = snap
             ctx["disk_io_summary"] = dio.get("summary")
             ctx["busy_procs"] = ((HEALTH.get("processes") or {}).get("by_cpu") or [])[:3]
-            _attr = ((HEALTH.get("processes") or {}).get("io")) or {}
-            if _attr.get("available"):
-                # Real per-process leaders (comm only) — precise I/O attribution
-                # for the explainer; cached read, never triggers an LLM call.
-                ctx["io_writers"] = _attr.get("writers") or []
-                ctx["io_readers"] = _attr.get("readers") or []
+            # Spike-time attribution: prefer the PERSISTED ring joined to the
+            # anomaly window ("who was writing AT the spike") over the live "now"
+            # leaders — a disk_io spike explained later can then still name the
+            # historical writer. Pure DB read; never triggers an LLM call. Falls
+            # back to the live attribution when no history covers the window.
+            _hist = _proc_io_at(ts)
+            if _hist and _hist.get("available"):
+                ctx["io_writers"] = _hist.get("writers") or []
+                ctx["io_readers"] = _hist.get("readers") or []
+                ctx["io_historical"] = True
+            else:
+                _attr = ((HEALTH.get("processes") or {}).get("io")) or {}
+                if _attr.get("available"):
+                    # Real per-process leaders (comm only) — precise I/O attribution
+                    # for the explainer; cached read, never triggers an LLM call.
+                    ctx["io_writers"] = _attr.get("writers") or []
+                    ctx["io_readers"] = _attr.get("readers") or []
         except Exception:
             pass
     try:
@@ -10464,15 +10535,19 @@ def _explain_facts(c):
         lines.append("Heaviest power-attributed entity then: {n} (~{w} W).".format(
             n=p.get("name"), w=p.get("watts")))
     # Real per-process disk-I/O attribution (comm only) for disk_io spikes — the
-    # precise "what was writing/reading heavily" leaders, when /proc/<pid>/io read.
+    # precise "what was writing/reading heavily" leaders. When it comes from the
+    # persisted ring joined to the anomaly window it names who was writing DURING
+    # the spike (historical); otherwise it's the live "now" leader.
+    _hist = c.get("io_historical")
+    _when = "during the spike" if _hist else "then"
     iw = (c.get("io_writers") or [])
     if iw:
-        lines.append("Heaviest writer then: {n} ({r}).".format(
-            n=iw[0].get("name"), r=_fmt_bps(iw[0].get("write_b_s"))))
+        lines.append("Heaviest writer {w}: {n} ({r}).".format(
+            w=_when, n=iw[0].get("name"), r=_fmt_bps(iw[0].get("write_b_s"))))
     ir = (c.get("io_readers") or [])
     if ir:
-        lines.append("Heaviest reader then: {n} ({r}).".format(
-            n=ir[0].get("name"), r=_fmt_bps(ir[0].get("read_b_s"))))
+        lines.append("Heaviest reader {w}: {n} ({r}).".format(
+            w=_when, n=ir[0].get("name"), r=_fmt_bps(ir[0].get("read_b_s"))))
     if len(lines) == 1:
         lines.append("No surrounding samples or running-process detail is available for that moment.")
     return lines
@@ -10605,6 +10680,15 @@ def _incident_explain_context(inc, now=None):
     except Exception as e:
         print("incident explain ctx error:", e, flush=True)
         ctx["running"] = {}
+    # If a disk_io series is among the members, join the persisted per-process I/O
+    # ring at the incident anchor so the explanation can name who was writing AT
+    # the spike (historical). Pure DB read; no LLM. Absent history → simply omitted.
+    if any(str(m.get("series") or "").startswith("disk_io") for m in members):
+        _hist = _proc_io_at(anchor)
+        if _hist and _hist.get("available"):
+            ctx["io_writers"] = _hist.get("writers") or []
+            ctx["io_readers"] = _hist.get("readers") or []
+            ctx["io_historical"] = True
     return ctx
 
 
@@ -10645,6 +10729,16 @@ def _incident_explain_facts(ctx):
         p = r["power"][0]
         lines.append("Heaviest power-attributed entity then: {n} (~{w} W).".format(
             n=p.get("name"), w=p.get("watts")))
+    # Spike-time per-process disk-I/O attribution (comm only) from the persisted
+    # ring, when a disk_io member fired — "who was writing DURING the spike".
+    iw = (ctx.get("io_writers") or [])
+    if iw:
+        lines.append("Heaviest writer during the spike: {n} ({r}).".format(
+            n=iw[0].get("name"), r=_fmt_bps(iw[0].get("write_b_s"))))
+    ir = (ctx.get("io_readers") or [])
+    if ir:
+        lines.append("Heaviest reader during the spike: {n} ({r}).".format(
+            n=ir[0].get("name"), r=_fmt_bps(ir[0].get("read_b_s"))))
     return lines
 
 

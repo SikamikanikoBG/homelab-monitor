@@ -246,5 +246,211 @@ class TestCopilotEnrichmentNoLLM(unittest.TestCase):
         self.assertTrue(any("postgres" in f for f in facts))
 
 
+class TestProcIoRingSchema(unittest.TestCase):
+    """The persisted per-process I/O ring: additive/idempotent migration."""
+    def test_migration_idempotent(self):
+        with app.LOCK:
+            app.DB.executescript(app._DB_SCHEMA)
+            app.DB.executescript(app._DB_SCHEMA)          # re-run must not raise
+            cols = [r[1] for r in app.DB.execute(
+                "PRAGMA table_info(proc_io_samples)").fetchall()]
+        self.assertEqual(cols, ["ts", "pid", "comm", "read_bps", "write_bps"])
+
+
+def _seed_pio(rows):
+    """rows: iterable of (ts, pid, comm, read_bps, write_bps)."""
+    with app.LOCK:
+        app.DB.execute("DELETE FROM proc_io_samples")
+        app.DB.executemany(
+            "INSERT INTO proc_io_samples(ts,pid,comm,read_bps,write_bps) VALUES(?,?,?,?,?)",
+            list(rows))
+        app.DB.commit()
+
+
+class TestProcIoAt(unittest.TestCase):
+    """_proc_io_at joins the persisted ring to an anomaly window."""
+    def test_returns_top_writer_in_window(self):
+        t = 1_000_000
+        _seed_pio([
+            (t,     10, "postgres", 0,      42 * MB),
+            (t + 5, 11, "rsync",    9 * MB, 1 * MB),
+            (t - 5, 10, "postgres", 0,      40 * MB),
+        ])
+        r = app._proc_io_at(t, window=120)
+        self.assertTrue(r["available"])
+        self.assertEqual(r["writers"][0]["name"], "postgres")
+        self.assertAlmostEqual(r["writers"][0]["write_b_s"], 42 * MB, delta=1)
+        self.assertEqual(r["readers"][0]["name"], "rsync")
+
+    def test_returns_none_when_no_history_in_window(self):
+        _seed_pio([(1_000_000, 10, "postgres", 0, 42 * MB)])
+        self.assertIsNone(app._proc_io_at(2_000_000, window=120))   # far from any row
+
+    def test_returns_none_on_empty_ring(self):
+        _seed_pio([])
+        self.assertIsNone(app._proc_io_at(1_000_000))
+
+    def test_bounded_query_limit(self):
+        t = 500_000
+        _seed_pio([(t, p, "w%02d" % p, 0, (p + 1) * MB) for p in range(10)])
+        r = app._proc_io_at(t, window=60, limit=3)
+        self.assertLessEqual(len(r["writers"]), 3)
+
+
+class TestProcIoRingPersistence(unittest.TestCase):
+    """The poll-path INSERT persists ONLY the top-few writers/readers (bounded),
+    deduped by pid — not all candidates."""
+    def _attr_many(self):
+        writers = [{"name": "w%02d" % p, "pid": p, "read_b_s": 0,
+                    "write_b_s": (100 - p) * MB} for p in range(1, 11)]
+        readers = [{"name": "r%02d" % p, "pid": 100 + p, "read_b_s": (100 - p) * MB,
+                    "write_b_s": 0} for p in range(1, 11)]
+        return {"available": True, "writers": writers, "readers": readers,
+                "top_writer": writers[0], "top_reader": readers[0]}
+
+    def _run_persist(self, ts):
+        """Exercise ONLY the ring-INSERT snippet with the real DB (mirrors the
+        ~45s cadence block: top-3 writers + top-3 readers, deduped by pid)."""
+        _pio = self._attr_many()
+        seen, out = set(), []
+        for _r in (sorted(_pio["writers"], key=lambda r: -(r.get("write_b_s") or 0))[:3]
+                   + sorted(_pio["readers"], key=lambda r: -(r.get("read_b_s") or 0))[:3]):
+            p = _r.get("pid")
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append((ts, p, _r.get("name"),
+                        int(_r.get("read_b_s") or 0), int(_r.get("write_b_s") or 0)))
+        with app.LOCK:
+            app.DB.executemany(
+                "INSERT INTO proc_io_samples(ts,pid,comm,read_bps,write_bps) VALUES(?,?,?,?,?)",
+                out)
+            app.DB.commit()
+        return out
+
+    def test_persists_only_top_few(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM proc_io_samples")
+            app.DB.commit()
+        rows = self._run_persist(1234)
+        # top-3 writers + top-3 readers, no pid overlap here → exactly 6 rows.
+        self.assertEqual(len(rows), 6)
+        with app.LOCK:
+            n = app.DB.execute("SELECT COUNT(*) FROM proc_io_samples").fetchone()[0]
+            comms = {r[0] for r in app.DB.execute("SELECT comm FROM proc_io_samples")}
+        self.assertEqual(n, 6)                     # NOT all 20 candidates
+        self.assertIn("w01", comms)                # heaviest writer kept
+        self.assertNotIn("w10", comms)             # 10th writer NOT persisted
+
+    def test_prune_enforces_retention(self):
+        old = 1000
+        fresh = old + app._PROC_IO_RETENTION + 10
+        _seed_pio([(old, 1, "stale", 0, MB), (fresh, 2, "fresh", 0, MB)])
+        with app.LOCK:
+            app.DB.execute("DELETE FROM proc_io_samples WHERE ts<?",
+                           (fresh - app._PROC_IO_RETENTION,))
+            app.DB.commit()
+            comms = {r[0] for r in app.DB.execute("SELECT comm FROM proc_io_samples")}
+        self.assertIn("fresh", comms)
+        self.assertNotIn("stale", comms)           # beyond 72h retention → pruned
+
+
+class TestSpikeAttributionJoinNoLLM(unittest.TestCase):
+    """The explain context names the HISTORICAL writer from the ring when present,
+    falls back to the live leader otherwise — and the join makes ZERO LLM calls."""
+    def _live_attr(self):
+        return {"available": True,
+                "top_writer": {"name": "live_writer", "pid": 9, "read_b_s": 0, "write_b_s": 5 * MB},
+                "writers": [{"name": "live_writer", "pid": 9, "read_b_s": 0, "write_b_s": 5 * MB}],
+                "readers": []}
+
+    def test_names_historical_writer_over_live(self):
+        now = int(time.time())
+        ts = now - 3600
+        _seed_pio([(ts, 10, "spike_writer", 0, 80 * MB)])
+        snap = {"available": True, "summary": {"total_read_mb_s": 9, "total_write_mb_s": 80},
+                "items": [{"device": "sda", "read_mb_s": 9, "write_mb_s": 80, "util_pct": 90}]}
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch("app._ollama_generate_stream", side_effect=AssertionError("LLM must not run")), \
+             patch.dict(app.HEALTH, {"disk_io": snap, "processes": {"io": self._live_attr()}}):
+            ctx = app._explain_context({"key": "disk_io:sda", "ts": ts, "direction": "spike",
+                                        "value": 80.0, "baseline": 5.0, "z": 7.0, "unit": "MB/s"})
+            facts = app._explain_facts(ctx)
+        self.assertTrue(ctx.get("io_historical"))
+        self.assertEqual(ctx["io_writers"][0]["name"], "spike_writer")
+        self.assertTrue(any("spike_writer" in f and "during the spike" in f for f in facts))
+        self.assertFalse(any("live_writer" in f for f in facts))
+
+    def test_falls_back_to_live_when_no_history(self):
+        now = int(time.time())
+        _seed_pio([])                               # empty ring → no window coverage
+        snap = {"available": True, "summary": {"total_read_mb_s": 0, "total_write_mb_s": 5},
+                "items": [{"device": "sda", "read_mb_s": 0, "write_mb_s": 5, "util_pct": 50}]}
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch.dict(app.HEALTH, {"disk_io": snap, "processes": {"io": self._live_attr()}}):
+            ctx = app._explain_context({"key": "disk_io:sda", "ts": now, "direction": "spike",
+                                        "value": 5.0, "baseline": 1.0, "z": 4.0, "unit": "MB/s"})
+            facts = app._explain_facts(ctx)
+        self.assertFalse(ctx.get("io_historical"))
+        self.assertEqual(ctx["io_writers"][0]["name"], "live_writer")
+        self.assertTrue(any("live_writer" in f for f in facts))
+
+    def test_proc_io_at_makes_no_llm_call(self):
+        t = int(time.time())
+        _seed_pio([(t, 10, "postgres", 0, 42 * MB)])
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch("app._ollama_generate_stream", side_effect=AssertionError("LLM must not run")):
+            r = app._proc_io_at(t)
+        self.assertEqual(r["writers"][0]["name"], "postgres")
+
+
+class TestIncidentSpikeAttributionNoLLM(unittest.TestCase):
+    """An incident whose members include a disk_io series names the historical
+    writer from the ring — with ZERO LLM calls in the context/facts path."""
+    def test_incident_facts_name_historical_writer(self):
+        now = int(time.time())
+        anchor = now - 1800
+        _seed_pio([(anchor, 10, "backup_job", 0, 66 * MB)])
+        inc = {"id": "inc1", "severity": "warning", "state": "open",
+               "opened_at": anchor, "updated_at": anchor,
+               "members": [{"series": "disk_io:sda", "direction": "spike",
+                            "last_seen": anchor, "active": True,
+                            "peak_value": 66.0, "baseline": 3.0, "peak_z": 6.0, "unit": "MB/s"}]}
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch("app._ollama_generate_stream", side_effect=AssertionError("LLM must not run")):
+            ctx = app._incident_explain_context(inc, now=now)
+            facts = app._incident_explain_facts(ctx)
+        self.assertTrue(ctx.get("io_historical"))
+        self.assertTrue(any("backup_job" in f and "during the spike" in f for f in facts))
+
+    def test_incident_without_diskio_member_has_no_io_attr(self):
+        now = int(time.time())
+        _seed_pio([(now - 100, 10, "backup_job", 0, 66 * MB)])
+        inc = {"id": "inc2", "severity": "warning", "state": "open",
+               "opened_at": now, "updated_at": now,
+               "members": [{"series": "gpu_util", "direction": "spike",
+                            "last_seen": now, "active": True}]}
+        ctx = app._incident_explain_context(inc, now=now)
+        self.assertNotIn("io_writers", ctx)         # not joined for non-disk_io incidents
+
+
+class TestProcIoRingPrivacy(unittest.TestCase):
+    """The per-process ring + spike attribution must NEVER reach a public surface."""
+    def test_ring_absent_from_public_status(self):
+        t = int(time.time())
+        _seed_pio([(t, 10, "secret_proc", 0, 99 * MB)])
+        pub = app.build_public_status()
+        blob = str(pub)
+        self.assertNotIn("secret_proc", blob)
+        self.assertNotIn("proc_io_samples", blob)
+        self.assertNotIn("write_bps", blob)
+
+    def test_build_public_status_does_not_read_ring(self):
+        # Even with a poisoned ring the public payload stays leak-free.
+        t = int(time.time())
+        _seed_pio([(t, 1, "leakybench", 12 * MB, 34 * MB)])
+        self.assertNotIn("leakybench", str(app.build_public_status()))
+
+
 if __name__ == "__main__":
     unittest.main()
