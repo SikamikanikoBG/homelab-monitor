@@ -8354,7 +8354,10 @@ function renderDiskIo(){
       anomsByDev[a.device || a.key.slice(8)]=a;
     }
   });
-  const busiest=items.reduce((m,it)=>(it.util_pct>(m?m.util_pct:-1)?it:m), null);
+  // Only numeric-util devices are eligible: the Windows probe can emit util_pct:null,
+  // and null>-1 is truthy in JS, so a null-util device could wrongly "win" and then
+  // busiest.util_pct.toFixed(0) would throw. Guard with Number.isFinite.
+  const busiest=items.reduce((m,it)=>(Number.isFinite(it.util_pct)&&it.util_pct>(m?m.util_pct:-1)?it:m), null);
   const K=[
     {v:(s.total_read_mb_s||0).toFixed(1),  l:I18N.t('diskio.k_read','Total read'),  s:'MB/s'},
     {v:(s.total_write_mb_s||0).toFixed(1), l:I18N.t('diskio.k_write','Total write'), s:'MB/s'},

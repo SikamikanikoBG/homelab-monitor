@@ -3291,6 +3291,24 @@ def _gpu_sessions(rows, interval, active_util=_ACTIVE_UTIL, max_gap=3, min_len=2
 _disk_io_prev = {}
 _SECTOR_BYTES = 512
 
+# Partition-name matcher for the summary rollup. A partition is a whole-disk name
+# plus a trailing partition suffix, per the kernel's block-device naming:
+#   • classic disks:   sdaN / vdaN / hdaN / xvdaN   (letters + trailing digits)
+#   • nvme / mmc / md: nvme0n1pN / mmcblk0pN / md0pN (a digit, then 'p', digits)
+# Whole disks (sda, nvme0n1, md0) do NOT match. md*/dm* aggregates are excluded
+# separately by name prefix so their stacked members aren't double-counted.
+_DISK_PART_RE = re.compile(r"^(?:sd|vd|hd|xvd)[a-z]+\d+$|^.+\dp\d+$")
+
+def _is_physical_disk(dev):
+    """True only for physical whole-disks — the set the SUMMARY should sum so that
+    RAID/dm aggregates and partitions (which restate the same bytes) aren't
+    triple-counted. Per-device rows keep every device; only the rollup uses this."""
+    if dev.startswith("md") or dev.startswith("dm"):
+        return False                       # RAID/device-mapper aggregate
+    if _DISK_PART_RE.match(dev):
+        return False                       # a partition of some whole disk
+    return True
+
 def collect_disk_io():
     """Per-device throughput (MB/s), utilisation (%) and avg op-latency (ms) from
     /proc/diskstats. First poll is a warm-up (no deltas yet). Never raises."""
@@ -3352,12 +3370,16 @@ def collect_disk_io():
     except Exception:
         pass
     out.sort(key=lambda x: -(x["read_mb_s"] + x["write_mb_s"]))
+    # Summary totals sum PHYSICAL whole-disks only: md/dm RAID aggregates and
+    # partitions restate the same bytes as their spindles, so including them
+    # overstated the headline KPI ~3-4x on stacked (md-RAID) hosts.
+    phys = [x for x in out if _is_physical_disk(x["device"])]
     return {
         "available": bool(out),
         "warming_up": not out,
         "summary": {
-            "total_read_mb_s":  round(sum(x["read_mb_s"]  for x in out), 1),
-            "total_write_mb_s": round(sum(x["write_mb_s"] for x in out), 1),
+            "total_read_mb_s":  round(sum(x["read_mb_s"]  for x in phys), 1),
+            "total_write_mb_s": round(sum(x["write_mb_s"] for x in phys), 1),
         },
         "items": out,
         "at": int(now),
@@ -9267,9 +9289,11 @@ _ASK_TOPICS = {
                  "utilization", "util", "healthy", "health"),
     "disk":     ("disk", "disks", "storage", "drive", "mount", "filesystem", "fill",
                  "filling", "full", "space", "free", "/backup", "/data"),
-    "disk_io":  ("i/o", "io", "iops", "throughput", "read", "reads", "reading",
-                 "write", "writes", "writing", "diskio", "latency", "seeks",
-                 "mb/s", "sda", "nvme", "vda"),
+    # Deliberately specific: bare "read"/"write"/"io" were dropped because whole-
+    # token matching made unrelated questions ("read the logs") pull disk-I/O
+    # facts. Multi-word entries (with a space) are matched as substrings.
+    "disk_io":  ("diskio", "i/o", "disk i/o", "disk io", "iops", "throughput",
+                 "latency", "seeks", "mb/s", "sda", "nvme", "vda"),
     "cost":     ("cost", "costs", "expensive", "cheap", "cheapest", "price", "pricey",
                  "budget", "spend", "spending", "money", "bill", "energy", "kwh",
                  "electricity", "eur", "euro", "euros", "dollar", "dollars"),
@@ -9293,14 +9317,20 @@ def _ask_tokens(q):
 
 
 def _ask_detect_topics(q):
-    """Return the set of topic keys whose keyword set intersects the question."""
+    """Return the set of topic keys whose keyword set matches the question.
+    Single-token keywords match on word boundaries (the tokenizer); multi-word
+    keywords (those containing a space, e.g. "disk io") match as substrings so a
+    phrase can trigger without reintroducing over-broad bare tokens."""
     toks = _ask_tokens(q)
     if not toks:
         return set()
+    ql = (q or "").lower()
     out = set()
     for topic, kws in _ASK_TOPICS.items():
-        if toks & set(kws):
-            out.add(topic)
+        for kw in kws:
+            if (kw in ql) if " " in kw else (kw in toks):
+                out.add(topic)
+                break
     return out
 
 

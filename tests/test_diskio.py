@@ -88,6 +88,39 @@ class TestCollectDiskIo(unittest.TestCase):
                         _dline("sdb", 0, 0, 0, 0, 8192, 0, 0)], now=4001.0)  # 4 MB/s
         self.assertEqual([it["device"] for it in r["items"]], ["sdb", "sda"])
 
+    def test_summary_counts_physical_whole_disks_only(self):
+        # Stacked layout: physical spindle sda (+ its partition sda1) assembled into
+        # an md-RAID md0 (+ its partition md0p1), and an nvme whole-disk nvme0n1
+        # (+ partition nvme0n1p1). The md aggregate and every partition restate the
+        # same bytes as their whole-disks, so the SUMMARY must count only sda+nvme0n1.
+        devs = ["sda", "sda1", "md0", "md0p1", "nvme0n1", "nvme0n1p1"]
+        self._poll([_dline(d, 0, 0, 0, 0, 0, 0, 0) for d in devs], now=5000.0)
+        # dt=1s. Physical writes: sda 2048 sec -> 1.0 MB/s, nvme0n1 4096 -> 2.0 MB/s.
+        # Every non-physical layer gets a big write that must NOT be summed.
+        lines = [
+            _dline("sda",       0, 0, 0, 0, 2048, 0, 0),
+            _dline("sda1",      0, 0, 0, 0, 2048, 0, 0),   # partition (excluded)
+            _dline("md0",       0, 0, 0, 0, 4096, 0, 0),   # RAID aggregate (excluded)
+            _dline("md0p1",     0, 0, 0, 0, 4096, 0, 0),   # md partition (excluded)
+            _dline("nvme0n1",   0, 0, 0, 0, 4096, 0, 0),
+            _dline("nvme0n1p1", 0, 0, 0, 0, 4096, 0, 0),   # nvme partition (excluded)
+        ]
+        r = self._poll(lines, now=5001.0)
+        # Every device is still listed per-device...
+        self.assertEqual({it["device"] for it in r["items"]}, set(devs))
+        # ...but the summary sums physical whole-disks only: 1.0 + 2.0 = 3.0.
+        self.assertEqual(r["summary"]["total_write_mb_s"], 3.0)
+        self.assertEqual(r["summary"]["total_read_mb_s"], 0.0)
+        # helper contract, spelled out
+        self.assertTrue(app._is_physical_disk("sda"))
+        self.assertTrue(app._is_physical_disk("nvme0n1"))
+        self.assertTrue(app._is_physical_disk("vda"))
+        self.assertFalse(app._is_physical_disk("sda1"))
+        self.assertFalse(app._is_physical_disk("nvme0n1p1"))
+        self.assertFalse(app._is_physical_disk("md0"))
+        self.assertFalse(app._is_physical_disk("md0p1"))
+        self.assertFalse(app._is_physical_disk("dm-0"))
+
     def test_no_proc_diskstats_unavailable(self):
         with patch("app.os.path.exists", return_value=False):
             r = app.collect_disk_io()
@@ -202,7 +235,17 @@ class TestDiskIoAnomaly(unittest.TestCase):
 class TestCopilotDiskIoTopic(unittest.TestCase):
     def test_topic_detected(self):
         self.assertIn("disk_io", app._ask_detect_topics("why is disk i/o so high right now"))
-        self.assertIn("disk_io", app._ask_detect_topics("what is writing heavily to sda"))
+        self.assertIn("disk_io", app._ask_detect_topics("what is happening on sda"))
+
+    def test_narrow_keywords_no_false_positive(self):
+        # bare read/write/io were dropped: an unrelated "read"/"write" question
+        # must NOT pull disk-I/O facts.
+        self.assertNotIn("disk_io", app._ask_detect_topics("read the logs for me"))
+        self.assertNotIn("disk_io", app._ask_detect_topics("write a summary of today"))
+        # but the specific disk-I/O phrasings still trigger.
+        for q in ("why is disk i/o high", "disk io looks busy", "disk latency spiking",
+                  "iops through the roof", "throughput on nvme0n1", "mb/s on vda"):
+            self.assertIn("disk_io", app._ask_detect_topics(q), q)
 
     def test_topic_facts_pull_snapshot_and_procs(self):
         snap = {"available": True,
