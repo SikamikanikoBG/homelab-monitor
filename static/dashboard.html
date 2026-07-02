@@ -1330,6 +1330,16 @@ h2{ font-weight:600; letter-spacing:.01em }
 h2 .hic{ opacity:.9 }
 /* Sub-tab row: a touch more air so the tabs read as a segmented control. */
 .subtabs{ gap:2px }
+/* Disk I/O tab: inline utilisation micro-bar, trend sparkline, tidy anomaly rows. */
+.dio-spark{ width:120px; height:26px; display:block }
+.dio-ubar{ display:inline-block; vertical-align:middle; width:70px; height:7px; border-radius:4px;
+           background:var(--bd); overflow:hidden; margin-left:6px }
+.dio-ubar>span{ display:block; height:100%; border-radius:4px;
+                background:linear-gradient(90deg,#3b82f6,#f59e0b) }
+.dio-tbl td{ vertical-align:middle }
+.dio-tbl tr.dio-anrow td{ padding-top:0; border-top:0 }
+.dio-tbl tr.dio-exrow td{ padding-top:0; border-top:0 }
+.dio-explain{ margin:4px 0 8px }
 </style></head><body><div class="app"><aside class="side" id="sidebar"></aside><main class="main"><div class="topbar" id="topbar"></div><div class="content">
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
@@ -2518,6 +2528,16 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
   <div id="disksbody"></div>
 </section>
 
+<!-- ───────── Disk I/O ───────── -->
+<section data-tab="diskio" hidden>
+  <div class="card">
+    <h2 data-i18n="diskio.title">💽 Disk I/O</h2>
+    <p class="cap" data-i18n="diskio.cap">Live per-device block-device throughput, utilisation and average op-latency, with trend sparklines from the 7-day history. Read-only — nothing here touches your disks.</p>
+    <div class="grid" id="diskio-kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"></div>
+    <div id="diskio-body" style="margin-top:12px"></div>
+  </div>
+</section>
+
 <!-- ───────── Network ───────── -->
 <section data-tab="network" hidden>
   <div class="card" id="netio-card" hidden><h2 data-i18n="net.throughput_title">📶 Throughput</h2>
@@ -2806,6 +2826,7 @@ const TABS = [
   {id:'uptime',     label:'Uptime',     charts:false, zone:'monitoring'},
   {id:'host',       label:'System',     charts:true,  zone:'monitoring'},
   {id:'disks',      label:'Disks',      charts:false, zone:'monitoring'},
+  {id:'diskio',     label:'Disk I/O',   charts:false, zone:'monitoring'},
   {id:'network',    label:'Network',    charts:false, zone:'monitoring'},
   {id:'security',   label:'Security',   charts:false, zone:'monitoring'},
   {id:'models',     label:'AI Models',  charts:false, zone:'ai'},
@@ -3060,6 +3081,7 @@ function showTab(id){
   if(id==='costs') renderCosts(true);
   if(id==='host')     renderHostTab();
   if(id==='disks')    renderDisksTab();
+  if(id==='diskio')   renderDiskIo();
   if(id==='network')  renderNetwork();
   if(id==='security') renderSecurity();
   if(id==='services') renderServicesTab();
@@ -3192,6 +3214,7 @@ function renderData(){
   // refresh (and on first load) when one of them is the visible tab.
   if(TAB==='network')  renderNetwork();
   if(TAB==='security') renderSecurity();
+  if(TAB==='diskio')   renderDiskIo();   // live per-device MB/s from HH.disk_io
 
   buildCharts();
 }
@@ -8275,6 +8298,126 @@ async function renderNetIO(){
   document.getElementById('nettalkers').innerHTML = talk.map(t=>
     `<tr><td>${esc(t.name)}</td><td>${fmtBytes(t.bytes_in)}</td><td>${fmtBytes(t.bytes_out)}</td><td><b>${fmtBytes(t.total)}</b></td></tr>`).join('');
 }
+// ── Disk I/O tab ──────────────────────────────────────────────────────────────
+// Current per-device throughput/util/latency from /api/health (HH.disk_io) +
+// 7-day trend sparklines from /api/diskio/history + a per-device z-score anomaly
+// chip (reusing FORECAST.anomalies, key 'disk_io:<dev>') with a one-click
+// "Explain this spike" that rides the existing Copilot explain stream. XSS-safe.
+let DIO_HIST={devices:[],at:0}, DIO_HIST_BUSY=false;
+async function loadDiskIoHistory(force){
+  if(DIO_HIST_BUSY) return;
+  if(!force && Date.now()-DIO_HIST.at < 30000 && DIO_HIST.devices.length) return;
+  DIO_HIST_BUSY=true;
+  try{
+    const j=await(await fetch('/api/diskio/history?window=21600')).json();
+    DIO_HIST={devices:(j&&j.devices)||[], at:Date.now()};
+  }catch(e){ /* keep last */ }
+  DIO_HIST_BUSY=false;
+  if(TAB==='diskio') renderDiskIo();
+}
+// Hand-rolled trend sparkline (no chart lib): read (fill+line) over write (line).
+function _dioSpark(rd, wr){
+  const all=[].concat(rd||[], wr||[]).filter(v=>v!=null&&!isNaN(v));
+  if(all.length<2) return '<span class="muted" style="font-size:11px">'+I18N.t('diskio.no_hist','collecting…')+'</span>';
+  const max=Math.max(1,...all), W=120, H=26, n=Math.max(rd.length,wr.length), den=(n-1)||1;
+  const line=arr=>arr.map((v,i)=>`${(i/den*W).toFixed(1)},${(H-((v||0)/max*H)).toFixed(1)}`).join(' ');
+  const rpts=line(rd), wpts=line(wr);
+  const area=rd.length?`${rpts} ${W},${H} 0,${H}`:'';
+  const lbl=I18N.tf('diskio.spark_aria','read/write trend, peak {v} MB/s',{v:max.toFixed(1)});
+  return `<svg class="dio-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${escAttr(lbl)}">`
+    +(area?`<polyline points="${area}" fill="var(--dio-rfill,rgba(59,130,246,.14))" stroke="none"></polyline>`:'')
+    +(rpts?`<polyline points="${rpts}" fill="none" stroke="var(--dio-r,#3b82f6)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"></polyline>`:'')
+    +(wpts?`<polyline points="${wpts}" fill="none" stroke="var(--dio-w,#f59e0b)" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="2 2"></polyline>`:'')
+    +`</svg>`;
+}
+function renderDiskIo(){
+  const body=document.getElementById('diskio-body'), kpi=document.getElementById('diskio-kpis');
+  if(!body||!kpi) return;
+  loadForecast();            // keep anomalies fresh (own 60s cache; cheap)
+  loadDiskIoHistory();       // trend series (own 30s cache)
+  const dio=(HH&&HH.disk_io)||{};
+  if(!dio.available){
+    kpi.innerHTML='';
+    const msg = dio.warming_up
+      ? I18N.t('diskio.warming','Warming up — per-device throughput appears after the next poll (~15s).')
+      : (dio.reason ? I18N.t('diskio.unavailable','Disk I/O stats are not available on this host.')
+                    : I18N.t('diskio.warming','Warming up — per-device throughput appears after the next poll (~15s).'));
+    body.innerHTML='<div class="ins info" style="margin:2px 0"><div class="ic">ℹ️</div><div><div class="t">'
+      +I18N.t('diskio.empty_t','No disk I/O yet')+'</div><div class="d">'+esc(msg)+'</div></div></div>';
+    return;
+  }
+  const items=dio.items||[], s=dio.summary||{};
+  // per-device anomaly map from the shared forecast bundle
+  const anomsByDev={};
+  ((FORECAST&&FORECAST.anomalies&&FORECAST.anomalies.items)||[]).forEach(a=>{
+    if(a && typeof a.key==='string' && a.key.indexOf('disk_io:')===0){
+      anomsByDev[a.device || a.key.slice(8)]=a;
+    }
+  });
+  const busiest=items.reduce((m,it)=>(it.util_pct>(m?m.util_pct:-1)?it:m), null);
+  const K=[
+    {v:(s.total_read_mb_s||0).toFixed(1),  l:I18N.t('diskio.k_read','Total read'),  s:'MB/s'},
+    {v:(s.total_write_mb_s||0).toFixed(1), l:I18N.t('diskio.k_write','Total write'), s:'MB/s'},
+    {v:items.length,                       l:I18N.t('diskio.k_devs','Devices')},
+    {v:busiest?busiest.util_pct.toFixed(0)+'%':'—', l:I18N.t('diskio.k_busiest','Busiest util'), s:busiest?esc(busiest.device):''},
+  ];
+  kpi.innerHTML=K.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
+  const fmtLat=v=>(v==null?'—':v.toFixed(2)+' ms');
+  const hist={}; (DIO_HIST.devices||[]).forEach(d=>hist[d.device]=d);
+  const rows=items.map((it,i)=>{
+    const a=anomsByDev[it.device];
+    const h=hist[it.device]||{};
+    const spark=_dioSpark(h.read_mb_s||[], h.write_mb_s||[]);
+    const util=Math.max(0,Math.min(100,it.util_pct||0));
+    const ubar=`<div class="dio-ubar" title="${escAttr(util.toFixed(1)+'%')}"><span style="width:${util.toFixed(1)}%"></span></div>`;
+    let chip='', explainRow='';
+    if(a){
+      const crit=Math.abs(a.z)>=4, arrow=a.direction==='spike'?'▲':'▼';
+      const dirTxt=a.direction==='spike'?I18N.t('anom.spike','spike'):I18N.t('anom.dip','dip');
+      chip=`<span class="badge ${crit?'crit':'warn'}" title="${escAttr(I18N.tf('anom.detail','{v}{u} now vs ~{b}{u} baseline ({z}σ)',{v:a.value,u:a.unit,b:a.baseline,z:(a.z>0?'+':'')+a.z}))}">${arrow} ${esc(dirTxt)} ${(a.z>0?'+':'')+a.z}σ</span>`
+        +` <button class="osvar" type="button" data-dio-why="${i}" style="margin-left:4px;font-size:11px">🧠 ${esc(I18N.t('diskio.explain','Explain this spike'))}</button>`;
+      explainRow=`<tr class="dio-exrow"><td colspan="7"><div class="dio-explain" id="dio-explain-${i}" hidden></div></td></tr>`;
+    }else{
+      chip=`<span class="badge ok" style="opacity:.7">${esc(I18N.t('diskio.normal','normal'))}</span>`;
+    }
+    return `<tr><td><b>${esc(it.device)}</b></td>`
+      +`<td>${(it.read_mb_s||0).toFixed(1)}</td><td>${(it.write_mb_s||0).toFixed(1)}</td>`
+      +`<td>${util.toFixed(1)}% ${ubar}</td>`
+      +`<td>${fmtLat(it.read_lat_ms)}</td><td>${fmtLat(it.write_lat_ms)}</td>`
+      +`<td>${spark}</td></tr>`
+      +`<tr class="dio-anrow"><td></td><td colspan="6">${chip}</td></tr>${explainRow}`;
+  }).join('');
+  body.innerHTML=`<table class="ntbl dio-tbl"><thead><tr>`
+    +`<th>${I18N.t('diskio.col_device','Device')}</th>`
+    +`<th>${I18N.t('diskio.col_read','Read MB/s')}</th>`
+    +`<th>${I18N.t('diskio.col_write','Write MB/s')}</th>`
+    +`<th>${I18N.t('diskio.col_util','Utilisation')}</th>`
+    +`<th>${I18N.t('diskio.col_rlat','Read latency')}</th>`
+    +`<th>${I18N.t('diskio.col_wlat','Write latency')}</th>`
+    +`<th>${I18N.t('diskio.col_trend','Trend (6h)')}</th></tr></thead><tbody>${rows}</tbody></table>`
+    +`<p class="cap" style="margin-top:8px"><span style="color:var(--dio-r,#3b82f6)">━</span> ${I18N.t('diskio.legend_read','read')} · `
+    +`<span style="color:var(--dio-w,#f59e0b)">┅</span> ${I18N.t('diskio.legend_write','write')}. `
+    +I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and flow into the anomaly ribbon, incidents and alert rules.')+`</p>`;
+  body.querySelectorAll('[data-dio-why]').forEach(btn=>{
+    btn.onclick=()=>explainDiskIo(items[+btn.getAttribute('data-dio-why')],
+                                  anomsByDev[items[+btn.getAttribute('data-dio-why')].device],
+                                  +btn.getAttribute('data-dio-why'));
+  });
+}
+let DIO_EXPLAIN_BUSY={};
+async function explainDiskIo(it, a, i){
+  if(!it||!a) return;
+  const out=document.getElementById('dio-explain-'+i); if(!out) return;
+  if(DIO_EXPLAIN_BUSY[i]) return;
+  if(!out.hidden && out.dataset.done==='1'){ out.hidden=true; out.dataset.done=''; return; }
+  DIO_EXPLAIN_BUSY[i]=true; out.hidden=false; out.dataset.done='';
+  out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  const payload={key:a.key, device:it.device, ts:a.ts||null, value:a.value, baseline:a.baseline,
+                 z:a.z, unit:a.unit||'MB/s', direction:a.direction, magnitude:a.magnitude};
+  await _copilotExplainStream(payload,out);
+  out.dataset.done='1'; DIO_EXPLAIN_BUSY[i]=false;
+}
+
 async function renderNetwork(){
   renderNetIO();
   if(CURRENT_HOST !== 'local') await loadHostData(CURRENT_HOST);

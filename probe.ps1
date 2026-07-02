@@ -82,6 +82,50 @@ function Read-Gpu {
     } catch { return @{} }
 }
 
+# ── Disk I/O (throughput / utilisation / latency via perf counters) ───────────
+# Mirrors the hub's collect_disk_io() JSON shape so remote Windows hosts report
+# disk I/O too. Read Bytes/sec + Write Bytes/sec → MB/s; % Disk Time → util%;
+# Avg. Disk sec/Read|Write (seconds) → ms/op. Degrades to {} if Get-Counter or
+# the PhysicalDisk counter set is unavailable, so nothing else breaks.
+function Read-DiskIo {
+    try {
+        if (-not (Get-Command Get-Counter -ErrorAction SilentlyContinue)) { return @{} }
+        $paths = @(
+            '\PhysicalDisk(*)\Disk Read Bytes/sec',
+            '\PhysicalDisk(*)\Disk Write Bytes/sec',
+            '\PhysicalDisk(*)\% Disk Time',
+            '\PhysicalDisk(*)\Avg. Disk sec/Read',
+            '\PhysicalDisk(*)\Avg. Disk sec/Write'
+        )
+        $samp = Get-Counter -Counter $paths -ErrorAction Stop
+        $by = @{}
+        foreach ($s in $samp.CounterSamples) {
+            $inst = "$($s.InstanceName)"
+            if (-not $inst -or $inst -eq '_total') { continue }
+            if (-not $by.ContainsKey($inst)) {
+                $by[$inst] = [ordered]@{ device = $inst; read_mb_s = 0.0; write_mb_s = 0.0
+                                         util_pct = $null; read_lat_ms = $null; write_lat_ms = $null }
+            }
+            $p = "$($s.Path)"
+            $v = [double]$s.CookedValue
+            if     ($p -match 'read bytes/sec')  { $by[$inst].read_mb_s  = [math]::Round($v / 1e6, 1) }
+            elseif ($p -match 'write bytes/sec') { $by[$inst].write_mb_s = [math]::Round($v / 1e6, 1) }
+            elseif ($p -match '% disk time')     { $by[$inst].util_pct   = [math]::Round([math]::Min(100.0, [math]::Max(0.0, $v)), 1) }
+            elseif ($p -match 'sec/read')        { $by[$inst].read_lat_ms  = [math]::Round($v * 1000, 2) }
+            elseif ($p -match 'sec/write')       { $by[$inst].write_lat_ms = [math]::Round($v * 1000, 2) }
+        }
+        $items = @($by.Values | Sort-Object { -($_.read_mb_s + $_.write_mb_s) })
+        if ($items.Count -eq 0) { return @{} }
+        $tr = 0.0; $tw = 0.0
+        foreach ($i in $items) { $tr += $i.read_mb_s; $tw += $i.write_mb_s }
+        return @{ disk_io = [ordered]@{
+            available = $true
+            summary   = @{ total_read_mb_s = [math]::Round($tr, 1); total_write_mb_s = [math]::Round($tw, 1) }
+            items     = ,@($items)
+        } }
+    } catch { return @{} }
+}
+
 # ── Disks (fixed local volumes) ───────────────────────────────────────────────
 function Read-Disks {
     $out = @()
@@ -347,6 +391,7 @@ Merge @{ os = $oshw.os; hw = $oshw.hw }
 Merge (Read-Net)
 Merge (Read-Sec)
 Merge (Read-Services)
+Merge (Read-DiskIo)
 $merged.disks    = (Read-Disks)
 $merged.hostname = $env:COMPUTERNAME
 

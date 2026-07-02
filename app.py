@@ -41,6 +41,7 @@ DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
+_DISK_IO_RETENTION = 7 * 86400   # per-device disk-I/O history: dense, 7-day ring
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 HOST_ROOT    = os.environ.get("HOST_ROOT", "/rootfs")          # host / mounted read-only (optional)
 PORT         = int(os.environ.get("PORT", "9800"))
@@ -161,6 +162,8 @@ CREATE TABLE IF NOT EXISTS hosts(
 CREATE TABLE IF NOT EXISTS power_proc(ts INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, watts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS disk_samples(ts INTEGER NOT NULL, mount TEXT NOT NULL, used REAL, total REAL);
 CREATE INDEX IF NOT EXISTS idx_disk_ts ON disk_samples(mount, ts);
+CREATE TABLE IF NOT EXISTS disk_io_samples(ts INTEGER NOT NULL, device TEXT NOT NULL, read_mb_s REAL, write_mb_s REAL, util_pct REAL);
+CREATE INDEX IF NOT EXISTS idx_diskio_ts ON disk_io_samples(device, ts);
 CREATE INDEX IF NOT EXISTS idx_gpus_ts   ON gpu_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_net_ts    ON net_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc(ts);
@@ -371,7 +374,7 @@ LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "te
           "model_meta": {}, "serving": [], "training": [], "devtools": []}
 # Current state of the "status" monitors (Docker + systemd). The background
 # collector refreshes these; /api/health just serves the cached snapshot.
-HEALTH = {"docker": None, "systemd": None, "update": None, "processes": None, "at": 0}
+HEALTH = {"docker": None, "systemd": None, "update": None, "processes": None, "disk_io": None, "at": 0}
 WATCH_SERVICES = [s.strip() for s in os.environ.get("WATCH_SERVICES", "").split(",") if s.strip()]
 SYSTEMD_ADMIN_DIR = "/etc/systemd/system/"   # units here are admin/user-authored (vs vendor)
 _ct_cache = {"list": [], "at": 0}
@@ -3266,10 +3269,105 @@ def _gpu_sessions(rows, interval, active_util=_ACTIVE_UTIL, max_gap=3, min_len=2
     close()
     return sorted(sessions, key=lambda s: -s["start"])
 
+# ── Disk I/O throughput / utilisation / latency (issue #196, done our way) ────
+# Read-only, pure-stdlib per-device block-device stats from /proc/diskstats. We
+# keep the human's compat response shape (available / summary / items with
+# read_mb_s + write_mb_s, loop*/ram*/sr* filtered, sorted by total desc) and
+# ENRICH each device with utilisation% and average per-op latency, then feed the
+# result into history (disk_io_samples), the z-score anomaly bundle and Copilot.
+#
+# /proc/diskstats layout (Linux kernel Documentation/admin-guide/iostats.rst):
+# each line is  <major> <minor> <name> f1 f2 f3 …  where the fields after the
+# device name are 1-based columns. Mapping to our zero-based `parts` index:
+#   parts[3]  = f1  reads completed
+#   parts[5]  = f3  sectors read           (×512 B)
+#   parts[6]  = f4  ms spent reading
+#   parts[7]  = f5  writes completed
+#   parts[9]  = f7  sectors written        (×512 B)
+#   parts[10] = f8  ms spent writing
+#   parts[12] = f10 ms spent doing I/O     (drives utilisation%)
+# These match the human's existing use of parts[5]/parts[9] for the sector
+# counters; the extra indices were confirmed against the kernel doc.
+_disk_io_prev = {}
+_SECTOR_BYTES = 512
+
+def collect_disk_io():
+    """Per-device throughput (MB/s), utilisation (%) and avg op-latency (ms) from
+    /proc/diskstats. First poll is a warm-up (no deltas yet). Never raises."""
+    path = os.path.join(HOST_ROOT, "proc/diskstats")
+    if not os.path.exists(path):
+        path = "/proc/diskstats"
+    if not os.path.exists(path):
+        return {"available": False, "warming_up": False, "reason": "no /proc/diskstats",
+                "summary": {"total_read_mb_s": 0.0, "total_write_mb_s": 0.0}, "items": []}
+    now = time.time()
+    out = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 14:
+                    continue
+                dev = parts[2]
+                if dev.startswith("loop") or dev.startswith("ram") or dev.startswith("sr"):
+                    continue
+                try:
+                    reads    = int(parts[3])
+                    s_read   = int(parts[5])
+                    ms_read  = int(parts[6])
+                    writes   = int(parts[7])
+                    s_write  = int(parts[9])
+                    ms_write = int(parts[10])
+                    ms_io    = int(parts[12])
+                except (ValueError, IndexError):
+                    continue
+                prev = _disk_io_prev.get(dev)
+                _disk_io_prev[dev] = (s_read, s_write, reads, writes,
+                                      ms_read, ms_write, ms_io, now)
+                if not prev:
+                    continue                       # first poll for this device: warm up
+                dt = now - prev[7]
+                if dt <= 0:
+                    continue
+                rmb = ((s_read  - prev[0]) * _SECTOR_BYTES) / 1048576.0 / dt
+                wmb = ((s_write - prev[1]) * _SECTOR_BYTES) / 1048576.0 / dt
+                d_reads   = reads    - prev[2]
+                d_writes  = writes   - prev[3]
+                d_msread  = ms_read  - prev[4]
+                d_mswrite = ms_write - prev[5]
+                d_msio    = ms_io    - prev[6]
+                # utilisation: fraction of wall time the device had I/O in flight
+                util = max(0.0, min(100.0, (d_msio / (dt * 1000.0)) * 100.0))
+                # avg latency ms/op; guard the counter-wraps and div-by-zero -> None
+                r_lat = round(d_msread / d_reads, 2) if d_reads > 0 and d_msread >= 0 else None
+                w_lat = round(d_mswrite / d_writes, 2) if d_writes > 0 and d_mswrite >= 0 else None
+                out.append({
+                    "device": dev,
+                    "read_mb_s":  round(max(0.0, rmb), 1),
+                    "write_mb_s": round(max(0.0, wmb), 1),
+                    "util_pct":   round(util, 1),
+                    "read_lat_ms":  r_lat,
+                    "write_lat_ms": w_lat,
+                })
+    except Exception:
+        pass
+    out.sort(key=lambda x: -(x["read_mb_s"] + x["write_mb_s"]))
+    return {
+        "available": bool(out),
+        "warming_up": not out,
+        "summary": {
+            "total_read_mb_s":  round(sum(x["read_mb_s"]  for x in out), 1),
+            "total_write_mb_s": round(sum(x["write_mb_s"] for x in out), 1),
+        },
+        "items": out,
+        "at": int(now),
+    }
+
 def health_scan():
     HEALTH["docker"]  = collect_docker()
     HEALTH["systemd"] = collect_systemd()
     HEALTH["update"]  = collect_update()
+    HEALTH["disk_io"] = collect_disk_io()
     # Top-processes is refreshed by sample_once (10s cadence) and cached on
     # HEALTH["processes"] — calling it here too would double-step the _PROC_PREV
     # jiffy deltas across two cadences and corrupt both. Reuse the cached value.
@@ -6389,10 +6487,23 @@ def sample_once():
             # Coarse public-status heartbeat sample (~5 min) — aggregated up/down
             # per anonymized subsystem key. Cheap; shares this held LOCK.
             sample_status_history(ts)
+        # Disk I/O moves fast, so sample it on its own tighter cadence (~45s) into
+        # a dedicated 7-day ring — dense enough for per-device sparklines + the
+        # z-score anomaly baseline without bloating the DB. Sourced from the
+        # health_scan snapshot (populated every 15s) so no extra /proc read here.
+        if ts % 45 < INTERVAL:
+            dio = HEALTH.get("disk_io") or {}
+            if dio.get("available"):
+                for it in (dio.get("items") or []):
+                    DB.execute("INSERT INTO disk_io_samples(ts,device,read_mb_s,write_mb_s,util_pct) "
+                               "VALUES(?,?,?,?,?)",
+                               (ts, it["device"], it.get("read_mb_s"),
+                                it.get("write_mb_s"), it.get("util_pct")))
         if ts % 360 < INTERVAL:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc", "disk_samples"):
                 DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
             DB.execute("DELETE FROM status_history WHERE ts<?", (ts - _STATHIST_RETENTION,))
+            DB.execute("DELETE FROM disk_io_samples WHERE ts<?", (ts - _DISK_IO_RETENTION,))
         if ts % 60 < INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             DB.execute("UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
                        "WHERE status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < ?",
@@ -7242,6 +7353,50 @@ _ANOMALY_SERIES = (
     ("power_draw", _TOTAL_W_EXPR, "W", 20.0),
 )
 
+_DISK_IO_MIN_DEV = 15.0    # MB/s: below this, a device's wobble isn't worth flagging
+
+def _disk_io_anomaly_items(cur, now, window, min_pts, z_thresh):
+    """Per-device z-score flags on total (read+write) disk throughput, using the
+    SAME rolling-baseline maths as `_zscore_anomalies` so I/O spikes flow into the
+    anomaly ribbon, incident grouping and the 'anomaly' alert rule for free.
+    Returns (items, checked, enough). Never raises."""
+    since = now - window
+    by_dev = {}
+    try:
+        for dev, r, w in cur.execute(
+                "SELECT device, read_mb_s, write_mb_s FROM disk_io_samples "
+                "WHERE ts>=? ORDER BY ts", (since,)):
+            by_dev.setdefault(dev, []).append((r or 0.0) + (w or 0.0))
+    except Exception:
+        return [], 0, False
+    items, checked, enough = [], 0, False
+    for dev, vals in by_dev.items():
+        if len(vals) < min_pts:
+            continue
+        enough = True
+        checked += 1
+        latest = vals[-1]
+        base = vals[:-1]
+        n = len(base)
+        mean = sum(base) / n
+        sd = (sum((v - mean) ** 2 for v in base) / n) ** 0.5
+        dev_amt = latest - mean
+        if abs(dev_amt) < _DISK_IO_MIN_DEV or sd <= 0:
+            continue
+        z = dev_amt / sd
+        if abs(z) < z_thresh:
+            continue
+        items.append({
+            "key": "disk_io:" + dev, "device": dev, "unit": "MB/s",
+            "value": round(latest, 1), "baseline": round(mean, 1),
+            "z": round(z, 1), "stddev": round(sd, 1),
+            "direction": "spike" if z > 0 else "dip",
+            "magnitude": round(abs(latest - mean), 1),
+            "samples": n + 1,
+        })
+    return items, checked, enough
+
+
 def _zscore_anomalies(cur, now):
     """Flag the latest reading of each key series when it sits far from a recent
     rolling baseline. Pure stdlib. Window = last ~6h of samples; baseline mean +
@@ -7293,6 +7448,12 @@ def _zscore_anomalies(cur, now):
             "magnitude": round(abs(latest - mean), 1),
             "samples": n + 1,
         })
+    # Merge per-device disk-I/O flags into the same bundle (same window/threshold),
+    # so a storage spike rides the existing anomaly ribbon / incident / rule paths.
+    dio_items, dio_checked, dio_enough = _disk_io_anomaly_items(cur, now, WINDOW, MIN_PTS, Z_THRESH)
+    out.extend(dio_items)
+    checked += dio_checked
+    enough = enough or dio_enough
     # sort most-extreme first so the worst offender leads the card
     out.sort(key=lambda a: abs(a["z"]), reverse=True)
     status = "quiet" if enough else "collecting"
@@ -7582,6 +7743,38 @@ def api_forecast():
                     "reco": reco,
                     "attention": {"reco": reco, "incidents_open": incidents.get("open", 0),
                                   "uptime_down": down}})
+
+@app.route("/api/diskio/history")
+def api_diskio_history():
+    """Recent per-device disk-I/O series (read/write MB/s + utilisation%) drawn
+    from the disk_io_samples 7-day ring, for the dashboard's per-device
+    sparklines. Read-only; degrades to an empty device list, never a 500."""
+    now = int(time.time())
+    try:
+        window = int(request.args.get("window", 3600))
+    except (TypeError, ValueError):
+        window = 3600
+    window = max(300, min(window, _DISK_IO_RETENTION))
+    since = now - window
+    devices = {}
+    try:
+        with LOCK:
+            rows = DB.cursor().execute(
+                "SELECT device, ts, read_mb_s, write_mb_s, util_pct FROM disk_io_samples "
+                "WHERE ts>=? ORDER BY device, ts", (since,)).fetchall()
+        for dev, ts, r, w, u in rows:
+            d = devices.setdefault(dev, {"device": dev, "ts": [], "read_mb_s": [],
+                                         "write_mb_s": [], "util_pct": []})
+            d["ts"].append(ts)
+            d["read_mb_s"].append(r)
+            d["write_mb_s"].append(w)
+            d["util_pct"].append(u)
+    except Exception as e:
+        print("diskio history error:", e, flush=True)
+        return jsonify({"now": now, "window": window, "devices": []})
+    return jsonify({"now": now, "window": window,
+                    "devices": sorted(devices.values(), key=lambda d: d["device"])})
+
 
 @app.route("/api/incidents")
 def api_incidents():
@@ -9074,6 +9267,9 @@ _ASK_TOPICS = {
                  "utilization", "util", "healthy", "health"),
     "disk":     ("disk", "disks", "storage", "drive", "mount", "filesystem", "fill",
                  "filling", "full", "space", "free", "/backup", "/data"),
+    "disk_io":  ("i/o", "io", "iops", "throughput", "read", "reads", "reading",
+                 "write", "writes", "writing", "diskio", "latency", "seeks",
+                 "mb/s", "sda", "nvme", "vda"),
     "cost":     ("cost", "costs", "expensive", "cheap", "cheapest", "price", "pricey",
                  "budget", "spend", "spending", "money", "bill", "energy", "kwh",
                  "electricity", "eur", "euro", "euros", "dollar", "dollars"),
@@ -9312,6 +9508,32 @@ def _ask_topic_facts(topics, q, ctx, now):
             srcs.append("disk")
         except Exception:
             pass
+
+    if "disk_io" in topics:
+        n_before = len(lines)
+        dio = HEALTH.get("disk_io") or {}
+        if dio.get("available"):
+            s = dio.get("summary") or {}
+            items = dio.get("items") or []
+            lines.append("Disk I/O now: {r} MB/s read, {w} MB/s write across {n} device(s).".format(
+                r=s.get("total_read_mb_s", 0), w=s.get("total_write_mb_s", 0), n=len(items)))
+            for it in items[:3]:
+                lat = []
+                if it.get("read_lat_ms")  is not None: lat.append("{} ms read".format(it["read_lat_ms"]))
+                if it.get("write_lat_ms") is not None: lat.append("{} ms write".format(it["write_lat_ms"]))
+                lines.append("{d}: {r} MB/s read, {w} MB/s write, {u}% util{l}.".format(
+                    d=it.get("device"), r=it.get("read_mb_s"), w=it.get("write_mb_s"),
+                    u=it.get("util_pct", 0), l=(" ("+", ".join(lat)+" latency)") if lat else ""))
+            # who might be driving it — top CPU consumers are the usual suspects
+            # for heavy read/write bursts (a rough, honest proxy, not attribution).
+            procs = ((HEALTH.get("processes") or {}).get("by_cpu") or [])[:3]
+            if procs:
+                lines.append("Busiest processes right now: " + ", ".join(
+                    "{n} ({c}% CPU)".format(n=p.get("name"), c=p.get("cpu_pct")) for p in procs) + ".")
+        elif dio.get("warming_up"):
+            lines.append("Disk I/O monitoring is warming up — one more poll and per-device MB/s appear.")
+        if len(lines) > n_before:
+            srcs.append("disk_io")
 
     if "cost" in topics:
         n_before = len(lines)
@@ -9757,6 +9979,21 @@ def _explain_context(point, now=None):
            "direction": point.get("direction"),
            "value": point.get("value"), "baseline": point.get("baseline"),
            "z": point.get("z"), "magnitude": point.get("magnitude")}
+    # Disk-I/O anomaly keys ("disk_io:<dev>") aren't a `samples` column, so give
+    # the explainer the live per-device snapshot + busiest processes instead of an
+    # empty series window — the top-processes context the ask path also uses.
+    if key.startswith("disk_io"):
+        dev = key.split(":", 1)[1] if ":" in key else point.get("device")
+        ctx["label"] = "disk I/O" + (" on " + dev if dev else "")
+        ctx["unit"] = ctx["unit"] or "MB/s"
+        try:
+            dio = HEALTH.get("disk_io") or {}
+            snap = next((it for it in (dio.get("items") or []) if it.get("device") == dev), None)
+            ctx["disk_io"] = snap
+            ctx["disk_io_summary"] = dio.get("summary")
+            ctx["busy_procs"] = ((HEALTH.get("processes") or {}).get("by_cpu") or [])[:3]
+        except Exception:
+            pass
     try:
         with LOCK:
             cur = DB.cursor()
@@ -13109,6 +13346,9 @@ def api_health():
                                     "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
     systemd = HEALTH["systemd"] or {"available": False, "reason": "warming up…",
                                     "services": [], "summary": {}}
+    disk_io = HEALTH.get("disk_io") or {"available": False, "warming_up": True,
+                                        "summary": {"total_read_mb_s": 0.0, "total_write_mb_s": 0.0},
+                                        "items": []}
     update  = dict(HEALTH["update"] or {"available": False, "current": VERSION})
     # Let the frontend decide whether to show the one-click "Update now" button.
     # Set here (not baked into the cached collect_update payload) so toggling the
@@ -13117,6 +13357,7 @@ def api_health():
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "demo": DEMO_MODE, "status_page": STATUS_PAGE,
                     "docker": docker, "systemd": systemd, "update": update,
+                    "disk_io": disk_io,
                     "processes": HEALTH["processes"],
                     "os_updates": os_updates_summary(),
                     "diagnostics": local_diagnostics(),
