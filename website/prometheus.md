@@ -111,6 +111,87 @@ filter cleanly). Panels cover:
 - **Cost & uptime** — month-to-date and projected energy cost, uptime checks up/down,
   per-check latency and uptime ratio, and TLS certificate days-remaining.
 
+## Alerting & recording rules
+
+A ready-to-load Prometheus rule pack ships alongside the dashboard at
+[`docs/grafana/alerts.rules.yml`](https://github.com/SikamikanikoBG/homelab-monitor/blob/main/docs/grafana/alerts.rules.yml).
+Every expression is keyed on a metric this exporter **actually** publishes (see the
+catalogue above) — nothing aspirational — so the rules light up the moment the
+matching series appear.
+
+Point Prometheus at it via `rule_files:`:
+
+```yaml
+# prometheus.yml
+rule_files:
+  - alerts.rules.yml     # path relative to your prometheus.yml (or an absolute path)
+
+scrape_configs:
+  - job_name: 'homelab_monitor'   # the HomelabExporterDown alert matches this job name
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['<your-host>:9800']
+```
+
+Reload with `curl -X POST http://<prometheus>:9090/-/reload` (or SIGHUP), then check
+**Status → Rules** in the Prometheus UI. Validate locally first with
+`promtool check rules docs/grafana/alerts.rules.yml` if you have the Prometheus
+toolkit installed.
+
+### Recording rules
+
+| Recorded series | Expression | Use |
+|---|---|---|
+| `homelab:gpu_vram_fill:ratio` | `homelab_gpu_vram_used_mb / homelab_gpu_vram_total_mb` | VRAM fill fraction (0..1) per GPU — the same expression the VRAM alert watches |
+| `homelab:gpu_util_pct:by_vendor` | `homelab_gpu_util_pct * on(gpu) group_left(vendor, name) homelab_gpu_info` | GPU utilisation decorated with the card's real `vendor` + `name` via the info-series join |
+
+### Alerts
+
+| Alert | Expr (summary) | Severity | Meaning |
+|---|---|---|---|
+| `HomelabGpuTempHigh` | `homelab_gpu_temp_c > 85` for 5m | warning | GPU running hot |
+| `HomelabGpuTempCritical` | `homelab_gpu_temp_c > 92` for 2m | critical | Thermal-throttle / damage risk |
+| `HomelabGpuVramNearFull` | `homelab_gpu_vram_used_mb / homelab_gpu_vram_total_mb > 0.95` for 10m | warning | VRAM OOM / model-eviction risk |
+| `HomelabPowerDrawHigh` | `homelab_power_total_w > 500` for 15m | warning | Sustained high total draw (PSU / cost) |
+| `HomelabDiskFillHigh` | `homelab_disk_fill_pct > 90` for 15m | warning | Filesystem over 90% |
+| `HomelabDiskFillCritical` | `homelab_disk_fill_pct > 97` for 5m | critical | Filesystem almost full |
+| `HomelabHostCpuSaturated` | `homelab_host_cpu_pct > 90` for 15m | warning | Host CPU saturated |
+| `HomelabHostMemoryHigh` | `homelab_host_mem_used_pct > 90` for 15m | warning | Host memory pressure / OOM risk |
+| `HomelabContainerNotRunning` | `homelab_container_state{state=~"exited|dead|restarting"} == 1` for 5m | warning | A tracked container left the running state |
+| `HomelabSystemdUnitFailed` | `homelab_systemd_unit_state{state="failed"}` for 5m | warning | A systemd unit entered the failed state |
+| `HomelabUptimeCheckDown` | `homelab_uptime_up == 0` for 2m | critical | A monitored endpoint is down |
+| `HomelabTlsCertExpiringSoon` | `homelab_uptime_cert_days_remaining < 14` for 1h | warning | TLS cert expiring within 14 days |
+| `HomelabTlsCertExpired` | `homelab_uptime_cert_days_remaining < 0` for 5m | critical | TLS cert already expired |
+| `HomelabAnomalyActive` | `homelab_anomaly_active > 0` for 5m | warning | Built-in z-score detector flagged a series |
+| `HomelabMonthlyCostOverBudget` | `homelab_cost_month_projected > 50` for 1h | warning | Projected month cost over a template budget |
+| `HomelabExporterDown` | `up{job="homelab_monitor"} == 0` for 2m | critical | Prometheus can't scrape the exporter |
+
+A few expressions encode this exporter's exact value semantics, worth knowing before
+you tune them:
+
+- **`homelab_container_state`** carries a value of `1` for a container's *current*
+  state only, so the alert matches the trouble states (`exited|dead|restarting`)
+  directly rather than testing an (absent) `running` series.
+- **`homelab_systemd_unit_state`** stores active(`1`)/not-active(`0`) in the *value*
+  and the literal state in the `state` label — so a failed unit reads as
+  `{state="failed"} 0`. The alert fires on the mere presence of that series
+  (Prometheus alerts fire per matching element regardless of the sample value).
+- The **`homelab_cost_month_*`** and **`homelab_uptime_*`** (incl. TLS cert) families
+  are emitted only when a price / uptime checks are configured; their rules stay
+  dormant until the series exist.
+
+!!! tip "Thresholds are examples — tune them"
+    Every threshold and `for:` window above is a sensible **starting point**, not a
+    universal truth. Adjust them to your hardware, workload and budget (e.g. raise the
+    `homelab_power_total_w` and `homelab_cost_month_projected` limits for a busy
+    training rig), and rename the `homelab_monitor` job matcher in `HomelabExporterDown`
+    if your scrape `job_name` differs.
+
+The same series drive the ready-to-import Grafana dashboard at
+[`docs/grafana/homelab_prometheus_dashboard.json`](https://github.com/SikamikanikoBG/homelab-monitor/blob/main/docs/grafana/homelab_prometheus_dashboard.json)
+(see [Import the Grafana dashboard](#import-the-grafana-dashboard) above), so alerts and
+panels stay in lock-step.
+
 !!! note
     Prometheus is entirely optional — the built-in dashboard is fully self-contained
     without it. The endpoint is there for folks who already run a Prometheus/Grafana stack.

@@ -1,0 +1,210 @@
+# HomeLab Monitor — Prometheus alerting & recording rules
+# =========================================================
+# Drop-in rule groups for the metrics published at HomeLab Monitor's /metrics
+# endpoint (see website/prometheus.md for the metric catalogue and the matching
+# importable Grafana dashboard at docs/grafana/homelab_prometheus_dashboard.json).
+#
+# Load it from your prometheus.yml:
+#
+#   rule_files:
+#     - alerts.rules.yml
+#
+# EVERY expression below references a metric that HomeLab Monitor actually
+# exports — nothing aspirational. A handful of families are emitted only when a
+# feature is configured (noted inline): the two homelab_cost_month_* families
+# appear only when an energy price is set, and homelab_uptime_* (incl. the TLS
+# cert families) only when ≥1 external uptime check exists. Rules for those stay
+# dormant until the series exist, which is harmless.
+#
+# All thresholds and `for:` windows are sensible STARTING POINTS — tune them to
+# your hardware and tolerance. The `up{job="homelab_monitor"}` meta-alert assumes
+# your scrape job is named `homelab_monitor` (as in the sample scrape config);
+# rename it to match your prometheus.yml if you used a different job_name.
+
+groups:
+  # ── Recording rules ────────────────────────────────────────────────────────
+  # Pre-compute a couple of frequently-charted/alerted expressions so panels and
+  # alerts stay cheap and consistent.
+  - name: homelab_recording
+    interval: 30s
+    rules:
+      # VRAM fill fraction (0..1) per GPU — the same expression the
+      # HomelabGpuVramNearFull alert watches, exposed for dashboards.
+      - record: homelab:gpu_vram_fill:ratio
+        expr: homelab_gpu_vram_used_mb / homelab_gpu_vram_total_mb
+
+      # GPU utilisation decorated with the card's real vendor + model, via the
+      # classic info-series join on the shared `gpu` label. Lets you group /
+      # legend GPU load by vendor without touching the lean numeric gauges.
+      - record: homelab:gpu_util_pct:by_vendor
+        expr: homelab_gpu_util_pct * on(gpu) group_left(vendor, name) homelab_gpu_info
+
+  # ── Alerting rules ─────────────────────────────────────────────────────────
+  - name: homelab_alerts
+    interval: 30s
+    rules:
+      # GPU thermals — warn early, page when it's genuinely hot.
+      - alert: HomelabGpuTempHigh
+        expr: homelab_gpu_temp_c > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU {{ $labels.gpu }} running hot ({{ $value | printf \"%.0f\" }}°C)"
+          description: "GPU {{ $labels.gpu }} has been above 85°C for 5m (now {{ $value | printf \"%.0f\" }}°C). Check airflow, fan curves and workload."
+
+      - alert: HomelabGpuTempCritical
+        expr: homelab_gpu_temp_c > 92
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU {{ $labels.gpu }} critically hot ({{ $value | printf \"%.0f\" }}°C)"
+          description: "GPU {{ $labels.gpu }} has exceeded 92°C for 2m (now {{ $value | printf \"%.0f\" }}°C) — thermal throttling / damage risk. Reduce load now."
+
+      # VRAM nearly exhausted — OOM / model-eviction risk.
+      - alert: HomelabGpuVramNearFull
+        expr: homelab_gpu_vram_used_mb / homelab_gpu_vram_total_mb > 0.95
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU {{ $labels.gpu }} VRAM nearly full ({{ $value | humanizePercentage }})"
+          description: "GPU {{ $labels.gpu }} VRAM has been >95% used for 10m ({{ $value | humanizePercentage }}). New allocations may OOM or evict resident models."
+
+      # Sustained total power draw — PSU / thermal / cost budget signal.
+      - alert: HomelabPowerDrawHigh
+        expr: homelab_power_total_w > 500
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained high power draw ({{ $value | printf \"%.0f\" }} W)"
+          description: "Total machine power (GPU+CPU+DRAM) has averaged above 500 W for 15m (now {{ $value | printf \"%.0f\" }} W). Expected under heavy training — tune the threshold to your rig."
+
+      # Disk fill — per filesystem mount.
+      - alert: HomelabDiskFillHigh
+        expr: homelab_disk_fill_pct > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} over 90% full ({{ $value | printf \"%.1f\" }}%)"
+          description: "{{ $labels.mountpoint }} has been above 90% for 15m (now {{ $value | printf \"%.1f\" }}%). Clean up or expand before it fills."
+
+      - alert: HomelabDiskFillCritical
+        expr: homelab_disk_fill_pct > 97
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} almost full ({{ $value | printf \"%.1f\" }}%)"
+          description: "{{ $labels.mountpoint }} is above 97% full (now {{ $value | printf \"%.1f\" }}%) — imminent write failures. Free space immediately."
+
+      # Host CPU / memory saturation.
+      - alert: HomelabHostCpuSaturated
+        expr: homelab_host_cpu_pct > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host CPU saturated ({{ $value | printf \"%.0f\" }}%)"
+          description: "Host CPU usage has been above 90% for 15m (now {{ $value | printf \"%.0f\" }}%)."
+
+      - alert: HomelabHostMemoryHigh
+        expr: homelab_host_mem_used_pct > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory pressure ({{ $value | printf \"%.0f\" }}%)"
+          description: "Host memory used has been above 90% for 15m (now {{ $value | printf \"%.0f\" }}%) — OOM-kill risk."
+
+      # A tracked Docker container is in a non-running state. The gauge emits a
+      # value of 1 for the container's CURRENT state only, so we match the
+      # trouble states directly rather than testing the (absent) running series.
+      - alert: HomelabContainerNotRunning
+        expr: homelab_container_state{state=~"exited|dead|restarting"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} is {{ $labels.state }}"
+          description: "Container {{ $labels.name }} has been in the '{{ $labels.state }}' state for 5m. Inspect logs and restart if unexpected."
+
+      # A systemd unit has entered the failed state. The gauge's VALUE encodes
+      # active(1)/not-active(0), while the `state` label carries the literal
+      # state — so a failed unit appears as {state="failed"} 0. This rule fires
+      # on the mere presence of that series (Prometheus alerts fire per matching
+      # element regardless of the sample value).
+      - alert: HomelabSystemdUnitFailed
+        expr: homelab_systemd_unit_state{state="failed"}
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "systemd unit {{ $labels.unit }} failed"
+          description: "systemd unit {{ $labels.unit }} has reported the 'failed' state for 5m. Check `systemctl status {{ $labels.unit }}`."
+
+      # External uptime check down (only present when uptime checks are configured).
+      - alert: HomelabUptimeCheckDown
+        expr: homelab_uptime_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Uptime check '{{ $labels.check }}' is DOWN"
+          description: "Monitored endpoint '{{ $labels.check }}' has failed its uptime probe for 2m."
+
+      # TLS certificate expiry (only present for configured cert checks).
+      - alert: HomelabTlsCertExpiringSoon
+        expr: homelab_uptime_cert_days_remaining < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS cert for '{{ $labels.check }}' expires in {{ $value | printf \"%.0f\" }}d"
+          description: "The certificate behind uptime check '{{ $labels.check }}' has {{ $value | printf \"%.0f\" }} days remaining. Renew before it lapses."
+
+      - alert: HomelabTlsCertExpired
+        expr: homelab_uptime_cert_days_remaining < 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS cert for '{{ $labels.check }}' has EXPIRED"
+          description: "The certificate behind uptime check '{{ $labels.check }}' expired {{ $value | printf \"%.0f\" }} days ago — clients will see TLS errors."
+
+      # Live anomaly flag from the built-in z-score detector.
+      - alert: HomelabAnomalyActive
+        expr: homelab_anomaly_active > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Anomaly on series '{{ $labels.series }}' ({{ $labels.direction }})"
+          description: "HomeLab Monitor's z-score detector has flagged '{{ $labels.series }}' as anomalous ({{ $labels.direction }}) for 5m."
+
+      # Month-to-date projection over a template budget (only present when an
+      # energy price is configured). Adjust the 50 to your monthly budget in the
+      # exported currency unit (see the {{ $labels.currency }} label).
+      - alert: HomelabMonthlyCostOverBudget
+        expr: homelab_cost_month_projected > 50
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Projected monthly energy cost {{ $value | printf \"%.2f\" }} {{ $labels.currency }} over budget"
+          description: "The projected full-month energy cost ({{ $value | printf \"%.2f\" }} {{ $labels.currency }}) has exceeded the 50 {{ $labels.currency }} template budget for 1h. Tune the threshold to your budget."
+
+      # Meta: the exporter itself stopped responding to scrapes. Uses the
+      # standard Prometheus `up` sample for this job — rename the job matcher if
+      # your scrape config uses a different job_name.
+      - alert: HomelabExporterDown
+        expr: up{job="homelab_monitor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HomeLab Monitor exporter is down"
+          description: "Prometheus has failed to scrape the homelab_monitor target (instance {{ $labels.instance }}) for 2m."
