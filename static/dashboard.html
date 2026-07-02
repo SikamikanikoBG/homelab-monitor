@@ -94,8 +94,10 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .tab.back{color:var(--mut);font-size:13px}.tab.back:hover{color:var(--tx)}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:17px 19px;margin:16px 0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px}
-.kpi{background:var(--inset);border:1px solid var(--bd);border-radius:9px;padding:12px 14px}
-.kpi .v{font-size:22px;font-weight:700}.kpi .l{color:var(--mut);font-size:12px;margin-top:2px}.kpi .s{font-size:12px;color:var(--mut);margin-top:3px}
+.kpi{background:var(--inset);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;transition:border-color .15s ease,transform .12s ease}
+.kpi:hover{border-color:var(--mut);transform:translateY(-1px)}
+@media(prefers-reduced-motion:reduce){.kpi{transition:none}.kpi:hover{transform:none}}
+.kpi .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}.kpi .l{color:var(--mut);font-size:12px;margin-top:2px}.kpi .s{font-size:12px;color:var(--mut);margin-top:3px}
 .ins{display:flex;gap:11px;padding:11px 13px;border-radius:9px;margin-bottom:9px;border:1px solid var(--bd);background:var(--inset)}
 .ins:last-child{margin-bottom:0}.ins .ic{font-size:17px;line-height:1.3}.ins .t{font-weight:600}.ins .d{color:var(--mut);font-size:13px}
 .ins.critical{border-left:3px solid var(--crit)}.ins.warning{border-left:3px solid var(--warn)}
@@ -1330,16 +1332,53 @@ h2{ font-weight:600; letter-spacing:.01em }
 h2 .hic{ opacity:.9 }
 /* Sub-tab row: a touch more air so the tabs read as a segmented control. */
 .subtabs{ gap:2px }
-/* Disk I/O tab: inline utilisation micro-bar, trend sparkline, tidy anomaly rows. */
-.dio-spark{ width:120px; height:26px; display:block }
-.dio-ubar{ display:inline-block; vertical-align:middle; width:70px; height:7px; border-radius:4px;
-           background:var(--bd); overflow:hidden; margin-left:6px }
-.dio-ubar>span{ display:block; height:100%; border-radius:4px;
-                background:linear-gradient(90deg,#3b82f6,#f59e0b) }
-.dio-tbl td{ vertical-align:middle }
-.dio-tbl tr.dio-anrow td{ padding-top:0; border-top:0 }
-.dio-tbl tr.dio-exrow td{ padding-top:0; border-top:0 }
-.dio-explain{ margin:4px 0 8px }
+/* Disk I/O tab — device cards echo the hero/gauge design language: a left status
+   rail keyed to utilisation, a tiered util micro-bar, tabular read/write + latency
+   stats, a trend sparkline, and an anomaly chip that reuses the GPU-gauge colours. */
+.dio-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(292px,1fr)); gap:12px; margin-top:12px }
+.dio-card{ --du:var(--ok); position:relative; border:1px solid var(--bd); border-radius:12px;
+           background:var(--inset); padding:14px 16px 14px 18px; overflow:hidden;
+           transition:border-color .15s ease, transform .12s ease, box-shadow .15s ease }
+.dio-card::before{ content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--du) }
+.dio-card.warn{ --du:var(--warn) } .dio-card.crit{ --du:var(--crit) }
+.dio-card:hover{ border-color:var(--mut); transform:translateY(-1px); box-shadow:0 3px 14px rgba(0,0,0,.14) }
+.dio-hd{ display:flex; align-items:center; gap:8px; margin-bottom:12px }
+.dio-dev{ font-weight:700; font-size:14.5px; font-family:var(--mono); min-width:0;
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+/* anomaly chip — mirrors the GPU gauge .gg-state colour treatment */
+.dio-chip{ --dc:var(--ok); margin-left:auto; flex:none; display:inline-flex; align-items:center; gap:5px;
+           font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px;
+           border:1px solid color-mix(in srgb,var(--dc) 45%,var(--bd));
+           color:var(--dc); background:color-mix(in srgb,var(--dc) 12%,transparent); white-space:nowrap }
+.dio-chip.warn{ --dc:var(--warn) } .dio-chip.crit{ --dc:var(--crit) }
+.dio-chip.normal{ color:var(--mut); border-color:var(--bd); background:transparent; font-weight:600; opacity:.85 }
+/* utilisation meter */
+.dio-util{ margin-bottom:13px }
+.dio-util-top{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:5px }
+.dio-util-lbl{ font-size:11px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.04em }
+.dio-util-val{ font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--tx) }
+.dio-ubar{ width:100%; height:8px; border-radius:5px; background:var(--bd); overflow:hidden }
+.dio-ubar>span{ display:block; height:100%; border-radius:5px; background:var(--du);
+                transition:width .6s cubic-bezier(.22,.61,.36,1) }
+/* throughput + latency stats */
+.dio-stats{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px 14px; margin-bottom:13px }
+.dio-stat .dsv{ font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.15 }
+.dio-stat .dsv .u{ font-size:11px; font-weight:600; color:var(--mut); margin-left:2px }
+.dio-stat.rd .dsv{ color:var(--dio-r,#3b82f6) } .dio-stat.wr .dsv{ color:var(--dio-w,#f59e0b) }
+.dio-stat .dsl{ font-size:11px; color:var(--mut); margin-top:2px; text-transform:uppercase; letter-spacing:.03em }
+/* trend sparkline + legend */
+.dio-trend{ border-top:1px solid var(--bd); padding-top:11px }
+.dio-spark{ width:100%; height:34px; display:block }
+.dio-legend{ display:flex; gap:14px; margin-top:7px; font-size:11px; color:var(--mut) }
+.dio-legend span{ display:inline-flex; align-items:center; gap:5px }
+.dio-legend i{ width:12px; height:0; border-top-width:2px; border-top-style:solid; flex:none }
+.dio-legend i.r{ border-color:var(--dio-r,#3b82f6) } .dio-legend i.w{ border-color:var(--dio-w,#f59e0b); border-top-style:dashed }
+/* explain affordance */
+.dio-why-row{ margin-top:11px } .dio-why{ font-size:11px }
+.dio-explain{ margin-top:10px }
+@media(max-width:520px){ .dio-grid{ grid-template-columns:1fr } }
+@media(prefers-reduced-motion:reduce){ .dio-card{ transition:none } .dio-card:hover{ transform:none }
+  .dio-ubar>span{ transition:none } }
 </style></head><body><div class="app"><aside class="side" id="sidebar"></aside><main class="main"><div class="topbar" id="topbar"></div><div class="content">
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
@@ -8367,39 +8406,48 @@ function renderDiskIo(){
   kpi.innerHTML=K.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
   const fmtLat=v=>(v==null?'—':v.toFixed(2)+' ms');
   const hist={}; (DIO_HIST.devices||[]).forEach(d=>hist[d.device]=d);
-  const rows=items.map((it,i)=>{
+  const stat=(v,unit,label,cls)=>`<div class="dio-stat ${cls||''}"><div class="dsv">${v}${unit?`<span class="u">${unit}</span>`:''}</div><div class="dsl">${label}</div></div>`;
+  const cards=items.map((it,i)=>{
     const a=anomsByDev[it.device];
     const h=hist[it.device]||{};
     const spark=_dioSpark(h.read_mb_s||[], h.write_mb_s||[]);
+    const hasUtil=Number.isFinite(it.util_pct);
     const util=Math.max(0,Math.min(100,it.util_pct||0));
-    const ubar=`<div class="dio-ubar" title="${escAttr(util.toFixed(1)+'%')}"><span style="width:${util.toFixed(1)}%"></span></div>`;
-    let chip='', explainRow='';
+    // status rail / util-bar tier keyed to utilisation (mirrors the gauge tiers)
+    const tier = !hasUtil ? '' : (util>=90?'crit':(util>=70?'warn':''));
+    const utilTxt = hasUtil ? util.toFixed(1)+'%' : '—';
+    let chip='', why='', explainBox='';
     if(a){
       const crit=Math.abs(a.z)>=4, arrow=a.direction==='spike'?'▲':'▼';
       const dirTxt=a.direction==='spike'?I18N.t('anom.spike','spike'):I18N.t('anom.dip','dip');
-      chip=`<span class="badge ${crit?'crit':'warn'}" title="${escAttr(I18N.tf('anom.detail','{v}{u} now vs ~{b}{u} baseline ({z}σ)',{v:a.value,u:a.unit,b:a.baseline,z:(a.z>0?'+':'')+a.z}))}">${arrow} ${esc(dirTxt)} ${(a.z>0?'+':'')+a.z}σ</span>`
-        +` <button class="osvar" type="button" data-dio-why="${i}" style="margin-left:4px;font-size:11px">🧠 ${esc(I18N.t('diskio.explain','Explain this spike'))}</button>`;
-      explainRow=`<tr class="dio-exrow"><td colspan="7"><div class="dio-explain" id="dio-explain-${i}" hidden></div></td></tr>`;
+      chip=`<span class="dio-chip ${crit?'crit':'warn'}" title="${escAttr(I18N.tf('anom.detail','{v}{u} now vs ~{b}{u} baseline ({z}σ)',{v:a.value,u:a.unit,b:a.baseline,z:(a.z>0?'+':'')+a.z}))}">${arrow} ${esc(dirTxt)} ${(a.z>0?'+':'')+a.z}σ</span>`;
+      why=`<div class="dio-why-row"><button class="osvar dio-why" type="button" data-dio-why="${i}">🧠 ${esc(I18N.t('diskio.explain','Explain this spike'))}</button></div>`;
+      explainBox=`<div class="dio-explain" id="dio-explain-${i}" hidden></div>`;
     }else{
-      chip=`<span class="badge ok" style="opacity:.7">${esc(I18N.t('diskio.normal','normal'))}</span>`;
+      chip=`<span class="dio-chip normal">${esc(I18N.t('diskio.normal','normal'))}</span>`;
     }
-    return `<tr><td><b>${esc(it.device)}</b></td>`
-      +`<td>${(it.read_mb_s||0).toFixed(1)}</td><td>${(it.write_mb_s||0).toFixed(1)}</td>`
-      +`<td>${util.toFixed(1)}% ${ubar}</td>`
-      +`<td>${fmtLat(it.read_lat_ms)}</td><td>${fmtLat(it.write_lat_ms)}</td>`
-      +`<td>${spark}</td></tr>`
-      +`<tr class="dio-anrow"><td></td><td colspan="6">${chip}</td></tr>${explainRow}`;
+    const aria=escAttr(I18N.tf('diskio.card_aria','{dev}: read {r} MB/s, write {w} MB/s, utilisation {u}',
+      {dev:it.device,r:(it.read_mb_s||0).toFixed(1),w:(it.write_mb_s||0).toFixed(1),u:utilTxt}));
+    return `<article class="dio-card ${tier}" role="group" aria-label="${aria}">`
+      +`<div class="dio-hd"><span class="dio-dev">${esc(it.device)}</span>${chip}</div>`
+      +`<div class="dio-util"><div class="dio-util-top">`
+        +`<span class="dio-util-lbl">${I18N.t('diskio.col_util','Utilisation')}</span>`
+        +`<span class="dio-util-val">${utilTxt}</span></div>`
+        +`<div class="dio-ubar" role="img" aria-label="${escAttr(I18N.tf('diskio.util_aria','utilisation {u}',{u:utilTxt}))}"><span style="width:${hasUtil?util.toFixed(1):0}%"></span></div></div>`
+      +`<div class="dio-stats">`
+        +stat((it.read_mb_s||0).toFixed(1),'MB/s',I18N.t('diskio.s_read','Read'),'rd')
+        +stat((it.write_mb_s||0).toFixed(1),'MB/s',I18N.t('diskio.s_write','Write'),'wr')
+        +stat(fmtLat(it.read_lat_ms),'',I18N.t('diskio.col_rlat','Read latency'))
+        +stat(fmtLat(it.write_lat_ms),'',I18N.t('diskio.col_wlat','Write latency'))
+      +`</div>`
+      +`<div class="dio-trend">${spark}<div class="dio-legend">`
+        +`<span><i class="r"></i>${I18N.t('diskio.legend_read','read')}</span>`
+        +`<span><i class="w"></i>${I18N.t('diskio.legend_write','write')}</span></div></div>`
+      +why+explainBox
+      +`</article>`;
   }).join('');
-  body.innerHTML=`<table class="ntbl dio-tbl"><thead><tr>`
-    +`<th>${I18N.t('diskio.col_device','Device')}</th>`
-    +`<th>${I18N.t('diskio.col_read','Read MB/s')}</th>`
-    +`<th>${I18N.t('diskio.col_write','Write MB/s')}</th>`
-    +`<th>${I18N.t('diskio.col_util','Utilisation')}</th>`
-    +`<th>${I18N.t('diskio.col_rlat','Read latency')}</th>`
-    +`<th>${I18N.t('diskio.col_wlat','Write latency')}</th>`
-    +`<th>${I18N.t('diskio.col_trend','Trend (6h)')}</th></tr></thead><tbody>${rows}</tbody></table>`
-    +`<p class="cap" style="margin-top:8px"><span style="color:var(--dio-r,#3b82f6)">━</span> ${I18N.t('diskio.legend_read','read')} · `
-    +`<span style="color:var(--dio-w,#f59e0b)">┅</span> ${I18N.t('diskio.legend_write','write')}. `
+  body.innerHTML=`<div class="dio-grid">${cards}</div>`
+    +`<p class="cap" style="margin-top:12px">`
     +I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and flow into the anomaly ribbon, incidents and alert rules.')+`</p>`;
   body.querySelectorAll('[data-dio-why]').forEach(btn=>{
     btn.onclick=()=>explainDiskIo(items[+btn.getAttribute('data-dio-why')],
