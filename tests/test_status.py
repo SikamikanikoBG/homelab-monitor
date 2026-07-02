@@ -2,6 +2,7 @@
 (JSON). The page is UNAUTHENTICATED, so the central test is privacy: the public
 payload must carry only aggregated, non-sensitive signals and NONE of the known
 topology/secret/settings fields the rest of the app exposes."""
+import email.utils
 import json
 import os
 import sys
@@ -488,6 +489,184 @@ class TestDailyRibbon(unittest.TestCase):
     def test_retention_covers_span(self):
         self.assertGreaterEqual(app._STATHIST_RETENTION,
                                 app._DAILY_RIBBON_DAYS * 86400)
+
+
+class TestStatusFeedAndSLA(unittest.TestCase):
+    """Shareable per-service status: RSS 2.0 incident feed + SLA/downtime summary.
+    The feed is UNAUTHENTICATED and per-service, so privacy is the central test:
+    only the credential-stripped host + generic Down/Recovered may ever surface —
+    never the raw target/userinfo/path/query or raw err."""
+    LEAK_TARGET = ("https://admin:SuperSecret123@vault.internal.lan:8443"
+                   "/secret/path?token=DEADBEEF")
+    ERR_TOKEN = "ERRTOKEN_LEAK_9999"
+
+    def setUp(self):
+        self.c = app.app.test_client()
+        self._sp = app.STATUS_PAGE
+        app.STATUS_PAGE = True
+        with app.LOCK:
+            app.DB.execute("DELETE FROM uptime_checks")
+            app.DB.execute("DELETE FROM uptime_results")
+            app.DB.commit()
+
+    def tearDown(self):
+        app.STATUS_PAGE = self._sp
+        with app.LOCK:
+            app.DB.execute("DELETE FROM uptime_checks")
+            app.DB.execute("DELETE FROM uptime_results")
+            app.DB.commit()
+
+    def _mk_check(self, cid, target, public=1, enabled=1, label="Vault", ctype="http"):
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
+                "expected_status,enabled,created_at,cert_warn_days,public) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, label, ctype, target, 60, 10, None, enabled, now, None, public))
+            app.DB.commit()
+
+    def _add_results(self, cid, samples):
+        """samples: list of (ts, up, latency_ms, code, err)."""
+        with app.LOCK:
+            for ts, up, lat, code, err in samples:
+                app.DB.execute(
+                    "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                    "VALUES(?,?,?,?,?,?)", (cid, ts, up, lat, code, err))
+            app.DB.commit()
+
+    # ── RSS well-formedness + content-type ────────────────────────────────────
+    def test_feed_wellformed(self):
+        from xml.dom import minidom
+        cid = "feedwf01"
+        self._mk_check(cid, "https://ok.example.com/")
+        now = int(time.time())
+        self._add_results(cid, [
+            (now - 3600, 1, 30.0, 200, None),
+            (now - 3000, 0, None, 503, "boom"),
+            (now - 1800, 1, 31.0, 200, None),
+        ])
+        r = self.c.get("/status/%s/feed.xml" % cid)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("application/rss+xml", r.content_type)
+        self.assertIn("charset=utf-8", r.content_type)
+        body = r.get_data(as_text=True)
+        dom = minidom.parseString(body)   # raises if malformed
+        self.assertEqual(dom.documentElement.tagName, "rss")
+        items = dom.getElementsByTagName("item")
+        self.assertTrue(items, "expected at least one incident item")
+        # each item: guid isPermaLink=false + RFC-822 pubDate that email can parse
+        for it in items:
+            guid = it.getElementsByTagName("guid")[0]
+            self.assertEqual(guid.getAttribute("isPermaLink"), "false")
+            pub = it.getElementsByTagName("pubDate")[0].firstChild.nodeValue
+            self.assertIsNotNone(email.utils.parsedate(pub), "bad pubDate %r" % pub)
+        # a down + a recovery for one closed incident → two items
+        self.assertEqual(len(items), 2)
+
+    # ── privacy contract: only host, never secret/path/token/err ──────────────
+    def test_feed_privacy_no_leak(self):
+        cid = "feedpriv1"
+        self._mk_check(cid, self.LEAK_TARGET)
+        now = int(time.time())
+        self._add_results(cid, [
+            (now - 3600, 1, 30.0, 200, None),
+            (now - 3000, 0, None, 503, self.ERR_TOKEN),
+            (now - 1800, 1, 31.0, 200, None),
+        ])
+        body = self.c.get("/status/%s/feed.xml" % cid).get_data(as_text=True)
+        self.assertIn("vault.internal.lan:8443", body)
+        for needle in ("admin", "SuperSecret123", "secret/path", "/secret",
+                       "DEADBEEF", "token=", self.ERR_TOKEN):
+            self.assertNotIn(needle, body,
+                             "feed leaked sensitive substring %r" % needle)
+
+    # ── gating: private / disabled / STATUS_PAGE off / missing → 404 ──────────
+    def test_feed_gating(self):
+        now = int(time.time())
+        self._mk_check("priv01", "https://a.example.com/", public=0, enabled=1)
+        self._mk_check("dis01", "https://b.example.com/", public=1, enabled=0)
+        self._mk_check("pub01", "https://c.example.com/", public=1, enabled=1)
+        self._add_results("pub01", [(now - 600, 1, 10.0, 200, None)])
+        self.assertEqual(self.c.get("/status/priv01/feed.xml").status_code, 404)
+        self.assertEqual(self.c.get("/status/dis01/feed.xml").status_code, 404)
+        self.assertEqual(self.c.get("/status/nope99/feed.xml").status_code, 404)
+        self.assertEqual(self.c.get("/status/pub01/feed.xml").status_code, 200)
+        app.STATUS_PAGE = False
+        self.assertEqual(self.c.get("/status/pub01/feed.xml").status_code, 404)
+        self.assertEqual(self.c.get("/status/feed.xml").status_code, 404)
+
+    # ── per-service /status/<id> page injects the RSS autodiscovery <link> ─────
+    def test_discovery_link_only_when_public(self):
+        self._mk_check("pubdisc", "https://d.example.com/", public=1, enabled=1)
+        self._mk_check("prvdisc", "https://e.example.com/", public=0, enabled=1)
+        pub = self.c.get("/status/pubdisc").get_data(as_text=True)
+        self.assertIn('type="application/rss+xml"', pub)
+        self.assertIn("/status/pubdisc/feed.xml", pub)
+        prv = self.c.get("/status/prvdisc").get_data(as_text=True)
+        self.assertNotIn("/status/prvdisc/feed.xml", prv)
+
+    # ── SLA downtime math: known fixture → expected minutes + incident count ──
+    def test_sla_downtime_math(self):
+        cid = "slamath1"
+        self._mk_check(cid, "https://f.example.com/")
+        now = int(time.time())
+        # one closed 20-minute (1200s) down-period inside the 24h window.
+        self._add_results(cid, [
+            (now - 3600, 1, 20.0, 200, None),   # up
+            (now - 3000, 0, None, 503, "x"),    # down  ← incident start
+            (now - 2400, 0, None, 503, "x"),    # down
+            (now - 1800, 1, 21.0, 200, None),   # up    ← recovery (end)
+        ])
+        d = self.c.get("/api/status/%s" % cid).get_json()
+        self.assertIn("sla", d)
+        s24 = d["sla"]["24h"]
+        self.assertEqual(s24["downtime_sec"], 1200)   # now-3000 → now-1800
+        self.assertEqual(s24["incidents"], 1)
+        self.assertEqual(s24["uptime"], 50.0)          # 2 up / 4 samples
+        # same closed incident is still counted inside the wider 90d window.
+        self.assertEqual(d["sla"]["90d"]["downtime_sec"], 1200)
+        self.assertEqual(d["sla"]["90d"]["incidents"], 1)
+
+    def test_sla_nodata_is_none(self):
+        cid = "slanone1"
+        self._mk_check(cid, "https://g.example.com/")
+        d = self.c.get("/api/status/%s" % cid).get_json()
+        for w in ("24h", "7d", "30d", "90d"):
+            self.assertIsNone(d["sla"][w]["uptime"])
+            self.assertIsNone(d["sla"][w]["downtime_sec"])
+            self.assertEqual(d["sla"][w]["incidents"], 0)
+
+    # ── additive back-compat: existing keys untouched, sla is purely added ────
+    def test_detail_additive_backcompat(self):
+        cid = "additive1"
+        self._mk_check(cid, "https://h.example.com/")
+        now = int(time.time())
+        self._add_results(cid, [(now - 600, 1, 12.0, 200, None)])
+        d = self.c.get("/api/status/%s" % cid).get_json()
+        for k in ("id", "label", "host", "type", "state", "uptime",
+                  "daily", "response_series", "incidents", "span"):
+            self.assertIn(k, d, "back-compat key %r vanished" % k)
+        self.assertEqual(set(d["uptime"].keys()), {"24h", "7d", "30d", "90d"})
+        self.assertEqual(set(d["sla"].keys()), {"24h", "7d", "30d", "90d"})
+
+    # ── cross-service feed aggregates public checks + stays privacy-safe ───────
+    def test_cross_service_feed(self):
+        from xml.dom import minidom
+        now = int(time.time())
+        self._mk_check("xpub", self.LEAK_TARGET, public=1, enabled=1, label="Vault")
+        self._mk_check("xprv", "https://z.example.com/", public=0, enabled=1)
+        self._add_results("xpub", [
+            (now - 3000, 0, None, 503, self.ERR_TOKEN),
+            (now - 1800, 1, 10.0, 200, None),
+        ])
+        r = self.c.get("/status/feed.xml")
+        self.assertEqual(r.status_code, 200)
+        body = r.get_data(as_text=True)
+        minidom.parseString(body)
+        self.assertIn("vault.internal.lan:8443", body)
+        for needle in ("SuperSecret123", "DEADBEEF", "secret/path", self.ERR_TOKEN):
+            self.assertNotIn(needle, body)
 
 
 if __name__ == "__main__":

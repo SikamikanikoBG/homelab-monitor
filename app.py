@@ -19,7 +19,7 @@ Adding a new monitor (it's meant to be easy):
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
 import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch
-import email.message
+import email.message, email.utils
 import html as _html
 from functools import wraps
 try:
@@ -12611,6 +12611,28 @@ def _public_incidents(rows, now, cap=_PUBLIC_INCIDENTS_MAX):
     incidents.reverse()   # newest first
     return incidents[:cap]
 
+def _sla_window(tu, incidents, now, window):
+    """Additive SLA summary for ONE window: {uptime %, downtime_sec, incidents}.
+    uptime mirrors _uptime_pct_window (same data source). Downtime is summed
+    HONESTLY from the reconstructed down-periods, clipped to the window — no new
+    sampling. downtime/incidents follow the 'no data' semantics of the uptime %:
+    when there are no samples in the window we report None/0 rather than fake a
+    fully-down window from a stale ongoing incident."""
+    pct = _uptime_pct_window(tu, now, window)
+    since = now - window
+    down = 0
+    count = 0
+    for inc in incidents:
+        s = inc["start"]
+        e = inc["end"] if inc["end"] is not None else now
+        ov = min(e, now) - max(s, since)
+        if ov > 0:
+            down += ov
+            count += 1
+    return {"uptime": pct,
+            "downtime_sec": (int(down) if pct is not None else None),
+            "incidents": count if pct is not None else 0}
+
 def _public_check_detail(cid, now=None):
     """PUBLIC, privacy-safe detail for ONE uptime check, or None when the check is
     not public+enabled (caller 404s). Single bounded 90-day query over the per-check
@@ -12681,6 +12703,16 @@ def _public_check_detail(cid, now=None):
         "incidents": _public_incidents(tuc, now),
         "span": _PUBLIC_DAILY_DAYS,
     }
+    # SLA / downtime summary — additive. Uptime mirrors out["uptime"]; downtime is
+    # summed from the SAME reconstructed down-periods (uncapped so a flappy service
+    # isn't undercounted), clipped to each window. Never introduces new sampling.
+    full_inc = _public_incidents(tuc, now, cap=len(tuc) + 1)
+    out["sla"] = {
+        "24h": _sla_window(tu, full_inc, now, 86400),
+        "7d":  _sla_window(tu, full_inc, now, 7 * 86400),
+        "30d": _sla_window(tu, full_inc, now, 30 * 86400),
+        "90d": _sla_window(tu, full_inc, now, 90 * 86400),
+    }
     if check["type"] == "cert" and cert_days is not None:
         out["cert_days"] = int(cert_days)
     return out
@@ -12714,6 +12746,169 @@ def _public_monitors(now):
             "incidents": _public_incidents(tuc, now, cap=10),
         })
     return mons
+
+# ── Shareable per-service status: RSS 2.0 incident feed (opt-in, privacy-first) ──
+# Same gate + privacy contract as /api/status/<id>: 404 unless the check is
+# public AND enabled AND STATUS_PAGE is on. Items carry ONLY a credential-stripped
+# host + generic Down/Recovered + optional HTTP code — never the raw target, path,
+# query, userinfo, or the raw err string.
+def _rss_pubdate(ts):
+    """RFC-822 date (GMT) for an epoch second — valid RSS <pubDate>."""
+    try:
+        return email.utils.formatdate(float(ts), usegmt=True)
+    except Exception:
+        return email.utils.formatdate(usegmt=True)
+
+def _human_dur(sec):
+    """Compact, human downtime string (server-side mirror of the page's durLabel)."""
+    sec = max(0, int(sec or 0))
+    if sec < 60:
+        return "%ds" % sec
+    if sec < 3600:
+        return "%dm" % (sec // 60)
+    if sec < 86400:
+        return "%dh %dm" % (sec // 3600, (sec % 3600) // 60)
+    return "%dd %dh" % (sec // 86400, (sec % 86400) // 3600)
+
+def _feed_items_for_check(check, incidents, host):
+    """Generic RSS item dicts from reconstructed incidents for ONE check. Each
+    down-period yields a 'Down' item (at its start) and, once recovered, a
+    'Recovered' item (at recovery). PRIVACY: label + credential-stripped host +
+    generic Down/Recovered + optional HTTP code ONLY — never target/path/err."""
+    cid = check["id"]
+    label = check.get("label") or ""
+    subject = host or label or "Service"
+    items = []
+    for inc in incidents:
+        code = inc.get("code")
+        codestr = " (HTTP %d)" % code if isinstance(code, int) else ""
+        dur = inc.get("duration_sec")
+        items.append({
+            "cid": cid, "label": label, "ts": int(inc["start"]),
+            "title": "%s — Down%s" % (subject, codestr),
+            "guid": "%s:down:%d" % (cid, int(inc["start"])),
+            "desc": "%s went down." % subject
+                    + (" Returned HTTP %d." % code if isinstance(code, int) else ""),
+        })
+        if inc.get("end") is not None:
+            items.append({
+                "cid": cid, "label": label, "ts": int(inc["end"]),
+                "title": "%s — Recovered" % subject,
+                "guid": "%s:up:%d" % (cid, int(inc["end"])),
+                "desc": "%s recovered%s." % (
+                    subject, (" after %s" % _human_dur(dur)) if dur else ""),
+            })
+    return items
+
+def _incidents_for(cid, now):
+    """(ts,up,code) rows → generic capped incidents for a check id (feed helper)."""
+    since = now - _PUBLIC_DAILY_DAYS * 86400 - 86400
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up,code FROM uptime_results WHERE check_id=? AND ts>=? ORDER BY ts",
+            (cid, since)).fetchall()
+    tuc = [(r[0], r[1], r[2]) for r in rows]
+    return _public_incidents(tuc, now, cap=_PUBLIC_INCIDENTS_MAX)
+
+def _build_status_feed(cid, now=None, base_url=""):
+    """RSS 2.0 XML string for one public+enabled check (or, when cid is None, a
+    cross-service feed of all public+enabled checks). Returns None when the check
+    isn't public+enabled (caller 404s). All interpolated text is XML-escaped."""
+    now = int(time.time()) if now is None else int(now)
+    esc = lambda s: _html.escape(str(s), quote=True)
+    base = (base_url or "").rstrip("/")
+    if cid is None:
+        title = "Lab status — incidents"
+        page_link = base + "/status"
+        self_link = base + "/status/feed.xml"
+        desc = "Recent incidents across all public services."
+        items = []
+        for c in list_uptime_checks():
+            if not (c.get("public") and c.get("enabled")):
+                continue
+            items += _feed_items_for_check(c, _incidents_for(c["id"], now), _public_host(c))
+    else:
+        with LOCK:
+            crow = DB.execute(
+                "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,"
+                "enabled,created_at,cert_warn_days,public FROM uptime_checks WHERE id=?",
+                (cid,)).fetchone()
+        if not crow:
+            return None
+        check = _uptime_row_to_dict(crow)
+        if not (check["public"] and check["enabled"]):
+            return None
+        host = _public_host(check)
+        page_link = base + "/status/" + urllib.parse.quote(cid, safe="")
+        self_link = page_link + "/feed.xml"
+        title = "%s — status" % (check["label"] or host or "Service")
+        desc = "Incident history for %s." % (host or check["label"] or "this service")
+        items = _feed_items_for_check(check, _incidents_for(cid, now), host)
+    items.sort(key=lambda i: i["ts"], reverse=True)
+    items = items[:_PUBLIC_INCIDENTS_MAX]
+    p = ['<?xml version="1.0" encoding="UTF-8"?>',
+         '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+         '<channel>',
+         '<title>%s</title>' % esc(title),
+         '<link>%s</link>' % esc(page_link),
+         '<atom:link href="%s" rel="self" type="application/rss+xml"/>' % esc(self_link),
+         '<description>%s</description>' % esc(desc),
+         '<language>en</language>',
+         '<generator>HomeLab Monitor</generator>',
+         '<ttl>5</ttl>',
+         '<lastBuildDate>%s</lastBuildDate>' % esc(_rss_pubdate(now))]
+    for it in items:
+        item_link = base + "/status/" + urllib.parse.quote(it["cid"], safe="")
+        p += ['<item>',
+              '<title>%s</title>' % esc(it["title"]),
+              '<link>%s</link>' % esc(item_link),
+              '<guid isPermaLink="false">%s</guid>' % esc(it["guid"]),
+              '<pubDate>%s</pubDate>' % esc(_rss_pubdate(it["ts"])),
+              '<description>%s</description>' % esc(it["desc"]),
+              '</item>']
+    p.append('</channel></rss>')
+    return "\n".join(p)
+
+def _check_is_public(cid):
+    """True only when the check exists AND is public AND enabled (feed/discovery
+    gate — mirrors _public_check_detail's contract, cheaply)."""
+    try:
+        with LOCK:
+            r = DB.execute("SELECT enabled,public FROM uptime_checks WHERE id=?",
+                           (cid,)).fetchone()
+        return bool(r and r[0] and r[1])
+    except Exception:
+        return False
+
+@app.route("/status/feed.xml")
+def status_feed_all():
+    """Cross-service RSS 2.0 incident feed (public+enabled checks only). Valid
+    (possibly empty) feed while STATUS_PAGE is on; 404 when it's off."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        xml = _build_status_feed(None, base_url=request.host_url)
+    except Exception as e:
+        print("status feed error:", e, flush=True)
+        xml = None
+    if xml is None:
+        return ("Not found", 404)
+    return Response(xml, content_type="application/rss+xml; charset=utf-8")
+
+@app.route("/status/<cid>/feed.xml")
+def status_feed_one(cid):
+    """Per-service RSS 2.0 incident feed. 404 unless the check is public AND enabled
+    (and STATUS_PAGE on). Privacy-identical to /api/status/<id>."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        xml = _build_status_feed(cid, base_url=request.host_url)
+    except Exception as e:
+        print("status feed error:", e, flush=True)
+        return ("Not found", 404)
+    if xml is None:
+        return ("Not found", 404)
+    return Response(xml, content_type="application/rss+xml; charset=utf-8")
 
 @app.route("/api/status")
 def api_status():
@@ -12749,6 +12944,16 @@ def api_status_detail(cid):
         return ("Not found", 404)
     return jsonify(detail)
 
+_STATUS_SHELL = None
+def _status_shell():
+    """Cached contents of static/status.html (read once) so the per-service page can
+    have an RSS autodiscovery <link> injected without a disk read per request."""
+    global _STATUS_SHELL
+    if _STATUS_SHELL is None:
+        with open(os.path.join(app.static_folder, "status.html"), encoding="utf-8") as f:
+            _STATUS_SHELL = f.read()
+    return _STATUS_SHELL
+
 @app.route("/status")
 @app.route("/status/<cid>")
 def status_page(cid=None):
@@ -12758,6 +12963,21 @@ def status_page(cid=None):
     detail data itself is gated by /api/status/<cid>)."""
     if not STATUS_PAGE:
         return ("Status page disabled", 404)
+    # RSS autodiscovery: only inject the per-service <link> when the check is
+    # actually public+enabled (so private/unknown ids leak nothing and readers
+    # don't advertise a feed that 404s). Server-rendered so non-JS RSS readers see
+    # it. Falls back to the plain static shell otherwise.
+    if cid and _check_is_public(cid):
+        try:
+            shell = _status_shell()
+            href = "/status/" + urllib.parse.quote(cid, safe="") + "/feed.xml"
+            tag = ('<link rel="alternate" type="application/rss+xml" '
+                   'title="Incident feed" href="%s">\n'
+                   % _html.escape(href, quote=True))
+            return Response(shell.replace("</head>", tag + "</head>", 1),
+                            content_type="text/html; charset=utf-8")
+        except Exception as e:
+            print("status shell inject error:", e, flush=True)
     return app.send_static_file("status.html")
 
 @app.route("/api/health")

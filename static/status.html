@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="dark light">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
+<link rel="alternate" type="application/rss+xml" title="Lab status — incidents" href="/status/feed.xml">
 <style>
 /* ── Design tokens — mirrored from dashboard.html so the page is on-brand ── */
 :root{--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code",Menlo,Consolas,monospace}
@@ -147,6 +148,19 @@ a.mon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .dwin .v.na{color:var(--mut)}
 .dwin .l{margin-top:4px;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
 @media(max-width:520px){ .dwins{grid-template-columns:repeat(2,1fr)} }
+/* SLA / downtime summary + RSS subscribe link */
+.slahead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.rsslink{display:inline-flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;font-weight:600;text-transform:none;letter-spacing:0}
+.rsslink:hover{color:var(--accent)}
+.rsslink svg{opacity:.85}
+.sla{border:1px solid var(--bd);border-radius:14px;background:var(--card);overflow:hidden}
+.slarow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:12px 16px;border-top:1px solid var(--bd);font-variant-numeric:tabular-nums}
+.slarow:first-child{border-top:0}
+.slarow .sll{color:var(--mut);font-size:13px;font-weight:600}
+.slarow .slr{font-size:13px;color:var(--tx)}
+.slarow .slr b{font-weight:700}
+.slarow .slr .sldn,.slarow .slr .slic{color:var(--mut);font-weight:500}
+.slarow .slr .na{color:var(--mut)}
 .card{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:16px}
 .spark{width:100%;height:72px;display:block;overflow:visible}
 .spark .ln{fill:none;stroke:var(--info);stroke-width:1.6;vector-effect:non-scaling-stroke}
@@ -254,6 +268,8 @@ body.offline-state .offline{display:block}
     </section>
     <div class="dwins" id="dWins"></div>
     <div class="ribbon" id="dRibbon" hidden></div>
+    <div class="sect slahead" id="dSlaHead"><span data-i18n="status.sla.title">SLA &amp; downtime</span><a class="rsslink" id="dRss" rel="alternate" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="18.5" r="2.3"/><path d="M3.5 10.2v3.1c4.2 0 7.6 3.4 7.6 7.6h3.1c0-5.9-4.8-10.7-10.7-10.7z"/><path d="M3.5 3.5v3.1c8 0 14.5 6.5 14.5 14.5h3.1C21.1 11.4 13.2 3.5 3.5 3.5z"/></svg><span data-i18n="status.rss">Subscribe (RSS)</span></a></div>
+    <div class="sla" id="dSla"></div>
     <div class="sect" data-i18n="status.detail.latency">Response time</div>
     <div class="card"><div id="dSpark"></div></div>
     <div class="sect" data-i18n="status.incidents">Past incidents</div>
@@ -606,6 +622,30 @@ function sparkline(series){
   cap.appendChild(a); cap.appendChild(b); box.appendChild(cap);
   return box;
 }
+// SLA / downtime summary — one row per window: uptime% · downtime · N incidents.
+function slaRow(labelKey,s){
+  const row=document.createElement('div'); row.className='slarow';
+  const l=document.createElement('span'); l.className='sll'; l.textContent=I18N.t(labelKey);
+  const r=document.createElement('span'); r.className='slr';
+  if(!s||s.uptime==null){ const n=document.createElement('span'); n.className='na'; n.textContent='—'; r.appendChild(n); }
+  else{
+    const up=document.createElement('b'); up.textContent=s.uptime+'%'; r.appendChild(up);
+    const d=document.createElement('span'); d.className='sldn';
+    d.textContent=' · '+I18N.tf('status.sla.down','{d} down',{d:durLabel(s.downtime_sec||0)}); r.appendChild(d);
+    const ic=document.createElement('span'); ic.className='slic';
+    ic.textContent=' · '+I18N.tf('status.sla.incidents','{n} incidents',{n:s.incidents||0}); r.appendChild(ic);
+  }
+  row.appendChild(l); row.appendChild(r); return row;
+}
+function renderSla(sla){
+  const head=document.getElementById('dSlaHead'), box=document.getElementById('dSla');
+  if(!sla){ head.hidden=true; box.hidden=true; box.innerHTML=''; return; }
+  head.hidden=false; box.hidden=false; box.innerHTML='';
+  box.appendChild(slaRow('status.sla.w24h',sla['24h']));
+  box.appendChild(slaRow('status.sla.w7d',sla['7d']));
+  box.appendChild(slaRow('status.sla.w30d',sla['30d']));
+  box.appendChild(slaRow('status.sla.w90d',sla['90d']));
+}
 let detailId=null, detailData=null;
 async function loadDetail(id){
   detailId=id;
@@ -654,6 +694,10 @@ function renderDetail(d){
   const ax=document.createElement('span'); ax.textContent=I18N.tf('status.ribbon.daysago','{n} days ago',{n:d.span||90});
   const bx=document.createElement('span'); bx.textContent=I18N.t('status.ribbon.today','Today');
   axis.appendChild(ax); axis.appendChild(bx); rb.appendChild(axis);
+  // SLA / downtime summary + RSS subscribe link
+  renderSla(d.sla);
+  const rss=document.getElementById('dRss');
+  if(rss){ if(d.id){ rss.href='/status/'+encodeURIComponent(d.id)+'/feed.xml'; rss.hidden=false; } else { rss.hidden=true; } }
   // latency sparkline
   const sp=document.getElementById('dSpark'); sp.innerHTML=''; sp.appendChild(sparkline(d.response_series||[]));
   // per-service incidents
