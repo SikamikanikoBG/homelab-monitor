@@ -188,6 +188,7 @@
   "status.sla.down": "停机 {d}",
   "status.sla.incidents": "{n} 次故障",
   "status.rss": "订阅 (RSS)",
+  "status.report.label": "下载报告",
   "sidebar.star": "在 GitHub 上加星",
   "sidebar.star_title": "在 GitHub 上给 HomeLab Monitor 加星 — 这对项目成长真的很有帮助",
   "sidebar.repo": "仓库",

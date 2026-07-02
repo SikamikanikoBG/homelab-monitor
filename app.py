@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch
+import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch, csv, io
 import email.message, email.utils
 import html as _html
 from functools import wraps
@@ -12909,6 +12909,119 @@ def status_feed_one(cid):
     if xml is None:
         return ("Not found", 404)
     return Response(xml, content_type="application/rss+xml; charset=utf-8")
+
+# ── Downloadable per-service SLA / incident report (CSV + JSON export) ──────────
+# Same gate + privacy contract as /api/status/<id> and the RSS feed: 404 unless the
+# check is public AND enabled AND STATUS_PAGE is on. The artifact carries ONLY the
+# display label + credential-stripped host + the SLA windows block + generic
+# Down/Recovered incidents (optional HTTP code) — never the raw target, path, query,
+# userinfo, or err string. No new sampling: it reuses _public_check_detail.
+def _safe_report_id(cid):
+    """Header/filename-safe token from a check id: alnum + dash ONLY, capped. Never
+    interpolates raw user/target text into the Content-Disposition header (so a weird
+    id/name can't inject headers). Falls back to 'service' when nothing survives."""
+    s = re.sub(r"[^A-Za-z0-9]+", "-", str(cid or "")).strip("-")
+    return (s[:64].strip("-") or "service")
+
+def _build_status_report(cid, now=None):
+    """Self-contained, privacy-safe report dict for one public+enabled check, or None
+    (caller 404s). Reuses _public_check_detail — SAME data source and privacy
+    contract as /api/status/<id>: label + host-only + sla windows + generic
+    incidents. The sla numbers are byte-for-byte the API's sla block."""
+    now = int(time.time()) if now is None else int(now)
+    detail = _public_check_detail(cid, now)
+    if detail is None:
+        return None
+    incidents = []
+    for inc in (detail.get("incidents") or []):
+        end = inc.get("end")
+        dur = inc.get("duration_sec")
+        code = inc.get("code")
+        incidents.append({
+            "started_at": int(inc["start"]),
+            "ended_at": (int(end) if end is not None else None),
+            "duration_sec": (int(dur) if dur is not None else None),
+            "state": ("Recovered" if end is not None else "Down"),
+            "http_code": (int(code) if isinstance(code, int) else None),
+        })
+    return {
+        "id": detail["id"],
+        "label": detail["label"],
+        "host": detail["host"],
+        "type": detail["type"],
+        "generated_at": now,
+        "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "sla": detail["sla"],
+        "incidents": incidents,
+    }
+
+def _report_to_csv(rep):
+    """Render a report dict to RFC-4180 CSV via the stdlib csv module (\\r\\n rows,
+    proper quoting). Two tables — SLA windows then incidents — plus a small metadata
+    header. Same privacy contract as the JSON report (no raw target/err)."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["service", rep.get("label") or ""])
+    w.writerow(["host", rep.get("host") or ""])
+    w.writerow(["generated_at", rep.get("generated_at")])
+    w.writerow(["generated_at_utc", rep.get("generated_at_utc") or ""])
+    w.writerow([])
+    w.writerow(["window", "uptime_pct", "downtime_sec", "downtime_human", "incidents"])
+    sla = rep.get("sla") or {}
+    for key in ("24h", "7d", "30d", "90d"):
+        s = sla.get(key) or {}
+        up = s.get("uptime")
+        dn = s.get("downtime_sec")
+        w.writerow([key,
+                    ("" if up is None else up),
+                    ("" if dn is None else dn),
+                    ("" if dn is None else _human_dur(dn)),
+                    (s.get("incidents") or 0)])
+    w.writerow([])
+    w.writerow(["started_at", "ended_at", "duration_sec", "state", "http_code"])
+    for inc in (rep.get("incidents") or []):
+        w.writerow([inc.get("started_at"),
+                    ("" if inc.get("ended_at") is None else inc.get("ended_at")),
+                    ("" if inc.get("duration_sec") is None else inc.get("duration_sec")),
+                    (inc.get("state") or ""),
+                    ("" if inc.get("http_code") is None else inc.get("http_code"))])
+    return buf.getvalue()
+
+@app.route("/status/<cid>/report.json")
+def status_report_json(cid):
+    """Downloadable self-contained JSON SLA/incident report. 404 unless the check is
+    public AND enabled (and STATUS_PAGE on). Privacy-identical to /api/status/<id>."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        rep = _build_status_report(cid)
+    except Exception as e:
+        print("status report error:", e, flush=True)
+        return ("Not found", 404)
+    if rep is None:
+        return ("Not found", 404)
+    fn = _safe_report_id(cid) + "-status-report.json"
+    return Response(json.dumps(rep, indent=2, ensure_ascii=False),
+                    content_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fn})
+
+@app.route("/status/<cid>/report.csv")
+def status_report_csv(cid):
+    """Downloadable CSV SLA/incident report (stdlib csv, RFC-4180). Same data and
+    gate as report.json; 404 identically when private/disabled/missing/STATUS_PAGE-off."""
+    if not STATUS_PAGE:
+        return ("Status page disabled", 404)
+    try:
+        rep = _build_status_report(cid)
+    except Exception as e:
+        print("status report error:", e, flush=True)
+        return ("Not found", 404)
+    if rep is None:
+        return ("Not found", 404)
+    fn = _safe_report_id(cid) + "-status-report.csv"
+    return Response(_report_to_csv(rep),
+                    content_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fn})
 
 @app.route("/api/status")
 def api_status():

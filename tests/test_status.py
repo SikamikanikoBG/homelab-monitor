@@ -669,5 +669,198 @@ class TestStatusFeedAndSLA(unittest.TestCase):
             self.assertNotIn(needle, body)
 
 
+class TestStatusReportExport(unittest.TestCase):
+    """Downloadable per-service SLA/incident report (report.json + report.csv). The
+    routes are UNAUTHENTICATED and reuse the /api/status/<id> data source, so the
+    central tests are privacy (no secret/target/path/token/err in either format OR
+    the Content-Disposition header), gating parity with the API, filename safety
+    (header-injection), and numeric consistency with the API's sla block."""
+    LEAK_TARGET = ("https://admin:SuperSecret123@vault.internal.lan:8443"
+                   "/secret/path?token=DEADBEEF")
+    ERR_TOKEN = "ERRTOKEN_LEAK_9999"
+    SECRETS = ("admin", "SuperSecret123", "secret/path", "/secret",
+               "DEADBEEF", "token=", ERR_TOKEN)
+
+    def setUp(self):
+        self.c = app.app.test_client()
+        self._sp = app.STATUS_PAGE
+        app.STATUS_PAGE = True
+        with app.LOCK:
+            app.DB.execute("DELETE FROM uptime_checks")
+            app.DB.execute("DELETE FROM uptime_results")
+            app.DB.commit()
+
+    def tearDown(self):
+        app.STATUS_PAGE = self._sp
+        with app.LOCK:
+            app.DB.execute("DELETE FROM uptime_checks")
+            app.DB.execute("DELETE FROM uptime_results")
+            app.DB.commit()
+
+    def _mk_check(self, cid, target, public=1, enabled=1, label="Vault", ctype="http"):
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
+                "expected_status,enabled,created_at,cert_warn_days,public) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, label, ctype, target, 60, 10, None, enabled, now, None, public))
+            app.DB.commit()
+
+    def _add_results(self, cid, samples):
+        with app.LOCK:
+            for ts, up, lat, code, err in samples:
+                app.DB.execute(
+                    "INSERT INTO uptime_results(check_id,ts,up,latency_ms,code,err) "
+                    "VALUES(?,?,?,?,?,?)", (cid, ts, up, lat, code, err))
+            app.DB.commit()
+
+    def _fixture(self, cid, target=None, label="Vault"):
+        """One closed 1200s down-incident (HTTP 503) inside all windows."""
+        self._mk_check(cid, target or self.LEAK_TARGET, label=label)
+        now = int(time.time())
+        self._add_results(cid, [
+            (now - 3600, 1, 20.0, 200, None),
+            (now - 3000, 0, None, 503, self.ERR_TOKEN),
+            (now - 2400, 0, None, 503, self.ERR_TOKEN),
+            (now - 1800, 1, 21.0, 200, None),
+        ])
+        return now
+
+    # ── JSON report shape ─────────────────────────────────────────────────────
+    def test_json_report_shape(self):
+        cid = "rep_shape1"
+        self._fixture(cid)
+        r = self.c.get("/status/%s/report.json" % cid)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("application/json", r.content_type)
+        self.assertIn('attachment; filename="rep-shape1-status-report.json"',
+                      r.headers.get("Content-Disposition", ""))
+        j = r.get_json()
+        for k in ("id", "label", "host", "type", "generated_at",
+                  "generated_at_utc", "sla", "incidents"):
+            self.assertIn(k, j, "missing report key %r" % k)
+        self.assertEqual(j["host"], "vault.internal.lan:8443")
+        self.assertEqual(set(j["sla"].keys()), {"24h", "7d", "30d", "90d"})
+        self.assertEqual(len(j["incidents"]), 1)
+        inc = j["incidents"][0]
+        self.assertEqual(inc["state"], "Recovered")
+        self.assertEqual(inc["http_code"], 503)
+        self.assertEqual(inc["duration_sec"], 1200)
+        self.assertIsNotNone(inc["ended_at"])
+
+    # ── privacy: no secret/target/path/token/err in body OR headers ───────────
+    def test_report_privacy_no_leak(self):
+        cid = "rep_priv1"
+        self._fixture(cid)
+        for path in ("/status/%s/report.json" % cid, "/status/%s/report.csv" % cid):
+            r = self.c.get(path)
+            self.assertEqual(r.status_code, 200)
+            body = r.get_data(as_text=True)
+            self.assertIn("vault.internal.lan:8443", body)
+            cd = r.headers.get("Content-Disposition", "")
+            for needle in self.SECRETS:
+                self.assertNotIn(needle, body,
+                                 "%s leaked %r in body" % (path, needle))
+                self.assertNotIn(needle, cd,
+                                 "%s leaked %r in Content-Disposition" % (path, needle))
+
+    # ── CSV parses back with stdlib csv + matches the JSON numbers ────────────
+    def test_csv_parses_and_matches_json(self):
+        import csv as _csv
+        import io as _io
+        cid = "rep_csv1"
+        self._fixture(cid)
+        j = self.c.get("/status/%s/report.json" % cid).get_json()
+        r = self.c.get("/status/%s/report.csv" % cid)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/csv", r.content_type)
+        self.assertIn("charset=utf-8", r.content_type)
+        self.assertIn('attachment; filename="rep-csv1-status-report.csv"',
+                      r.headers.get("Content-Disposition", ""))
+        rows = list(_csv.reader(_io.StringIO(r.get_data(as_text=True))))
+        # locate the SLA table header + the incidents table header
+        sla_hdr = ["window", "uptime_pct", "downtime_sec", "downtime_human", "incidents"]
+        inc_hdr = ["started_at", "ended_at", "duration_sec", "state", "http_code"]
+        self.assertIn(sla_hdr, rows)
+        self.assertIn(inc_hdr, rows)
+        si = rows.index(sla_hdr)
+        sla_rows = {r0[0]: r0 for r0 in rows[si + 1:si + 5]}
+        for w in ("24h", "7d", "30d", "90d"):
+            self.assertIn(w, sla_rows)
+            csv_up = sla_rows[w][1]
+            csv_dn = sla_rows[w][2]
+            csv_ic = int(sla_rows[w][4])
+            jw = j["sla"][w]
+            self.assertEqual(csv_ic, jw["incidents"])
+            self.assertEqual(csv_up, "" if jw["uptime"] is None else str(jw["uptime"]))
+            self.assertEqual(csv_dn,
+                             "" if jw["downtime_sec"] is None else str(jw["downtime_sec"]))
+        ii = rows.index(inc_hdr)
+        inc_rows = rows[ii + 1:]
+        self.assertEqual(len(inc_rows), len(j["incidents"]))
+        cr = inc_rows[0]
+        ji = j["incidents"][0]
+        self.assertEqual(int(cr[0]), ji["started_at"])
+        self.assertEqual(int(cr[2]), ji["duration_sec"])
+        self.assertEqual(cr[3], ji["state"])
+        self.assertEqual(int(cr[4]), ji["http_code"])
+
+    # ── consistency: report sla == /api/status/<id> sla ───────────────────────
+    def test_report_matches_api_sla(self):
+        cid = "rep_cons1"
+        self._fixture(cid)
+        api = self.c.get("/api/status/%s" % cid).get_json()
+        rep = self.c.get("/status/%s/report.json" % cid).get_json()
+        self.assertEqual(rep["sla"], api["sla"])
+
+    # ── gating parity: private / disabled / missing / STATUS_PAGE off → 404 ───
+    def test_report_gating(self):
+        now = int(time.time())
+        self._mk_check("priv01", "https://a.example.com/", public=0, enabled=1)
+        self._mk_check("dis01", "https://b.example.com/", public=1, enabled=0)
+        self._mk_check("pub01", "https://c.example.com/", public=1, enabled=1)
+        self._add_results("pub01", [(now - 600, 1, 10.0, 200, None)])
+        for fmt in ("json", "csv"):
+            self.assertEqual(
+                self.c.get("/status/priv01/report.%s" % fmt).status_code, 404)
+            self.assertEqual(
+                self.c.get("/status/dis01/report.%s" % fmt).status_code, 404)
+            self.assertEqual(
+                self.c.get("/status/nope99/report.%s" % fmt).status_code, 404)
+            self.assertEqual(
+                self.c.get("/status/pub01/report.%s" % fmt).status_code, 200)
+        app.STATUS_PAGE = False
+        self.assertEqual(self.c.get("/status/pub01/report.json").status_code, 404)
+        self.assertEqual(self.c.get("/status/pub01/report.csv").status_code, 404)
+
+    # ── filename sanitization: non-alnum id → safe filename, live route ───────
+    def test_filename_sanitization_live(self):
+        cid = "web.api_01"   # routable but non-alnum → sanitizes to web-api-01
+        self._mk_check(cid, "https://ok.example.com/", label="Weird")
+        now = int(time.time())
+        self._add_results(cid, [(now - 600, 1, 10.0, 200, None)])
+        for fmt in ("json", "csv"):
+            r = self.c.get("/status/%s/report.%s" % (cid, fmt))
+            self.assertEqual(r.status_code, 200)
+            cd = r.headers.get("Content-Disposition", "")
+            self.assertIn('filename="web-api-01-status-report.%s"' % fmt, cd)
+
+    # ── filename sanitization: nasty ids can never inject the header ──────────
+    def test_safe_report_id_injection(self):
+        # weird chars (quotes, CR/LF, slashes, spaces, unicode) all collapse to
+        # an alnum/dash token — no header-breaking bytes survive.
+        nasty = 'a b/c"\r\nx"; drop=1\t你.9'
+        safe = app._safe_report_id(nasty)
+        self.assertRegex(safe, r"^[A-Za-z0-9-]+$")
+        for bad in ('"', "\r", "\n", "/", " ", ";", "\t", "你"):
+            self.assertNotIn(bad, safe)
+        self.assertEqual(app._safe_report_id(""), "service")
+        self.assertEqual(app._safe_report_id("///"), "service")
+        self.assertRegex(app._safe_report_id("ok-id_123"), r"^[A-Za-z0-9-]+$")
+        # over-long ids are capped (filename stays sane)
+        self.assertLessEqual(len(app._safe_report_id("x" * 500)), 64)
+
+
 if __name__ == "__main__":
     unittest.main()

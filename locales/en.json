@@ -161,6 +161,7 @@
   "status.sla.down": "{d} down",
   "status.sla.incidents": "{n} incidents",
   "status.rss": "Subscribe (RSS)",
+  "status.report.label": "Download report",
   "sidebar.star": "Star on GitHub",
   "sidebar.star_title": "Star HomeLab Monitor on GitHub — it genuinely helps the project grow",
   "sidebar.repo": "Repo",

@@ -161,6 +161,10 @@ a.mon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .slarow .slr b{font-weight:700}
 .slarow .slr .sldn,.slarow .slr .slic{color:var(--mut);font-weight:500}
 .slarow .slr .na{color:var(--mut)}
+.report{margin-top:10px;font-size:12.5px;color:var(--mut)}
+.report a{color:var(--accent);font-weight:600}
+.report a:hover{text-decoration:underline}
+.report .rsep{opacity:.5;margin:0 2px}
 .card{border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:16px}
 .spark{width:100%;height:72px;display:block;overflow:visible}
 .spark .ln{fill:none;stroke:var(--info);stroke-width:1.6;vector-effect:non-scaling-stroke}
@@ -270,6 +274,7 @@ body.offline-state .offline{display:block}
     <div class="ribbon" id="dRibbon" hidden></div>
     <div class="sect slahead" id="dSlaHead"><span data-i18n="status.sla.title">SLA &amp; downtime</span><a class="rsslink" id="dRss" rel="alternate" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="18.5" r="2.3"/><path d="M3.5 10.2v3.1c4.2 0 7.6 3.4 7.6 7.6h3.1c0-5.9-4.8-10.7-10.7-10.7z"/><path d="M3.5 3.5v3.1c8 0 14.5 6.5 14.5 14.5h3.1C21.1 11.4 13.2 3.5 3.5 3.5z"/></svg><span data-i18n="status.rss">Subscribe (RSS)</span></a></div>
     <div class="sla" id="dSla"></div>
+    <div class="report" id="dReport" hidden><span data-i18n="status.report.label">Download report</span> <a id="dRepCsv" download>CSV</a> <span class="rsep">·</span> <a id="dRepJson" download>JSON</a></div>
     <div class="sect" data-i18n="status.detail.latency">Response time</div>
     <div class="card"><div id="dSpark"></div></div>
     <div class="sect" data-i18n="status.incidents">Past incidents</div>
@@ -698,6 +703,9 @@ function renderDetail(d){
   renderSla(d.sla);
   const rss=document.getElementById('dRss');
   if(rss){ if(d.id){ rss.href='/status/'+encodeURIComponent(d.id)+'/feed.xml'; rss.hidden=false; } else { rss.hidden=true; } }
+  // Downloadable SLA / incident report (CSV · JSON)
+  const rep=document.getElementById('dReport');
+  if(rep){ if(d.id){ document.getElementById('dRepCsv').href='/status/'+encodeURIComponent(d.id)+'/report.csv'; document.getElementById('dRepJson').href='/status/'+encodeURIComponent(d.id)+'/report.json'; rep.hidden=false; } else rep.hidden=true; }
   // latency sparkline
   const sp=document.getElementById('dSpark'); sp.innerHTML=''; sp.appendChild(sparkline(d.response_series||[]));
   // per-service incidents
