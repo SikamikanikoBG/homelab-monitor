@@ -7114,7 +7114,7 @@ function renderIncidents(){
 function _incAiOneLiner(it){
   const t=(it&&it.ai_explanation)?String(it.ai_explanation):'';
   if(!t) return '';
-  return '<div class="inc-ai-line" title="'+esc(t)+'"><span class="ai-ic">🧠</span><span>'+esc(t)+'</span></div>';
+  return '<div class="inc-ai-line" title="'+escAttr(t)+'"><span class="ai-ic">🧠</span><span>'+esc(t)+'</span></div>';
 }
 // Auto-explain opt-in toggle (OFF by default). Loads once from /api/settings and
 // persists on change. The generation itself runs server-side on a dedicated worker.
