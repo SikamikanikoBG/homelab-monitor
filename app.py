@@ -13870,10 +13870,13 @@ def _extra_metrics_text():
     try:
         host_name = ((LATEST.get("host") or {}).get("hostname") or socket.gethostname())
         info_s = []
-        for g in (LATEST.get("gpus") or []):
+        for i, g in enumerate(LATEST.get("gpus") or []):
             idx = g.get("idx")
+            # Fall back to the enumerate index (not a constant) so cards missing
+            # idx can't collide into an identical labelset — a duplicate series
+            # would make Prometheus reject the whole scrape.
             info_s.append(({"host": host_name,
-                            "gpu": f"gpu{idx if idx is not None else 0}",
+                            "gpu": f"gpu{idx if idx is not None else i}",
                             "name": g.get("name") or "",
                             "vendor": (g.get("vendor") or "unknown")}, 1))
         _prom_metric(out, "homelab_gpu_info", "gauge",
