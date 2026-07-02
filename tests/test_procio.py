@@ -452,5 +452,114 @@ class TestProcIoRingPrivacy(unittest.TestCase):
         self.assertNotIn("leakybench", str(app.build_public_status()))
 
 
+def _mk_incident(iid, opened_at, *members, severity="warning", state="open"):
+    """Insert one incident + its members directly (no evaluate/enqueue path).
+    members: (series, last_seen) tuples."""
+    with app.LOCK:
+        app.DB.execute("DELETE FROM incidents WHERE id=?", (iid,))
+        app.DB.execute("DELETE FROM incident_members WHERE incident_id=?", (iid,))
+        app.DB.execute(
+            "INSERT INTO incidents(id,state,severity,opened_at,updated_at,miss)"
+            " VALUES(?,?,?,?,?,0)", (iid, state, severity, opened_at, opened_at))
+        for series, last_seen in members:
+            app.DB.execute(
+                "INSERT INTO incident_members(incident_id,series,direction,peak_z,unit,"
+                "peak_value,baseline,first_seen,last_seen,active) VALUES(?,?,?,?,?,?,?,?,?,1)",
+                (iid, series, "spike", 6.0, "MB/s", 80.0, 5.0, opened_at, last_seen))
+        app.DB.commit()
+
+
+class TestIncidentSpikeIoReadPayload(unittest.TestCase):
+    """The deterministic `spike_io` field on the incident *read* payload
+    (/api/incidents/<id> → get_incident): present when a disk_io member + history
+    exist, gracefully omitted otherwise, comm-only, and NEVER an LLM call."""
+    def tearDown(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM incidents")
+            app.DB.execute("DELETE FROM incident_members")
+            app.DB.execute("DELETE FROM proc_io_samples")
+            app.DB.commit()
+
+    def test_helper_names_top_writer_and_reader(self):
+        now = int(time.time())
+        anchor = now - 300
+        _seed_pio([(anchor, 10, "backup_job", 0, 66 * MB),
+                   (anchor, 11, "rsync", 9 * MB, 0)])
+        inc = {"id": "i1", "opened_at": anchor, "updated_at": anchor,
+               "members": [{"series": "disk_io:sda", "last_seen": anchor}]}
+        s = app._incident_spike_io(inc, now=now)
+        self.assertTrue(s["available"])
+        self.assertEqual(s["writer"]["name"], "backup_job")
+        self.assertIn("MB/s", s["writer"]["write_h"])
+        self.assertEqual(s["reader"]["name"], "rsync")
+
+    def test_helper_none_without_diskio_member(self):
+        now = int(time.time())
+        _seed_pio([(now, 10, "backup_job", 0, 66 * MB)])
+        inc = {"id": "i2", "opened_at": now, "updated_at": now,
+               "members": [{"series": "gpu_util", "last_seen": now}]}
+        self.assertIsNone(app._incident_spike_io(inc, now=now))
+
+    def test_helper_none_when_no_history_covers_window(self):
+        now = int(time.time())
+        _seed_pio([(now - 99999, 10, "backup_job", 0, 66 * MB)])  # far outside window
+        inc = {"id": "i3", "opened_at": now, "updated_at": now,
+               "members": [{"series": "disk_io:sda", "last_seen": now}]}
+        self.assertIsNone(app._incident_spike_io(inc, now=now))
+
+    def test_helper_none_on_empty_ring(self):
+        now = int(time.time())
+        _seed_pio([])
+        inc = {"id": "i4", "opened_at": now, "updated_at": now,
+               "members": [{"series": "disk_io:sda", "last_seen": now}]}
+        self.assertIsNone(app._incident_spike_io(inc, now=now))
+
+    def test_get_incident_carries_spike_io(self):
+        now = int(time.time())
+        _mk_incident("gi1", now, ("disk_io:sda", now))
+        _seed_pio([(now, 10, "postgres", 0, 42 * MB)])
+        inc = app.get_incident("gi1")
+        self.assertIn("spike_io", inc)
+        self.assertEqual(inc["spike_io"]["writer"]["name"], "postgres")
+
+    def test_get_incident_omits_spike_io_without_diskio(self):
+        now = int(time.time())
+        _mk_incident("gi2", now, ("gpu_util", now))
+        _seed_pio([(now, 10, "postgres", 0, 42 * MB)])
+        self.assertNotIn("spike_io", app.get_incident("gi2"))
+
+    def test_read_path_makes_zero_llm_calls(self):
+        now = int(time.time())
+        _mk_incident("gi3", now, ("disk_io:sda", now))
+        _seed_pio([(now, 10, "postgres", 0, 42 * MB)])
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch("app._ollama_generate_stream", side_effect=AssertionError("LLM must not run")):
+            inc = app.get_incident("gi3")
+            _ = app.list_incidents()
+        self.assertIn("spike_io", inc)
+
+    def test_api_incident_one_carries_spike_io_and_no_llm(self):
+        now = int(time.time())
+        _mk_incident("gi4", now, ("disk_io:sda", now))
+        _seed_pio([(now, 10, "kworker", 0, 55 * MB)])
+        app.app.config["TESTING"] = True
+        c = app.app.test_client()
+        with patch("app._ollama_generate", side_effect=AssertionError("LLM must not run")), \
+             patch("app._ollama_generate_stream", side_effect=AssertionError("LLM must not run")):
+            r = c.get("/api/incidents/gi4")
+        j = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(j["incident"]["spike_io"]["writer"]["name"], "kworker")
+
+    def test_spike_io_comm_absent_from_public_status(self):
+        now = int(time.time())
+        _mk_incident("gi5", now, ("disk_io:sda", now))
+        _seed_pio([(now, 10, "secret_writer", 0, 77 * MB)])
+        # the field surfaces on the authed read...
+        self.assertEqual(app.get_incident("gi5")["spike_io"]["writer"]["name"], "secret_writer")
+        # ...but NEVER on any public surface
+        self.assertNotIn("secret_writer", str(app.build_public_status()))
+
+
 if __name__ == "__main__":
     unittest.main()

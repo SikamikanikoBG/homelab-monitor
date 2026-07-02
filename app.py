@@ -6304,6 +6304,12 @@ def get_incident(iid):
                        "detail": "all members returned to baseline", "series": None})
         tl.sort(key=lambda e: (e["at"] or 0))
         inc["timeline"] = tl
+        # Glanceable, deterministic spike-time disk-I/O attribution for the drawer
+        # ("who wrote DURING the spike") — a pure cached ring read, NO LLM, comm
+        # only. Omitted when no disk_io member / no history covers the window.
+        _sio = _incident_spike_io(inc)
+        if _sio:
+            inc["spike_io"] = _sio
         return inc
     except Exception as e:
         print("get_incident error:", e, flush=True)
@@ -10427,6 +10433,46 @@ def _proc_io_at(ts, window=120, limit=3):
     if not writers and not readers:
         return None
     return {"available": True, "writers": writers, "readers": readers}
+
+
+def _incident_spike_io(inc, now=None):
+    """Deterministic spike-time disk-I/O attribution for an incident *read* payload
+    (the detail drawer's "who was writing DURING the spike" line). If a disk_io
+    series is among the incident's members, join the persisted per-process ring at
+    the incident's most-recent activity via `_proc_io_at` and surface the heaviest
+    writer + heaviest reader (comm only, each pre-formatted). Pure cached DB read —
+    NEVER an LLM call, never a poll. Bounded to the top writer + top reader. Returns
+    {"available": True, "writer"?: {...}, "reader"?: {...}} or None when there's no
+    disk_io member / no history covers the window / the ring is unreadable — the
+    caller then simply omits the field (drawer unchanged). comm only; NOT exposed on
+    any public surface. Never raises."""
+    try:
+        members = (inc or {}).get("members") or []
+        if not any(str(m.get("series") or "").startswith("disk_io") for m in members):
+            return None
+        now = now or int(time.time())
+        anchor = max([m.get("last_seen") or 0 for m in members]
+                     + [inc.get("updated_at") or 0, inc.get("opened_at") or 0, 0]) or now
+        anchor = max(min(int(anchor), now), now - 30 * 24 * 3600)
+        hist = _proc_io_at(anchor)
+        if not (hist and hist.get("available")):
+            return None
+        out = {"available": True}
+        w = hist.get("writers") or []
+        r = hist.get("readers") or []
+        if w:
+            wb = int(w[0].get("write_b_s") or 0)
+            out["writer"] = {"name": w[0].get("name"), "write_b_s": wb,
+                             "write_h": _fmt_bps(wb)}
+        if r:
+            rb = int(r[0].get("read_b_s") or 0)
+            out["reader"] = {"name": r[0].get("name"), "read_b_s": rb,
+                             "read_h": _fmt_bps(rb)}
+        if "writer" not in out and "reader" not in out:
+            return None
+        return out
+    except Exception:
+        return None
 
 
 def _explain_context(point, now=None):

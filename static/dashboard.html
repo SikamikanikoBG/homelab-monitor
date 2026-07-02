@@ -674,6 +674,17 @@ tr.reg-dead td{opacity:1}
 .incd-meta dt{color:var(--mut)}
 .incd-meta dd{margin:0;font-family:var(--mono);font-size:12.5px}
 .incd-dur{color:var(--info);font-family:inherit;font-size:12px}
+/* glanceable spike-time disk-I/O attribution ("who wrote DURING the spike") */
+.incd-spikeio{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-top:10px;
+  padding:8px 10px;border:1px solid var(--bd);border-radius:9px;background:var(--inset)}
+.incd-spikeio-ic{font-size:14px;flex:none;line-height:1}
+.incd-spikeio-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--mut);flex:none}
+.incd-spikeio .vbadge{text-transform:none;letter-spacing:0;font-size:11px;font-weight:600;
+  color:var(--tx);border-color:var(--bd);background:var(--card)}
+.incd-spikeio .vbadge.io-w{color:var(--crit);border-color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent)}
+.incd-spikeio .vbadge.io-r{color:var(--info);border-color:var(--info);background:color-mix(in srgb,var(--info) 10%,transparent)}
+.incd-spikeio .vbadge b{font-weight:700;font-family:var(--mono)}
 /* timeline */
 .incd-tl{position:relative;margin:0;padding:0 0 0 22px;list-style:none}
 .incd-tl::before{content:'';position:absolute;left:5px;top:4px;bottom:4px;width:2px;background:var(--bd)}
@@ -7341,6 +7352,30 @@ function _incdSparkline(data, direction, crit){
     +'<circle class="sp-peak-core" cx="'+cx+'" cy="'+cy+'" r="1.3"/>'
     +'</svg>';
 }
+// Glanceable, deterministic spike-time disk-I/O attribution line from the incident
+// read payload's `spike_io` (a pure cached ring read on the server — NO LLM). Names
+// who was writing/reading DURING the spike. comm is XSS-escaped; '' when absent so
+// the drawer renders exactly as before. Rates are server-pre-formatted (write_h/read_h).
+function _incdSpikeIo(inc){
+  const s=inc&&inc.spike_io;
+  if(!s||!s.available||(!s.writer&&!s.reader)) return '';
+  let chips='';
+  if(s.writer&&s.writer.name){
+    chips+='<span class="vbadge io-w" title="'+escAttr(I18N.t('incd.spike_writer_t','Heaviest writer during the spike'))+'">'
+      +'<span class="vdot" aria-hidden="true"></span>'
+      +I18N.tf('incd.spike_wrote','{name} wrote ~{rate}',{name:'<b>'+esc(s.writer.name)+'</b>',rate:esc(s.writer.write_h||'')})+'</span>';
+  }
+  if(s.reader&&s.reader.name){
+    chips+='<span class="vbadge io-r" title="'+escAttr(I18N.t('incd.spike_reader_t','Heaviest reader during the spike'))+'">'
+      +'<span class="vdot" aria-hidden="true"></span>'
+      +I18N.tf('incd.spike_read','{name} read ~{rate}',{name:'<b>'+esc(s.reader.name)+'</b>',rate:esc(s.reader.read_h||'')})+'</span>';
+  }
+  if(!chips) return '';
+  return '<div class="incd-spikeio" role="note" aria-label="'+escAttr(I18N.t('incd.spike_io','During the spike'))+'">'
+    +'<span class="incd-spikeio-ic" aria-hidden="true">⏱️</span>'
+    +'<span class="incd-spikeio-lbl">'+esc(I18N.t('incd.spike_io','During the spike'))+'</span>'
+    +chips+'</div>';
+}
 function _incdRender(inc){
   _incdHeader(inc);
   const body=document.getElementById('incd-body');
@@ -7415,7 +7450,7 @@ function _incdRender(inc){
   }).join('') || '<div class="muted" style="font-size:13px">'+esc(I18N.t('incd.no_members','No member signals.'))+'</div>';
   body.innerHTML=
     '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.ai_title','AI explanation'))+'</div><div id="incd-ai"></div></section>'
-   +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+'</section>'
+   +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+_incdSpikeIo(inc)+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.timeline','Timeline'))+'</div>'+tlHtml+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.members','Signals'))+'</div>'+memHtml+'</section>';
   body.querySelectorAll('[data-incd-why]').forEach(btn=>{
