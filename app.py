@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch, csv, io
+import os, re, sys, glob, time, json, ssl, math, socket, calendar, sqlite3, threading, queue, subprocess, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, smtplib, fnmatch, csv, io
 import email.message, email.utils
 import html as _html
 from functools import wraps
@@ -265,6 +265,14 @@ _RUNS_MIGRATIONS = ("key_id TEXT",)
 # stamped when a copilot generation is captured (NULL when GPU power/timing absent or
 # for pre-migration rows). Powers the "local vs cloud" inference-savings rollup.
 _LLM_SAMPLES_MIGRATIONS = ("energy_wh REAL",)
+# Persisted Lab-Copilot explanation for a correlated incident (E1). All nullable:
+# ai_explanation = the bounded plain-English probable-cause + suggested next step
+# (LLM-generated, sanitised); ai_explained_at = unix ts it was generated;
+# ai_model = the model that produced it. Written ONLY from explicit user actions
+# (Explain/Regenerate, first-open one-shot) or the dedicated auto-explain worker —
+# NEVER on the metrics/collector poll path. Incident READS return these cached
+# fields with zero LLM calls. Old rows read as NULL (feature simply shows nothing).
+_INCIDENTS_MIGRATIONS = ("ai_explanation TEXT", "ai_explained_at INTEGER", "ai_model TEXT")
 
 def _data_dir():
     return os.path.dirname(os.path.abspath(DB_PATH)) or "."
@@ -323,6 +331,11 @@ def _apply_schema_migrations(conn):
     for col in _LLM_SAMPLES_MIGRATIONS:
         try:
             conn.execute(f"ALTER TABLE llm_samples ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in _INCIDENTS_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE incidents ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     # Migrate a legacy single instance-wide api_key (the previous design) into the
@@ -4390,6 +4403,13 @@ SETTING_DEFAULTS = {
     # on: a slow, heavily-cached, bounded background poller (see IMG_CHECK_* envs).
     "image_update_check":        "0",        # "0" / "1" — master switch
     "image_update_interval_sec": "21600",    # seconds between full re-checks (~6h; min ~1h enforced)
+    # ── Auto-explain new incidents (E1) — OFF by default, inert until enabled ────
+    # When "1", a newly-OPENED correlated incident gets a Lab-Copilot explanation
+    # generated automatically — but ONLY on a dedicated, decoupled worker thread,
+    # NEVER on the metrics/collector poll path. Rate-limited, de-duplicated, and a
+    # no-op when the local LLM is unreachable. When "0" (default): zero new
+    # behaviour — explanations are only ever produced by an explicit user action.
+    "incident_auto_explain":     "0",        # "0" / "1" — master switch
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass", "slack_webhook_url", "smtp_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
@@ -5850,6 +5870,8 @@ def evaluate_incidents(anomalies, now=None):
     now = int(now if now is not None else time.time())
     items = (anomalies or {}).get("items") or []
     active = {a["key"]: a for a in items if a.get("key")}
+    newly_opened = False          # a fresh incident opened this pass → auto-explain candidate
+    result = None
     try:
         with LOCK:
             row = DB.execute(
@@ -5862,6 +5884,7 @@ def evaluate_incidents(anomalies, now=None):
                     iid = uuid.uuid4().hex
                     DB.execute("INSERT INTO incidents(id,state,severity,opened_at,updated_at,miss)"
                                " VALUES(?,?,?,?,?,0)", (iid, "open", "warning", now, now))
+                    newly_opened = True
                 # upsert each active series as a member (extend the incident)
                 mrows = DB.execute(
                     "SELECT series, peak_z FROM incident_members WHERE incident_id=?", (iid,)).fetchall()
@@ -5892,26 +5915,99 @@ def evaluate_incidents(anomalies, now=None):
                 DB.execute("UPDATE incidents SET severity=?, updated_at=?, miss=0 WHERE id=?",
                            (_incident_severity(mem), now, iid))
                 DB.commit()
-                return iid
-
-            # No anomalies active this pass.
-            if iid is None:
-                return None
-            miss = (row[3] or 0) + 1
-            if miss >= _INCIDENT_CLEAR_CONFIRM:
-                DB.execute("UPDATE incidents SET state='cleared', cleared_at=?, updated_at=?, miss=? WHERE id=?",
-                           (now, now, miss, iid))
-                DB.execute("UPDATE incident_members SET active=0 WHERE incident_id=?", (iid,))
-                _trim_incidents()
+                result = iid
+            elif iid is None:
+                # No anomalies active this pass and nothing open.
+                result = None
             else:
-                DB.execute("UPDATE incidents SET miss=?, updated_at=? WHERE id=?", (miss, now, iid))
-            DB.commit()
-            return None if miss >= _INCIDENT_CLEAR_CONFIRM else iid
+                miss = (row[3] or 0) + 1
+                if miss >= _INCIDENT_CLEAR_CONFIRM:
+                    DB.execute("UPDATE incidents SET state='cleared', cleared_at=?, updated_at=?, miss=? WHERE id=?",
+                               (now, now, miss, iid))
+                    DB.execute("UPDATE incident_members SET active=0 WHERE incident_id=?", (iid,))
+                    _trim_incidents()
+                else:
+                    DB.execute("UPDATE incidents SET miss=?, updated_at=? WHERE id=?", (miss, now, iid))
+                DB.commit()
+                result = None if miss >= _INCIDENT_CLEAR_CONFIRM else iid
+        # LOCK released — the auto-explain trigger runs on a DEDICATED worker (it
+        # never touches the LLM here). This is the ONLY auto path, and it is off the
+        # poll's DB lock: a cheap enqueue that no-ops unless the opt-in is on.
+        if newly_opened and result:
+            _enqueue_incident_explain(result)
+        return result
     except Exception as e:
         print("evaluate_incidents error:", e, flush=True)
         try: DB.rollback()
         except Exception: pass
         return None
+
+# ── Auto-explain worker (E1) — dedicated, decoupled off-poll path ─────────────
+# When the `incident_auto_explain` opt-in is "1", a NEWLY-OPENED incident gets a
+# Copilot explanation generated automatically — but ONLY here, on a single daemon
+# worker draining a queue, NEVER inside collect()/health_scan()/evaluate_incidents/
+# the sample loop. The collector merely ENQUEUES an id (a cheap put AFTER the DB
+# LOCK is released); all LLM work happens on this thread. Rate-limited (a minimum
+# gap between generations, one at a time so never more than one in flight) and
+# de-duplicated (an id already queued is skipped). Degrades to a no-op when the
+# local LLM is unreachable (generate_incident_explanation persists nothing then).
+_INCIDENT_EXPLAIN_Q = queue.Queue()
+_INCIDENT_EXPLAIN_QUEUED = set()
+_INCIDENT_EXPLAIN_QLOCK = threading.Lock()
+_INCIDENT_EXPLAIN_MIN_GAP = float(os.environ.get("INCIDENT_EXPLAIN_MIN_GAP", "10"))  # ≥ s between gens
+_incident_explain_worker_started = False
+
+def _incident_explain_worker():
+    """Drain the auto-explain queue one id at a time, rate-limited. Runs forever on
+    a daemon thread; every generation is a graceful no-op when the LLM is down."""
+    last = 0.0
+    while True:
+        iid = _INCIDENT_EXPLAIN_Q.get()
+        try:
+            with _INCIDENT_EXPLAIN_QLOCK:
+                _INCIDENT_EXPLAIN_QUEUED.discard(iid)
+            gap = _INCIDENT_EXPLAIN_MIN_GAP - (time.time() - last)
+            if gap > 0:
+                time.sleep(gap)
+            # The opt-in may have flipped OFF since enqueue — re-check before any
+            # LLM work. generate_incident_explanation is itself cache-safe (skips
+            # the model when an explanation already exists).
+            if get_settings().get("incident_auto_explain") == "1":
+                generate_incident_explanation(iid, force=False)
+            last = time.time()
+        except Exception as e:
+            print("incident explain worker error:", e, flush=True)
+        finally:
+            _INCIDENT_EXPLAIN_Q.task_done()
+
+def _ensure_incident_explain_worker():
+    """Lazily start the single worker thread on first real enqueue (so a process
+    that never opts in — and the test suite — never spawns it)."""
+    global _incident_explain_worker_started
+    with _INCIDENT_EXPLAIN_QLOCK:
+        if _incident_explain_worker_started:
+            return
+        threading.Thread(target=_incident_explain_worker, name="incident-explain",
+                         daemon=True).start()
+        _incident_explain_worker_started = True
+
+def _enqueue_incident_explain(iid):
+    """Queue a newly-opened incident for auto-explanation IF the opt-in is on. A
+    cheap, DB-LOCK-free trigger called ONLY after evaluate_incidents releases LOCK;
+    reads the setting (its own lock), de-dupes, and hands the id to the worker. A
+    no-op when the toggle is off (the default). Never raises, never blocks the
+    caller on the LLM."""
+    try:
+        if not iid or get_settings().get("incident_auto_explain") != "1":
+            return
+        with _INCIDENT_EXPLAIN_QLOCK:
+            if iid in _INCIDENT_EXPLAIN_QUEUED:
+                return
+            _INCIDENT_EXPLAIN_QUEUED.add(iid)
+        _ensure_incident_explain_worker()
+        _INCIDENT_EXPLAIN_Q.put(iid)
+    except Exception as e:
+        print("enqueue incident explain error:", e, flush=True)
 
 def _incident_members(iid):
     """Member rows for one incident (caller holds LOCK or accepts a plain read)."""
@@ -5933,9 +6029,11 @@ def list_incidents(limit=50):
     try:
         with LOCK:
             rows = DB.execute(
-                "SELECT id, state, severity, opened_at, updated_at, cleared_at FROM incidents "
+                "SELECT id, state, severity, opened_at, updated_at, cleared_at, "
+                "ai_explanation, ai_explained_at, ai_model FROM incidents "
                 "ORDER BY (state='open') DESC, opened_at DESC LIMIT ?", (int(limit),)).fetchall()
-            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at")
+            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at",
+                    "ai_explanation", "ai_explained_at", "ai_model")
             out = []
             for r in rows:
                 d = dict(zip(cols, r))
@@ -5959,11 +6057,13 @@ def get_incident(iid):
     try:
         with LOCK:
             row = DB.execute(
-                "SELECT id, state, severity, opened_at, updated_at, cleared_at, miss "
+                "SELECT id, state, severity, opened_at, updated_at, cleared_at, miss, "
+                "ai_explanation, ai_explained_at, ai_model "
                 "FROM incidents WHERE id=?", (iid,)).fetchone()
             if not row:
                 return None
-            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at", "miss")
+            cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at", "miss",
+                    "ai_explanation", "ai_explained_at", "ai_model")
             inc = dict(zip(cols, row))
             inc["members"] = _incident_members(iid)
         inc["member_count"] = len(inc["members"])
@@ -7844,6 +7944,29 @@ def api_incident_one(iid):
     if inc is None:
         return jsonify({"error": "unknown incident"}), 404
     return jsonify({"now": int(time.time()), "incident": inc})
+
+@app.route("/api/incidents/<iid>/explain", methods=["POST"])
+def api_incident_explain(iid):
+    """Explicit, on-demand incident explanation — the Explain / Regenerate action
+    and the drawer's first-open one-shot. This is the ONLY incident endpoint that
+    may reach the LLM; the plain reads (/api/incidents and /api/incidents/<id>) are
+    always cache-only (zero LLM). Body: {"regenerate": bool}. On a cache hit with
+    regenerate falsey, returns the persisted explanation WITHOUT any LLM call.
+    Always 200 (except 404 for an unknown id); graceful llm_status when the LLM is
+    off. Persists the generated text so it survives reopen and shows in the list."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    force = bool(isinstance(payload, dict) and payload.get("regenerate"))
+    res = generate_incident_explanation(iid, force=force)
+    if res.get("llm_status") == "unknown":
+        return jsonify({"error": "unknown incident"}), 404
+    res.setdefault("id", iid)
+    res["now"] = int(time.time())
+    res["model"] = COPILOT_MODEL
+    res["enabled"] = COPILOT_ENABLED
+    return jsonify(res)
 
 # ── Lab Copilot (E1): local-LLM insight layer ────────────────────────────────
 # Read-only. Assembles a compact, already-computed snapshot of the lab (live GPU
@@ -10198,6 +10321,162 @@ def _explain_structured(facts, capture=None):
             capture.append(_pcap[0] if _pcap else None)
         return {"explanation": ptext, "severity": None, "action": None}, None
     return None, (err or perr or "unreachable")
+
+
+# ── Incident-level Copilot explanation (E1): persisted, proactive ─────────────
+# A short plain-English probable-cause + suggested next step for a WHOLE correlated
+# incident (vs the per-member "Why?"). Generated ONLY from explicit events (the
+# Explain/Regenerate action, a drawer first-open one-shot) or the dedicated
+# auto-explain worker — NEVER on the poll path. Once generated it is PERSISTED on
+# the incident row, so every incident READ (list/drawer) returns it with zero LLM
+# calls. Series keys only — no check targets / URLs / credentials ever enter the
+# prompt context or the stored text (these incidents never reach the public /status
+# surface, which is built from uptime_results, not the correlated-incidents table).
+_INCIDENT_EXPLAIN_MAX = 1000   # hard cap on the persisted explanation length (chars)
+
+
+def _incident_explain_context(inc, now=None):
+    """Deterministic grounding for an incident-level explanation, assembled purely
+    from the incident's own members + what was running on the GPU/host around its
+    most-recent activity. The DB LOCK is taken for the read then RELEASED here — no
+    LLM call happens under lock. Never raises."""
+    now = now or int(time.time())
+    members = inc.get("members") or []
+    # anchor the "what was running" snapshot on the incident's most-recent activity
+    anchor = max([m.get("last_seen") or 0 for m in members]
+                 + [inc.get("updated_at") or 0, inc.get("opened_at") or 0, 0]) or now
+    anchor = max(min(int(anchor), now), now - 30 * 24 * 3600)
+    ctx = {"now": now, "id": inc.get("id"), "severity": inc.get("severity"),
+           "state": inc.get("state"), "opened_at": inc.get("opened_at"),
+           "cleared_at": inc.get("cleared_at"), "member_count": len(members),
+           "active_count": sum(1 for m in members if m.get("active")),
+           "members": members, "anchor": anchor}
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            ctx["running"] = _explain_running(cur, anchor)
+    except Exception as e:
+        print("incident explain ctx error:", e, flush=True)
+        ctx["running"] = {}
+    return ctx
+
+
+def _incident_explain_facts(ctx):
+    """Terse, deterministic English describing a whole incident + its surroundings.
+    Doubles as the LLM grounding and the no-LLM fallback. Telemetry series keys
+    only — never a check target, URL or credential."""
+    lines = []
+    sev = ctx.get("severity") or "warning"
+    state = ctx.get("state") or "open"
+    n, a = ctx.get("member_count") or 0, ctx.get("active_count") or 0
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ctx.get("opened_at") or 0))
+    lines.append(
+        "A {sev} correlated incident is {state}: {n} signal(s) fired together, "
+        "opened {when}, {a} still active.".format(sev=sev, state=state, n=n, when=when, a=a))
+    for m in (ctx.get("members") or [])[:6]:
+        name = _EXPLAIN_LABELS.get(m.get("series") or "", m.get("series") or "a series")
+        direction = m.get("direction") or "change"
+        u = m.get("unit") or ""
+        z = m.get("peak_z")
+        seg = "{name}: {dir}".format(name=name, dir=direction)
+        if m.get("peak_value") is not None and m.get("baseline") is not None:
+            seg += " to {v}{u} (baseline ~{b}{u})".format(v=m.get("peak_value"), u=u, b=m.get("baseline"))
+        if isinstance(z, (int, float)):
+            seg += " at {z}σ".format(z=round(abs(z), 1))
+        seg += "; " + ("still active" if m.get("active") else "settled") + "."
+        lines.append(seg)
+    r = ctx.get("running") or {}
+    if r.get("models"):
+        mo = r["models"][0]
+        lines.append("Largest model on the GPU then: {mo} ({mb} MB, served by {s}).".format(
+            mo=mo.get("model") or "?", mb=mo.get("vram_mb") or 0, s=mo.get("service") or "?"))
+    if r.get("procs"):
+        top = ", ".join("{s} ({m} MB)".format(s=p.get("service"), m=p.get("mem_mb"))
+                        for p in r["procs"][:2])
+        lines.append("Top processes by memory then: " + top + ".")
+    if r.get("power"):
+        p = r["power"][0]
+        lines.append("Heaviest power-attributed entity then: {n} (~{w} W).".format(
+            n=p.get("name"), w=p.get("watts")))
+    return lines
+
+
+def _sanitize_explanation(text):
+    """Bound + normalise an LLM explanation before persisting: collapse whitespace,
+    hard-cap the length. Rendering is XSS-escaped at the UI; this keeps the stored
+    blob small and clean. Returns None for empty/garbage input."""
+    if not isinstance(text, str):
+        return None
+    t = " ".join(text.split())
+    if not t:
+        return None
+    return t[:_INCIDENT_EXPLAIN_MAX]
+
+
+def _store_incident_explanation(iid, text, model, now):
+    """Persist a generated explanation on the incident row (bounded). Returns True
+    on write. Never raises."""
+    try:
+        with LOCK:
+            DB.execute("UPDATE incidents SET ai_explanation=?, ai_explained_at=?, ai_model=? WHERE id=?",
+                       (text, now, model, iid))
+            DB.commit()
+        return True
+    except Exception as e:
+        print("store incident explanation error:", e, flush=True)
+        try: DB.rollback()
+        except Exception: pass
+        return False
+
+
+def generate_incident_explanation(iid, force=False, now=None):
+    """THE ONLY writer of the incident ai_explanation columns. Reachable purely
+    from explicit events — the /api/incidents/<id>/explain endpoint (Explain /
+    Regenerate / drawer first-open one-shot) and the dedicated auto-explain worker
+    — NEVER from collect()/health_scan()/the sample loop.
+
+    • Unknown incident            → {"llm_status":"unknown"}, no write.
+    • Cache present and not force  → returns the cache, ZERO LLM call.
+    • force OR no cache            → assembles context under LOCK, RELEASES it, then
+      calls the model (structured explain, no lock held). On success persists the
+      bounded text + model + ts and returns it. LLM down → returns the status and
+      leaves any existing cache intact (graceful no-op, nothing persisted).
+    Never raises."""
+    now = int(now if now is not None else time.time())
+    inc = get_incident(iid)          # cached read — zero LLM
+    if inc is None:
+        return {"id": iid, "llm_status": "unknown", "cached": False, "source": "none"}
+    if inc.get("ai_explanation") and not force:
+        return {"id": iid, "explanation": inc["ai_explanation"], "cached": True,
+                "source": "llm", "llm_status": "ok", "ai_model": inc.get("ai_model"),
+                "ai_explained_at": inc.get("ai_explained_at"), "severity": inc.get("severity")}
+    ctx = _incident_explain_context(inc, now)     # LOCK taken + released inside
+    facts = _incident_explain_facts(ctx)
+    _cap = []
+    res, err = _explain_structured(facts, capture=_cap)   # NO lock held across this
+    if res is None:
+        # LLM off/unreachable — graceful no-op: keep any prior cache, report status.
+        out = {"id": iid, "cached": False, "source": "facts",
+               "llm_status": err or "unreachable", "facts": facts,
+               "severity": inc.get("severity")}
+        if inc.get("ai_explanation"):
+            out.update({"explanation": inc["ai_explanation"], "source": "llm",
+                        "ai_model": inc.get("ai_model"),
+                        "ai_explained_at": inc.get("ai_explained_at")})
+        return out
+    # Compose the bounded persisted blob: probable cause + optional next step.
+    text = res["explanation"]
+    if res.get("action"):
+        text = text + " Suggested next step: " + res["action"]
+    text = _sanitize_explanation(text)
+    _store_incident_explanation(iid, text, COPILOT_MODEL, now)
+    out = {"id": iid, "explanation": text, "cached": False, "source": "llm",
+           "llm_status": "ok", "ai_model": COPILOT_MODEL, "ai_explained_at": now,
+           "severity": res.get("severity") or inc.get("severity"), "action": res.get("action")}
+    inf = _inference_cost(_cap[0] if _cap else None, now)
+    if inf:
+        out["inference"] = inf
+    return out
 
 
 # JSON-Schema for the ask-box's structured answer — mirrors EXPLAIN_SCHEMA so the

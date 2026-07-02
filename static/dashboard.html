@@ -387,6 +387,14 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .inc-chip .sig{font-family:var(--mono);font-size:10.5px;color:var(--mut);flex:none}
 .inc-chip .resolved{font-size:10px;color:var(--mut);flex:none}
 .inc-explain{margin-top:9px}
+/* persisted AI one-liner on a list row (truncated, XSS-safe) */
+.inc-ai-line{display:flex;align-items:center;gap:6px;margin-top:9px;font-size:12.5px;color:var(--tx);
+  padding:6px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card)}
+.inc-ai-line .ai-ic{flex:none;opacity:.85}
+.inc-ai-line span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* auto-explain opt-in toggle in the card header */
+.inc-auto{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer;white-space:nowrap}
+.inc-auto input{cursor:pointer}
 /* header summary badge — calm when quiet, lit when an incident is open */
 .inc-badge{display:none;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 9px;
   border-radius:999px;border:1px solid var(--bd);background:var(--inset);color:var(--mut);
@@ -1601,6 +1609,10 @@ h2 .hic{ opacity:.9 }
       <h2 data-i18n="inc.title">🛟 Incidents</h2>
       <span class="chip" id="inc-chip" hidden></span>
       <span class="ch-space"></span>
+      <label class="inc-auto" title="" id="inc-auto-wrap" hidden>
+        <input type="checkbox" id="inc-auto-explain">
+        <span data-i18n="inc.auto_explain">Auto-explain new incidents</span>
+      </label>
     </div>
     <div id="inc-body"></div>
     <p class="cap" data-i18n="inc.cap">Anomalies that fire together are grouped into one correlated incident with a lifecycle — opening when the cluster trips and clearing once every member has settled back to normal. One incident, many signals.</p>
@@ -6992,6 +7004,7 @@ async function loadIncidents(force){
   if(CURRENT_HOST!=='local') return;   // incidents live on the hub's own DB
   const card=document.getElementById('inc-card'), body=document.getElementById('inc-body');
   if(!card||!body) return;
+  _incAutoInit();
   if(!force && Date.now()-INCIDENTS_AT < 30000 && INCIDENTS){ renderIncidents(); return; }
   if(!INCIDENTS){ card.hidden=false;
     body.innerHTML='<div class="skel skel-line w90"></div><div class="skel skel-line w70"></div>'; }
@@ -7070,6 +7083,7 @@ function renderIncidents(){
       +`<span class="inc-time">${esc(timeTxt)}</span>`
       +`<span class="inc-count">${esc(count)}</span></div>`
       +`<div class="inc-members">${chips}</div>`
+      +_incAiOneLiner(it)
       +`<div class="inc-open-row">`
       +`<button type="button" class="inc-details-link" data-inc-open-btn="${esc(it.id)}">${esc(detailsTxt)} →</button></div>`
       +`<div class="inc-explain" id="inc-explain-${esc(it.id)}" hidden></div>`
@@ -7094,6 +7108,32 @@ function renderIncidents(){
         e.preventDefault(); openIncidentDrawer(row.getAttribute('data-inc-open'), row); }
     });
   });
+}
+// Persisted AI explanation as a concise, truncated, XSS-safe one-liner on a row.
+// Pure cache read from the /api/incidents payload — never triggers an LLM call.
+function _incAiOneLiner(it){
+  const t=(it&&it.ai_explanation)?String(it.ai_explanation):'';
+  if(!t) return '';
+  return '<div class="inc-ai-line" title="'+esc(t)+'"><span class="ai-ic">🧠</span><span>'+esc(t)+'</span></div>';
+}
+// Auto-explain opt-in toggle (OFF by default). Loads once from /api/settings and
+// persists on change. The generation itself runs server-side on a dedicated worker.
+let INC_AUTO_INIT=false;
+async function _incAutoInit(){
+  if(INC_AUTO_INIT) return; INC_AUTO_INIT=true;
+  const wrap=document.getElementById('inc-auto-wrap'), cb=document.getElementById('inc-auto-explain');
+  if(!wrap||!cb) return;
+  try{
+    const s=(await(await fetch('/api/settings')).json()).settings||{};
+    cb.checked = s.incident_auto_explain==='1';
+  }catch(e){ /* leave OFF (default) */ }
+  wrap.hidden=false;
+  wrap.title=I18N.t('inc.auto_explain_tip','When on, newly-opened incidents get a plain-English AI explanation generated automatically (local LLM, off the metrics path). Off by default.');
+  cb.onchange=async()=>{
+    try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({incident_auto_explain: cb.checked?'1':'0'})}); }
+    catch(e){ cb.checked=!cb.checked; }
+  };
 }
 let INC_EXPLAIN_BUSY={};
 function _incFindMember(ref){
@@ -7142,6 +7182,7 @@ function _incdFocusables(){
 async function openIncidentDrawer(iid, trigger){
   if(!iid) return;
   INCD_OPEN=String(iid); INCD_TRIGGER=trigger||document.activeElement;
+  INCD_AI_STATE={iid:String(iid), busy:false, tried:false, result:null};   // per-open one-shot guard
   const wrap=document.getElementById('incd'), panel=wrap.querySelector('.incd-panel'),
         body=document.getElementById('incd-body');
   wrap.hidden=false;
@@ -7322,12 +7363,78 @@ function _incdRender(inc){
       +'</div>';
   }).join('') || '<div class="muted" style="font-size:13px">'+esc(I18N.t('incd.no_members','No member signals.'))+'</div>';
   body.innerHTML=
-    '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+'</section>'
+    '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.ai_title','AI explanation'))+'</div><div id="incd-ai"></div></section>'
+   +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.timeline','Timeline'))+'</div>'+tlHtml+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.members','Signals'))+'</div>'+memHtml+'</section>';
   body.querySelectorAll('[data-incd-why]').forEach(btn=>{
     btn.onclick=()=>_incdExplain(inc, +btn.getAttribute('data-incd-why'), btn);
   });
+  _incdAiRender(inc);
+}
+// ── Persisted incident AI explanation in the drawer ───────────────────────────
+// Shows the CACHED explanation immediately if present (with model/time + a
+// Regenerate affordance). If there's none, kicks a ONE-SHOT generate on first
+// open only (never on the 30s drawer refresh — INCD_AI_STATE.tried guards it).
+// The Regenerate button forces a fresh generation. All fetches hit the dedicated
+// POST /api/incidents/<id>/explain; the plain drawer poll (GET) stays LLM-free.
+let INCD_AI_STATE=null;
+function _incdAiActions(iid, model, at){
+  let meta='';
+  if(model) meta='<span class="muted" style="font-size:11px;margin-right:8px">'
+    +esc(I18N.tf('incd.ai_by','via {m}',{m:model}))+(at?' · '+esc(relTime(at)):'')+'</span>';
+  return '<div style="margin-top:8px">'+meta
+    +'<button type="button" class="reco-link" id="incd-ai-regen">'+esc(I18N.t('incd.ai_regen','Regenerate'))+'</button></div>';
+}
+function _incdAiPaint(box, j, iid){
+  if(!box) return;
+  const tmp=document.createElement('div');
+  _copilotRenderExplain(tmp, j);        // handles llm vs graceful facts note; XSS-safe
+  box.innerHTML=tmp.innerHTML + _incdAiActions(iid, j&&j.ai_model, j&&j.ai_explained_at);
+  const rb=document.getElementById('incd-ai-regen');
+  if(rb) rb.onclick=()=>_incdAiFetch(iid, true);
+}
+function _incdAiRender(inc){
+  const box=document.getElementById('incd-ai'); if(!box) return;
+  const st=INCD_AI_STATE||{};
+  if(st.busy){ box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>'; return; }
+  if(st.result){ _incdAiPaint(box, st.result, inc.id); return; }         // explicit call result
+  if(inc.ai_explanation){                                                // persisted cache
+    _incdAiPaint(box, {source:'llm', explanation:inc.ai_explanation,
+      ai_model:inc.ai_model, ai_explained_at:inc.ai_explained_at, cached:true}, inc.id);
+    return;
+  }
+  if(!st.tried){                                                         // first open, no cache → one-shot
+    box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+    _incdAiFetch(inc.id, false);
+    return;
+  }
+  box.innerHTML='<div class="muted">'+esc(I18N.t('incd.ai_none','No AI explanation yet.'))+'</div>'
+    +_incdAiActions(inc.id);
+  const rb=document.getElementById('incd-ai-regen'); if(rb) rb.onclick=()=>_incdAiFetch(inc.id, true);
+}
+async function _incdAiFetch(iid, regen){
+  const st=INCD_AI_STATE;
+  if(!st || String(st.iid)!==String(iid) || st.busy) return;
+  st.busy=true; st.tried=true;
+  const box=document.getElementById('incd-ai');
+  if(box) box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  let j=null;
+  try{ j=await(await fetch('/api/incidents/'+encodeURIComponent(iid)+'/explain',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({regenerate:!!regen})})).json(); }
+  catch(e){ j={source:'facts', llm_status:'unreachable'}; }
+  if(!INCD_AI_STATE || String(INCD_AI_STATE.iid)!==String(iid)) return;   // drawer changed/closed
+  st.busy=false; st.result=j;
+  if(j && j.explanation && j.source==='llm') _incApplyExplanation(iid, j.explanation, j.ai_model, j.ai_explained_at);
+  _incdAiPaint(document.getElementById('incd-ai'), j, iid);
+}
+// Reflect a freshly-persisted explanation into the in-memory list cache so the
+// row one-liner appears without waiting for the next /api/incidents poll.
+function _incApplyExplanation(iid, text, model, at){
+  try{
+    const it=((INCIDENTS&&INCIDENTS.incidents)||[]).find(x=>String(x.id)===String(iid));
+    if(it){ it.ai_explanation=text; it.ai_model=model; it.ai_explained_at=at; renderIncidents(); }
+  }catch(e){}
 }
 let INCD_WHY_BUSY={};
 async function _incdExplain(inc, mi, btn){
