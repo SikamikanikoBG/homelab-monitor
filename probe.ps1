@@ -61,23 +61,109 @@ function Read-Temp {
     return @{}
 }
 
-# ── GPU via nvidia-smi (identical query to probe.py) ──────────────────────────
+# ── GPU: nvidia-smi first, else WMI + perf-counter fallback ───────────────────
+# NVIDIA path is byte-for-byte identical to probe.py's read_gpu() (same query,
+# same JSON keys), so an NVIDIA box behaves exactly as before. When nvidia-smi is
+# absent or returns nothing, fall back to Win32_VideoController (card name /
+# driver / VRAM) + GPU Engine / GPU Adapter Memory perf counters so AMD and Intel
+# iGPU Windows hosts still report a GPU. The emitted `gpu` block matches the
+# NVIDIA contract exactly (count/name/mem_used/mem_total/util/temp) so the hub's
+# app.py renders it with zero backend changes; a `vendor` field is added on top.
 function Read-Gpu {
+    # ---- NVIDIA (unchanged contract; must still win when present) ----
     try {
-        if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return @{} }
-        $raw = & nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,name --format=csv,noheader,nounits 2>$null
-        $lines = @($raw | Where-Object { $_ -and $_.Trim() })
-        if ($lines.Count -eq 0) { return @{} }
-        $p = $lines[0].Split(',') | ForEach-Object { $_.Trim() }
-        if ($p.Count -lt 5) { return @{} }
-        function I($v) { try { return [int][double]$v } catch { return 0 } }
+        if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+            $raw = & nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,name --format=csv,noheader,nounits 2>$null
+            $lines = @($raw | Where-Object { $_ -and $_.Trim() })
+            if ($lines.Count -gt 0) {
+                $p = $lines[0].Split(',') | ForEach-Object { $_.Trim() }
+                if ($p.Count -ge 5) {
+                    function I($v) { try { return [int][double]$v } catch { return 0 } }
+                    return @{ gpu = [ordered]@{
+                        count     = $lines.Count
+                        name      = $p[4]
+                        mem_used  = (I $p[0])
+                        mem_total = (I $p[1])
+                        util      = (I $p[2])
+                        temp      = (I $p[3])
+                        vendor    = 'nvidia'
+                    } }
+                }
+            }
+        }
+    } catch {}
+
+    # ---- Fallback: WMI + perf counters (AMD / Intel iGPU / unknown) ----
+    try {
+        $cards = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
+                   Where-Object { $_.Name })
+        if ($cards.Count -eq 0) { return @{} }
+
+        function VendorOf($n) {
+            $s = "$n".ToLower()
+            if ($s -match 'nvidia|geforce|quadro|tesla|rtx|gtx') { return 'nvidia' }
+            if ($s -match 'amd|radeon|ati|instinct|vega|firepro') { return 'amd' }
+            if ($s -match 'intel|iris|uhd|hd graphics|arc|xe') { return 'intel' }
+            return 'unknown'
+        }
+
+        # Per-adapter dedicated VRAM (bytes). AdapterRAM is a 32-bit field capped
+        # at ~4GB, so prefer the driver's HardwareInformation.qwMemorySize in the
+        # display-adapter registry class when present, keyed by matching name.
+        function VramBytes($card) {
+            $bytes = 0
+            try {
+                $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+                foreach ($sub in (Get-ChildItem $base -ErrorAction SilentlyContinue |
+                                  Where-Object { $_.PSChildName -match '^\d{4}$' })) {
+                    $props = Get-ItemProperty $sub.PSPath -ErrorAction SilentlyContinue
+                    if (-not $props) { continue }
+                    $dd = "$($props.'DriverDesc')"
+                    if ($dd -and $card.Name -and ($dd.Trim() -eq $card.Name.Trim())) {
+                        $q = $props.'HardwareInformation.qwMemorySize'
+                        if ($q) { $bytes = [int64]$q; break }
+                    }
+                }
+            } catch {}
+            if ($bytes -le 0) {
+                try { if ($card.AdapterRAM -and [int64]$card.AdapterRAM -gt 0) { $bytes = [int64]$card.AdapterRAM } } catch {}
+            }
+            return $bytes
+        }
+
+        # Live utilisation: sum \GPU Engine(*)\Utilization Percentage across engines,
+        # clamped to 0..100 (multiple engines can each report near-100 concurrently).
+        $util = 0
+        try {
+            if (Get-Command Get-Counter -ErrorAction SilentlyContinue) {
+                $s = Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop
+                $sum = ($s.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+                if ($sum -ne $null) { $util = [int][math]::Round([math]::Min(100.0, [math]::Max(0.0, [double]$sum))) }
+            }
+        } catch {}
+
+        # Live VRAM in use: sum \GPU Adapter Memory(*)\Dedicated Usage (bytes) → MB.
+        $memUsedMb = 0
+        try {
+            if (Get-Command Get-Counter -ErrorAction SilentlyContinue) {
+                $m = Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction Stop
+                $mb = ($m.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+                if ($mb -ne $null -and [double]$mb -gt 0) { $memUsedMb = [int][math]::Round([double]$mb / 1MB) }
+            }
+        } catch {}
+
+        $memTotalMb = 0
+        foreach ($c in $cards) { $memTotalMb += [int][math]::Round((VramBytes $c) / 1MB) }
+        if ($memUsedMb -gt $memTotalMb -and $memTotalMb -gt 0) { $memUsedMb = $memTotalMb }
+
         return @{ gpu = [ordered]@{
-            count     = $lines.Count
-            name      = $p[4]
-            mem_used  = (I $p[0])
-            mem_total = (I $p[1])
-            util      = (I $p[2])
-            temp      = (I $p[3])
+            count     = $cards.Count
+            name      = "$($cards[0].Name)".Trim()
+            mem_used  = $memUsedMb
+            mem_total = $memTotalMb
+            util      = $util
+            temp      = 0
+            vendor    = (VendorOf $cards[0].Name)
         } }
     } catch { return @{} }
 }
