@@ -10337,9 +10337,12 @@ function startTour(fromOffer){
   // Starting also arms the "seen" flag so a mid-tour reload won't re-pop the offer.
   try{ localStorage.setItem(TOUR_KEY,'seen'); }catch(e){}
   const wrap=document.getElementById('tour'); wrap.hidden=false;
-  _tourGo(0, true);
+  // Arm reposition listeners BEFORE _tourGo: if it finds every target absent and
+  // calls endTour synchronously, endTour's removeEventListener calls then balance
+  // these adds (no leaked listeners). _tourReposition no-ops while !TOUR.open.
   window.addEventListener('resize', _tourReposition, {passive:true});
   window.addEventListener('scroll', _tourReposition, {passive:true, capture:true});
+  _tourGo(0, true);
 }
 function endTour(reason){
   if(!TOUR.open) return;
