@@ -390,9 +390,25 @@ def get_gpu(range="6h"):
 
     `models_vram` is peak/avg VRAM (MB) per (server, model) over `range`;
     `callers` is connection-seconds per caller→server edge over the same window.
+
+    `gpus` is the per-card list (one entry per physical GPU) — each carries its
+    `vendor` (`nvidia`/`amd`/`intel`/`unknown`) alongside idx/name and its own
+    util/VRAM/power/temp, so an agent can reason about a mixed-vendor rig. The
+    top-level util/VRAM/power fields remain the whole-box aggregate. `vendor` is
+    additive: older monitors that don't report it yield `unknown`.
     """
     data = _get("/api/data?range=" + urllib.parse.quote(str(range)))
     now = data.get("now") or {}
+    gpus = [{
+        "idx":           g.get("idx"),
+        "name":          g.get("name"),
+        "vendor":        g.get("vendor") or "unknown",
+        "util_pct":      g.get("util"),
+        "vram_used_mb":  g.get("mem_used"),
+        "vram_total_mb": g.get("mem_total"),
+        "power_w":       g.get("power"),
+        "temp_c":        g.get("temp"),
+    } for g in (now.get("gpus") or [])]
     return {
         "range": data.get("range", range),
         "available": now.get("gpu_avail"),
@@ -401,6 +417,7 @@ def get_gpu(range="6h"):
         "vram_total_mb": now.get("mem_total"),
         "power_w": now.get("power"),
         "temp_c": now.get("temp"),
+        "gpus": gpus,
         "pressure_free_mb": data.get("pressure_free_mb"),
         "models_vram": data.get("model_summary") or [],
         "callers": data.get("callers") or [],

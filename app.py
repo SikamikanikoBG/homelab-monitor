@@ -13861,6 +13861,27 @@ def _extra_metrics_text():
     except Exception:
         pass
 
+    # Per-GPU vendor info series (value always 1; identity in the labels). Additive
+    # and dedicated — the numeric GPU gauges (homelab_gpu_util_pct etc.) keep their
+    # existing label set untouched, so dashboards/recording rules that join on
+    # gpu="gpu0" are unaffected; this series lets Grafana label a card by vendor
+    # via an on(gpu) group_left(vendor, name) join. Label values are exposition-
+    # escaped by _prom_label_val. Omitted entirely when no per-card list exists.
+    try:
+        host_name = ((LATEST.get("host") or {}).get("hostname") or socket.gethostname())
+        info_s = []
+        for g in (LATEST.get("gpus") or []):
+            idx = g.get("idx")
+            info_s.append(({"host": host_name,
+                            "gpu": f"gpu{idx if idx is not None else 0}",
+                            "name": g.get("name") or "",
+                            "vendor": (g.get("vendor") or "unknown")}, 1))
+        _prom_metric(out, "homelab_gpu_info", "gauge",
+                     "GPU identity (value always 1; host/gpu/name/vendor in labels)",
+                     info_s)
+    except Exception:
+        pass
+
     # Per-disk bytes + fill % from the host snapshot (GB fields -> bytes).
     try:
         used_s, total_s, pct_s = [], [], []
@@ -14662,6 +14683,30 @@ def api_disk_scan():
     threading.Thread(target=_disk_scan_worker, args=(path, real), daemon=True).start()
     return jsonify({"path": path, "state": "scanning"})
 
+_GPU_VENDOR_ORDER = {"nvidia": 0, "amd": 1, "intel": 2, "unknown": 3}
+
+def _fleet_vendor_summary(rows):
+    """Count GPUs by vendor across ONLINE fleet rows, for the All-hosts summary
+    chip. Each online host that reports a GPU contributes one to its
+    representative vendor's tally (the fleet row carries a single aggregate GPU);
+    a GPU with no/blank/unrecognised vendor — e.g. an older payload that predates
+    the vendor field — counts as 'unknown'. Offline hosts and GPU-less hosts are
+    skipped. Returns an ordered list of {vendor, count}, NVIDIA→AMD→Intel→unknown
+    then alpha, or [] when no online host has a GPU."""
+    counts = {}
+    for r in (rows or []):
+        if not r.get("online"):
+            continue
+        gpu = (r.get("host") or {}).get("gpu")
+        if not gpu:
+            continue
+        v = str(gpu.get("vendor") or "unknown").lower()
+        if v not in _GPU_VENDOR_ORDER:
+            v = "unknown"
+        counts[v] = counts.get(v, 0) + 1
+    return [{"vendor": k, "count": counts[k]}
+            for k in sorted(counts, key=lambda k: (_GPU_VENDOR_ORDER.get(k, 9), k))]
+
 @app.route("/api/fleet")
 def api_fleet():
     """Compact summary KPIs for every host in the fleet. Drives the All-hosts
@@ -14693,7 +14738,8 @@ def api_fleet():
                 "last_check": h.get("last_check"),
                 "error": entry.get("error"),
             })
-    return jsonify({"hosts": rows, "interval": INTERVAL})
+    return jsonify({"hosts": rows, "interval": INTERVAL,
+                    "gpu_vendors": _fleet_vendor_summary(rows)})
 
 @app.route("/api/hosts/<name>/test", methods=["POST"])
 def api_hosts_test(name):

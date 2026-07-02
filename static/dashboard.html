@@ -1018,6 +1018,8 @@ button.btn:hover{border-color:var(--mut)}
 .osbadge{font-size:11px;color:var(--mut);background:#161b22;border:1px solid var(--bd);border-radius:6px;padding:1px 7px;margin-left:6px}
 /* Fleet table on Overview */
 .fleet-meta{color:var(--mut);font-size:12px;margin:-4px 0 10px}
+.fleet-gpusum{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+.fleet-gpusum .lbl{color:var(--mut);font-size:12px;margin-right:2px}
 .fleet-tbl{width:100%;border-collapse:collapse;font-size:13px}
 .fleet-tbl th{font-size:11px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:7px 9px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
 .fleet-tbl td{padding:9px;border-bottom:1px solid var(--bd);vertical-align:middle}
@@ -1578,6 +1580,7 @@ h2 .hic{ opacity:.9 }
   <div class="card">
     <h2 data-i18n="fleet.title">🖥 All hosts</h2>
     <div class="fleet-meta" id="fleet_meta">Every registered host at a glance. Click a row to focus that host in the other tabs.</div>
+    <div class="fleet-gpusum" id="fleet_gpu_summary" hidden></div>
     <div style="overflow-x:auto">
       <table class="fleet-tbl" id="fleet_tbl">
         <thead>
@@ -6484,12 +6487,33 @@ async function renderExperiments(force){
     : I18N.tf('exp.sess_empty','<tr><td class="muted" colspan="7">No GPU activity above {n}% util in this range yet.</td></tr>',{n:(j.active_pct||20)});
 }
 
+// Fleet GPU-by-vendor summary chip (e.g. "GPUs: 3 NVIDIA · 1 AMD"). Server-
+// computed counts (FLEET.gpu_vendors) are rendered through the fixed vendor
+// allow-list, so it's XSS-safe and never colour-only — each chip carries the
+// count + vendor text. Absent/empty → the row is hidden (graceful on GPU-less
+// fleets and older payloads, which fold into 'unknown').
+function renderFleetGpuSummary(){
+  const el = document.getElementById('fleet_gpu_summary');
+  if(!el) return;
+  const vendors = (FLEET && FLEET.gpu_vendors) || [];
+  if(!vendors.length){ el.hidden = true; el.innerHTML = ''; return; }
+  const chips = vendors.map(v => {
+    const cls = GPU_VENDORS.hasOwnProperty(v.vendor) ? v.vendor : 'unknown';
+    const label = I18N.t('gpu.vendor_'+cls, GPU_VENDORS[cls]);
+    const title = I18N.tf('fleet.gpu_count', '{n} {v} GPU(s) online', {n:v.count, v:label});
+    return `<span class="vbadge ${cls}" title="${escAttr(title)}" aria-label="${escAttr(title)}">`+
+           `<span class="vdot" aria-hidden="true"></span>${v.count} ${esc(label)}</span>`;
+  }).join('');
+  el.innerHTML = `<span class="lbl">${esc(I18N.t('fleet.gpus_label','GPUs:'))}</span>${chips}`;
+  el.hidden = false;
+}
 function renderFleet(){
   if(!FLEET) return;
   const meta = document.getElementById('fleet_meta');
   const tbody = document.querySelector('#fleet_tbl tbody');
   const rows = FLEET.hosts || [];
   meta.innerHTML = I18N.tf('fleet.meta', `${rows.length} host${rows.length===1?'':'s'} · polling every ${FLEET.interval||10}s · click a row to focus that host in the other tabs.`, {n:rows.length, i:(FLEET.interval||10)});
+  renderFleetGpuSummary();
   tbody.innerHTML = rows.map(r => {
     const st = statusOfFleetRow(r);
     const h = r.host || {};

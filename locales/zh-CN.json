@@ -823,6 +823,8 @@
   "exp.sess_active": "GPU 活动时间",
   "exp.sess_empty": "<tr><td class=\"muted\" colspan=\"7\">所选范围内尚无利用率高于 {n}% 的 GPU 活动。</td></tr>",
   "fleet.meta": "{n} 台主机 · 每 {i} 秒轮询 · 点击某行可在其他标签页聚焦该主机。",
+  "fleet.gpus_label": "GPU：",
+  "fleet.gpu_count": "{n} 个 {v} GPU 在线",
   "host.no_data": "暂无数据",
   "host.probe_wait": "<div class=\"muted\" style=\"padding:12px 2px\">⏳ <b>{host}</b> — {err}。探测每 {i} 秒运行一次；新主机需一个周期才会有数据。</div>",
   "disks.local_only": "仅限本机",

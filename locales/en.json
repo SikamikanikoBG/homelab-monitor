@@ -796,6 +796,8 @@
   "exp.sess_active": "GPU-active time",
   "exp.sess_empty": "<tr><td class=\"muted\" colspan=\"7\">No GPU activity above {n}% util in this range yet.</td></tr>",
   "fleet.meta": "{n} hosts · polling every {i}s · click a row to focus that host in the other tabs.",
+  "fleet.gpus_label": "GPUs:",
+  "fleet.gpu_count": "{n} {v} GPU(s) online",
   "host.no_data": "no data yet",
   "host.probe_wait": "<div class=\"muted\" style=\"padding:12px 2px\">⏳ <b>{host}</b> — {err}. Probes run every {i}s; new hosts take one cycle to populate.</div>",
   "disks.local_only": "Local host only",

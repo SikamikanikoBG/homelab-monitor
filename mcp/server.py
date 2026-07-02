@@ -155,7 +155,9 @@ def get_memory(range: str = "6h") -> dict:
 def get_gpu(range: str = "6h") -> dict:
     """GPU detail: current utilisation, VRAM used/total, power and temperature, plus
     per-model VRAM use and the caller→server attribution over `range`. Answers "why
-    is the GPU pinned, and which service is calling the model server?".
+    is the GPU pinned, and which service is calling the model server?". Includes a
+    per-card `gpus` list — each entry carries its `vendor` (nvidia/amd/intel/unknown)
+    with its own util/VRAM/power/temp — so mixed-vendor rigs are legible.
     """
     return hc.get_gpu(range)
 
