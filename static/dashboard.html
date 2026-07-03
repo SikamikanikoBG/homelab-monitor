@@ -2202,6 +2202,20 @@ h2 .hic{ opacity:.9 }
       <div id="rulesnochan" class="ins warning" style="display:none" data-i18n="rules.no_channel">
         No channel configured yet — add a Discord/ntfy/Telegram/webhook channel on the 🔔 Alerts page first.</div>
 
+      <!-- ── AI-native shortcut: describe an alert in plain English (E1 Lab Copilot) ── -->
+      <div id="nlrule" class="card-sub" style="margin-bottom:14px;padding:12px;border:1px solid var(--line,#2a3550);border-radius:10px">
+        <div style="font-weight:600;margin-bottom:6px"><span aria-hidden="true">✨</span> <span data-i18n="nlrule.title">Describe an alert in plain English</span></div>
+        <p class="cap" style="margin:0 0 8px" data-i18n="nlrule.help">The Lab Copilot drafts a rule from your words — you review and confirm it in the form below. Nothing is saved until you click Add rule.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+          <input type="text" id="nlrule_text" class="field" style="flex:1;min-width:240px"
+                 placeholder="e.g. tell me if the GPU temperature spikes"
+                 data-i18n-attr="placeholder:nlrule.placeholder">
+          <button class="rb on" id="nlrule_go" data-i18n="nlrule.generate">Draft it</button>
+        </div>
+        <div id="nlrule_status" class="cap" style="margin-top:8px;display:none"></div>
+        <div id="nlrule_assumptions" style="margin-top:8px;display:none"></div>
+      </div>
+
       <div class="card-sub" style="font-weight:600;margin-bottom:8px" data-i18n="rules.add_title">➕ Add a rule</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:880px;align-items:end">
         <div>
@@ -5392,6 +5406,80 @@ async function addRule(){
   if(j.ok){ document.getElementById('r_name').value=''; showAlertStatus('ok',I18N.t('rules.added','Rule added.')); loadRules(); }
   else showAlertStatus('critical', j.error||'Could not add rule.');
 }
+// ── AI-native: draft a rule from plain English, pre-fill the manual form ──────
+// Calls POST /api/alerts/rules/from_text (the ONLY LLM caller here). The LLM only
+// DRAFTS; the user reviews the pre-filled form and clicks the normal "Add rule",
+// which saves through the existing validated create path. Nothing here persists.
+function nlSetStatus(level, text){
+  const s=document.getElementById('nlrule_status');
+  s.style.display=''; s.className='cap ins '+(level||'');
+  s.textContent=text;
+}
+function prefillRuleForm(p){
+  if(!p) return;
+  document.getElementById('r_name').value = p.name||'';
+  const t = p.ctype||'anomaly';
+  document.getElementById('r_type').value = t;
+  const pm = p.params||{};
+  if(t==='anomaly' && pm.series) document.getElementById('r_p_series').value = pm.series;
+  if((t==='disk_eta'||t==='vram_eta') && pm.days!=null) document.getElementById('r_p_days').value = pm.days;
+  if(t==='cost_budget' && pm.budget!=null) document.getElementById('r_p_budget').value = pm.budget;
+  if(t==='incident' && pm.severity) document.getElementById('r_p_incsev').value = pm.severity;
+  if(t==='slo_burn'){
+    if(pm.policy) document.getElementById('r_p_slopolicy').value = pm.policy;
+    if(pm.burn_threshold!=null) document.getElementById('r_p_burn').value = pm.burn_threshold;
+    if(pm.fast_burn!=null) document.getElementById('r_p_fastburn').value = pm.fast_burn;
+    if(pm.slow_burn!=null) document.getElementById('r_p_slowburn').value = pm.slow_burn;
+  }
+  if(p.channel) document.getElementById('r_channel').value = p.channel;
+  if(p.level) document.getElementById('r_level').value = p.level;
+  if(p.cooldown_min!=null) document.getElementById('r_cooldown').value = p.cooldown_min;
+  ruleParamsVisibility();               // reveal the right param inputs for the type
+  // The check picker is populated after fetch; set it once the options exist.
+  if((t==='uptime_down'||t==='cert_expiry'||t==='slo_burn') && pm.check_id){
+    const up=document.getElementById('r_p_upcheck');
+    if(up && [...up.options].some(o=>o.value===pm.check_id)) up.value = pm.check_id;
+  }
+}
+function renderAssumptions(list){
+  const box=document.getElementById('nlrule_assumptions');
+  if(!(list&&list.length)){ box.style.display='none'; box.innerHTML=''; return; }
+  box.style.display='';
+  box.innerHTML = '<div class="cap" style="margin-bottom:4px">'
+    + esc(I18N.t('nlrule.assumptions','Assumptions the Copilot filled in — review before saving:')) + '</div>'
+    + '<ul style="margin:0;padding-left:18px">'
+    + list.map(a=>`<li class="cap">${esc(a)}</li>`).join('') + '</ul>';
+}
+async function draftRuleFromText(){
+  const text=(document.getElementById('nlrule_text').value||'').trim();
+  if(!text){ nlSetStatus('warning', I18N.t('nlrule.empty','Describe the alert you want first.')); return; }
+  const btn=document.getElementById('nlrule_go');
+  btn.disabled=true;
+  nlSetStatus('info', I18N.t('nlrule.drafting','Drafting your rule…'));
+  renderAssumptions([]);
+  let j;
+  try{ j=await(await fetch('/api/alerts/rules/from_text',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({text})})).json(); }
+  catch(e){ nlSetStatus('warning', I18N.t('nlrule.unavailable','AI drafting unavailable — use the form below.')); btn.disabled=false; return; }
+  btn.disabled=false;
+  if(!j || j.enabled===false || (j.llm_status && j.llm_status!=='ok')){
+    nlSetStatus('warning', I18N.t('nlrule.unavailable','AI drafting unavailable — use the form below.'));
+    return;
+  }
+  if(j.proposal){
+    prefillRuleForm(j.proposal);
+    renderAssumptions(j.assumptions||[]);
+    if(j.valid){
+      nlSetStatus('ok', (j.summary||I18N.t('nlrule.drafted','Draft ready.')) + ' ' + I18N.t('nlrule.review','Review the form below, then click Add rule to save.'));
+    } else {
+      nlSetStatus('warning', (j.summary||'') + ' ' + I18N.t('nlrule.needsfix','Please adjust the draft in the form before saving.'));
+    }
+    // scroll the form into view so the reviewed draft is obvious
+    document.getElementById('r_name').scrollIntoView({behavior:'smooth',block:'nearest'});
+  } else {
+    nlSetStatus('warning', I18N.t('nlrule.nomap','Could not map that to a rule — try rephrasing or use the form.'));
+  }
+}
 async function testRuleChannel(){
   const ch=document.getElementById('r_test_channel').value;
   showAlertStatus('info',I18N.t('toast.sending_test','Sending test alert…'));
@@ -5435,6 +5523,8 @@ async function loadAlertHistory(){
 document.getElementById('r_type').onchange = ruleParamsVisibility;
 document.getElementById('r_p_slopolicy').onchange = ruleParamsVisibility;
 document.getElementById('r_add').onclick = addRule;
+document.getElementById('nlrule_go').onclick = draftRuleFromText;
+document.getElementById('nlrule_text').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); draftRuleFromText(); } });
 document.getElementById('r_test_btn').onclick = testRuleChannel;
 document.getElementById('m_kind').onchange = maintKindVisibility;
 document.getElementById('m_add').onclick = addMaintenance;

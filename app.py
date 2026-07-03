@@ -15228,6 +15228,315 @@ def api_alerts_channel_test():
     return jsonify({"ok": all(ok for _, ok, _ in results),
                     "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in results]})
 
+# ── NL alert authoring (E1): "Describe an alert in plain English" ─────────────
+# The Lab Copilot DRAFTS a structured alert rule from a plain-English sentence,
+# then the human reviews + confirms it in the SAME manual form and saves through
+# the EXISTING validated create path. The LLM only ever proposes; it never
+# persists, never mutates the host, and can only draft a normal notification rule
+# (the engine has no host-mutating rule type). LLM is called EXCLUSIVELY on the
+# explicit POST /api/alerts/rules/from_text action below — never on any poll,
+# collect, GET, or the rules-list. Schema context is assembled under LOCK and the
+# LOCK is released before the ollama HTTP call.
+RULE_DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "ctype": {"type": "string", "enum": sorted(_RULE_TYPES)},
+        "params": {"type": "object"},
+        "channel": {"type": "string"},
+        "level": {"type": "string", "enum": ["info", "warning", "critical"]},
+        "cooldown_min": {"type": "integer"},
+        "summary": {"type": "string"},
+    },
+    "required": ["ctype", "params", "summary"],
+}
+_RULE_DRAFT_MAX_TEXT = 500      # cap the NL input length fed to the model
+_RULE_DRAFT_MAX_COOLDOWN = 10080   # one week, in minutes
+
+
+def _rule_schema_context():
+    """Assemble the REAL rule schema the engine accepts — the enumerated rule
+    types, allowed anomaly series, configured channels and existing uptime/cert
+    checks — so the model can only draft within what create_rule() validates.
+
+    Reads settings + uptime_checks under LOCK, then returns a plain dict. NO LLM
+    call happens here and the LOCK is released before the caller talks to ollama.
+    Never raises."""
+    try:
+        channels = ["all"] + list(_configured_channels(get_settings()))
+    except Exception:
+        channels = ["all"]
+    checks, cert_ids, check_ids = [], set(), set()
+    try:
+        with LOCK:
+            rows = DB.execute("SELECT id,label,type FROM uptime_checks").fetchall()
+        for cid, label, ctype in rows:
+            checks.append({"id": cid, "label": label, "type": ctype})
+            check_ids.add(cid)
+            if ctype == "cert":
+                cert_ids.add(cid)
+    except Exception:
+        pass
+    return {
+        "types": sorted(_RULE_TYPES),
+        "channels": channels,
+        "series": ["any"] + [k for k, *_ in _ANOMALY_SERIES],
+        "levels": list(LEVELS.keys()),
+        "checks": checks,
+        "check_ids": check_ids,
+        "cert_ids": cert_ids,
+    }
+
+
+def _rule_draft_prompt(text, ctx):
+    """Ground the model in the exact rule vocabulary this engine supports."""
+    series = ", ".join(ctx["series"])
+    channels = ", ".join(ctx["channels"])
+    checks = ctx["checks"]
+    chk = ", ".join("%s (%s, %s)" % (c["id"], c["label"], c["type"]) for c in checks) or "(none configured)"
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Turn the user's plain-English request into ONE alert RULE this engine can "
+        "run. Alert rules ONLY send a notification when a signal the dashboard "
+        "already computes crosses a line — they never change anything on the host. "
+        "You MUST pick a ctype from this exact list and only use its params:\n"
+        "- anomaly: params {\"series\": one of [" + series + "]} — fires while that "
+        "metric is behaving abnormally (statistical anomaly). Use this for "
+        "'temperature/utilisation/power/VRAM spike/unusual' requests (map GPU temp "
+        "-> gpu_temp, GPU load -> gpu_util, power -> gpu_power, VRAM -> gpu_vram). "
+        "This engine has NO fixed-threshold-with-duration rule, so a request like "
+        "'temp over 85 for 10 min' becomes an anomaly on gpu_temp.\n"
+        "- disk_eta: params {\"days\": number} — fires when a disk is forecast to "
+        "fill within N days.\n"
+        "- vram_eta: params {\"days\": number} — fires when GPU VRAM is forecast to "
+        "fill within N days.\n"
+        "- cost_budget: params {\"budget\": number} — fires when the projected "
+        "month electricity cost exceeds this budget.\n"
+        "- incident: params {\"severity\": \"warning\"|\"critical\"} — fires when a "
+        "correlated incident at/above that severity opens.\n"
+        "- uptime_down: params {\"check_id\": one of the ids below or \"any\"} — "
+        "fires when an uptime check is down.\n"
+        "- cert_expiry: params {\"check_id\": a cert check id or \"any\"} — fires "
+        "when a TLS certificate is near expiry.\n"
+        "- slo_burn: params {\"check_id\": id or \"any\", \"policy\": "
+        "\"single\"|\"multi_window\", and for single \"burn_threshold\": number, "
+        "for multi_window \"fast_burn\": number and \"slow_burn\": number} — fires "
+        "when a check burns its SLO error budget too fast.\n"
+        "Existing uptime checks (id, label, type): " + chk + ".\n"
+        "Return a JSON object with: \"name\" (a short rule name), \"ctype\" (from "
+        "the list), \"params\" (only the keys for that ctype), \"channel\" (one of "
+        "[" + channels + "], default \"all\"), \"level\" (\"info\", \"warning\", or "
+        "\"critical\"), \"cooldown_min\" (integer minutes, default 60), and "
+        "\"summary\" (one plain-English sentence describing what the rule will do). "
+        "If unsure of a specific target, use \"any\". No markdown.\n\n"
+        "REQUEST: " + text.strip() + "\n")
+
+
+def _clamp_num(v, lo, hi, default):
+    """Return (value, adjusted) — coerce to float, clamp to [lo,hi], or use
+    default when unparseable. `adjusted` is True when we changed what the model
+    gave us (so the caller can note it as an assumption)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default, True
+    c = max(lo, min(hi, f))
+    return c, (c != f)
+
+
+def _coerce_params_for_type(ctype, p, ctx, assumptions):
+    """Coerce the model's params into something _validate_rule() will accept for
+    this ctype, clamping out-of-range numbers and dropping unknown targets to
+    'any'. Appends human-readable notes to `assumptions`."""
+    if not isinstance(p, dict):
+        p = {}
+    if ctype == "anomaly":
+        series = p.get("series")
+        if not (isinstance(series, str) and series in ctx["series"]):
+            if isinstance(series, str) and series.strip():
+                assumptions.append("Unknown series '%s' — watching any series instead." % series.strip()[:40])
+            series = "any"
+        return {"series": series}
+    if ctype in ("disk_eta", "vram_eta"):
+        days, adj = _clamp_num(p.get("days"), 0.1, 3650.0, 3.0)
+        if adj:
+            assumptions.append("Days threshold set to %g." % days)
+        return {"days": days}
+    if ctype == "cost_budget":
+        budget, adj = _clamp_num(p.get("budget"), 0.0, 1e9, 50.0)
+        if adj:
+            assumptions.append("Budget set to %g." % budget)
+        return {"budget": budget}
+    if ctype == "incident":
+        sev = p.get("severity")
+        if sev not in ("warning", "critical"):
+            if sev:
+                assumptions.append("Incident severity defaulted to warning.")
+            sev = "warning"
+        return {"severity": sev}
+    if ctype in ("uptime_down", "cert_expiry"):
+        cid = p.get("check_id")
+        valid_ids = ctx["cert_ids"] if ctype == "cert_expiry" else ctx["check_ids"]
+        if not (isinstance(cid, str) and cid in valid_ids):
+            if isinstance(cid, str) and cid.strip() and cid != "any":
+                assumptions.append("No matching check '%s' — applying to any check." % cid.strip()[:40])
+            cid = "any"
+        return {"check_id": cid}
+    if ctype == "slo_burn":
+        cid = p.get("check_id")
+        if not (isinstance(cid, str) and cid in ctx["check_ids"]):
+            if isinstance(cid, str) and cid.strip() and cid != "any":
+                assumptions.append("No matching check '%s' — applying to any check." % cid.strip()[:40])
+            cid = "any"
+        policy = p.get("policy")
+        if policy not in ("single", "multi_window"):
+            policy = "single"
+        if policy == "multi_window":
+            fb, a1 = _clamp_num(p.get("fast_burn"), 0.1, 1000.0, 14.4)
+            sb, a2 = _clamp_num(p.get("slow_burn"), 0.1, 1000.0, 6.0)
+            if a1 or a2:
+                assumptions.append("Burn rates set to fast %g× / slow %g×." % (fb, sb))
+            return {"check_id": cid, "policy": "multi_window", "fast_burn": fb, "slow_burn": sb}
+        bt, adj = _clamp_num(p.get("burn_threshold"), 0.1, 1000.0, 1.0)
+        if adj:
+            assumptions.append("Burn-rate threshold set to %g×." % bt)
+        return {"check_id": cid, "policy": "single", "burn_threshold": bt}
+    return {}
+
+
+def _rule_plain_summary(pr):
+    """Deterministic one-line description of a proposed rule (server-side fallback
+    when the model omits a usable summary). Never raises."""
+    ct = pr.get("ctype") or ""
+    p = pr.get("params") or {}
+    if ct == "anomaly":
+        return "Alert when %s is anomalous." % (p.get("series") or "any series")
+    if ct == "disk_eta":
+        return "Alert when a disk is forecast to fill within %g days." % float(p.get("days", 3))
+    if ct == "vram_eta":
+        return "Alert when GPU VRAM is forecast to fill within %g days." % float(p.get("days", 3))
+    if ct == "cost_budget":
+        return "Alert when projected month cost exceeds %g." % float(p.get("budget", 50))
+    if ct == "incident":
+        return "Alert when a correlated incident at/above %s opens." % (p.get("severity") or "warning")
+    if ct == "uptime_down":
+        return "Alert when uptime check '%s' goes down." % (p.get("check_id") or "any")
+    if ct == "cert_expiry":
+        return "Alert when the TLS cert for '%s' is near expiry." % (p.get("check_id") or "any")
+    if ct == "slo_burn":
+        return "Alert when '%s' burns its SLO error budget too fast." % (p.get("check_id") or "any")
+    return "Could not map this request to a supported rule type."
+
+
+def _coerce_drafted_rule(obj, ctx, text):
+    """Turn a raw LLM object into a safe PROPOSED rule + assumptions + type_ok.
+    Fills sane defaults, clamps out-of-range values, and flags an unmappable type.
+    Pure (no LOCK, no LLM, no DB writes). Never raises."""
+    assumptions = []
+    if not isinstance(obj, dict):
+        obj = {}
+    ctype = obj.get("ctype")
+    ctype = ctype.strip() if isinstance(ctype, str) else ""
+    type_ok = ctype in _RULE_TYPES
+    name = obj.get("name")
+    name = name.strip() if isinstance(name, str) and name.strip() else ""
+    if not name:
+        name = (text.strip()[:48] or "New alert")
+        assumptions.append("Named the rule from your description.")
+    channel = obj.get("channel")
+    channel = channel.strip() if isinstance(channel, str) else ""
+    if channel not in _VALID_CHANNELS:
+        if channel:
+            assumptions.append("Unknown channel '%s' — using all configured channels." % channel[:40])
+        channel = "all"
+    level = obj.get("level")
+    level = level.strip().lower() if isinstance(level, str) else ""
+    if level not in LEVELS:
+        if level:
+            assumptions.append("Severity defaulted to warning.")
+        level = "warning"
+    cd_raw = obj.get("cooldown_min", 60)
+    try:
+        cd = int(float(cd_raw))
+    except (TypeError, ValueError):
+        cd, adj = 60, True
+    else:
+        adj = False
+    if cd < 0:
+        cd, adj = 0, True
+    if cd > _RULE_DRAFT_MAX_COOLDOWN:
+        cd, adj = _RULE_DRAFT_MAX_COOLDOWN, True
+    if adj:
+        assumptions.append("Cooldown set to %d minutes." % cd)
+    params = _coerce_params_for_type(ctype, obj.get("params"), ctx, assumptions) if type_ok else {}
+    proposal = {"name": name, "ctype": ctype if type_ok else "", "params": params,
+                "channel": channel, "level": level, "cooldown_min": cd, "enabled": False}
+    return proposal, assumptions, type_ok
+
+
+def _draft_rule_from_text(text, ctx):
+    """The ONE new LLM caller in this feature. Returns
+    (proposal|None, assumptions, valid, llm_status, summary). Never persists,
+    never raises. `proposal` is a NOT-SAVED candidate rule dict; `valid` means the
+    existing _validate_rule() accepts it verbatim (defense in depth)."""
+    raw, err = _ollama_generate(_rule_draft_prompt(text, ctx), fmt=RULE_DRAFT_SCHEMA)
+    if raw is None:
+        return None, [], False, (err or "unreachable"), ""
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        obj = None
+    llm_summary = ""
+    if isinstance(obj, dict):
+        s = obj.get("summary")
+        if isinstance(s, str) and s.strip():
+            llm_summary = s.strip()[:300]
+    proposal, assumptions, type_ok = _coerce_drafted_rule(obj if isinstance(obj, dict) else {}, ctx, text)
+    valid = False
+    if type_ok:
+        _clean, verr = _validate_rule({**proposal, "enabled": False})
+        if verr:
+            assumptions.append("This draft still needs a fix before it can be saved: %s" % verr)
+        else:
+            valid = True
+    else:
+        assumptions.insert(0, "Could not map your request to a rule this engine supports — edit it in the form below.")
+    summary = llm_summary or _rule_plain_summary(proposal)
+    return proposal, assumptions, valid, "ok", summary
+
+
+@app.route("/api/alerts/rules/from_text", methods=["POST"])
+def api_alert_rule_from_text():
+    """Draft (NOT save) an alert rule from a plain-English description via the
+    local LLM. The ONLY new LLM caller — never on a poll/collect/GET path. Always
+    200; returns a PROPOSED rule the UI pre-fills into the manual form, plus the
+    assumptions it filled and a `valid` flag. Saving happens only when the user
+    confirms, through the existing validated /api/alerts/rules create path."""
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    now = int(time.time())
+    ctx = _rule_schema_context()   # assembled under LOCK; released before any LLM call
+    schema_out = {"types": ctx["types"], "channels": ctx["channels"],
+                  "series": ctx["series"], "levels": ctx["levels"]}
+    if not text:
+        return jsonify({"ok": True, "valid": False, "enabled": COPILOT_ENABLED,
+                        "model": COPILOT_MODEL, "llm_status": "no_text",
+                        "proposal": None, "assumptions": [], "summary": "",
+                        "schema": schema_out})
+    if len(text) > _RULE_DRAFT_MAX_TEXT:
+        text = text[:_RULE_DRAFT_MAX_TEXT]
+    if not COPILOT_ENABLED:
+        return jsonify({"ok": True, "valid": False, "enabled": False,
+                        "model": COPILOT_MODEL, "llm_status": "disabled",
+                        "proposal": None, "assumptions": [], "summary": "",
+                        "schema": schema_out})
+    proposal, assumptions, valid, llm_status, summary = _draft_rule_from_text(text, ctx)
+    return jsonify({"ok": True, "valid": valid, "enabled": COPILOT_ENABLED,
+                    "model": COPILOT_MODEL, "llm_status": llm_status,
+                    "proposal": proposal, "assumptions": assumptions,
+                    "summary": summary, "schema": schema_out})
+
+
 @app.route("/api/alerts/rules", methods=["GET", "POST"])
 def api_alert_rules():
     if request.method == "POST":
