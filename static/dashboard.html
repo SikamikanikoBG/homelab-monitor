@@ -238,6 +238,50 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hero-status-chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd));background:color-mix(in srgb,var(--ok) 12%,transparent)}
 .hero-status-chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--bd));background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .hero-status-chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
+/* ── Lab Health Score — glanceable 0-100 headline ring + expandable breakdown.
+   --hs is the band colour (ok/warn/crit token); the ring arc + number carry it,
+   but the number and band text are ALWAYS shown so the state is never colour-only. */
+.hero-score{--hs:var(--ok);flex:none;align-self:center;display:flex;align-items:center;gap:11px;
+  background:transparent;border:1px solid transparent;border-radius:12px;padding:5px 9px 5px 5px;
+  cursor:pointer;position:relative;transition:background .15s ease,border-color .15s ease}
+.hero-score[hidden]{display:none}
+.hero-score:hover{background:color-mix(in srgb,var(--hs) 8%,transparent);border-color:color-mix(in srgb,var(--hs) 30%,var(--bd))}
+.hero-score:focus-visible{outline:2px solid var(--hs);outline-offset:2px}
+.hero-score .hs-ring{width:58px;height:58px;flex:none;transform:rotate(-90deg)}
+.hero-score .hs-track{fill:none;stroke:var(--bd);stroke-width:7}
+.hero-score .hs-arc{fill:none;stroke:var(--hs);stroke-width:7;stroke-linecap:round;
+  stroke-dasharray:188.5;stroke-dashoffset:188.5;transition:stroke-dashoffset .7s cubic-bezier(.4,0,.2,1),stroke .3s ease}
+.hero-score .hs-face{position:absolute;left:5px;top:5px;width:58px;height:58px;
+  display:flex;align-items:center;justify-content:center;pointer-events:none}
+.hero-score .hs-num{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--hs);letter-spacing:-.02em}
+.hero-score .hs-meta{display:flex;flex-direction:column;align-items:flex-start;gap:1px;min-width:0}
+.hero-score .hs-lead{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.hero-score .hs-band{font-size:14px;font-weight:700;color:var(--hs);line-height:1.1}
+.hero-score .hs-band::after{content:'▾';font-size:10px;margin-left:5px;color:var(--mut);
+  display:inline-block;transition:transform .15s ease}
+.hero-score[aria-expanded="true"] .hs-band::after{transform:rotate(180deg)}
+@media(prefers-reduced-motion:reduce){.hero-score .hs-arc{transition:stroke .3s ease}.hero-score .hs-band::after{transition:none}}
+/* Breakdown panel — worst-first factor rows, each with its deduction + plain detail */
+.hero-score-panel{margin:0 20px 14px;padding:12px 14px;border:1px solid var(--bd);border-radius:11px;
+  background:var(--inset);animation:hsp-in .18s ease}
+.hero-score-panel[hidden]{display:none}
+@keyframes hsp-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.hero-score-panel{animation:none}}
+.hsp-head{font-size:12px;color:var(--mut);margin:0 0 9px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.hsp-head .hsp-eq{font-variant-numeric:tabular-nums}
+.hsp-clear{display:flex;align-items:center;gap:8px;color:var(--ok);font-weight:600;font-size:13.5px}
+.hsp-list{display:flex;flex-direction:column;gap:7px}
+.hsp-row{display:flex;align-items:baseline;gap:10px}
+.hsp-row .hsp-delta{flex:none;font-weight:700;font-variant-numeric:tabular-nums;font-size:13px;
+  min-width:38px;text-align:right;color:var(--crit)}
+.hsp-row.warn .hsp-delta{color:var(--warn)}
+.hsp-row .hsp-body{min-width:0}
+.hsp-row .hsp-label{font-weight:600;font-size:13px}
+.hsp-row .hsp-detail{color:var(--mut);font-size:12.5px;margin-left:7px}
+.hsp-bar{flex:none;width:46px;height:5px;border-radius:3px;background:var(--bd);overflow:hidden;align-self:center}
+.hsp-bar>i{display:block;height:100%;background:var(--crit);border-radius:3px}
+.hsp-row.warn .hsp-bar>i{background:var(--warn)}
+@media(max-width:640px){.hero-score .hs-meta{display:none}.hero-score-panel{margin:0 14px 12px}}
 /* KPI strip — tabular, calm, evenly divided */
 .hero-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   border-top:1px solid var(--bd)}
@@ -1599,8 +1643,20 @@ h2 .hic{ opacity:.9 }
         <h2 id="hero-title">—</h2>
         <div class="hsub" id="hero-sub"></div>
       </div>
+      <button type="button" class="hero-score" id="hero-score" hidden
+              aria-expanded="false" aria-controls="hero-score-panel">
+        <svg class="hs-ring" viewBox="0 0 72 72" aria-hidden="true" focusable="false">
+          <circle class="hs-track" cx="36" cy="36" r="30"/>
+          <circle class="hs-arc" cx="36" cy="36" r="30"/>
+        </svg>
+        <span class="hs-face"><span class="hs-num" id="hero-score-num">—</span></span>
+        <span class="hs-meta"><span class="hs-lead" id="hero-score-lead"></span>
+          <span class="hs-band" id="hero-score-band"></span></span>
+      </button>
       <span class="chip hero-status-chip" id="hero-chip" role="status"></span>
     </div>
+    <div class="hero-score-panel" id="hero-score-panel" hidden role="region"
+         aria-label="Lab Health Score breakdown"></div>
     <div class="hero-gauges" id="hero-gauges" hidden></div>
     <div class="hero-kpis" id="hero-kpis"></div>
     <div class="hero-foot" id="hero-foot">
@@ -6591,7 +6647,78 @@ function renderHero(){
   teaser.textContent=tt;
   teaser.hidden=!tt;
 
+  renderHeroScore();      // the glanceable 0-100 Lab Health headline ring
   renderNavAttention();   // same cheap counts also drive the sidebar badges
+}
+// Lab Health Score — one glanceable 0-100 ring + expandable, worst-first breakdown
+// that reconciles exactly to the number (score == 100 + Σ deltas, clamped). Reads
+// the deterministic FORECAST.health payload (no LLM, no extra fetch). The number +
+// band text are always shown, so the state is never colour-only (a11y).
+const _HS_BAND_TXT={excellent:['Excellent','hero.hs_excellent'],good:['Good','hero.hs_good'],
+  fair:['Fair','hero.hs_fair'],at_risk:['At risk','hero.hs_at_risk']};
+function _hsTierVar(tier){return tier==='crit'?'var(--crit)':tier==='warn'?'var(--warn)':'var(--ok)';}
+function renderHeroScore(){
+  const el=document.getElementById('hero-score'); if(!el) return;
+  _wireHeroScore();
+  const h=(FORECAST&&FORECAST.health)||null;
+  if(!h || typeof h.score!=='number'){ el.hidden=true; return; }
+  el.hidden=false;
+  const score=Math.max(0,Math.min(100,Math.round(h.score)));
+  const tier=h.tier||'ok';
+  el.style.setProperty('--hs',_hsTierVar(tier));
+  // ring arc: circumference 2π·30 ≈ 188.5, offset shrinks as the score rises
+  const CIRC=188.5, arc=el.querySelector('.hs-arc');
+  if(arc) arc.style.strokeDashoffset=(CIRC*(1-score/100)).toFixed(2);
+  const [bandEn,bandKey]=_HS_BAND_TXT[h.band]||[h.band||'',null];
+  const bandTxt=bandKey?I18N.t(bandKey,bandEn):bandEn;
+  document.getElementById('hero-score-num').textContent=String(score);
+  document.getElementById('hero-score-lead').textContent=I18N.t('hero.hs_lead','Lab health');
+  document.getElementById('hero-score-band').textContent=bandTxt;
+  const factors=Array.isArray(h.factors)?h.factors:[];
+  el.setAttribute('aria-label',
+    I18N.tf('hero.hs_aria','Lab Health Score {n} of 100 — {band}. {c} factors reducing it. Activate to see the breakdown.',
+      {n:score,band:bandTxt,c:factors.length}));
+  _renderHeroScorePanel(h,factors,bandTxt);
+}
+const _HS_FAC_LBL={uptime:['Uptime checks','hero.hsf_uptime'],incidents:['Open incidents','hero.hsf_incidents'],
+  slo:['SLO error budget','hero.hsf_slo'],disk:['Disk capacity','hero.hsf_disk'],
+  vram:['GPU VRAM capacity','hero.hsf_vram'],anomalies:['Active anomalies','hero.hsf_anomalies'],
+  thermal:['GPU thermals','hero.hsf_thermal']};
+function _hsFactorLabel(f){const m=_HS_FAC_LBL[f.key];return m?I18N.t(m[1],m[0]):(f.label||f.key||'');}
+function _renderHeroScorePanel(h,factors,bandTxt){
+  const p=document.getElementById('hero-score-panel'); if(!p) return;
+  const caps=h.caps||{};
+  let head;
+  if(!factors.length){
+    head=`<div class="hsp-clear"><span aria-hidden="true">✓</span>`
+      +`<span>${esc(I18N.t('hero.hs_allclear','All clear — no signals are reducing your lab health.'))}</span></div>`;
+    p.innerHTML=head;
+    return;
+  }
+  const sum=factors.reduce((a,f)=>a+(+f.delta||0),0);
+  head=`<div class="hsp-head"><span>${esc(I18N.t('hero.hs_why','Why it isn’t 100'))}</span>`
+    +`<span class="hsp-eq">100 − ${Math.abs(sum)} = <strong>${Math.max(0,Math.min(100,100+sum))}</strong></span></div>`;
+  const rows=factors.map(f=>{
+    const d=+f.delta||0, cap=+caps[f.key]||Math.abs(d)||1;
+    const warn=Math.abs(d)<10;
+    const w=Math.max(6,Math.min(100,Math.round(Math.abs(d)/cap*100)));
+    const detail=f.detail?`<span class="hsp-detail">${esc(f.detail)}</span>`:'';
+    return `<div class="hsp-row${warn?' warn':''}">`
+      +`<span class="hsp-delta">${d>0?'+':''}${d}</span>`
+      +`<span class="hsp-bar"><i style="width:${w}%"></i></span>`
+      +`<span class="hsp-body"><span class="hsp-label">${esc(_hsFactorLabel(f))}</span>${detail}</span>`
+      +`</div>`;
+  }).join('');
+  p.innerHTML=head+`<div class="hsp-list">${rows}</div>`;
+}
+function _wireHeroScore(){
+  const btn=document.getElementById('hero-score'), panel=document.getElementById('hero-score-panel');
+  if(!btn||!panel||btn.dataset.wired) return; btn.dataset.wired='1';
+  btn.addEventListener('click',()=>{
+    const open=btn.getAttribute('aria-expanded')==='true';
+    btn.setAttribute('aria-expanded', open?'false':'true');
+    panel.hidden=open;
+  });
 }
 // Sidebar nav badges: surface where there's something to attend to. Driven by the
 // SAME cheap /api/forecast counts as the hero rollup — never the LLM endpoint.

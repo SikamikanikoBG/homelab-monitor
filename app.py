@@ -8257,6 +8257,294 @@ def _seed_demo_data():
         print("DEMO_MODE seed skipped (continuing):", e, flush=True)
 
 
+# ── Lab Health Score ──────────────────────────────────────────────────────────
+# A single deterministic 0-100 headline for the cockpit, synthesized ONLY from
+# signals the app already produces (no LLM, no new probing). Fully explainable:
+#
+#     score = clamp(100 + Σ factor.delta, 0, 100)
+#
+# The base is 100 — a perfectly quiet, healthy lab. Each category can only DEDUCT
+# (never add), and only for BAD DATA ACTUALLY OBSERVED; a missing / still-warming
+# signal never penalizes (absent ≠ unhealthy). Per-category deductions are bounded
+# by a documented cap so no single category can sink the whole score, and the
+# running total is clamped to [0,100]. Because the caps sum to > 100, many
+# simultaneous problems drive the score to 0 (clamped) — as they should.
+#
+# Category caps (max deduction) + rationale — the model's only tunables:
+_HS_CAPS = {
+    "uptime":    50,   # a monitored check being DOWN is the most serious signal
+    "incidents": 30,   # open correlated-anomaly incidents (worse when critical)
+    "slo":       20,   # error-budget exhausted / fast burn on a check
+    "disk":      15,   # imminent disk-fill ETA
+    "vram":      12,   # imminent GPU-VRAM-exhaustion ETA
+    "anomalies": 18,   # currently-firing z-score anomalies
+    "thermal":   15,   # GPU temperature near the throttle ceiling / throttling
+}
+# English fallback labels (the client re-localizes via the `key`; `detail`/`meta`
+# carry the live numbers so the UI can localize the sentence too).
+_HS_LABELS = {
+    "uptime":    "Uptime checks",
+    "incidents": "Open incidents",
+    "slo":       "SLO error budget",
+    "disk":      "Disk capacity",
+    "vram":      "GPU VRAM capacity",
+    "anomalies": "Active anomalies",
+    "thermal":   "GPU thermals",
+}
+# Band thresholds (score >= cut → band), best-first; each maps to a colour tier.
+_HS_BANDS = ((90, "excellent", "ok"), (75, "good", "ok"),
+             (50, "fair", "warn"), (0, "at_risk", "crit"))
+
+def _hs_band(score):
+    for cut, band, tier in _HS_BANDS:
+        if score >= cut:
+            return band, tier
+    return "at_risk", "crit"
+
+def _hs_num(x):
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+def compute_health_score(signals, now=None):
+    """Pure, deterministic Lab Health Score over already-computed signals. NO I/O,
+    NO LLM — it only does arithmetic on the dict handed in. `signals` keys (all
+    optional; any may be absent/None without penalty):
+        uptime    : list of check dicts (enabled/state + optional 'slo' sub-dict)
+        incidents : {'open': int, 'critical': int}
+        anomalies : {'items': [{'key',...}, ...]}
+        disk      : list of mount forecast dicts (status/eta_days/mount)
+        vram      : {'status', 'eta_min'}
+        gpu       : {'temp': float, 'throttled': bool, 'gpus': [{'temp'}, ...]}
+    Returns {score, band, tier, factors:[{key,label,delta,detail,meta}], caps,
+    generated_at}. Guarantees score == clamp(100 + Σ factor.delta, 0, 100); each
+    factor.delta is a negative integer (deductions only). Never raises."""
+    signals = signals or {}
+    factors = []
+
+    def add(key, delta, detail, meta):
+        delta = int(delta)
+        if delta < 0:
+            factors.append({"key": key, "label": _HS_LABELS.get(key, key),
+                            "delta": delta, "detail": detail, "meta": meta})
+
+    # 1) UPTIME — any enabled check currently DOWN (the hardest failure signal).
+    try:
+        checks = signals.get("uptime") or []
+        enabled = [c for c in checks if isinstance(c, dict) and c.get("enabled")]
+        down = [c for c in enabled if c.get("state") == "down"]
+        if down:
+            d = min(_HS_CAPS["uptime"], 20 * len(down))
+            add("uptime", -d, f"{len(down)} of {len(enabled)} checks down",
+                {"down": len(down), "total": len(enabled)})
+    except Exception:
+        pass
+
+    # 2) INCIDENTS — open correlated-anomaly incidents, extra weight if critical.
+    try:
+        inc = signals.get("incidents") or {}
+        op = int(inc.get("open") or 0)
+        crit = int(inc.get("critical") or 0)
+        if op > 0:
+            d = min(_HS_CAPS["incidents"], 10 * op + 8 * crit)
+            detail = (f"{op} open incident{'s' if op != 1 else ''}"
+                      + (f", {crit} critical" if crit else ""))
+            add("incidents", -d, detail, {"open": op, "critical": crit})
+    except Exception:
+        pass
+
+    # 3) SLO — checks whose error budget is exhausted or burning fast. Only count
+    #    checks with data_sufficient so a sparse window never invents a penalty.
+    try:
+        checks = signals.get("uptime") or []
+        ob = burn = 0
+        for c in checks:
+            slo = (c or {}).get("slo") if isinstance(c, dict) else None
+            if not (isinstance(slo, dict) and slo.get("data_sufficient")):
+                continue
+            if slo.get("over_budget"):
+                ob += 1
+            if slo.get("burning"):
+                burn += 1
+        if ob or burn:
+            d = min(_HS_CAPS["slo"], 8 * ob + 6 * burn)
+            bits = []
+            if ob:
+                bits.append(f"{ob} over budget")
+            if burn:
+                bits.append(f"{burn} burning fast")
+            add("slo", -d, ", ".join(bits), {"over_budget": ob, "burning": burn})
+    except Exception:
+        pass
+
+    # 4) DISK CAPACITY — soonest imminent disk-fill ETA (proximity → deduction).
+    try:
+        def _disk_pen(dsk):
+            st = dsk.get("status")
+            if st == "full":
+                return _HS_CAPS["disk"]
+            if st != "filling":
+                return 0
+            eta = _hs_num(dsk.get("eta_days"))
+            if eta is None:
+                return 0
+            if eta <= 1:  return 15
+            if eta <= 3:  return 12
+            if eta <= 7:  return 7
+            if eta <= 30: return 3
+            return 0
+        worst, worst_pen = None, 0
+        for dsk in (signals.get("disk") or []):
+            if not isinstance(dsk, dict):
+                continue
+            p = _disk_pen(dsk)
+            if p > worst_pen:
+                worst_pen, worst = p, dsk
+        if worst_pen > 0:
+            eta = _hs_num(worst.get("eta_days"))
+            if worst.get("status") == "full":
+                detail = f"{worst.get('mount')} full"
+            elif eta is not None:
+                when = "<1d" if eta < 1 else f"~{round(eta)}d"
+                detail = f"{worst.get('mount')} fills in {when}"
+            else:
+                detail = worst.get("mount")
+            add("disk", -min(_HS_CAPS["disk"], worst_pen), detail,
+                {"mount": worst.get("mount"), "status": worst.get("status"),
+                 "eta_days": eta})
+    except Exception:
+        pass
+
+    # 5) VRAM CAPACITY — GPU-VRAM-exhaustion ETA proximity.
+    try:
+        vram = signals.get("vram") or {}
+        st = vram.get("status")
+        eta = _hs_num(vram.get("eta_min"))
+        p = 0
+        if st == "full":
+            p = _HS_CAPS["vram"]
+        elif st == "filling" and eta is not None:
+            if eta <= 60:      p = 12
+            elif eta <= 360:   p = 9
+            elif eta <= 1440:  p = 5
+            elif eta <= 10080: p = 2
+        if p > 0:
+            if st == "full":
+                detail = "GPU VRAM full"
+            elif eta is not None and eta < 120:
+                detail = f"VRAM exhausts in ~{round(eta)}m"
+            else:
+                detail = f"VRAM exhausts in ~{round((eta or 0) / 60)}h"
+            add("vram", -min(_HS_CAPS["vram"], p), detail,
+                {"status": st, "eta_min": eta})
+    except Exception:
+        pass
+
+    # 6) ANOMALIES — currently-firing z-score anomalies (GPU util/vram/power/temp,
+    #    total power, disk-I/O). Only active items; a quiet detector never deducts.
+    try:
+        items = (signals.get("anomalies") or {}).get("items") or []
+        items = [i for i in items if isinstance(i, dict)]
+        if items:
+            d = min(_HS_CAPS["anomalies"], 5 * len(items))
+            keys = [i.get("key") for i in items[:4] if i.get("key")]
+            detail = f"{len(items)} anomal{'ies' if len(items) != 1 else 'y'} firing"
+            add("anomalies", -d, detail, {"count": len(items), "keys": keys})
+    except Exception:
+        pass
+
+    # 7) THERMAL — GPU temperature near the throttle ceiling, or actively throttling.
+    try:
+        gpu = signals.get("gpu") or {}
+        temps = [_hs_num(gpu.get("temp"))]
+        for gg in (gpu.get("gpus") or []):
+            if isinstance(gg, dict):
+                temps.append(_hs_num(gg.get("temp")))
+        temps = [t for t in temps if t is not None and t > 0]
+        tmax = max(temps) if temps else None
+        throttled = bool(gpu.get("throttled"))
+        p = 0
+        if tmax is not None:
+            if tmax >= 90:   p = 15
+            elif tmax >= 84: p = 9
+            elif tmax >= 79: p = 4
+        if throttled:
+            p = max(p, 9)
+        if p > 0:
+            if tmax is not None and throttled:
+                detail = f"GPU at {round(tmax)}°C, throttling"
+            elif tmax is not None:
+                detail = f"GPU at {round(tmax)}°C"
+            else:
+                detail = "GPU throttling"
+            add("thermal", -min(_HS_CAPS["thermal"], p), detail,
+                {"temp": (round(tmax, 1) if tmax is not None else None),
+                 "throttled": throttled})
+    except Exception:
+        pass
+
+    total = sum(f["delta"] for f in factors)
+    score = max(0, min(100, 100 + total))
+    factors.sort(key=lambda f: f["delta"])   # worst (most negative) first
+    band, tier = _hs_band(score)
+    return {"score": score, "band": band, "tier": tier, "factors": factors,
+            "caps": dict(_HS_CAPS),
+            "generated_at": int(now if now is not None else time.time())}
+
+def _hs_incident_counts():
+    """Open-incident tally for the health score: total open + how many are
+    'critical'. One tiny bounded query; degrades to zeros, never raises."""
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT severity FROM incidents WHERE state='open'").fetchall()
+        return {"open": len(rows),
+                "critical": sum(1 for r in rows if (r[0] or "") == "critical")}
+    except Exception:
+        return {"open": 0, "critical": 0}
+
+def _hs_gpu_signal():
+    """Live GPU thermal signal for the health score, from the cached snapshot the
+    UI already has. Empty (→ no thermal penalty) when no GPU is present, so a
+    GPU-less host is never dinged for 'missing' thermals."""
+    if not LATEST.get("gpu_avail"):
+        return {}
+    return {"temp": LATEST.get("temp"),
+            "throttled": (LATEST.get("gpu_extra") or {}).get("throttled"),
+            "gpus": LATEST.get("gpus")}
+
+def _gather_health_signals(now):
+    """Collect the (already-computed) signals the Lab Health Score reads. Reuses
+    the same pure detectors as /api/forecast (disk/VRAM/anomalies) plus the uptime
+    checks (with their SLO sub-dict), open-incident counts and the live GPU
+    thermal snapshot. Read-only; NO LLM; degrades to empties, never raises."""
+    try:
+        with LOCK:
+            cur = DB.cursor()
+            disks = _disk_forecasts(cur, now)
+            anomalies = _zscore_anomalies(cur, now)
+            vram = _vram_forecast(cur, now)
+    except Exception as e:
+        print("health signals error:", e, flush=True)
+        disks, anomalies, vram = [], {"items": []}, {}
+    try:
+        checks = uptime_overview().get("checks", []) or []
+    except Exception:
+        checks = []
+    return {"uptime": checks, "incidents": _hs_incident_counts(),
+            "anomalies": anomalies, "disk": disks, "vram": vram,
+            "gpu": _hs_gpu_signal()}
+
+@app.route("/api/health_score")
+def api_health_score():
+    """Read-only, deterministic Lab Health Score (0-100) + explainable breakdown.
+    Synthesizes the signals the app already produces — uptime/SLO, open incidents,
+    active z-score anomalies, disk/VRAM capacity ETAs and GPU thermals — into ONE
+    glanceable headline with a worst-first factor list that reconciles exactly to
+    the number (score == clamp(100 + Σ delta)). PURE MATH: this endpoint makes ZERO
+    LLM calls and never mutates. Authed dashboard surface only — NOT exposed on the
+    public /status pages. Always 200; graceful-degrade, never 500."""
+    now = int(time.time())
+    return jsonify(compute_health_score(_gather_health_signals(now), now))
+
 @app.route("/api/forecast")
 def api_forecast():
     """Read-only forecasts computed from the history already in SQLite, using pure
@@ -8313,11 +8601,18 @@ def api_forecast():
     reco = _reco_counts({"disk": disks, "vram": vram, "cost_month": cost_month,
                          "anomalies": anomalies, "incidents": incidents,
                          "uptime": uptime_checks, "ooms": ooms})
+    # Lab Health Score rides the SAME already-polled forecast pass (no extra timer,
+    # no LLM): reuse the disk/VRAM/anomaly/uptime signals just computed + the live
+    # GPU thermal snapshot + an open-incident tally. Deterministic math only.
+    health = compute_health_score({
+        "uptime": uptime_checks, "incidents": _hs_incident_counts(),
+        "anomalies": anomalies, "disk": disks, "vram": vram,
+        "gpu": _hs_gpu_signal()}, now)
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
                     "anomalies": anomalies, "vram": vram,
                     "incidents": incidents,
                     "uptime": {"down": down, "total": len(uptime_checks)},
-                    "reco": reco,
+                    "reco": reco, "health": health,
                     "attention": {"reco": reco, "incidents_open": incidents.get("open", 0),
                                   "uptime_down": down}})
 
