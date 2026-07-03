@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Status</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<style>
+/* The dashboard's own tokens — this status page is part of the product, dark-first. */
+:root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;--inset:#0d1117;--hover:#1c2230;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;
+--mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+[data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;
+--crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;--inset:#f6f8fa;--hover:#eef1f4;
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);min-height:100vh;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:30px 18px 60px}
+a{color:inherit;text-decoration:none}
+.sd{width:9px;height:9px;border-radius:50%;flex:none;background:var(--mut)}
+.sd.ok{background:var(--ok)}.sd.warn{background:var(--warn)}.sd.crit{background:var(--crit)}.sd.unknown,.sd.info{background:var(--mut)}
+
+/* header — brand uses the app's radar logo, not an emoji */
+.top{display:flex;align-items:center;gap:11px;margin-bottom:26px}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.brand img{width:26px;height:26px;display:block}
+.brand .sub{color:var(--mut);font-weight:500;font-size:13px}
+.spring{flex:1}
+.tbtn{background:var(--card);border:1px solid var(--bd);color:var(--mut);border-radius:8px;
+  width:34px;height:34px;cursor:pointer;display:grid;place-items:center;transition:border-color .15s,color .15s}
+.tbtn:hover{border-color:var(--accent);color:var(--tx)}
+.tbtn svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* overall banner */
+.banner{display:flex;align-items:center;gap:12px;padding:16px 18px;border-radius:12px;
+  border:1px solid var(--bd);font-weight:600;font-size:16px;margin-bottom:26px;background:var(--card)}
+.banner .bd{width:12px;height:12px;border-radius:50%;background:currentColor;flex:none}
+.banner.ok{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
+.banner.warn{background:var(--warnbg);border-color:var(--warn);color:var(--warn)}
+.banner.crit{background:var(--critbg);border-color:var(--crit);color:var(--crit)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 currentColor}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.banner.ok .bd{animation:pulse 2.4s infinite}
+
+/* section label */
+.sect{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--mut);
+  margin:0 2px 11px;display:flex;align-items:center;gap:8px}
+.sect .cnt{margin-left:auto;letter-spacing:.03em;font-weight:600;text-transform:none;font-family:var(--mono)}
+
+/* system strip */
+.sys{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:30px}
+.syscard{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:13px 14px}
+.syscard .h{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.syscard .m{font-size:21px;font-weight:700;font-family:var(--mono);line-height:1.2;margin-top:5px}
+.syscard .d{font-size:12px;color:var(--mut);margin-top:1px}
+
+/* components (status-page style: name + status + 90-day bar) */
+.comps{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.comp{display:block;background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:15px 17px;transition:border-color .14s}
+a.comp:hover{border-color:var(--accent)}
+.comp-h{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.comp-nm{font-weight:600;font-size:15px}
+.comp-host{color:var(--mut);font-size:12px;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.comp-st{font-size:12px;font-weight:600;color:var(--mut)}
+.comp-st.ok{color:var(--ok)}.comp-st.crit{color:var(--crit)}.comp-st.warn{color:var(--warn)}
+a.comp:hover .comp-arr{color:var(--accent)}
+.comp-arr{color:var(--mut);font-size:15px;margin-left:4px}
+
+/* the 90-day daily bar */
+.daybar{display:flex;gap:2px;height:36px;align-items:stretch}
+.daybar .d{flex:1 1 0;min-width:2px;border-radius:2px;background:var(--ok)}
+.daybar .d.down{background:var(--crit)}
+.daybar .d.part{background:var(--warn)}
+.daybar .d.nodata{background:var(--bd);opacity:.45}
+.axis{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-top:8px;font-family:var(--mono)}
+.axis .mid{color:var(--tx);font-weight:600}
+
+/* legend */
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:6px 2px 30px;font-size:12px;color:var(--mut)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+/* incidents */
+.incwrap{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:6px 18px}
+.incday{padding:14px 0;border-bottom:1px solid var(--bd)}
+.incday:last-child{border-bottom:0}
+.incdate{font-size:12px;font-weight:700;color:var(--mut);letter-spacing:.04em;margin-bottom:10px;font-family:var(--mono)}
+.incrow{display:flex;gap:11px;padding:7px 0}
+.incrow .bdot{width:9px;height:9px;border-radius:50%;background:var(--crit);margin-top:5px;flex:none}
+.inctitle{font-weight:600;font-size:14px}
+.incmeta{font-size:12px;color:var(--mut);font-family:var(--mono);margin-top:2px}
+.empty{color:var(--mut);font-size:13px;padding:18px 2px;text-align:center}
+
+/* detail */
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--mut);font-size:13px;margin-bottom:18px}
+.back:hover{color:var(--accent)}
+.dhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.dhead h1{font-size:23px;font-weight:700}
+.statepill{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:5px 13px;border-radius:999px;border:1px solid var(--bd);color:var(--mut)}
+.statepill.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.statepill.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.dsub{color:var(--mut);font-size:13px;font-family:var(--mono);margin-bottom:22px}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
+.tile{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:14px;text-align:center}
+.tile .k{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--mut)}
+.tile .v{font-size:22px;font-weight:700;font-family:var(--mono);margin-top:4px}
+.panel{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:17px 18px;margin-bottom:16px}
+.panel h3{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:13px;display:flex;gap:8px}
+.panel h3 .meta{margin-left:auto;font-family:var(--mono);font-weight:600;letter-spacing:0;text-transform:none}
+.spark{width:100%;height:66px;display:block}
+
+.foot{margin-top:30px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--mut)}
+.foot img{width:15px;height:15px;opacity:.8}
+.foot a:hover{color:var(--accent)}
+@media(max-width:560px){.tiles{grid-template-columns:repeat(2,1fr)}.comp-host{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <a href="/public" class="brand"><img src="/static/logo.svg" alt=""><span id="lab-nm">HomeLab</span><span class="sub">status</span></a>
+    <span class="spring"></span>
+    <button class="tbtn" id="themebtn" title="Toggle theme" aria-label="Toggle theme"></button>
+  </div>
+  <div id="view"></div>
+  <div class="foot"><img src="/static/logo.svg" alt=""><a href="https://github.com/SikamikanikoBG/homelab-monitor" target="_blank" rel="noopener">HomeLab Monitor</a> · <span id="foot-upd"></span></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const SUN='<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>';
+const MOON='<svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>';
+function pct(v){ return v==null?'—':(Math.round(v*100)/100)+'%'; }
+function ms(v){ return v==null?'—':Math.round(v)+' ms'; }
+function clock(){ return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function fmtDur(s){ s=Math.max(0,Math.round(s)); const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  if(d) return d+'d '+h+'h'; if(h) return h+'h '+m+'m'; if(m) return m+'m'; return s+'s'; }
+function relTime(ts){ if(!ts) return '—'; const s=Date.now()/1000-ts;
+  if(s<60) return Math.max(1,Math.round(s))+'s ago'; if(s<3600) return Math.round(s/60)+'m ago';
+  if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function tsDate(ts){ return new Date(ts*1000).toLocaleDateString([], {month:'short',day:'numeric'}); }
+function tsTime(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function stLabel(s){ return s==='up'?'Operational':s==='down'?'Down':'No data'; }
+function stCls(s){ return s==='up'?'ok':s==='down'?'crit':'unknown'; }
+
+// theme: dark-first (the app's identity), persisted; toggle dark <-> light
+let THEME=localStorage.getItem('pub_theme')||'dark';
+function applyTheme(){ document.documentElement.setAttribute('data-theme',THEME); $('themebtn').innerHTML=THEME==='dark'?SUN:MOON; }
+applyTheme();
+$('themebtn').onclick=()=>{ THEME=THEME==='dark'?'light':'dark'; localStorage.setItem('pub_theme',THEME); applyTheme(); };
+
+function setBrand(d){ if(d.lab_name){$('lab-nm').textContent=d.lab_name; document.title=d.lab_name+' status';} }
+function notEnabled(){ $('view').innerHTML='<div class="empty" style="padding:50px 0">This status page isn\'t enabled.</div>'; }
+
+// 90-day daily uptime bar — pads the left with no-data so it's always full width to today
+function dayBar(daily){
+  const cells=daily||[]; const pad=Math.max(0,90-cells.length); let h='<div class="daybar">';
+  for(let i=0;i<pad;i++) h+='<span class="d nodata" title="no data"></span>';
+  for(const c of cells){ const st=c.state==='up'?'up':c.state==='down'?'down':(c.up_pct!=null&&c.up_pct<100?'part':'nodata');
+    h+=`<span class="d ${st}" title="${esc(tsDate(c.date)+' · '+pct(c.up_pct))}"></span>`; }
+  return h+'</div>';
+}
+function component(m){
+  const cls=stCls(m.state);
+  return `<a class="comp" href="/public/${encodeURIComponent(m.id)}">
+    <div class="comp-h"><span class="sd ${cls}"></span><span class="comp-nm">${esc(m.label)}</span>
+      <span class="comp-host">${esc(m.host||'')}</span><span class="spring"></span>
+      <span class="comp-st ${cls}">${stLabel(m.state)}</span><span class="comp-arr">›</span></div>
+    ${dayBar(m.daily)}
+    <div class="axis"><span>90 days ago</span><span class="mid">${pct(m.uptime90)} uptime</span><span>Today</span></div></a>`;
+}
+function incidentsBlock(list){
+  if(!list||!list.length) return '<div class="empty">No incidents in the last 14 days — all clear.</div>';
+  const groups={};
+  list.forEach(i=>{ const k=tsDate(i.start); (groups[k]=groups[k]||[]).push(i); });
+  return '<div class="incwrap">'+Object.keys(groups).map(day=>`<div class="incday"><div class="incdate">${esc(day)}</div>`+
+    groups[day].map(i=>{ const end=i.end?tsTime(i.end):'now'; const dur=i.duration_s!=null?('down '+fmtDur(i.duration_s)):'ongoing';
+      return `<div class="incrow"><span class="bdot"></span><div><div class="inctitle">${esc(i.service)} — ${esc(i.err||'outage')}</div>
+        <div class="incmeta">${dur} · ${tsTime(i.start)} → ${end}</div></div></div>`; }).join('')+'</div>').join('')+'</div>';
+}
+
+async function renderIndex(){
+  let d; try{ const r=await fetch('/api/public-status'); if(!r.ok) return notEnabled(); d=await r.json(); }catch(e){ return; }
+  setBrand(d);
+  const su=d.monitors_summary||{}, down=su.down||0;
+  const ok=d.status==='ok', crit=d.status==='crit';
+  const bcls=crit?'crit':ok?'ok':'warn';
+  const btxt=crit?(down?`${down} service${down>1?'s':''} down`:'Major outage'):ok?'All systems operational':'Degraded performance';
+  const sys=(d.overview||[]).map(c=>`<div class="syscard"><div class="h"><span class="sd ${c.status||'unknown'}"></span>${esc(c.label||c.key)}</div>
+    <div class="m">${esc(c.metric||'—')}</div><div class="d">${esc(c.detail||'')}</div></div>`).join('');
+  const mons=d.monitors||[];
+  const comps = mons.length
+    ? `<div class="sect">Services<span class="cnt">${su.up||0} up · ${down} down</span></div><div class="comps">${mons.map(component).join('')}</div>
+       <div class="legend"><span><i style="background:var(--ok)"></i>Operational</span><span><i style="background:var(--warn)"></i>Degraded</span><span><i style="background:var(--crit)"></i>Down</span><span><i style="background:var(--bd)"></i>No data</span></div>`
+    : '';
+  $('view').innerHTML=`<div class="banner ${bcls}"><span class="bd"></span>${btxt}</div>
+    ${sys?`<div class="sect">System</div><div class="sys">${sys}</div>`:''}
+    ${comps}
+    <div class="sect">Past incidents</div>${incidentsBlock(d.incidents)}`;
+  $('foot-upd').textContent='updated '+clock();
+}
+
+function spark(series){
+  if(!series||series.length<2) return '<div class="empty">Not enough samples yet.</div>';
+  const xs=series.map(p=>p.t), ys=series.map(p=>p.ms);
+  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+  const W=600,H=66,pad=5, sx=t=>x1===x0?0:(t-x0)/(x1-x0)*W, sy=v=>y1===y0?H/2:H-pad-(v-y0)/(y1-y0)*(H-2*pad);
+  const pts=series.map(p=>sx(p.t).toFixed(1)+','+sy(p.ms).toFixed(1)).join(' ');
+  const area=`${sx(x0).toFixed(1)},${H} ${pts} ${sx(x1).toFixed(1)},${H}`;
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <polygon points="${area}" fill="var(--accent)" opacity="0.10"></polygon>
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>`;
+}
+
+async function renderDetail(id){
+  let d; try{ const r=await fetch('/api/public-status/'+encodeURIComponent(id)); if(r.status===404){ location.href='/public'; return; } d=await r.json(); }catch(e){ return; }
+  try{ const s=await (await fetch('/api/public-status')).json(); setBrand(s); }catch(e){}
+  const cls=stCls(d.state);
+  const since=d.up_since?('up for '+fmtDur(Date.now()/1000-d.up_since)):(d.state==='down'?'currently down':'');
+  const u=d.uptime||{};
+  const tiles=[['24h',u['24h']],['7 days',u['7d']],['30 days',u['30d']],['90 days',u['90d']]]
+    .map(([k,v])=>`<div class="tile"><div class="k">${k}</div><div class="v">${pct(v)}</div></div>`).join('');
+  const ys=(d.response_series||[]).map(p=>p.ms);
+  const meta=ys.length?`avg ${Math.round(ys.reduce((a,b)=>a+b,0)/ys.length)} · max ${Math.max(...ys)} ms`:'';
+  let cert='';
+  if(d.cert_days_remaining!=null) cert=`TLS valid · ${d.cert_days_remaining}d left · `;
+  $('view').innerHTML=`<a class="back" href="/public">‹ back to status</a>
+    <div class="dhead"><span class="sd ${cls}" style="width:12px;height:12px"></span><h1>${esc(d.label)}</h1>
+      <span class="statepill ${cls}">${d.state==='up'?'Operational':d.state==='down'?'Down':'Unknown'}</span></div>
+    <div class="dsub">${esc(d.host||'')}${since?' · '+since:''}</div>
+    <div class="tiles">${tiles}</div>
+    <div class="panel"><h3>Uptime · last 90 days<span class="meta">${(d.daily||[]).length} days tracked</span></h3>
+      ${dayBar(d.daily)}<div class="axis"><span>90 days ago</span><span class="mid">${pct(u['90d'])} uptime</span><span>Today</span></div></div>
+    <div class="panel"><h3>Response time<span class="meta">${meta}</span></h3>${spark(d.response_series)}</div>
+    <div class="panel"><h3>Past incidents</h3>${incidentsBlock((d.incidents||[]).map(i=>({service:d.label,...i})))}</div>
+    <div class="dsub" style="margin:0">${cert}checked ${relTime(d.last_checked)}</div>`;
+  $('foot-upd').textContent='updated '+clock();
+}
+
+function route(){ const m=location.pathname.match(/\/public\/([^/]+)\/?$/); if(m) renderDetail(decodeURIComponent(m[1])); else renderIndex(); }
+route();
+setInterval(route, 30000);
+</script>
+</body>
+</html>

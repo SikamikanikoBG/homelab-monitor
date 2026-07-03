@@ -30,6 +30,7 @@ Everything the dashboard shows is reachable. Start with `list_hosts` → `get_ho
 | `get_memory(range="6h")` | Per-service & per-process RAM breakdown (the memory treemap) | `GET /api/data` |
 | `get_gpu(range="6h")` | GPU util / VRAM / power / temp, per-model VRAM, caller attribution | `GET /api/data` |
 | `get_ai_models(range="6h")` | Which models are loaded, VRAM, and *who is driving them* | `GET /api/data` |
+| `get_installed_models()` | Every model available on the hub, by provider — not just loaded | `GET /api/models` |
 | `get_history(range="6h")` | Charted time-series (GPU + host) for trends | `GET /api/data` |
 | `get_events(range="6h")` / `get_alerts(...)` | Recent OOM kills / threshold crossings + insights | `GET /api/data` |
 | `scan_disk(path="/", rescan=False)` | WizTree-style nested folder-size treemap | `GET /api/disk_scan` |

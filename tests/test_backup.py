@@ -5,7 +5,6 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app
 import db_backup
@@ -83,26 +82,47 @@ class TestVacuumInto(unittest.TestCase):
 
 class TestReopenDb(unittest.TestCase):
     def test_reopen_db_reconnects(self):
-        app.DB.execute("SELECT 1").fetchone()
-        app.reopen_db()
-        row = app.DB.execute("SELECT 1").fetchone()
-        self.assertEqual(row[0], 1)
-
+        old_ephemeral = app.DB_EPHEMERAL
+        with patch.object(app, "DB_PATH", ":memory:"):
+            app.DB.execute("SELECT 1").fetchone()
+            app.reopen_db()
+            row = app.DB.execute("SELECT 1").fetchone()
+            self.assertEqual(row[0], 1)
+        # reopen_db() closed the old connection; open a fresh in-memory DB to restore
+        try:
+            app.DB.close()
+        except Exception:
+            pass
+        app.DB = app._open_db_connection(":memory:")
+        app._apply_schema_migrations(app.DB)
+        app.DB_EPHEMERAL = old_ephemeral
 
 class TestBackupApi(unittest.TestCase):
     def test_backup_download_returns_sqlite(self):
         client = app.app.test_client()
-        rv = client.get("/api/backup")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(app, "_data_dir_writable", return_value=True):
+                with patch.object(app, "_data_dir", return_value=tmpdir):
+                    rv = client.get("/api/backup")
+
         self.assertEqual(rv.status_code, 200)
         self.assertIn("attachment", rv.headers.get("Content-Disposition", ""))
+
         payload = rv.get_data()
         self.assertTrue(payload.startswith(db_backup.SQLITE_MAGIC))
 
     def test_restore_rejects_garbage(self):
         client = app.app.test_client()
         from io import BytesIO
+
         data = {"backup": (BytesIO(b"not sqlite"), "bad.db")}
-        rv = client.post("/api/backup/restore", data=data, content_type="multipart/form-data")
+        rv = client.post(
+            "/api/backup/restore",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
         self.assertEqual(rv.status_code, 400)
         self.assertFalse(rv.get_json()["ok"])
 

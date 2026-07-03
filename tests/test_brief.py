@@ -42,36 +42,53 @@ class TestRenderContract(unittest.TestCase):
         _clean()
         _healthy_state()
 
-    def test_returns_html_summary_subject(self):
-        html, summary, subject = app.render_brief("dark")
+    def test_returns_html_summary_subject_level(self):
+        html, summary, subject, level = app.render_brief("dark")
         self.assertTrue(html.lstrip().startswith("<!DOCTYPE html>"))
-        self.assertIn("📰 Daily brief", html)
+        self.assertIn("Daily brief", html)
         self.assertIn("testhub", subject)
         self.assertIsInstance(summary, str)
+        self.assertEqual(level, "info")          # all-green → info severity
+
+    def test_no_emoji_anywhere(self):
+        """Arsen's hard requirement: no 'infant icons' in either render."""
+        _healthy_state(disk_pct=95)              # force an action line too
+        html, summary, _, _ = app.render_brief("dark")
+        for blob in (html, summary):
+            self.assertFalse(any(ord(ch) >= 0x1F000 for ch in blob),
+                             "brief must contain no emoji")
 
     def test_all_green_has_no_action_block(self):
-        html, summary, subject = app.render_brief("dark")
+        html, summary, subject, _ = app.render_brief("dark")
         self.assertIn("All systems healthy", html)
         self.assertIn("All systems healthy", subject)
-        self.assertNotIn("Action needed", html)
-        self.assertNotIn("Action needed", summary)
+        self.assertNotIn("ACTION NEEDED", html)
+        self.assertNotIn("ACTION NEEDED", summary)
 
     def test_issue_surfaces_headline_and_action(self):
         _healthy_state(disk_pct=95)          # host card goes crit on disk
-        html, summary, subject = app.render_brief("dark")
-        self.assertIn("to look at", html)
-        self.assertIn("Action needed", html)
-        self.assertIn("Action needed", summary)
+        html, summary, subject, level = app.render_brief("dark")
+        self.assertIn("needs you", html)
+        self.assertIn("ACTION NEEDED", html.upper())
+        self.assertIn("ACTION NEEDED", summary)
         self.assertNotIn("All systems healthy", subject)
+        self.assertEqual(level, "critical")      # disk crit → critical severity
 
-    def test_offline_registered_host_is_an_action(self):
+    def test_offline_registered_host_counts_down_not_up(self):
+        """A registered host with no live poll data is offline — and must NOT be
+        counted in the 'hosts up' tally (the 5/5-while-one-down bug)."""
         with app.LOCK:
             app.DB.execute("INSERT INTO hosts(name, ssh_target, tags, added_at, last_check_at, last_check_json) "
                            "VALUES(?,?,?,?,?,?)",
                            ("edge", "u@edge", "", int(time.time()), int(time.time()),
-                            '{"summary": {"overall": "fail"}}'))
+                            '{"summary": {"overall": "ok"}}'))   # stale-OK Test result
             app.DB.commit()
-        html, summary, subject = app.render_brief("dark")
+        with app.HOST_DATA_LOCK:
+            app.HOST_DATA.pop("edge", None)      # never successfully polled → offline
+        fleet = app._brief_fleet()
+        self.assertEqual(fleet["total"], 2)      # hub + edge
+        self.assertEqual(fleet["up"], 1)         # only the hub — NOT 2/2
+        html, summary, subject, _ = app.render_brief("dark")
         self.assertIn("edge", html)
         self.assertIn("offline", html.lower())
 
@@ -80,17 +97,17 @@ class TestRenderContract(unittest.TestCase):
             app.DB.execute("INSERT INTO events(ts, service, kind, detail) VALUES(?,?,?,?)",
                            (int(time.time()) - 300, "immich", "oom", "killed worker"))
             app.DB.commit()
-        html, _, _ = app.render_brief("dark")
+        html, _, _, _ = app.render_brief("dark")
         self.assertIn("Alerts", html)
         self.assertIn("immich", html)
 
     def test_light_theme_uses_light_palette(self):
-        html, _, _ = app.render_brief("light")
+        html, _, _, _ = app.render_brief("light")
         self.assertIn(app._BRIEF_PALETTE["light"]["bg"], html)
 
     def test_no_dead_fragment_link(self):
         """Email clients strip/neutralise href="#"; the brief must not ship one."""
-        html, _, _ = app.render_brief("dark")
+        html, _, _, _ = app.render_brief("dark")
         self.assertNotIn('href="#"', html)
 
 

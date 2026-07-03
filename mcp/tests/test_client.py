@@ -134,7 +134,7 @@ RUNS = {
          "started_at": 1000, "ended_at": 4600, "duration": 3600, "host": "ardi",
          "params": {"lr": 0.0002, "epochs": 3}, "tags": ["sft"], "notes": "",
          "key_id": 1, "key_name": "laptop",
-         "metrics_latest": {"loss": 0.42, "accuracy": 0.91},
+         "metrics_latest": {"loss": 0.42, "accuracy": 0.91, "tokens_per_sec": 1834.2},
          "energy_kwh": 1.8, "cost": 0.46, "avg_w": 180, "peak_util": 99},
         {"id": "r2", "name": "eval-sweep", "source": "mlflow", "status": "running",
          "started_at": 4000, "ended_at": None, "duration": 600, "host": "ardi",
@@ -148,7 +148,8 @@ RUN_ONE = {
     "id": "r1", "name": "qwen-sft", "source": "sdk", "status": "finished",
     "started_at": 1000, "ended_at": 4600, "duration": 3600, "host": "ardi",
     "params": {"lr": 0.0002, "epochs": 3}, "tags": ["sft"], "notes": "",
-    "metrics": {"loss": {"steps": [0, 1, 2], "ts": [1000, 2800, 4600], "values": [1.2, 0.7, 0.42]}},
+    "metrics": {"loss": {"steps": [0, 1, 2], "ts": [1000, 2800, 4600], "values": [1.2, 0.7, 0.42]},
+                "tokens_per_sec": {"steps": [0, 1, 2], "ts": [1000, 2800, 4600], "values": [1700, 1850, 1900]}},
     "resource": {"labels": [1000, 4600], "power_w": [170, 190], "util_pct": [98, 99], "bucket_sec": 600},
     "energy_kwh": 1.8, "cost": 0.46, "avg_w": 180, "peak_util": 99,
     "currency": "BGN", "tariff_mode": "dual",
@@ -165,6 +166,21 @@ DISK_SCANNING = {"path": "/slow", "state": "scanning"}
 METRICS = "# HELP gpu_util GPU utilization\ngpu_util{gpu=\"gpu0\"} 73\n"
 HEALTHZ = {"status": "ok", "version": "0.13.1"}
 
+MODELS = {
+    "enabled": True, "ollama_reachable": True,
+    "providers": ["ollama", "vllm"],
+    "models": [
+        {"name": "llama3:70b", "provider": "ollama", "host": "local",
+         "size_bytes": 40_000_000_000, "size_gb": 37.25, "family": "llama",
+         "param_size": "70B", "quant": "Q4_0", "modified": "2026-06-18T08:30:00Z",
+         "loaded": True, "vram_mb": 8200},
+        {"name": "mistral-7b-instruct", "provider": "vllm", "host": "local",
+         "size_bytes": None, "size_gb": None, "family": None, "param_size": None,
+         "quant": None, "modified": None, "loaded": True, "vram_mb": 5200},
+    ],
+    "totals": {"count": 2, "loaded": 2, "total_bytes": 40_000_000_000, "total_gb": 37.25},
+}
+
 ROUTES = {
     "/api/fleet": FLEET,
     "/api/host_data/local": HOST_LOCAL,
@@ -174,6 +190,7 @@ ROUTES = {
     "/api/costs": COSTS,
     "/api/costs/entity": COSTS_ENTITY,
     "/api/runs": RUNS,
+    "/api/models": MODELS,
     "/healthz": HEALTHZ,
 }
 
@@ -322,6 +339,13 @@ def run():
         check(r["callers"][0]["caller"] == "open-webui", "caller attribution")
         check(r["vram_summary"][0]["peak"] == 8200, "vram summary")
 
+        print("get_installed_models")
+        r = hc.get_installed_models()
+        check(r["providers"] == ["ollama", "vllm"], "providers grouped")
+        check(len(r["models"]) == 2, "installed models list")
+        check(any(m["provider"] == "vllm" for m in r["models"]), "vllm entry surfaced")
+        check(r["totals"]["count"] == 2, "totals passthrough")
+
         print("get_events / get_alerts")
         r = hc.get_events()
         check(r["events"][0]["kind"] == "oom", "events surfaced")
@@ -350,12 +374,14 @@ def run():
         r = hc.get_experiments("7d")
         check(r["count"] == 2, "counts runs")
         check(r["runs"][0]["metrics_latest"]["loss"] == 0.42, "latest metrics surfaced")
+        check(r["runs"][0]["metrics_latest"]["tokens_per_sec"] == 1834.2, "tokens/sec surfaced in metrics_latest")
         check(r["runs"][0]["cost"] == 0.46, "run priced by GPU energy")
 
         print("get_experiment")
         r = hc.get_experiment("r1")
         check(r["id"] == "r1" and r["status"] == "finished", "single run detail")
         check(r["metrics"]["loss"]["values"][-1] == 0.42, "loss-curve series")
+        check(r["metrics"]["tokens_per_sec"]["values"] == [1700, 1850, 1900], "tokens/sec curve surfaced")
         check(r["resource"]["util_pct"] == [98, 99], "gpu series over the run")
         try:
             hc.get_experiment("nope")

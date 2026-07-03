@@ -51,6 +51,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: utility   # injects nvidia-smi into the container
       PORT: "9800"                          # dashboard served on 0.0.0.0:9800 (LAN/VPN reachable)
       MCP_PORT: "9810"                       # built-in read-only MCP server on 0.0.0.0:9810/mcp
+      # PUBLIC_STATUS: "1"                   # uncomment to enable the public read-only status page
       # ENABLE_MCP: "0"                      # uncomment to run the dashboard without the MCP server
       # MCP_ALLOWED_HOSTS: "YOUR-HUB:9810"  # lock the MCP HTTP transport to specific Host headers
                                             # (host:* wildcards ok). Unset = reachable from anywhere

@@ -13,6 +13,7 @@ Quickstart (Jupyter / Colab / Kaggle):
     with homelab.run("sft-llama3-lora", params={"lr": 2e-4, "bs": 8}) as r:
         for step, loss in enumerate(train()):
             r.log_metric("loss", loss, step=step)
+            r.log_metric("tokens_per_sec", batch_tokens / step_seconds, step=step)  # tracked on Experiments
         r.log_params({"final_eval": 0.81})
 
     # pull it back (e.g. from another notebook), with cost attached by the hub:

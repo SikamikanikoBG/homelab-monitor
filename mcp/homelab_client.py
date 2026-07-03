@@ -249,6 +249,26 @@ def get_ai_models(range="6h"):
     }
 
 
+def get_installed_models():
+    """The Installed-models registry (#219): every AI model available on the hub —
+    not just what's loaded — grouped by provider (ollama, vllm, llama.cpp, …).
+
+    Ollama entries carry full on-disk detail (size, quant, param size, last
+    modified); other providers carry name/loaded/vram only (most catalogue APIs
+    don't expose on-disk size). `totals` is count/loaded/disk-GB across all
+    providers; `providers` lists which ones were detected. Answers "what can I
+    run, and where — without SSHing in".
+    """
+    data = _get("/api/models")
+    return {
+        "enabled": data.get("enabled"),
+        "ollama_reachable": data.get("ollama_reachable"),
+        "providers": data.get("providers") or [],
+        "models": data.get("models") or [],
+        "totals": data.get("totals") or {},
+    }
+
+
 def get_events(range="6h"):
     """Recent edge-triggered events (OOM kills, threshold crossings) + insights.
 
@@ -404,9 +424,12 @@ def get_experiments(range="7d", status=""):
 
     Returns one row per run: `id`, `name`, `source` (sdk/mlflow/…), `status`,
     `started_at`/`ended_at`/`duration`, `host`, `params`, `tags`,
-    `metrics_latest` (the last value logged per metric — e.g. loss/accuracy), and
-    the energy it cost: `energy_kwh`, `cost`, `avg_w`, `peak_util`. Answers "which
-    runs ran, how did they do, and what did each one cost?".
+    `metrics_latest` (the last value logged per metric — e.g. loss/accuracy, and
+    for LLM training/fine-tuning runs, throughput as `tokens_per_sec` — or
+    `tok_per_sec`/`tokens_sec`/`tok_s`, whichever alias the script used — if the
+    training script logged it), and the energy it cost: `energy_kwh`, `cost`,
+    `avg_w`, `peak_util`. Answers "which runs ran, how did they do, and what did
+    each one cost — and how many tokens/sec were they pushing?".
     """
     q = "?range=" + urllib.parse.quote(str(range))
     if status:
@@ -426,8 +449,9 @@ def get_experiment(run_id):
     """Full detail for one tracked run by `run_id` (from `get_experiments`).
 
     Returns its logged-metric series (`metrics`: per-key steps/ts/values — the
-    loss curve), the GPU `resource` time-series (`power_w`/`util_pct` over the
-    run), and the priced energy it burned (`energy_kwh`, `cost`, `avg_w`,
+    loss curve, and a `tokens_per_sec` series too if the script logged one — see
+    `get_experiments`), the GPU `resource` time-series (`power_w`/`util_pct` over
+    the run), and the priced energy it burned (`energy_kwh`, `cost`, `avg_w`,
     `peak_util`). An unknown id surfaces as an HTTP 404 error.
     """
     return _get("/api/runs/" + urllib.parse.quote(str(run_id)))

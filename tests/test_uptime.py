@@ -489,9 +489,60 @@ class TestApi(unittest.TestCase):
         r = self.c.delete("/api/uptime/" + cid)
         self.assertEqual(r.status_code, 404)
 
+    def test_notify_uptime_clears_correct_cert_key(self):
+        _clean_db()
+        cid_a, _ = app.create_uptime_check({
+            "label": "check-a", "type": "http",
+            "target": "http://example-a.com", "interval_sec": 60, "timeout_sec": 10
+        })
+        cid_b, _ = app.create_uptime_check({
+            "label": "check-b", "type": "http",
+            "target": "http://example-b.com", "interval_sec": 60, "timeout_sec": 10
+        })
+        app._NOTIFIED[f"uptime:cert:{cid_a}"] = True
+        app._NOTIFIED[f"uptime:cert:{cid_b}"] = True
+        now = int(time.time())
+        app.create_maintenance_window(
+            label="a only", kind="uptime", pattern=cid_a,
+            start_ts=now - 60, end_ts=now + 3600
+        )
+        s = {**app.SETTING_DEFAULTS}
+        app.notify_uptime(s)
+        self.assertNotIn(f"uptime:cert:{cid_a}", app._NOTIFIED)
+        self.assertIn(f"uptime:cert:{cid_b}", app._NOTIFIED)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_create_rejects_non_numeric_timestamps(self):
+        resp = client.post("/api/maintenance", json={
+            "label": "bad timestamp", "kind": "uptime", "pattern": "*",
+            "start_ts": "not-a-number", "end_ts": "also-not-a-number",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("numeric", resp.get_json()["error"])
+
+    def test_create_rejects_oversized_daily_window(self):
+        now = int(time.time())
+        resp = client.post("/api/maintenance", json={
+            "label": "too long daily", "kind": "uptime", "pattern": "*",
+            "start_ts": now, "end_ts": now + 90000,
+            "recurrence": "daily",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("24h", resp.get_json()["error"])
+
+    def test_create_rejects_oversized_weekly_window(self):
+        now = int(time.time())
+        resp = client.post("/api/maintenance", json={
+            "label": "too long weekly", "kind": "uptime", "pattern": "*",
+            "start_ts": now, "end_ts": now + 700000,
+            "recurrence": "weekly",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("7d", resp.get_json()["error"])
+
 
 class TestTlsCertExpiry(unittest.TestCase):
     """Tests for _tls_cert_days and cert_status surfacing in _uptime_state."""

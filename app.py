@@ -18,14 +18,14 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, glob, time, json, socket, sqlite3, threading, subprocess, smtplib, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, email.message, fnmatch
+import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, smtplib, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, email.message, fnmatch
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
 except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, Response, send_file, send_from_directory, after_this_request, g
+from flask import Flask, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
 import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
@@ -34,11 +34,13 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.21.1"
+VERSION      = "0.22.1"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
 RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
+_DISK_IO_RETENTION = 7 * 86400   # per-device disk-I/O history: dense, 7-day ring
+_PROC_IO_RETENTION = 72 * 3600   # per-process I/O ring: short, spike-attribution only
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 HOST_ROOT    = os.environ.get("HOST_ROOT", "/rootfs")          # host / mounted read-only (optional)
 PORT         = int(os.environ.get("PORT", "9800"))
@@ -92,6 +94,7 @@ if _PROM_OK:
         "container_state":   Gauge("homelab_container_state",     "Container state (1=running)",       ["name", "state"]),
         "systemd_unit":      Gauge("homelab_systemd_unit_state",  "Systemd unit state (1=active)",     ["unit",  "state"]),
         "model_vram":        Gauge("homelab_model_loaded_vram_mb","Model VRAM loaded (MB)",             ["server", "model"]),
+        "models_installed":  Gauge("homelab_models_installed_total","AI models detected per provider (#219: loaded + idle catalogue)", ["provider"]),
     }
 LOCK = threading.Lock()
 _DB_MAINTENANCE = False   # True during backup/restore — collector skips DB writes
@@ -103,6 +106,10 @@ CREATE TABLE IF NOT EXISTS proc(ts INTEGER, service TEXT, mem REAL);
 CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL);
 CREATE TABLE IF NOT EXISTS edges(ts INTEGER, caller TEXT, server TEXT, conns INTEGER);
 CREATE TABLE IF NOT EXISTS events(ts INTEGER, service TEXT, kind TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS disk_io_samples(ts INTEGER NOT NULL, device TEXT NOT NULL, read_mb_s REAL, write_mb_s REAL, util_pct REAL);
+CREATE INDEX IF NOT EXISTS idx_diskio_ts ON disk_io_samples(device, ts);
+CREATE TABLE IF NOT EXISTS proc_io_samples(ts INTEGER NOT NULL, pid INTEGER, comm TEXT, read_bps INTEGER, write_bps INTEGER);
+CREATE INDEX IF NOT EXISTS idx_procio_ts ON proc_io_samples(ts);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS hosts(
   name TEXT PRIMARY KEY,
@@ -174,6 +181,8 @@ _HOST_MIGRATIONS = ("poll_timeout INTEGER", "poll_fails INTEGER DEFAULT 0", "pol
 # Which API key pushed a run (for per-key attribution); added to the runs table.
 _RUNS_MIGRATIONS = ("key_id TEXT",)
 _UPTIME_MIGRATIONS = ("cert_days_remaining INTEGER", "cert_expires_at INTEGER")
+# Per-check opt-in to the public status page (off by default).
+_UPTIME_CHECK_MIGRATIONS = ("public INTEGER NOT NULL DEFAULT 0",)
 
 def _data_dir():
     return os.path.dirname(os.path.abspath(DB_PATH)) or "."
@@ -211,6 +220,11 @@ def _apply_schema_migrations(conn):
     for col in _UPTIME_MIGRATIONS:
         try:
             conn.execute(f"ALTER TABLE uptime_results ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in _UPTIME_CHECK_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE uptime_checks ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     # Migrate a legacy single instance-wide api_key (the previous design) into the
@@ -259,7 +273,7 @@ _apply_schema_migrations(DB)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
           "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None, "gpus": [], "gpu_extra": {},
-          "model_meta": {}, "serving": [], "training": [], "devtools": []}
+          "model_meta": {}, "serving": [], "training": [], "devtools": [], "model_catalog": []}
 # Current state of the "status" monitors (Docker + systemd). The background
 # collector refreshes these; /api/health just serves the cached snapshot.
 HEALTH = {"docker": None, "systemd": None, "update": None, "processes": None, "at": 0}
@@ -522,6 +536,17 @@ def _match_probe(ct):
             return fn
     return None
 
+def _match_probe_key(ct):
+    """Return the PROBES key (provider id, e.g. 'ollama', 'vllm', 'lmstudio') for a
+    container whose image/name matches a known server, else None. Same match order
+    as _match_probe — kept as a separate lookup so callers that only need the
+    provider label don't have to carry the fn around."""
+    img, name = ct.get("image", "").lower(), ct.get("name", "").lower()
+    for key, fn in PROBES:
+        if key in img or key in name:
+            return key
+    return None
+
 CATALOG_MAX = 15   # max idle "available" models listed per server before collapsing to a count
 
 def probe_models(ct):
@@ -741,6 +766,106 @@ def read_disks():
         except Exception:
             pass
     return sorted(out, key=lambda d: -d["pct"])[:6]
+
+_disk_prev = {}
+
+# /proc/diskstats layout (Linux kernel Documentation/admin-guide/iostats.rst):
+# each line is  <major> <minor> <name> f1 f2 f3 …  where the fields after the
+# device name are 1-based columns. Mapping to our zero-based `parts` index:
+#   parts[3]  = f1  reads completed
+#   parts[5]  = f3  sectors read           (×512 B)
+#   parts[6]  = f4  ms spent reading
+#   parts[7]  = f5  writes completed
+#   parts[9]  = f7  sectors written        (×512 B)
+#   parts[10] = f8  ms spent writing
+#   parts[12] = f10 ms spent doing I/O     (drives utilisation%)
+_SECTOR_BYTES = 512
+
+# Partition-name matcher for the summary rollup. A partition is a whole-disk name
+# plus a trailing partition suffix, per the kernel's block-device naming:
+#   • classic disks:   sdaN / vdaN / hdaN / xvdaN   (letters + trailing digits)
+#   • nvme / mmc / md: nvme0n1pN / mmcblk0pN / md0pN (a digit, then 'p', digits)
+# Whole disks (sda, nvme0n1, md0) do NOT match. md*/dm* aggregates are excluded
+# separately by name prefix so their stacked members aren't double-counted.
+_DISK_PART_RE = re.compile(r"^(?:sd|vd|hd|xvd)[a-z]+\d+$|^.+\dp\d+$")
+
+def _is_physical_disk(dev):
+    """True only for physical whole-disks — the set the SUMMARY should sum so that
+    RAID/dm aggregates and partitions (which restate the same bytes) aren't
+    triple-counted. Per-device rows keep every device; only the rollup uses this."""
+    if dev.startswith("md") or dev.startswith("dm"):
+        return False                       # RAID/device-mapper aggregate
+    if _DISK_PART_RE.match(dev):
+        return False                       # a partition of some whole disk
+    return True
+
+def collect_disk_io():
+    """Per-device throughput (MB/s), utilisation (%) and avg op-latency (ms) from
+    /proc/diskstats. First poll is a warm-up (no deltas yet). Never raises."""
+    path = os.path.join(HOST_ROOT, "proc/diskstats") if os.path.exists(os.path.join(HOST_ROOT, "proc/diskstats")) else "/proc/diskstats"
+    if not os.path.exists(path):
+        return {"available": False, "warming_up": False, "reason": "no /proc/diskstats",
+                "summary": {"total_read_mb_s": 0.0, "total_write_mb_s": 0.0}, "items": []}
+    now = time.time()
+    out = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 14: continue
+                dev = parts[2]
+                if dev.startswith("loop") or dev.startswith("ram") or dev.startswith("sr"): continue
+                try:
+                    reads    = int(parts[3])
+                    s_read   = int(parts[5])
+                    ms_read  = int(parts[6])
+                    writes   = int(parts[7])
+                    s_write  = int(parts[9])
+                    ms_write = int(parts[10])
+                    ms_io    = int(parts[12])
+                except (ValueError, IndexError):
+                    continue
+                prev = _disk_prev.get(dev)
+                _disk_prev[dev] = (s_read, s_write, reads, writes, ms_read, ms_write, ms_io, now)
+                if not prev:
+                    continue                       # first poll for this device: warm up
+                dt = now - prev[7]
+                if dt <= 0:
+                    continue
+                rmb = ((s_read - prev[0]) * _SECTOR_BYTES) / 1048576.0 / dt
+                wmb = ((s_write - prev[1]) * _SECTOR_BYTES) / 1048576.0 / dt
+                d_reads, d_writes = reads - prev[2], writes - prev[3]
+                d_msread, d_mswrite, d_msio = ms_read - prev[4], ms_write - prev[5], ms_io - prev[6]
+                # utilisation: fraction of wall time the device had I/O in flight
+                util = max(0.0, min(100.0, (d_msio / (dt * 1000.0)) * 100.0))
+                # avg latency ms/op; guard the counter-wraps and div-by-zero -> None
+                r_lat = round(d_msread / d_reads, 2) if d_reads > 0 and d_msread >= 0 else None
+                w_lat = round(d_mswrite / d_writes, 2) if d_writes > 0 and d_mswrite >= 0 else None
+                out.append({
+                    "device": dev,
+                    "read_mb_s":  round(max(0.0, rmb), 1),
+                    "write_mb_s": round(max(0.0, wmb), 1),
+                    "util_pct":   round(util, 1),
+                    "read_lat_ms":  r_lat,
+                    "write_lat_ms": w_lat,
+                })
+    except Exception:
+        pass
+    out.sort(key=lambda x: -(x["read_mb_s"] + x["write_mb_s"]))
+    # Summary totals sum PHYSICAL whole-disks only: md/dm RAID aggregates and
+    # partitions restate the same bytes as their spindles, so including them
+    # overstates the headline KPI ~3-4x on stacked (md-RAID) hosts.
+    phys = [x for x in out if _is_physical_disk(x["device"])]
+    return {
+        "available": bool(out),
+        "warming_up": not out,
+        "summary": {
+            "total_read_mb_s":  round(sum(x["read_mb_s"]  for x in phys), 1),
+            "total_write_mb_s": round(sum(x["write_mb_s"] for x in phys), 1),
+        },
+        "items": out,
+        "at": int(now),
+    }
 
 # hwmon drivers / thermal-zone types that expose the real CPU die/core sensors.
 _CPU_HWMON = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal")
@@ -2582,6 +2707,99 @@ def _total_cpu_jiffies():
         parts = f.readline().split()[1:]   # cpu  user nice system idle iowait …
     return sum(int(x) for x in parts)
 
+# ── Per-process disk I/O attribution ("who is actually driving that spike") ────
+# Sample ONLY the bounded top-N candidate set collect_top_processes already
+# computes (by CPU delta + by RAM), one small read each per poll — never a full
+# /proc scan. Deltas across polls give per-process read_B/s + write_B/s; prev
+# state is keyed by pid and guarded by the process start-time so a recycled pid
+# can't inherit a stale counter. /proc/<pid>/io needs matching privilege:
+# unreadable (PermissionError/missing) -> degrade silently to no attribution.
+_PROC_IO_PREV = {}   # pid(str) -> (starttime:int, read_bytes:int, write_bytes:int, ts:float)
+
+def _fmt_bps(b):
+    """Human byte-rate: MB/s, KB/s or B/s. Never raises."""
+    try:
+        b = float(b or 0)
+    except (TypeError, ValueError):
+        return "0 B/s"
+    if b >= 1048576:
+        return "%.1f MB/s" % (b / 1048576.0)
+    if b >= 1024:
+        return "%.0f KB/s" % (b / 1024.0)
+    return "%d B/s" % int(b)
+
+def _read_proc_io(pid):
+    """Return (read_bytes, write_bytes) from /proc/<pid>/io, or None when it can't
+    be read (no privilege / pid gone / field absent). Never raises."""
+    try:
+        with open("/proc/%s/io" % pid) as f:
+            data = f.read()
+    except (OSError, ValueError):
+        return None
+    rb = wb = None
+    for line in data.splitlines():
+        if line.startswith("read_bytes:"):
+            try: rb = int(line.split(":", 1)[1])
+            except (ValueError, IndexError): pass
+        elif line.startswith("write_bytes:"):
+            try: wb = int(line.split(":", 1)[1])
+            except (ValueError, IndexError): pass
+    if rb is None or wb is None:
+        return None
+    return (rb, wb)
+
+def collect_proc_disk_io(candidates, now=None):
+    """Per-process disk read/write throughput for a BOUNDED candidate set.
+    `candidates`: iterable of (pid_str, comm, starttime) — the monitor's existing
+    top-by-CPU / top-by-RAM pids only, so cost stays O(top-N) reads, not O(all
+    pids). Reads /proc/<pid>/io for each, computes B/s from the delta vs the
+    previous poll, guarding pid reuse (start-time mismatch -> reset) and counter
+    resets/negatives (-> drop the sample). Returns {"available": False} when
+    /proc/<pid>/io is unreadable for EVERY candidate (no privilege / non-Linux)
+    so the feature is simply absent; otherwise the top writer/reader plus short
+    leader lists. Never surfaces cmdline/argv — only the process comm."""
+    if now is None:
+        now = time.time()
+    rows, seen, any_readable = [], set(), False
+    for pid, comm, starttime in candidates:
+        pid = str(pid)
+        seen.add(pid)
+        io = _read_proc_io(pid)
+        if io is None:
+            continue
+        any_readable = True
+        rb, wb = io
+        prev = _PROC_IO_PREV.get(pid)
+        _PROC_IO_PREV[pid] = (starttime, rb, wb, now)
+        if not prev:
+            continue                                   # first poll for this pid: warm up
+        p_start, p_rb, p_wb, p_ts = prev
+        if p_start != starttime:
+            continue                                   # pid recycled -> drop stale delta
+        dt = now - p_ts
+        if dt <= 0:
+            continue
+        d_rb, d_wb = rb - p_rb, wb - p_wb
+        if d_rb < 0 or d_wb < 0:
+            continue                                   # counter reset/wrap -> skip
+        rows.append({"name": comm, "pid": int(pid),
+                     "read_b_s":  int(d_rb / dt),
+                     "write_b_s": int(d_wb / dt)})
+    # Prune prev state to the current candidate set so it can't grow unbounded.
+    for dead in [p for p in _PROC_IO_PREV if p not in seen]:
+        _PROC_IO_PREV.pop(dead, None)
+    if not any_readable:
+        return {"available": False}                    # no /proc/<pid>/io access at all
+    writers = sorted((r for r in rows if r["write_b_s"] > 0), key=lambda r: -r["write_b_s"])
+    readers = sorted((r for r in rows if r["read_b_s"]  > 0), key=lambda r: -r["read_b_s"])
+    return {
+        "available": True,
+        "top_writer": writers[0] if writers else None,
+        "top_reader": readers[0] if readers else None,
+        "writers": writers[:5],
+        "readers": readers[:5],
+    }
+
 def collect_top_processes(top_n=10):
     """Top-N processes by CPU% and by RAM, aggregated by command. Reads /proc
     directly (no psutil); returns None where /proc isn't available (e.g. a
@@ -2594,6 +2812,9 @@ def collect_top_processes(top_n=10):
     prev_total = _PROC_PREV["total"]
     prev_pids  = _PROC_PREV["pids"]
     cur_pids, agg = {}, {}
+    # Per-pid meta kept only long enough to pick the bounded I/O-attribution set
+    # (top-N by CPU delta + top-N by RAM) — we do NOT read /proc/<pid>/io for all.
+    pid_meta = []   # (pid, comm, starttime, rss_kb, dcpu)
     for pid in pids:
         try:
             with open(f"/proc/{pid}/stat") as f:
@@ -2602,18 +2823,19 @@ def collect_top_processes(top_n=10):
             comm = stat[stat.find("(") + 1:rp]
             rest = stat[rp + 2:].split()         # fields from 'state' onward
             jiff = int(rest[11]) + int(rest[12]) # utime + stime
+            starttime = int(rest[19])            # field 22: start-time (pid-reuse guard)
             with open(f"/proc/{pid}/statm") as f:
                 rss_kb = int(f.read().split()[1]) * _PROC_PAGE_KB
         except (OSError, ValueError, IndexError):
             continue
         cur_pids[pid] = jiff
+        dpid = (jiff - prev_pids[pid]) if pid in prev_pids else 0
+        pid_meta.append((pid, comm, starttime, rss_kb, dpid if dpid > 0 else 0))
         a = agg.setdefault(comm, {"mem_kb": 0, "dcpu": 0, "count": 0})
         a["mem_kb"] += rss_kb
         a["count"]  += 1
-        if pid in prev_pids:
-            d = jiff - prev_pids[pid]
-            if d > 0:
-                a["dcpu"] += d
+        if dpid > 0:
+            a["dcpu"] += dpid
     _PROC_PREV["total"] = total
     _PROC_PREV["pids"]  = cur_pids
     ncpu = os.cpu_count() or 1
@@ -2623,9 +2845,22 @@ def collect_top_processes(top_n=10):
         cpu = (100.0 * a["dcpu"] / span * ncpu) if span > 0 else 0.0
         rows.append({"name": comm, "cpu_pct": round(cpu, 1),
                      "mem_mb": round(a["mem_kb"] / 1024), "count": a["count"]})
+    # Bounded candidate set for per-process I/O attribution: union of the top-N by
+    # CPU delta and top-N by RAM. Reuses the selection this function already runs
+    # (never a full-/proc io scan) and keeps the heavy-hitters that plausibly drive
+    # a disk spike in view across polls so their deltas accumulate.
+    cand = {}   # pid -> (pid, comm, starttime)
+    for m in sorted(pid_meta, key=lambda r: -r[4])[:top_n]:
+        cand[m[0]] = (m[0], m[1], m[2])
+    for m in sorted(pid_meta, key=lambda r: -r[3])[:top_n]:
+        cand[m[0]] = (m[0], m[1], m[2])
+    try:
+        proc_io = collect_proc_disk_io(list(cand.values()))
+    except Exception:
+        proc_io = {"available": False}
     return {"by_cpu": sorted(rows, key=lambda r: -r["cpu_pct"])[:top_n],
             "by_mem": sorted(rows, key=lambda r: -r["mem_mb"])[:top_n],
-            "ncpu": ncpu}
+            "ncpu": ncpu, "io": proc_io}
 
 # ── Experiments: training-run detection + GPU activity sessions ────────────────
 # Auto-recognise training / fine-tuning jobs from /proc cmdline, and reconstruct
@@ -2786,6 +3021,7 @@ def health_scan():
     HEALTH["docker"]  = collect_docker()
     HEALTH["systemd"] = collect_systemd()
     HEALTH["update"]  = collect_update()
+    HEALTH["disk_io"] = collect_disk_io()
     # Top-processes is refreshed by sample_once (10s cadence) and cached on
     # HEALTH["processes"] — calling it here too would double-step the _PROC_PREV
     # jiffy deltas across two cadences and corrupt both. Reuse the cached value.
@@ -3404,6 +3640,17 @@ def _detect_os(user, host, port):
     info["label"] = pretty if family == "windows" else (f"{pretty}" + (f" · {init}" if init else ""))
     return info
 
+def _remedy_docker_windows_daemon():
+    """Docker CLI is present on a Windows host but the daemon didn't answer
+    cleanly — usually Docker Desktop's engine needs a restart (e.g. after an
+    auto-update bumps the CLI's API version ahead of the running engine)."""
+    return {"where": "on the remote (Windows)",
+            "cmd": "# Docker Desktop's engine isn't answering API calls cleanly.\n"
+                   "# Restart it from the system tray (Docker Desktop icon > Restart),\n"
+                   "# or from an elevated PowerShell:\n"
+                   "Restart-Service com.docker.service -Force\n"
+                   "# Then confirm `docker ps` works locally before you re-test here."}
+
 def _remedy_docker_group(user, os_info):
     """Per-OS instructions for joining the docker group / fixing socket perms."""
     fam = (os_info.get("family") or "linux")
@@ -3620,16 +3867,34 @@ def probe_host(name):
         else:
             checks.append({"id": "proc", "label": "Host readable (WMI)", "status": "warn",
                            "detail": (err or "no reply from PowerShell")[:160]})
-        # Docker on Windows: only if the CLI is on PATH (Docker Desktop, or a WSL
-        # engine exposed to Windows). Honest "info" otherwise.
+        # Docker on Windows: first check the CLI is even on PATH — only THEN run
+        # it. Previously we ran `docker version` straight away and treated any
+        # failure (missing CLI *or* a daemon-side error) as "not installed".
+        # But Docker Desktop's client/engine API-version handshake can itself
+        # fail with a message like "request returned 500 Internal Server Error
+        # ... check if the server supports the requested API version" — that
+        # text contains the word "error", so it used to get misclassified as
+        # "CLI not on PATH" even though Docker is very much installed, just
+        # unhealthy. Split "CLI absent" (info) from "CLI present but the
+        # daemon didn't respond cleanly" (warn) like the Linux path already
+        # does for permission-denied vs. not-installed.
         _, out, err, _ = _ssh_with_stdin(user, host, port, _WIN_PS_CMD,
-            b"try{(docker version --format '{{.Server.Version}}')}catch{''}", timeout=12)
-        dv = (out or "").strip().splitlines()[-1].strip() if (out or "").strip() else ""
-        if dv and "." in dv and "error" not in dv.lower() and "cannot" not in dv.lower():
-            checks.append({"id": "docker", "label": "Docker", "status": "ok", "detail": f"server v{dv}"})
+            b"if(-not (Get-Command docker -EA SilentlyContinue)){Write-Output 'DOCKER_ABSENT'}else{"
+            b"$v=(docker version --format '{{.Server.Version}}' 2>&1);"
+            b"if($LASTEXITCODE -eq 0){Write-Output \"DOCKER_OK:$v\"}else{Write-Output \"DOCKER_ERR:$v\"}}",
+            timeout=12)
+        line = (out or "").strip().splitlines()[-1].strip() if (out or "").strip() else ""
+        if line.startswith("DOCKER_OK:") and "." in line:
+            checks.append({"id": "docker", "label": "Docker", "status": "ok",
+                           "detail": f"server v{line.split(':', 1)[1].strip()}"})
+        elif line.startswith("DOCKER_ERR:"):
+            checks.append({"id": "docker", "label": "Docker", "status": "warn",
+                           "detail": f"Docker is installed on {name} but the daemon didn't respond cleanly: "
+                                     f"{line.split(':', 1)[1].strip()[:160]}",
+                           "remedy": _remedy_docker_windows_daemon()})
         else:
             checks.append({"id": "docker", "label": "Docker", "status": "info",
-                           "detail": "Docker CLI not on PATH — container panel hidden for this host"})
+                           "detail": "Docker CLI not found on PATH — container panel hidden for this host"})
         # systemd D-Bus analogue: Windows services are always queryable.
         checks.append({"id": "dbus", "label": "Windows services", "status": "ok",
                        "detail": "Get-Service available"})
@@ -3896,10 +4161,11 @@ _uptime_down_since = {}        # check_id -> wall-clock ts the current DOWN stre
 def _uptime_row_to_dict(r):
     cols = ("id", "label", "type", "target", "interval_sec", "timeout_sec",
             "expected_status", "alerts_enabled", "fail_threshold", "latency_warn_ms",
-            "enabled", "created_at")
+            "enabled", "created_at", "public")
     d = dict(zip(cols, r))
     d["enabled"] = bool(d["enabled"])
     d["alerts_enabled"] = bool(d["alerts_enabled"])
+    d["public"] = bool(d.get("public"))
     return d
 
 _CRED_RE = re.compile(r"(://)[^/\s:@]+:[^/\s@]+@")
@@ -3914,7 +4180,7 @@ def list_uptime_checks():
     with LOCK:
         rows = DB.execute(
             "SELECT id,label,type,target,interval_sec,timeout_sec,expected_status,"
-            "alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at "
+            "alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at,public "
             "FROM uptime_checks ORDER BY created_at").fetchall()
     return [_uptime_row_to_dict(r) for r in rows]
 
@@ -4022,7 +4288,8 @@ def _validate_uptime_check(body):
             "expected_status": expected,
             "alerts_enabled": 1 if body.get("alerts_enabled", True) else 0,
             "fail_threshold": fail_threshold, "latency_warn_ms": latency_warn,
-            "enabled": 1 if body.get("enabled", True) else 0}, None
+            "enabled": 1 if body.get("enabled", True) else 0,
+            "public": 1 if body.get("public") else 0}, None
 
 def create_uptime_check(body):
     clean, err = _validate_uptime_check(body)
@@ -4032,11 +4299,12 @@ def create_uptime_check(body):
     with LOCK:
         DB.execute(
             "INSERT INTO uptime_checks(id,label,type,target,interval_sec,timeout_sec,"
-            "expected_status,alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "expected_status,alerts_enabled,fail_threshold,latency_warn_ms,enabled,created_at,public) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (cid, clean["label"], clean["type"], clean["target"], clean["interval_sec"],
              clean["timeout_sec"], clean["expected_status"], clean["alerts_enabled"],
-             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], int(time.time())))
+             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], int(time.time()),
+             clean["public"]))
         DB.commit()
     _uptime_due.pop(cid, None)   # probe promptly on next scheduler pass
     return cid, None
@@ -4048,11 +4316,16 @@ def update_uptime_check(cid, body):
         return False, "not found"
     if not body:
         return False, "empty update"
-    # Quick enable/disable toggle without full revalidation.
-    if "enabled" in body and set(body.keys()) <= {"enabled"}:
+    # Quick toggles without full revalidation: enabled (pause/resume) and/or public
+    # (show on the public status page). Accepts either alone or both together.
+    if body and set(body.keys()) <= {"enabled", "public"}:
+        sets, vals = [], []
+        if "enabled" in body:
+            sets.append("enabled=?"); vals.append(1 if body.get("enabled") else 0)
+        if "public" in body:
+            sets.append("public=?"); vals.append(1 if body.get("public") else 0)
         with LOCK:
-            DB.execute("UPDATE uptime_checks SET enabled=? WHERE id=?",
-                       (1 if body.get("enabled") else 0, cid))
+            DB.execute(f"UPDATE uptime_checks SET {','.join(sets)} WHERE id=?", (*vals, cid))
             DB.commit()
         return True, None
     clean, err = _validate_uptime_check(body)
@@ -4061,10 +4334,10 @@ def update_uptime_check(cid, body):
     with LOCK:
         DB.execute(
             "UPDATE uptime_checks SET label=?,type=?,target=?,interval_sec=?,timeout_sec=?,"
-            "expected_status=?,alerts_enabled=?,fail_threshold=?,latency_warn_ms=?,enabled=? WHERE id=?",
+            "expected_status=?,alerts_enabled=?,fail_threshold=?,latency_warn_ms=?,enabled=?,public=? WHERE id=?",
             (clean["label"], clean["type"], clean["target"], clean["interval_sec"],
              clean["timeout_sec"], clean["expected_status"], clean["alerts_enabled"],
-             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], cid))
+             clean["fail_threshold"], clean["latency_warn_ms"], clean["enabled"], clean["public"], cid))
         DB.commit()
     _uptime_due.pop(cid, None)   # re-probe with new config promptly
     return True, None
@@ -4368,12 +4641,50 @@ def _post_text(url, text, headers=None, timeout=5):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
+def _post_multipart(url, payload_json, filename, file_bytes,
+                    file_ctype="text/html; charset=utf-8", timeout=10):
+    """POST multipart/form-data: one JSON `payload_json` part + one file part. Stdlib
+    only (no `requests`) so the daily brief can attach its HTML to a Discord webhook
+    upload. Returns (status, body)."""
+    boundary = "----homelab-" + os.urandom(8).hex()
+    head = (f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="payload_json"\r\n'
+            "Content-Type: application/json\r\n\r\n"
+            f"{payload_json}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'
+            f"Content-Type: {file_ctype}\r\n\r\n").encode("utf-8")
+    body = head + file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": NOTIFY_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read()
+
 def send_discord(webhook, level, title, detail):
     payload = {"embeds": [{"title": title, "description": detail,
                            "color": _COLORS.get(level, _COLORS["info"]),
                            "footer": {"text": f"HomeLab Monitor · {level}"},
                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}]}
     return _post_json(webhook, payload)
+
+def send_discord_brief(webhook, level, title, description, html, filename):
+    """Daily brief → Discord: a clean, severity-coloured embed (no emoji) carrying the
+    summary, plus the full HTML brief attached as a downloadable file. Discord shows
+    the attachment as a file card the reader opens in a browser (it does not render
+    HTML inline). If the multipart upload is rejected (size/permission/network), fall
+    back to a plain embed so the brief still arrives — just without the attachment."""
+    embed = {"title": (title or "")[:256], "description": (description or "")[:4000],
+             "color": _COLORS.get(level, _COLORS["info"]),
+             "footer": {"text": f"HomeLab Monitor v{VERSION}"},
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}
+    payload = json.dumps({"embeds": [embed],
+                          "attachments": [{"id": 0, "filename": filename}]})
+    try:
+        return _post_multipart(webhook, payload, filename, html.encode("utf-8"))
+    except Exception as e:
+        print("brief discord attachment failed, sending summary only:", e, flush=True)
+        return send_discord(webhook, level, title, description)
 
 def send_ntfy(server, topic, level, title, detail):
     server = (server or "https://ntfy.sh").rstrip("/")
@@ -5187,20 +5498,26 @@ def sample_once():
     # Probes are independent 2 s-timeout HTTP calls, so run them in parallel.
     ai = [c for c in conts if _match_probe(c)]
     models = []
+    model_catalog = []   # {service, provider, model, loaded, vram_mb} — the Installed-models registry (#219)
     if ai:
         with ThreadPoolExecutor(max_workers=min(8, len(ai))) as ex:
             found_lists = list(ex.map(probe_models, ai))
+        provider_of = {c["name"]: _match_probe_key(c) for c in ai}
         for ct, found in zip(ai, found_lists):
             svc = ct["name"]
+            provider = provider_of.get(svc)
             smem = procs.get(svc)                         # MB this server holds on the GPU now
             api_vram = any(v is not None for _, v in found)
             for mdl, vram in found:
                 if vram is not None:                      # server reported its own VRAM (Ollama)
-                    models.append((svc, mdl, round(vram)))
+                    vram_val = round(vram)
                 elif not api_vram and len(found) == 1 and smem:
-                    models.append((svc, mdl, round(smem)))  # single model ↔ all the server's VRAM
+                    vram_val = round(smem)                # single model ↔ all the server's VRAM
                 else:
-                    models.append((svc, mdl, None))         # server up but idle / can't attribute
+                    vram_val = None                        # server up but idle / can't attribute
+                models.append((svc, mdl, vram_val))
+                model_catalog.append({"service": svc, "provider": provider, "model": mdl,
+                                       "loaded": vram_val is not None, "vram_mb": vram_val})
 
     # Attribute model-server traffic to its callers (who is driving Ollama, etc.).
     edges = sample_callers(conts, {c["name"] for c in ai})
@@ -5271,9 +5588,43 @@ def sample_once():
                            (ts, g["idx"], g["util"], g["mem_used"], g["mem_total"], g["power"], g["temp"]))
         DB.executemany("INSERT INTO net_samples(ts,iface,bytes_in,bytes_out) VALUES(?,?,?,?)",
                        _net_rows(ts, nm))   # host NICs + per-container talkers (#30)
+        # Disk I/O moves fast, so sample it on its own tighter cadence (~45s) into
+        # a dedicated 7-day ring — dense enough for per-device sparklines + the
+        # anomaly baseline without bloating the DB. Sourced from the health_scan
+        # snapshot (populated every 15s) so no extra /proc read here.
+        if ts % 45 < INTERVAL:
+            dio = HEALTH.get("disk_io") or {}
+            if dio.get("available"):
+                for it in (dio.get("items") or []):
+                    DB.execute("INSERT INTO disk_io_samples(ts,device,read_mb_s,write_mb_s,util_pct) "
+                               "VALUES(?,?,?,?,?)",
+                               (ts, it["device"], it.get("read_mb_s"),
+                                it.get("write_mb_s"), it.get("util_pct")))
+            # Persist a BOUNDED per-process I/O ring: only the top-few writers +
+            # top-few readers from the attribution already computed (comm only,
+            # never argv). Deduped by pid -> at most ~6 rows/poll, not all ~20
+            # candidates. Feeds spike-time attribution; rides this same cadence.
+            _pio = (HEALTH.get("processes") or {}).get("io") or {}
+            if _pio.get("available"):
+                _seen_pids, _pio_rows = set(), []
+                for _r in (sorted((_pio.get("writers") or []),
+                                  key=lambda r: -(r.get("write_b_s") or 0))[:3]
+                           + sorted((_pio.get("readers") or []),
+                                    key=lambda r: -(r.get("read_b_s") or 0))[:3]):
+                    _p = _r.get("pid")
+                    if _p in _seen_pids:
+                        continue
+                    _seen_pids.add(_p)
+                    _pio_rows.append((ts, _p, _r.get("name"),
+                                      int(_r.get("read_b_s") or 0), int(_r.get("write_b_s") or 0)))
+                if _pio_rows:
+                    DB.executemany("INSERT INTO proc_io_samples(ts,pid,comm,read_bps,write_bps) "
+                                   "VALUES(?,?,?,?,?)", _pio_rows)
         if ts % 360 < INTERVAL:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc"):
                 DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
+            DB.execute("DELETE FROM disk_io_samples WHERE ts<?", (ts - _DISK_IO_RETENTION,))
+            DB.execute("DELETE FROM proc_io_samples WHERE ts<?", (ts - _PROC_IO_RETENTION,))
         if ts % 60 < INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             DB.execute("UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
                        "WHERE status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < ?",
@@ -5290,9 +5641,82 @@ def sample_once():
                   gpu_avail=gpu_avail, gpus=gpus, gpu_extra=gpu_extra,
                   procs=sorted(({"service": s, "mem": round(m)} for s, m in procs.items()), key=lambda x: -x["mem"]),
                   models=[{"service": s, "model": m, "vram": v} for s, m, v in models],
+                  model_catalog=model_catalog,
                   model_meta=model_meta, serving=serving, training=training, devtools=devtools,
                   callers=sorted(({"caller": c, "server": s, "conns": n} for (c, s), n in edges.items()),
                                  key=lambda x: -x["conns"]), host=host)
+
+_DISK_IO_MIN_DEV = 15.0    # MB/s: below this, a device's wobble isn't worth flagging
+_DISKIO_ANOM_WINDOW  = 6 * 3600   # trailing baseline window (~6h at the ~45s disk-io cadence)
+_DISKIO_ANOM_MIN_PTS = 30         # need a real baseline before scoring anything
+_DISKIO_ANOM_Z       = 3.0        # |z| at/above this is "look here", not noise
+_diskio_anom_active = set()       # devices currently flagged — edge-triggered so a
+                                   # persistent spike logs one event, not one per scan
+_diskio_anom_latest = {}          # device -> anomaly item, for the live /api/health badge
+
+def _disk_io_anomaly_items(cur, now):
+    """Per-device z-score flags on total (read+write) disk throughput: score the
+    latest reading against a trailing baseline (mean/stddev of the window
+    excluding the latest point), same maths style as the rest of the monitor's
+    threshold checks. Returns a list of {device, value, baseline, z, direction,
+    magnitude} dicts — only devices that actually fired. Never raises."""
+    since = now - _DISKIO_ANOM_WINDOW
+    by_dev = {}
+    try:
+        for dev, r, w in cur.execute(
+                "SELECT device, read_mb_s, write_mb_s FROM disk_io_samples "
+                "WHERE ts>=? ORDER BY ts", (since,)):
+            by_dev.setdefault(dev, []).append((r or 0.0) + (w or 0.0))
+    except Exception:
+        return []
+    out = []
+    for dev, vals in by_dev.items():
+        if len(vals) < _DISKIO_ANOM_MIN_PTS:
+            continue
+        latest = vals[-1]
+        base = vals[:-1]
+        n = len(base)
+        mean = sum(base) / n
+        sd = (sum((v - mean) ** 2 for v in base) / n) ** 0.5
+        dev_amt = latest - mean
+        if abs(dev_amt) < _DISK_IO_MIN_DEV or sd <= 0:
+            continue
+        z = dev_amt / sd
+        if abs(z) < _DISKIO_ANOM_Z:
+            continue
+        out.append({
+            "device": dev, "value": round(latest, 1), "baseline": round(mean, 1),
+            "z": round(z, 1), "direction": "spike" if z > 0 else "dip",
+            "magnitude": round(abs(latest - mean), 1),
+        })
+    return out
+
+def diskio_scan():
+    """Edge-triggered disk-I/O anomaly check: a device logs ONE event on the
+    ok->anomaly transition (not once per scan while it stays flagged), and drops
+    out of the active set once it's back to baseline — mirrors the existing
+    'log only on the state edge' convention used elsewhere so a persistently busy
+    disk can't spam the Insight Feed. Writes into the same `events` table as OOM
+    (kind='diskio_spike'), so it rides the existing events->insights plumbing for
+    free — no new alert/incident system needed."""
+    if _DB_MAINTENANCE:
+        return
+    now = int(time.time())
+    with LOCK:
+        items = _disk_io_anomaly_items(DB.cursor(), now)
+        firing = {it["device"]: it for it in items}
+        newly = [it for dev, it in firing.items() if dev not in _diskio_anom_active]
+        for it in newly:
+            detail = (f"{it['direction']} to {it['value']} MB/s (baseline ~{it['baseline']} MB/s, "
+                      f"{it['z']:+.1f}σ)")[:300]
+            DB.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)",
+                      (now, it["device"], "diskio_spike", detail))
+        if newly:
+            DB.commit()
+        _diskio_anom_active.clear()
+        _diskio_anom_active.update(firing.keys())
+    _diskio_anom_latest.clear()
+    _diskio_anom_latest.update(firing)
 
 def oom_scan():
     targets = ({p["service"] for p in LATEST["procs"]} |
@@ -5318,13 +5742,17 @@ def oom_scan():
         _scan_since[svc] = int(time.time())
 
 def collector():
-    last_oom = last_health = last_notify = 0
+    last_oom = last_health = last_notify = last_diskio = 0
     while True:
         try:
             sample_once()
             now = time.time()
             if now - last_oom > 60:
                 oom_scan(); last_oom = now
+            if now - last_diskio > 60:
+                try: diskio_scan()
+                except Exception as e: print("diskio_scan error:", e, flush=True)
+                last_diskio = now
             if now - last_health > 15:
                 health_scan(); last_health = now
             # Notifier runs *after* the latest health/oom data is in place, so
@@ -5403,6 +5831,23 @@ def api_data():
             if i is not None:
                 services.setdefault(svc, [0] * len(labels))[i] = round(mem or 0)
         other = [max(0, total["mem"][i] - sum(s[i] for s in services.values())) for i in range(len(labels))]
+        # Per-device disk-I/O trend, same bucketing/labels as everything else on this
+        # endpoint — feeds the Disk I/O tab's per-device sparklines. disk_io_samples
+        # rides its own ~45s cadence (sparser than `samples`), so buckets it doesn't
+        # cover keep their 0-fill default (matches the `services` fill above).
+        disk_io = {}
+        for b, dev, r, w, u in cur.execute(
+                "SELECT (ts/?)*? b,device,AVG(read_mb_s),AVG(write_mb_s),AVG(util_pct) "
+                "FROM disk_io_samples WHERE ts>=? GROUP BY b,device", (bk, bk, since)).fetchall():
+            i = idx.get(int(b))
+            if i is None:
+                continue
+            d = disk_io.setdefault(dev, {"read_mb_s": [0] * len(labels),
+                                         "write_mb_s": [0] * len(labels),
+                                         "util_pct": [0] * len(labels)})
+            d["read_mb_s"][i]  = round(r or 0, 1)
+            d["write_mb_s"][i] = round(w or 0, 1)
+            d["util_pct"][i]   = round(u or 0, 1)
         ticks = cur.execute("SELECT COUNT(*) FROM samples WHERE ts>=?", (since,)).fetchone()[0] or 1
         summary = sorted(({"service": s, "peak": round(pk), "avg": round(av), "present": round(100 * cnt / ticks)}
                           for s, pk, av, cnt in cur.execute(
@@ -5421,7 +5866,8 @@ def api_data():
         evs = [{"ts": t, "service": s, "kind": k, "detail": d}
                for t, s, k, d in cur.execute("SELECT ts,service,kind,detail FROM events WHERE ts>=? ORDER BY ts",
                                               (since,)).fetchall()]
-        for e in evs:
+        oom_evs = [e for e in evs if e["kind"] == "oom"]
+        for e in oom_evs:
             row = cur.execute("SELECT service,mem FROM proc WHERE ts<=? AND service!=? ORDER BY ts DESC,mem DESC LIMIT 1",
                               (e["ts"] + INTERVAL, e["service"])).fetchone()
             if row:
@@ -5429,7 +5875,15 @@ def api_data():
                               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(e['ts']))}.")
         mem_total = LATEST["mem_total"] or 24576
         peak = max(total["mempk"]) if total["mempk"] else 0
-        insights = build_insights(total, services, mem_total, evs, LATEST["host"])
+        insights = build_insights(total, services, mem_total, oom_evs, LATEST["host"])
+        diskio_evs = [e for e in evs if e["kind"] == "diskio_spike"]
+        if diskio_evs:
+            latest_by_dev = {}
+            for e in diskio_evs:
+                latest_by_dev[e["service"]] = e   # `service` column holds the device name here
+            for dev, e in latest_by_dev.items():
+                insights.append({"level": "warning", "title": f"Disk I/O spike on {dev}",
+                                 "detail": e["detail"]})
     # Uptime rows ride the same Insight Feed (computed outside LOCK — uptime_overview
     # takes it itself). DOWN/slow endpoints surface on the cockpit with no new tile.
     try:
@@ -5440,8 +5894,8 @@ def api_data():
         up_summary = {"total": 0, "up": 0, "down": 0, "unknown": 0, "worst_down": None}
     return jsonify({"version": VERSION, "range": rng, "bucket_sec": bk, "labels": labels, "total": total,
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
-                    "callers": callers, "events": evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
-                    "uptime_summary": up_summary,
+                    "callers": callers, "events": oom_evs, "insights": insights, "pressure_free_mb": PRESSURE_MB,
+                    "uptime_summary": up_summary, "disk_io": disk_io,
                     "mem_total": mem_total, "peak_mem": peak, "now": LATEST})
 
 def _hhmm_to_min(s, default):
@@ -5988,6 +6442,211 @@ def _run_cost_window(cur, started, ended, ctx):
         e_kwh += p * kwh_per
         cost += p * kwh_per * (_price_at(ctx, ts) or 0.0)
     return round(e_kwh, 4), round(cost, 4), (round(sum_p / n) if n else 0), round(peak_u)
+
+
+# ── Local-LLM model registry (ollama) ─────────────────────────────────────────
+# Read-only inventory of the models pulled to this host's ollama. Self-contained:
+# a small /api/ps (resident) + /api/tags (on-disk) poller, cached briefly so a
+# chatty UI can't hammer ollama. No generation, no GPU spin, no secret leak.
+COPILOT_OLLAMA_URL = os.environ.get("COPILOT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+COPILOT_ENABLED    = os.environ.get("COPILOT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_CACHE = None            # {"ts": int, "models": [...], "reachable": bool}
+_REGISTRY_TTL = float(os.environ.get("COPILOT_REGISTRY_TTL", "45"))  # seconds
+
+
+def _llm_resident_models():
+    """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
+    timeout, stdlib only. Returns (list, reachable). Each entry:
+    {name, size_mb, vram_mb, gpu_fraction, keep_alive_sec}. gpu_fraction is the
+    share of the model resident in VRAM (size_vram/size) — surfaces GPU vs CPU
+    offload. keep_alive_sec is seconds until expires_at (keep-alive countdown).
+
+    MUST be called OUTSIDE any held LOCK (it does network I/O)."""
+    if not COPILOT_ENABLED:
+        return [], False
+    url = COPILOT_OLLAMA_URL + "/api/ps"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return [], False
+    return _parse_resident_models(data), True
+
+
+def _parse_resident_models(data, now=None):
+    """Parse an ollama /api/ps payload into the resident-model list. Pure →
+    unit-testable. Tolerates missing/odd fields."""
+    now = now or time.time()
+    out = []
+    for m in (data or {}).get("models", []) if isinstance(data, dict) else []:
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        size = m.get("size") or 0
+        vram = m.get("size_vram") or 0
+        frac = round(vram / size, 3) if size > 0 else None
+        keep = None
+        exp = m.get("expires_at")
+        if exp:
+            try:
+                # ollama emits RFC3339, e.g. 2026-06-21T12:00:00.123456789Z or +TZ
+                from datetime import datetime
+                s = exp.strip()
+                # python's fromisoformat handles offsets; trim ns to µs and Z
+                s = re.sub(r"(\.\d{6})\d+", r"\1", s).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                keep = int(dt.timestamp() - now)
+            except Exception:
+                keep = None
+        out.append({
+            "name": name,
+            "size_mb": round(size / 1048576) if size else None,
+            "vram_mb": round(vram / 1048576) if vram else None,
+            "gpu_fraction": frac,
+            "keep_alive_sec": keep,
+        })
+    return out
+
+
+def _parse_model_registry(tags, resident=None):
+    """Parse an ollama /api/tags payload into the installed-model inventory. Pure
+    → unit-testable. Cross-references the resident set (by model name) to flag
+    which entries are loaded right now and surface their live VRAM. Tolerates
+    missing/odd fields; never raises.
+
+    Each entry: {name, size_bytes, size_gb, family, param_size, quant, modified,
+    loaded(bool), vram_mb}."""
+    res_by_name = {}
+    for m in (resident or []):
+        nm = m.get("name")
+        if nm:
+            res_by_name[nm] = m
+    out = []
+    for m in (tags or {}).get("models", []) if isinstance(tags, dict) else []:
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        size = m.get("size") or 0
+        det = m.get("details") or {}
+        r = res_by_name.get(name)
+        out.append({
+            "name": name,
+            "size_bytes": size,
+            "size_gb": round(size / 1073741824, 2) if size else 0.0,
+            "family": det.get("family") or None,
+            "param_size": det.get("parameter_size") or None,
+            "quant": det.get("quantization_level") or None,
+            "modified": m.get("modified_at") or m.get("modified") or None,
+            "loaded": r is not None,
+            "vram_mb": (r or {}).get("vram_mb"),
+        })
+    # Largest on disk first — the inventory's natural "what's eating my disk" sort.
+    out.sort(key=lambda x: x["size_bytes"] or 0, reverse=True)
+    return out
+
+
+def _registry_totals(models):
+    """Header summary for the registry: count, total disk bytes/GB, loaded count.
+    Pure."""
+    total = sum(m.get("size_bytes") or 0 for m in models)
+    return {
+        "count": len(models),
+        "loaded": sum(1 for m in models if m.get("loaded")),
+        "total_bytes": total,
+        "total_gb": round(total / 1073741824, 2) if total else 0.0,
+    }
+
+
+def _fetch_model_registry():
+    """Poll ollama GET /api/tags for the on-disk catalogue, cross-referenced with
+    the resident set. Returns (models, reachable). Read-only, short timeout,
+    stdlib only. MUST be called OUTSIDE any held LOCK (network I/O)."""
+    if not COPILOT_ENABLED:
+        return [], False
+    url = COPILOT_OLLAMA_URL + "/api/tags"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=4) as r:
+            tags = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return [], False
+    # Resident cross-ref is best-effort: if /api/ps fails we still return the
+    # on-disk list (just without loaded flags), never an error.
+    resident, _ = _llm_resident_models()
+    return _parse_model_registry(tags, resident), True
+
+
+def _model_registry(now=None):
+    """Cached registry accessor. Serves a fresh fetch at most once per _REGISTRY_TTL
+    so a chatty UI can't hammer ollama. Returns (models, reachable). Network I/O
+    happens OUTSIDE the cache lock."""
+    now = now or time.time()
+    with _REGISTRY_LOCK:
+        c = _REGISTRY_CACHE
+        if c and (now - c["ts"]) < _REGISTRY_TTL:
+            return list(c["models"]), c["reachable"]
+    models, reachable = _fetch_model_registry()
+    with _REGISTRY_LOCK:
+        globals()["_REGISTRY_CACHE"] = {
+            "ts": now, "models": models, "reachable": reachable}
+    return list(models), reachable
+
+
+def _merge_registry(ollama_models, catalog):
+    """Combine the rich ollama on-disk registry (size/quant/param/modified) with the
+    provider-tagged catalog built each sample cycle from EVERY recognised AI server
+    (#219 — vLLM, llama.cpp, LM Studio, ComfyUI, InvokeAI, …). Pure → unit-testable.
+
+    Ollama entries already carry the full registry detail and are tagged
+    provider='ollama'/host='local' as-is. Catalog entries whose provider is
+    'ollama' are dropped here (the ollama registry is the authoritative, richer
+    source for that provider); every other provider becomes a lightweight entry
+    (name/provider/loaded/vram — no on-disk size, most catalogue APIs don't expose
+    one). Entries missing a model name are skipped."""
+    out = [dict(m, provider="ollama", host="local") for m in ollama_models]
+    seen = {(m["name"], m["provider"]) for m in out}
+    for c in catalog or []:
+        name = c.get("model")
+        provider = c.get("provider") or "other"
+        if not name or provider == "ollama":
+            continue
+        key = (name, provider)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "name": name, "provider": provider, "host": "local",
+            "size_bytes": None, "size_gb": None, "family": None,
+            "param_size": None, "quant": None, "modified": None,
+            "loaded": bool(c.get("loaded")), "vram_mb": c.get("vram_mb"),
+        })
+    return out
+
+
+@app.route("/api/models")
+def api_models():
+    """The Model Registry: the full inventory of models available on this host —
+    ollama's on-disk catalogue (GET /api/tags, size/quant/param detail) merged with
+    every other recognised AI server's model list (#219: vLLM, llama.cpp, LM Studio,
+    ComfyUI, InvokeAI, …), cross-referenced with what's loaded right now so the UI
+    can flag resident models + their live VRAM, grouped by provider.
+
+    Always 200, graceful-degrade, never 500, no secret leak (we echo a `reachable`
+    bool, never the URL/creds). Ollama half cached ~45s so a busy tab can't hammer
+    it; the rest rides the existing sampler's cached model_catalog (no extra I/O).
+    /api/tags is polled outside any held LOCK."""
+    ollama_models, reachable = _model_registry()
+    models = _merge_registry(ollama_models, LATEST.get("model_catalog"))
+    return jsonify({
+        "enabled": COPILOT_ENABLED,
+        "ollama_reachable": reachable,
+        "models": models,
+        "totals": _registry_totals(models),
+        "providers": sorted({m["provider"] for m in models}),
+    })
+
 
 @app.route("/api/integration/keys", methods=["GET", "POST"])
 def api_keys_route():
@@ -6574,9 +7233,21 @@ def api_health():
     # Set here (not baked into the cached collect_update payload) so toggling the
     # env flag takes effect on restart without waiting for the update cache.
     update["self_update_enabled"] = ALLOW_SELF_UPDATE
+    disk_io = dict(HEALTH.get("disk_io") or {"available": False, "warming_up": True,
+                                              "summary": {"total_read_mb_s": 0.0, "total_write_mb_s": 0.0},
+                                              "items": []})
+    # Per-process I/O attribution (Top writer/reader) — attach ONLY to this authed
+    # payload. Carries process comm (never cmdline/argv) and NEVER appears on the
+    # public status surface (build_public_status doesn't read processes/disk_io).
+    _pio = (HEALTH.get("processes") or {}).get("io")
+    if _pio and _pio.get("available"):
+        disk_io["attribution"] = _pio
+    if _diskio_anom_latest:
+        disk_io["anomalies"] = dict(_diskio_anom_latest)
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "docker": docker, "systemd": systemd, "update": update,
                     "processes": HEALTH["processes"],
+                    "disk_io": disk_io,
                     "os_updates": os_updates_summary(),
                     "diagnostics": local_diagnostics(),
                     "mcp": {"enabled": _mcp_enabled(), "port": _mcp_port()},
@@ -6595,7 +7266,8 @@ def metrics():
 
     # Clear all multi-label gauges before re-populating so stale series vanish.
     for key in ("gpu_vram_used", "gpu_vram_total", "gpu_util", "gpu_temp", "gpu_power",
-                "host_disk_used", "model_vram", "container_state", "systemd_unit"):
+                "host_disk_used", "model_vram", "container_state", "systemd_unit",
+                "models_installed"):
         _G[key].clear()
 
     # ── GPU ──────────────────────────────────────────────────────────────────
@@ -6621,6 +7293,15 @@ def metrics():
         if vram is not None:
             _G["model_vram"].labels(server=entry.get("service", "?"),
                                     model=entry.get("model", "?")).set(vram)
+
+    # ── Installed-models registry, by provider (#219) — no new I/O: counts the
+    # already-sampled model_catalog, same source the /api/models endpoint merges.
+    provider_counts = {}
+    for entry in (LATEST.get("model_catalog") or []):
+        p = entry.get("provider") or "unknown"
+        provider_counts[p] = provider_counts.get(p, 0) + 1
+    for provider, count in provider_counts.items():
+        _G["models_installed"].labels(provider=provider).set(count)
 
     # ── Docker containers ────────────────────────────────────────────────────
     docker = HEALTH.get("docker") or {}
@@ -7013,11 +7694,20 @@ def api_maintenance():
         end_ts   = body.get("end_ts")
         if not start_ts or not end_ts:
             return jsonify({"ok": False, "error": "start_ts and end_ts are required"}), 400
-        if int(end_ts) <= int(start_ts):
+        try:
+            start_ts = int(start_ts)
+            end_ts = int(end_ts)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "start_ts and end_ts must be numeric"}), 400
+        if end_ts <= start_ts:
             return jsonify({"ok": False, "error": "end_ts must be after start_ts"}), 400
         recurrence = body.get("recurrence") or None
         if recurrence and recurrence not in ("daily", "weekly"):
             return jsonify({"ok": False, "error": "recurrence must be daily, weekly, or null"}), 400
+        if recurrence == "daily" and (end_ts - start_ts) > 86400:
+            return jsonify({"ok": False, "error": "daily recurrence window cannot exceed 24h"}), 400
+        if recurrence == "weekly" and (end_ts - start_ts) > 604800:
+            return jsonify({"ok": False, "error": "weekly recurrence window cannot exceed 7d"}), 400
         wid = create_maintenance_window(
             label=label,
             kind=body.get("kind") or "*",
@@ -7169,6 +7859,7 @@ def api_notify_rules_test():
                           channels)
     return jsonify({"ok": True, "channels": list(channels)})
 
+
 @app.route("/")
 def index():
     return app.send_static_file("dashboard.html")
@@ -7229,21 +7920,31 @@ def _brief_yesterday_cost():
     return round(cost, 2), round(kwh, 2), cur
 
 def _brief_fleet():
-    """Hub + registered hosts with an up/down flag. The hub is always up (we're the
-    one rendering). A registered host counts as up if its last check exists and its
-    summary didn't fail."""
+    """Hub + registered hosts with a LIVE up/down flag. The hub is always up (we're
+    the one rendering). A registered host's online flag comes from the SAME source the
+    dashboard fleet table uses — _host_is_online() over the live HOST_DATA poll cache —
+    NOT the stored manual-Test result. The old code read last_check.overall, a snapshot
+    that never goes stale when a host later drops, so an offline host kept counting as
+    up (the "5/5 while one is offline" bug). CPU/RAM detail comes from the live poll;
+    a down host shows its last poll error instead."""
+    def _cpu_ram(h):
+        cpu = round(h.get("cpu", 0) or 0)
+        ram_pct = round(h["ram_used"] / h["ram_total"] * 100) if h.get("ram_total") else 0
+        return f"{cpu}% CPU · {ram_pct}% RAM"
     out = []
     host = LATEST.get("host") or {}
-    cpu = round(host.get("cpu", 0) or 0)
-    ram_pct = round(host["ram_used"] / host["ram_total"] * 100) if host.get("ram_total") else 0
     out.append({"name": host.get("hostname") or "this host", "up": True, "hub": True,
-                "detail": f"{cpu}% CPU · {ram_pct}% RAM"})
-    for h in list_hosts():
-        chk = h.get("last_check") or {}
-        overall = ((chk.get("summary") or {}).get("overall"))
-        up = bool(chk) and overall != "fail"
-        out.append({"name": h.get("name", "?"), "up": up, "hub": False,
-                    "detail": "" if up else "not reachable at last check"})
+                "detail": _cpu_ram(host)})
+    with HOST_DATA_LOCK:
+        for h in list_hosts():
+            entry = HOST_DATA.get(h["name"]) or {}
+            up = _host_is_online(entry)
+            if up:
+                detail = _cpu_ram((entry.get("data") or {}).get("host") or {})
+            else:
+                err = (entry.get("error") or "").strip().splitlines()
+                detail = (err[0][:80] if err else "offline — no recent poll")
+            out.append({"name": h.get("name", "?"), "up": up, "hub": False, "detail": detail})
     return {"hosts": out, "up": sum(1 for x in out if x["up"]), "total": len(out)}
 
 def _brief_checks():
@@ -7326,7 +8027,23 @@ def _brief_assemble():
         actions.append((2, f"Check “{lbl}” is down"))
     for lbl, d in checks["certs"]:
         actions.append((1 if d > 7 else 2, f"TLS cert {lbl} expires in {d} day{'s' if d != 1 else ''}"))
+    # Name the actual problem containers / units instead of a bare "N failed" — the
+    # whole point of an action line is to say which thing needs you.
+    for ct in (docker.get("containers") or []):
+        if ct.get("status") in ("crit", "warn"):
+            st = (ct.get("status_text") or ct.get("label") or "unhealthy").strip()
+            actions.append((2 if ct["status"] == "crit" else 1,
+                            f"Container {ct.get('name', '?')} — {st}"))
+    for sv in (systemd.get("services") or []):
+        if sv.get("status") == "crit":
+            ex = sv.get("exit_status")
+            tail = f" (exit {ex})" if isinstance(ex, int) else ""
+            actions.append((2, f"systemd unit {sv.get('name', '?')} failed{tail}"))
+    # Remaining overview cards (GPU/host/…) — containers & services are already
+    # itemised by name above, so skip their roll-up cards to avoid "1 failed" dupes.
     for c in overview:
+        if c.get("key") in ("containers", "services"):
+            continue
         if c["status"] in ("crit", "warn"):
             actions.append((2 if c["status"] == "crit" else 1, f"{c['label']}: {c['detail']}"))
     crit = any(p == 2 for p, _ in actions)
@@ -7337,22 +8054,25 @@ def _brief_assemble():
             "issues": len(actions_text), "crit": crit, "now": int(time.time())}
 
 def render_brief(theme="dark"):
-    """Return (html, summary, subject). `html` is a self-contained inline-styled
-    email body; `summary` is the compact text for chat channels; `subject` is the
-    email/notification title."""
+    """Return (html, summary, subject, level). `html` is a self-contained inline-styled
+    body used for BOTH the email and the Discord HTML attachment; `summary` is the
+    compact, emoji-free text for chat channels; `subject` is the title; `level` is the
+    severity ("critical"/"warning"/"info") so chat channels colour the message by how
+    bad it is instead of always showing info-blue. No emoji anywhere: status is carried
+    by colour (CSS dots, the embed stripe) and quiet uppercase labels."""
     P = _BRIEF_PALETTE["light"] if theme == "light" else _BRIEF_PALETTE["dark"]
     d = _brief_assemble()
     hub = _alert_host_label() or "homelab"
     when = time.strftime("%a %d %b", time.localtime(d["now"]))
     issues, crit = d["issues"], d["crit"]
     fleet, checks, ai = d["fleet"], d["checks"], d["ai"]
+    level = "critical" if crit else ("warning" if issues else "info")
 
     if issues == 0:
-        head_emoji, head_text, head_col = "✅", "All systems healthy", P["ok"]
+        head_text, head_col = "All systems healthy", P["ok"]
         head_sub = "nothing needs you today"
     else:
-        head_emoji = "🔴" if crit else "🟠"
-        head_text = f"{issues} thing{'s' if issues != 1 else ''} to look at"
+        head_text = f"{issues} thing{'' if issues == 1 else 's'} {'needs' if issues == 1 else 'need'} you"
         head_col = P["crit"] if crit else P["warn"]
         head_sub = "otherwise the lab is healthy"
 
@@ -7373,11 +8093,14 @@ def render_brief(theme="dark"):
                        f'font-size:14px;color:{P["tx"]}">{ln}</td></tr>' for ln in lines)
         return (f'<tr><td style="padding:0 24px 6px"><table role="presentation" width="100%" '
                 f'cellpadding="0" cellspacing="0">{body}</table></td></tr>')
+    def dot(col):
+        """A small coloured status bullet — the no-emoji replacement for 🟢/🔴/🟠."""
+        return f'<span style="color:{col};font-size:11px;vertical-align:middle">&#9679;</span>'
 
     parts = []
     parts.append(f'<tr><td style="padding:20px 24px;border-bottom:1px solid {P["bd"]}">'
                  f'<table role="presentation" width="100%"><tr>'
-                 f'<td style="font-size:18px;font-weight:700;color:{P["tx"]}">📰 Daily brief</td>'
+                 f'<td style="font-size:18px;font-weight:700;color:{P["tx"]}">Daily brief</td>'
                  f'<td align="right" style="font-size:13px;color:{P["mut"]}">{when} · {_he(hub)}</td>'
                  f'</tr></table></td></tr>')
     # KPI strip
@@ -7389,38 +8112,38 @@ def render_brief(theme="dark"):
         for val, lbl, col in kpis)
     parts.append(f'<tr><td style="padding:16px 24px 2px"><table role="presentation" width="100%" '
                  f'cellpadding="0" cellspacing="6"><tr>{tiles}</tr></table></td></tr>')
-    # headline
+    # headline — severity shown by the coloured left border + tint, not an emoji
     parts.append(f'<tr><td style="padding:18px 24px"><table role="presentation" width="100%" '
-                 f'style="background:{head_col}1a;border:1px solid {head_col};border-radius:10px">'
+                 f'style="background:{head_col}1a;border:1px solid {head_col};'
+                 f'border-left:4px solid {head_col};border-radius:10px">'
                  f'<tr><td style="padding:14px 16px;font-size:16px;color:{P["tx"]}">'
-                 f'<span style="font-size:20px">{head_emoji}</span> &nbsp;<b>{_he(head_text)}</b> '
+                 f'<b>{_he(head_text)}</b> '
                  f'&nbsp;<span style="color:{P["mut"]}">· {head_sub}</span></td></tr></table></td></tr>')
     # action needed
     if d["actions"]:
-        parts.append(head("⚡ Action needed"))
+        parts.append(head("Action needed"))
         parts.append(rows_table([_he(a) for a in d["actions"]]))
     # fleet
-    parts.append(head("🖥️ Fleet"))
+    parts.append(head("Fleet"))
     fleet_lines = []
     for x in fleet["hosts"]:
-        dot = "🟢" if x["up"] else "🔴"
         extra = f' <span style="color:{P["mut"]}">· {_he(x["detail"])}</span>' if x["detail"] else ""
         tag = " (hub)" if x["hub"] else ""
-        fleet_lines.append(f'{dot} {_he(x["name"])}{tag}{extra}')
+        fleet_lines.append(f'{dot(P["ok"] if x["up"] else P["crit"])} {_he(x["name"])}{tag}{extra}')
     parts.append(rows_table(fleet_lines))
     # checks
     if checks["enabled"]:
-        parts.append(head("📡 Checks"))
+        parts.append(head("Checks"))
         sm = checks["summary"]
-        clines = [f'{"🟢" if not checks["downs"] else "🔴"} {sm["up"]}/{sm["total"]} checks responding']
+        clines = [f'{dot(P["ok"] if not checks["downs"] else P["crit"])} {sm["up"]}/{sm["total"]} checks responding']
         for lbl in checks["downs"]:
-            clines.append(f'🔴 {_he(lbl)} is down')
+            clines.append(f'{dot(P["crit"])} {_he(lbl)} is down')
         for lbl, dd in checks["certs"]:
-            clines.append(f'🟠 cert {_he(lbl)} expires in {dd} day{"s" if dd != 1 else ""}')
+            clines.append(f'{dot(P["warn"])} cert {_he(lbl)} expires in {dd} day{"s" if dd != 1 else ""}')
         parts.append(rows_table(clines))
     # alerts (events) last 24h
     if d["events"]:
-        parts.append(head("🔔 Alerts · last 24h"))
+        parts.append(head("Alerts · last 24h"))
         elines = []
         for e in d["events"]:
             t = time.strftime("%H:%M", time.localtime(e["ts"]))
@@ -7428,7 +8151,7 @@ def render_brief(theme="dark"):
             elines.append(f'{_he(t)} — {_he(who)}: {_he(e.get("detail") or e.get("kind") or "")}')
         parts.append(rows_table(elines))
     # ai & cost
-    parts.append(head("🤖 AI &amp; cost"))
+    parts.append(head("AI &amp; cost"))
     ailines = []
     if ai["available"]:
         gname = ai["gpu_name"] or "GPU"
@@ -7444,8 +8167,8 @@ def render_brief(theme="dark"):
     parts.append(rows_table(ailines))
     # capacity nudges
     if d["capacity"]:
-        parts.append(head("📈 Capacity nudges"))
-        parts.append(rows_table([f'{ic} {_he(txt)}' for ic, txt in d["capacity"]]))
+        parts.append(head("Capacity nudges"))
+        parts.append(rows_table([_he(txt) for _ic, txt in d["capacity"]]))
     # footer — no CTA link: a brief has no absolute dashboard URL to point at, and
     # a fragment-only href="#" is stripped/dead in Gmail/Outlook/Apple Mail. The
     # footer line tells the reader where the brief is configured instead.
@@ -7459,25 +8182,25 @@ def render_brief(theme="dark"):
             f'border:1px solid {P["bd"]};border-radius:12px;overflow:hidden">'
             f'{"".join(parts)}</table></body></html>')
 
-    # ── compact text summary for chat channels ────────────────────────────────
-    slines = [f'{head_emoji} {head_text}']
+    # ── compact, emoji-free text summary for chat channels ────────────────────
+    # Does NOT repeat the headline: the channel title (subject) already carries it,
+    # so the body leads with the sub-line, then the named actions, then a stat strip.
+    slines = [head_sub]
     if d["actions"]:
-        slines.append("")
-        slines.append("⚡ Action needed:")
-        slines += [f'• {a}' for a in d["actions"][:5]]
-    slines.append("")
-    stat = f'🖥️ {fleet["up"]}/{fleet["total"]} up'
+        slines += ["", "ACTION NEEDED"]
+        slines += [f'• {a}' for a in d["actions"][:6]]
+    stat = f'Hosts {fleet["up"]}/{fleet["total"]}'
     if checks["enabled"]:
-        stat += f' · 📡 {checks["summary"]["up"]}/{checks["summary"]["total"]} checks'
+        stat += f' · Checks {checks["summary"]["up"]}/{checks["summary"]["total"]}'
     if d["events"]:
-        stat += f' · 🔔 {len(d["events"])} in 24h'
+        stat += f' · {len(d["events"])} event{"s" if len(d["events"]) != 1 else ""}/24h'
     if ai["cost"] is not None:
-        stat += f' · 🤖 {ai["cost"]} {cur}'
-    slines.append(stat)
+        stat += f' · {ai["cost"]} {cur} ydy'
+    slines += ["", stat]
     summary = "\n".join(slines)
 
     subject = f"[{hub}] Daily brief — {head_text}"
-    return html, summary, subject
+    return html, summary, subject, level
 
 def _send_brief_email(s, subject, html, text):
     """Send the brief as a multipart email: plain-text fallback + HTML body."""
@@ -7492,20 +8215,23 @@ def _send_brief_email(s, subject, html, text):
                s.get("email_username"), s.get("email_password"))
 
 def send_brief(s, channel):
-    """Render and deliver the brief to one channel. Raises on delivery failure."""
-    html, summary, subject = render_brief(s.get("brief_theme", "dark"))
+    """Render and deliver the brief to one channel. Raises on delivery failure.
+    The severity `level` (not a hardcoded "info") drives each channel's colour/priority,
+    and Discord gets the full HTML attached, not just the text summary."""
+    html, summary, subject, level = render_brief(s.get("brief_theme", "dark"))
+    fname = f"brief-{time.strftime('%Y-%m-%d')}.html"
     if channel == "email":
         _send_brief_email(s, subject, html, summary)
     elif channel == "discord":
-        send_discord(s.get("discord_webhook_url"), "info", subject, summary)
+        send_discord_brief(s.get("discord_webhook_url"), level, subject, summary, html, fname)
     elif channel == "telegram":
-        _post_to_telegram(s.get("telegram_token"), s.get("telegram_chat_id"), "info", subject, summary)
+        _post_to_telegram(s.get("telegram_token"), s.get("telegram_chat_id"), level, subject, summary)
     elif channel == "ntfy":
-        send_ntfy(s.get("ntfy_server") or "https://ntfy.sh", s.get("ntfy_topic"), "info", subject, summary)
+        send_ntfy(s.get("ntfy_server") or "https://ntfy.sh", s.get("ntfy_topic"), level, subject, summary)
     elif channel == "slack":
-        send_slack(s.get("slack_webhook_url"), "info", subject, summary)
+        send_slack(s.get("slack_webhook_url"), level, subject, summary)
     elif channel == "webhook":
-        send_webhook(s.get("webhook_url"), "info", subject, summary, _alert_host_label() or "")
+        send_webhook(s.get("webhook_url"), level, subject, summary, _alert_host_label() or "")
     else:
         raise ValueError(f"unknown brief channel: {channel}")
 
@@ -7560,7 +8286,7 @@ def brief_worker():
 def api_brief_preview():
     """Render the current brief as HTML (the Preview button opens this in a tab)."""
     theme = request.args.get("theme") or get_settings().get("brief_theme", "dark")
-    html, _, _ = render_brief("light" if theme == "light" else "dark")
+    html, _, _, _ = render_brief("light" if theme == "light" else "dark")
     return Response(html, mimetype="text/html; charset=utf-8")
 
 @app.route("/api/brief/test", methods=["POST"])
@@ -7579,10 +8305,237 @@ def api_brief_test():
         return jsonify({"ok": False, "error": str(e)}), 502
     return jsonify({"ok": True, "channel": ch})
 
-threading.Thread(target=collector, daemon=True).start()
-threading.Thread(target=host_poller, daemon=True).start()
-threading.Thread(target=uptime_worker, daemon=True).start()
-threading.Thread(target=brief_worker, daemon=True).start()
+# Under pytest, "pytest" is already in sys.modules by the time any test file's
+# `import app` runs — skip the live background workers there. They mutate global
+# state (LATEST/HEALTH/DB) on their own clock with no test-mode awareness, so a
+# long-enough suite could otherwise race a real collector tick against a test's
+# own explicit state setup. Never gated in production (no pytest import there).
+if "pytest" not in sys.modules:
+    threading.Thread(target=collector, daemon=True).start()
+    threading.Thread(target=host_poller, daemon=True).start()
+    threading.Thread(target=uptime_worker, daemon=True).start()
+    threading.Thread(target=brief_worker, daemon=True).start()
+
+
+import os as _os
+
+# ── Public status page: monitors (uptime checks marked public) ────────────────
+# A check appears on the public page only when it is BOTH public=1 and enabled.
+# The index carries a sanitized summary; each service has a fuller read-only
+# detail (uptime windows, daily history, response series, incidents, cert). We
+# never surface the raw target with credentials — only the host (+ port for tcp).
+
+def _public_monitor_host(check):
+    """A display target safe for a public page: the host (and port for tcp),
+    never the path/query or any user:pass credentials."""
+    t = check.get("target") or ""
+    try:
+        if check.get("type") == "tcp":
+            host, port = _parse_host_port(t)
+            return f"{host}:{port}" if host else ""
+        u = urllib.parse.urlsplit(t)
+        host = u.hostname or ""
+        return f"{host}:{u.port}" if u.port else host
+    except Exception:
+        return ""
+
+def _public_monitor(check, now):
+    """One public component for the status page — a single 90-day query yields
+    everything the Statuspage-style row needs: current state, 24h/7d/90d uptime,
+    a day-by-day bar, the recent heartbeat, cert status, and recent incidents.
+    No raw target (host only)."""
+    cid = check["id"]
+    with LOCK:
+        rows = DB.execute(
+            "SELECT ts,up,latency_ms,code,err,cert_days_remaining,cert_expires_at "
+            "FROM uptime_results WHERE check_id=? AND ts>=? ORDER BY ts",
+            (cid, now - 7776000)).fetchall()        # 90 days
+    def win(w):
+        sub = [r for r in rows if r[0] >= now - w]
+        return round(100.0 * sum(1 for r in sub if r[1]) / len(sub), 2) if sub else None
+    last = rows[-1] if rows else None
+    state = "unknown" if not last else ("up" if last[1] else "down")
+    cert_days = last[5] if (last and len(last) > 5) else None
+    cert_status = None
+    if cert_days is not None:
+        cert_status = "red" if cert_days <= 7 else "amber" if cert_days <= 21 else "ok"
+    return {
+        "id": cid, "label": check["label"], "type": check["type"],
+        "host": _public_monitor_host(check), "state": state,
+        "last_latency_ms": (last[2] if last else None),
+        "last_checked": (last[0] if last else None),
+        "uptime": win(86400), "uptime7": win(604800), "uptime90": win(7776000),
+        "up_since": _uptime_up_since(rows),
+        "daily": _uptime_daily(rows),
+        "strip": [{"up": bool(r[1]), "t": r[0]} for r in rows[-_UPTIME_STRIP_CELLS:]],
+        "incidents": _uptime_incidents(rows, cap=5),
+        "cert_days_remaining": cert_days, "cert_status": cert_status,
+    }
+
+def _public_monitors(now):
+    """Every public+enabled check as a status-page component, in display order."""
+    return [_public_monitor(c, now) for c in list_uptime_checks()
+            if c.get("public") and c.get("enabled")]
+
+def _public_monitors_summary(monitors):
+    return {"total": len(monitors),
+            "up": sum(1 for m in monitors if m["state"] == "up"),
+            "down": sum(1 for m in monitors if m["state"] == "down")}
+
+def _public_incident_feed(monitors, now, days=14, cap=25):
+    """Recent incidents across all public components, tagged with the service
+    name, most-recent first — drives the page's 'Past incidents' timeline."""
+    cutoff = now - days * 86400
+    feed = []
+    for m in monitors:
+        for inc in m.get("incidents", []):
+            if inc["start"] >= cutoff or (inc.get("end") and inc["end"] >= cutoff):
+                feed.append({"service": m["label"], **inc})
+    feed.sort(key=lambda i: i["start"], reverse=True)
+    return feed[:cap]
+
+def _uptime_window_pct(check_id, now, window):
+    with LOCK:
+        agg = DB.execute("SELECT COUNT(*), SUM(up) FROM uptime_results WHERE check_id=? AND ts>=?",
+                         (check_id, now - window)).fetchone()
+    tot = (agg[0] or 0) if agg else 0
+    return round(100.0 * (agg[1] or 0) / tot, 2) if tot else None
+
+def _uptime_up_since(rows):
+    """From ascending [(ts,up,…)] rows, the ts the current contiguous up-run began
+    (None if currently down/unknown or there's no data)."""
+    if not rows or not rows[-1][1]:
+        return None
+    since = rows[-1][0]
+    for r in reversed(rows):
+        if not r[1]:
+            break
+        since = r[0]
+    return since
+
+def _uptime_incidents(rows, cap=20):
+    """Reconstruct down-periods from ascending result rows. Each incident:
+    {start, end|None, duration_s|None, err}. Most-recent first, capped."""
+    incidents, cur = [], None
+    for r in rows:
+        ts, up, err = r[0], r[1], (r[4] if len(r) > 4 else None)
+        if not up and cur is None:
+            cur = {"start": ts, "end": None, "duration_s": None, "err": err or None}
+        elif up and cur is not None:
+            cur["end"] = ts; cur["duration_s"] = ts - cur["start"]
+            incidents.append(cur); cur = None
+    if cur is not None:                      # still down at the end of the window
+        incidents.append(cur)
+    incidents.reverse()
+    return incidents[:cap]
+
+def _uptime_response_series(rows, max_points=120):
+    """Downsample up-result latencies to ~max_points {t, ms} for a sparkline."""
+    pts = [(r[0], r[2]) for r in rows if r[1] and r[2] is not None]
+    if len(pts) > max_points:
+        step = len(pts) / max_points
+        pts = [pts[int(i * step)] for i in range(max_points)]
+    return [{"t": t, "ms": round(ms)} for t, ms in pts]
+
+def _uptime_daily(rows, days=90):
+    """Bucket ascending result rows into per-day {date, up_pct, state} cells
+    (oldest→newest), only for days that actually have samples (≤ days)."""
+    DAY = 86400
+    buckets = {}
+    for r in rows:
+        d = r[0] - (r[0] % DAY)
+        b = buckets.setdefault(d, [0, 0])
+        b[0] += 1; b[1] += 1 if r[1] else 0
+    out = []
+    for d in sorted(buckets)[-days:]:
+        tot, upn = buckets[d]
+        pct = round(100.0 * upn / tot, 2) if tot else None
+        state = "up" if pct == 100 else ("down" if (pct is not None and pct < 100) else "unknown")
+        out.append({"date": d, "up_pct": pct, "state": state})
+    return out
+
+def _public_status_detail(cid, now):
+    """Full read-only detail for one public service, or None if the check isn't
+    public+enabled. Windowed over the retained samples (up to 90 days)."""
+    check = next((c for c in list_uptime_checks() if c["id"] == cid), None)
+    if not check or not (check.get("public") and check.get("enabled")):
+        return None
+    s = _uptime_state(check["id"], now)
+    with LOCK:
+        rows90 = DB.execute(
+            "SELECT ts,up,latency_ms,code,err FROM uptime_results WHERE check_id=? AND ts>=? ORDER BY ts",
+            (check["id"], now - 7776000)).fetchall()         # 90 days
+    rows24 = [r for r in rows90 if r[0] >= now - 86400]
+    return {
+        "id": check["id"], "label": check["label"], "type": check["type"],
+        "host": _public_monitor_host(check),
+        "state": s["state"], "last_latency_ms": s["last_latency_ms"],
+        "last_checked": s["last_checked"], "interval_sec": check["interval_sec"],
+        "up_since": _uptime_up_since(rows90),
+        "uptime": {
+            "24h": _uptime_window_pct(check["id"], now, 86400),
+            "7d":  _uptime_window_pct(check["id"], now, 604800),
+            "30d": _uptime_window_pct(check["id"], now, 2592000),
+            "90d": _uptime_window_pct(check["id"], now, 7776000),
+        },
+        "daily": _uptime_daily(rows90),
+        "response_series": _uptime_response_series(rows24),
+        "incidents": _uptime_incidents(rows90),
+        "cert_days_remaining": s["cert_days_remaining"],
+        "cert_expires_at": s["cert_expires_at"], "cert_status": s["cert_status"],
+    }
+
+def _public_overall_status(cards, monitors):
+    """ok only when every overview card is ok and no public monitor is down;
+    crit if a monitor is down; warn otherwise."""
+    if any(m["state"] == "down" for m in monitors):
+        return "crit"
+    return "ok" if all(c.get("status") == "ok" for c in cards) else "warn"
+
+@app.route("/api/public-status")
+def api_public_status():
+    if not _os.environ.get("PUBLIC_STATUS"):
+        abort(404)
+    cfg = get_settings()
+    gpu_avail = LATEST.get("gpu_avail")
+    now = {"gpu": {"util": LATEST.get("util"), "mem_used": LATEST.get("mem_used"),
+                   "mem_total": (LATEST.get("mem_total") or 24576) if gpu_avail else 0,
+                   "power": LATEST.get("power"), "temp": LATEST.get("temp"),
+                   "available": bool(gpu_avail),
+                   "gpus": LATEST.get("gpus") or [],
+                   "extra": LATEST.get("gpu_extra") or {}},
+           "host": LATEST.get("host") or {}}
+    docker  = HEALTH.get("docker")  or {"available": False, "reason": "warming up", "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}
+    systemd = HEALTH.get("systemd") or {"available": False, "reason": "warming up", "services": [], "summary": {}}
+    cards = build_overview(now, docker, systemd)
+    safe_cards = [{k: v for k, v in c.items() if k in ("key", "label", "status", "metric", "detail")} for c in cards]
+    _now = int(time.time())
+    monitors = _public_monitors(_now)
+    return jsonify({
+        "lab_name": cfg.get("lab_name", "My HomeLab"),
+        "lab_emoji": cfg.get("lab_emoji", "🏠"),
+        "overview": safe_cards,
+        "monitors": monitors,
+        "monitors_summary": _public_monitors_summary(monitors),
+        "incidents": _public_incident_feed(monitors, _now),
+        "status": _public_overall_status(safe_cards, monitors),
+    })
+
+@app.route("/api/public-status/<cid>")
+def api_public_status_one(cid):
+    if not _os.environ.get("PUBLIC_STATUS"):
+        abort(404)
+    detail = _public_status_detail(cid, int(time.time()))
+    if detail is None:
+        abort(404)
+    return jsonify(detail)
+
+@app.route("/public")
+@app.route("/public/<cid>")
+def public_status(cid=None):
+    if not _os.environ.get("PUBLIC_STATUS"):
+        abort(404)
+    return send_from_directory("static", "public.html")
 
 if __name__ == "__main__":
     print(
