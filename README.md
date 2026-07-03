@@ -24,7 +24,7 @@ docker compose up -d
 
 Open `http://<your-host>:9800` and you're done. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
 
-> 🆕 **v0.21 — see your power bill by the hour, and which GPU is burning it.** A 7×24 **busy-hours cost heatmap** that shows *when* your lab actually costs you money, **any-vendor GPU** support (AMD on Linux with no ROCm; AMD/Intel on Windows — no vendor tools), and **built-in uptime monitoring** for any HTTP/TCP endpoint. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
+> 🆕 **v0.23 — Disk I/O gets a real dashboard, AI models span every provider.** Per-device utilisation, op-latency, trend sparklines, z-score anomaly detection and per-process "who's writing right now" attribution on the Disk I/O tab; the AI Models registry now catalogs vLLM/llama.cpp/LM Studio alongside ollama; **tokens/sec** is first-class on Experiments (UI + MCP); click-to-copy reaches the whole dashboard; and **maintenance windows** silence alerts during planned work. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
 
 ## What you get
 
