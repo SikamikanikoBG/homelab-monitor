@@ -118,6 +118,25 @@ class TestCategoryPenalties(unittest.TestCase):
         r = app.compute_health_score({"gpu": {"temp": None, "throttled": True}})
         self.assertIn("thermal", self._keys(r))
 
+    def test_power_cap_at_cool_temp_is_not_a_thermal_penalty(self):
+        # A routine power/util cap on a COOL, idle GPU sitting at its configured
+        # power limit is normal operation, NOT a health problem — it must NOT deduct
+        # under the thermal category (else the demo score is understated).
+        for reasons in (["Power cap"], ["Power brake"], ["Power cap", "Power brake"]):
+            r = app.compute_health_score({"gpu": {
+                "temp": 43, "throttled": True, "throttle": reasons}})
+            self.assertEqual(r["factors"], [], reasons)
+            self.assertEqual(r["score"], 100, reasons)
+
+    def test_thermal_throttle_reason_penalizes_even_when_not_yet_hot(self):
+        # An explicitly-thermal slowdown IS a real signal and must deduct, even when
+        # the reported temp is below the temperature bands.
+        r = app.compute_health_score({"gpu": {
+            "temp": 60, "throttled": True, "throttle": ["HW thermal"]}})
+        self.assertIn("thermal", self._keys(r))
+        self.assertEqual(self._factor(r, "thermal")["delta"], -9)
+        self.assertTrue(_reconciles(r))
+
     def test_slo_over_budget_and_burn_penalize(self):
         r = app.compute_health_score({"uptime": [
             {"enabled": True, "state": "up",

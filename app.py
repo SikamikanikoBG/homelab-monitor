@@ -8294,6 +8294,12 @@ _HS_LABELS = {
 # Band thresholds (score >= cut → band), best-first; each maps to a colour tier.
 _HS_BANDS = ((90, "excellent", "ok"), (75, "good", "ok"),
              (50, "fair", "warn"), (0, "at_risk", "crit"))
+# Throttle reasons that count as a THERMAL health signal. A routine power/util cap
+# ("Power cap") or an external power brake is normal, intended operation — a cool,
+# idle GPU sitting at its configured power limit is NOT a health problem — so those
+# reasons must never deduct under the thermal category. Only explicit thermal
+# slowdowns (which _decode_throttle labels exactly) are a genuine thermal signal.
+_HS_THERMAL_THROTTLE = ("SW thermal", "HW thermal")
 
 def _hs_band(score):
     for cut, band, tier in _HS_BANDS:
@@ -8451,7 +8457,12 @@ def compute_health_score(signals, now=None):
     except Exception:
         pass
 
-    # 7) THERMAL — GPU temperature near the throttle ceiling, or actively throttling.
+    # 7) THERMAL — GPU temperature near the throttle ceiling, or actively THERMAL-
+    #    throttling. A routine power/util cap (e.g. "Power cap" on a cool, idle card
+    #    sitting at its configured power limit) is normal operation, NOT a health
+    #    problem — so it must never deduct here. When throttle *reasons* are known we
+    #    count only the explicitly-thermal ones; if only an opaque bool is available
+    #    we fall back to it (a high temp is always caught by the bands regardless).
     try:
         gpu = signals.get("gpu") or {}
         temps = [_hs_num(gpu.get("temp"))]
@@ -8460,24 +8471,28 @@ def compute_health_score(signals, now=None):
                 temps.append(_hs_num(gg.get("temp")))
         temps = [t for t in temps if t is not None and t > 0]
         tmax = max(temps) if temps else None
-        throttled = bool(gpu.get("throttled"))
+        reasons = gpu.get("throttle")
+        if isinstance(reasons, (list, tuple)):
+            thermal_throttle = any(r in _HS_THERMAL_THROTTLE for r in reasons)
+        else:
+            thermal_throttle = bool(gpu.get("throttled"))
         p = 0
         if tmax is not None:
             if tmax >= 90:   p = 15
             elif tmax >= 84: p = 9
             elif tmax >= 79: p = 4
-        if throttled:
+        if thermal_throttle:
             p = max(p, 9)
         if p > 0:
-            if tmax is not None and throttled:
-                detail = f"GPU at {round(tmax)}°C, throttling"
+            if tmax is not None and thermal_throttle:
+                detail = f"GPU at {round(tmax)}°C, thermal throttling"
             elif tmax is not None:
                 detail = f"GPU at {round(tmax)}°C"
             else:
-                detail = "GPU throttling"
+                detail = "GPU thermal throttling"
             add("thermal", -min(_HS_CAPS["thermal"], p), detail,
                 {"temp": (round(tmax, 1) if tmax is not None else None),
-                 "throttled": throttled})
+                 "throttled": thermal_throttle})
     except Exception:
         pass
 
@@ -8507,8 +8522,10 @@ def _hs_gpu_signal():
     GPU-less host is never dinged for 'missing' thermals."""
     if not LATEST.get("gpu_avail"):
         return {}
+    extra = LATEST.get("gpu_extra") or {}
     return {"temp": LATEST.get("temp"),
-            "throttled": (LATEST.get("gpu_extra") or {}).get("throttled"),
+            "throttled": extra.get("throttled"),
+            "throttle": extra.get("throttle"),
             "gpus": LATEST.get("gpus")}
 
 def _gather_health_signals(now):
