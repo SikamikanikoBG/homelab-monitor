@@ -5851,6 +5851,28 @@ def _uptime_down_reason(c):
         bits.append(_redact_target(str(err))[:200])
     return " — ".join(bits) if bits else ""
 
+def _live_signal_bundle(now=None):
+    """Build the read-only signal bundle _eval_rule() consumes, from the CURRENT
+    live signals: disk forecasts, month cost projection, z-score anomalies, VRAM
+    forecast, correlated incidents and uptime/cert/SLO per-check states. Every entry
+    is a PURE read (forecasts + cached overviews) — no dispatch, no cooldown/last-
+    fired writes, no rule mutation. Shared by evaluate_rules() (real firing) and the
+    side-effect-free 'would it fire now?' preview endpoint."""
+    if now is None:
+        now = int(time.time())
+    ctx = _cost_ctx()
+    with LOCK:
+        cur = DB.cursor()
+        signals = {"disk": _disk_forecasts(cur, now),
+                   "cost_month": _cost_projection(cur, ctx, now),
+                   "anomalies": _zscore_anomalies(cur, now),
+                   "vram": _vram_forecast(cur, now)}
+    # list_incidents() and uptime_overview() take LOCK themselves — read them OUTSIDE
+    # the block above so we never nest the non-reentrant lock.
+    signals["incidents"] = list_incidents()
+    signals["uptime"] = uptime_overview().get("checks", [])
+    return signals
+
 def evaluate_rules(signals=None):
     """Evaluate every enabled rule and fire those whose condition is true and whose
     cooldown has elapsed. `signals` may be supplied (so the notifier pass shares the
@@ -5869,19 +5891,7 @@ def evaluate_rules(signals=None):
     in_maint, _maint_end = _in_maintenance(now)
     if signals is None:
         try:
-            ctx = _cost_ctx()
-            with LOCK:
-                cur = DB.cursor()
-                signals = {"disk": _disk_forecasts(cur, now),
-                           "cost_month": _cost_projection(cur, ctx, now),
-                           "anomalies": _zscore_anomalies(cur, now),
-                           "vram": _vram_forecast(cur, now)}
-            # list_incidents() takes LOCK itself — read it OUTSIDE the block above so
-            # we never nest the non-reentrant lock.
-            signals["incidents"] = list_incidents()
-            # uptime_overview() takes LOCK itself (via _uptime_state) — read it
-            # OUTSIDE the block above so we never nest the non-reentrant lock.
-            signals["uptime"] = uptime_overview().get("checks", [])
+            signals = _live_signal_bundle(now)
         except Exception as e:
             print("evaluate_rules signal error:", e, flush=True)
             return 0
@@ -5981,6 +5991,178 @@ def evaluate_rules(signals=None):
                 DB.execute("UPDATE alert_rules SET last_state=? WHERE id=?", ("clear", rule["id"]))
                 DB.commit()
     return fired
+
+def _preview_rule(clean, signals):
+    """Side-effect-free 'would it fire now?' dry-run for a VALIDATED rule spec against
+    the CURRENT signal bundle. Returns (would_fire, detail, observed):
+
+      • would_fire — True/False from the SAME pure _eval_rule() the engine uses, or
+        None when the ctype can't be honestly judged at an instant right now (e.g.
+        cost tracking is off, or an SLO check has no data yet).
+      • detail     — a plain-terms one-liner explaining WHY: the observed value(s)
+        vs the rule's threshold, whether firing or not.
+      • observed   — a small structured dict of the numbers behind that verdict.
+
+    Purity: reads ONLY the passed-in `signals` bundle. No dispatch to any channel,
+    no cooldown/last-fired/snooze write, no rule row created/updated, no LLM. The
+    caller (the preview endpoint) is an explicit user action, never a poll."""
+    ct = clean.get("ctype")
+    p = clean.get("params") or {}
+    # Authoritative firing verdict + (when firing) the exact production detail string.
+    try:
+        fired, _title, fdetail = _eval_rule(clean, signals)
+    except Exception:
+        fired, _title, fdetail = False, None, None
+
+    if ct == "anomaly":
+        want = p.get("series") or "any"
+        items = (signals.get("anomalies") or {}).get("items") or []
+        hits = [a for a in items if want == "any" or a.get("key") == want]
+        observed = {"series": want, "active_anomalies": len(items), "matching": len(hits)}
+        who = "any series" if want == "any" else want
+        if fired:
+            return True, fdetail, observed
+        return False, (f"No active anomaly on {who} right now "
+                       f"({len(items)} anomaly signal(s) active, {len(hits)} matching)."), observed
+
+    if ct == "disk_eta":
+        thr = float(p.get("days"))
+        filling = [(d.get("mount"), d.get("eta_days")) for d in (signals.get("disk") or [])
+                   if d.get("eta_days") is not None]
+        observed = {"threshold_days": thr,
+                    "disks": [{"mount": m, "eta_days": e} for m, e in filling]}
+        if fired:
+            return True, fdetail, observed
+        if filling:
+            m, e = min(filling, key=lambda x: x[1])
+            return False, (f"Soonest disk {m} projected full in ~{e}d "
+                           f"> threshold {thr}d."), observed
+        return False, (f"No disk is currently filling (no positive fill rate) — "
+                       f"threshold {thr}d not reached."), observed
+
+    if ct == "vram_eta":
+        thr = float(p.get("days"))
+        v = signals.get("vram") or {}
+        eta_min = v.get("eta_min")
+        eta_days = round(eta_min / 1440.0, 2) if eta_min is not None else None
+        observed = {"threshold_days": thr, "status": v.get("status"),
+                    "eta_days": eta_days, "pct": v.get("pct")}
+        if fired:
+            return True, fdetail, observed
+        if v.get("status") == "filling" and eta_days is not None:
+            return False, (f"GPU VRAM filling — projected full in ~{eta_days}d "
+                           f"> threshold {thr}d."), observed
+        return False, (f"GPU VRAM not on a filling trajectory right now "
+                       f"(status {v.get('status') or 'unknown'}) — threshold {thr}d not reached."), observed
+
+    if ct == "cost_budget":
+        budget = float(p.get("budget"))
+        cm = signals.get("cost_month") or {}
+        cur = cm.get("currency", "")
+        proj = cm.get("projected_month")
+        observed = {"budget": budget, "enabled": bool(cm.get("enabled")),
+                    "projected_month": proj, "month_to_date": cm.get("month_to_date"),
+                    "currency": cur}
+        if not cm.get("enabled"):
+            return None, ("Cost tracking is off — can't preview a budget rule instantly. "
+                          "Enable energy pricing to evaluate it."), observed
+        if fired:
+            return True, fdetail, observed
+        return False, (f"Projected month cost {cur}{proj} ≤ budget {cur}{budget} "
+                       f"(month-to-date {cur}{cm.get('month_to_date')})."), observed
+
+    if ct == "incident":
+        want = p.get("severity") or "warning"
+        ranks = {"warning": 1, "critical": 2}
+        thr = ranks.get(want, 1)
+        opens = [i for i in (signals.get("incidents") or []) if i.get("state") == "open"]
+        hits = [i for i in opens if ranks.get(i.get("severity"), 0) >= thr]
+        observed = {"severity_threshold": want, "open_incidents": len(opens),
+                    "at_or_above": len(hits)}
+        if fired:
+            return True, fdetail, observed
+        return False, (f"No open incident at/above {want} right now "
+                       f"({len(opens)} open incident(s))."), observed
+
+    if ct == "uptime_down":
+        want = p.get("check_id") or "any"
+        checks = signals.get("uptime") or []
+        if want == "any":
+            enabled = [c for c in checks if c.get("enabled")]
+            down = [c for c in enabled if c.get("state") == "down"]
+            observed = {"target": "any", "enabled_checks": len(enabled), "down": len(down)}
+            if fired:
+                return True, fdetail, observed
+            return False, (f"0 of {len(enabled)} enabled uptime check(s) are down right now."), observed
+        match = next((c for c in checks if c.get("id") == want), None)
+        st = match.get("state") if match else "unknown"
+        label = str((match or {}).get("label") or want)
+        observed = {"target": want, "state": st}
+        if fired:
+            return True, fdetail, observed
+        return False, (f"Check '{label}' is {st} (not down)."), observed
+
+    if ct == "cert_expiry":
+        want = p.get("check_id") or "any"
+        checks = signals.get("uptime") or []
+        certs = [c for c in checks if c.get("type") == "cert" and c.get("enabled")]
+        if want != "any":
+            certs = [c for c in certs if c.get("id") == want]
+        warning = [c for c in certs if c.get("state") == "up" and c.get("cert_warn")]
+        days = [c.get("days_to_expiry") for c in certs if c.get("days_to_expiry") is not None]
+        soonest = min(days) if days else None
+        observed = {"target": want, "cert_checks": len(certs),
+                    "in_warn_window": len(warning), "soonest_days": soonest}
+        if fired:
+            return True, fdetail, observed
+        if not certs:
+            return False, ("No TLS-cert check to preview right now."), observed
+        tail = f"; soonest expires in ~{soonest}d" if soonest is not None else ""
+        return False, (f"No TLS cert is inside its warn window right now "
+                       f"({len(certs)} cert check(s){tail})."), observed
+
+    if ct == "slo_burn":
+        want = p.get("check_id") or "any"
+        checks = signals.get("uptime") or []
+        relevant = [c for c in checks if c.get("enabled") and (want == "any" or c.get("id") == want)]
+        policy = p.get("policy") if p.get("policy") in ("single", "multi_window") else "single"
+        # Worst-observed 1h burn among checks that have enough SLO data to judge.
+        worst = None
+        have_data = 0
+        for c in relevant:
+            slo = c.get("slo") or {}
+            if not slo.get("data_sufficient"):
+                continue
+            have_data += 1
+            b1 = slo.get("burn_1h")
+            if b1 is None:
+                continue
+            if worst is None or b1 > worst[1]:
+                worst = (c, b1)
+        observed = {"policy": policy, "checks_evaluated": len(relevant),
+                    "checks_with_data": have_data,
+                    "worst_burn_1h": (worst[1] if worst else None)}
+        if policy == "multi_window":
+            observed["fast_burn"] = p.get("fast_burn")
+            observed["slow_burn"] = p.get("slow_burn")
+        else:
+            observed["burn_threshold"] = p.get("burn_threshold")
+        if fired:
+            return True, fdetail, observed
+        if have_data == 0:
+            return None, ("No check has enough SLO history to judge burn yet — "
+                          "can't preview this instantly."), observed
+        wb = worst[1] if worst else 0
+        if policy == "multi_window":
+            return False, (f"Worst burn {_reco_num(wb)}×/1h < fast {_reco_num(p.get('fast_burn'))}× "
+                           f"(0 checks over budget)."), observed
+        return False, (f"Worst burn {_reco_num(wb)}×/1h < threshold {_reco_num(p.get('burn_threshold'))}× "
+                       f"(0 checks over budget)."), observed
+
+    # Unknown/unpreviewably ctype — honest null rather than a faked verdict.
+    if fired:
+        return True, fdetail, {}
+    return None, f"Can't preview '{ct}' instantly.", {}
 
 # ── Incidents (correlated-anomaly lifecycle) ──────────────────────────────────
 # The z-score detector flags *individual* series (GPU util/VRAM/power/temp + total
@@ -15535,6 +15717,48 @@ def api_alert_rule_from_text():
                     "model": COPILOT_MODEL, "llm_status": llm_status,
                     "proposal": proposal, "assumptions": assumptions,
                     "summary": summary, "schema": schema_out})
+
+
+@app.route("/api/alerts/rules/preview", methods=["POST"])
+def api_alert_rule_preview():
+    """Read-only 'would it fire now?' dry-run for an alert-rule spec (the same shape
+    /api/alerts/rules accepts). Validates the spec through the exact _validate_rule()
+    path, then evaluates its CONDITION against the CURRENT live signal bundle using
+    the SAME pure _eval_rule() the engine uses — but with ZERO side effects: NO
+    dispatch to any channel, NO cooldown/last-fired/snooze write, NO rule row
+    created/updated/deleted, NO LLM. An explicit user action only — never reachable
+    from a poll/collect path. Always 200; an invalid spec comes back valid:false with
+    a clear message (no 500)."""
+    body = request.get_json(silent=True) or {}
+    # Validate as a would-be rule. The `enabled` flag is irrelevant to an instant
+    # condition check, and a preview must never depend on a name the user hasn't
+    # typed yet — so default a placeholder name and force enabled off.
+    spec = {**body, "enabled": False}
+    if not (spec.get("name") or "").strip():
+        spec["name"] = "preview"
+    clean, err = _validate_rule(spec)
+    if err:
+        return jsonify({"ok": True, "valid": False, "would_fire": None,
+                        "detail": err, "observed": {}}), 200
+    try:
+        signals = _live_signal_bundle()
+    except Exception as e:
+        print("rule preview signal error:", e, flush=True)
+        return jsonify({"ok": True, "valid": True, "ctype": clean["ctype"],
+                        "would_fire": None,
+                        "detail": "Live signals are momentarily unavailable — try again.",
+                        "observed": {}}), 200
+    try:
+        would_fire, detail, observed = _preview_rule(clean, signals)
+    except Exception as e:
+        print("rule preview eval error:", e, flush=True)
+        return jsonify({"ok": True, "valid": True, "ctype": clean["ctype"],
+                        "would_fire": None,
+                        "detail": "Could not evaluate that rule right now.",
+                        "observed": {}}), 200
+    return jsonify({"ok": True, "valid": True, "ctype": clean["ctype"],
+                    "would_fire": would_fire, "detail": detail,
+                    "observed": observed}), 200
 
 
 @app.route("/api/alerts/rules", methods=["GET", "POST"])

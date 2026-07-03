@@ -2294,10 +2294,12 @@ h2 .hic{ opacity:.9 }
           <div class="flabel" data-i18n="rules.f_cooldown">Cooldown (min)</div>
           <input type="number" id="r_cooldown" class="field" min="0" step="5" value="60">
         </div>
-        <div>
+        <div style="display:flex;gap:8px;align-items:center">
           <button class="rb on" id="r_add" data-i18n="rules.add_btn">Add rule</button>
+          <button class="rb" id="r_preview" data-i18n="preview.test_btn" title="Check whether this rule's condition is true right now — read-only, sends nothing.">Test — would it fire now?</button>
         </div>
       </div>
+      <div id="rule_preview_chip" hidden style="margin-top:8px" role="status" aria-live="polite"></div>
 
       <div class="card-sub" style="font-weight:600;margin:18px 0 8px" data-i18n="rules.list_title">Your rules</div>
       <div id="rules_list"></div>
@@ -5215,14 +5217,23 @@ async function loadRules(){
           <b>${esc(r.name)}</b> — ${esc(ruleSummary(r))}
           <span class="cap">· ${esc(r.channel)} · ${esc(r.level)} · ${I18N.t('rules.cooldown','cooldown')} ${r.cooldown_min}m${snz}</span>
           <div class="cap">${I18N.t('rules.last_fired','last fired')}: ${esc(fired)}</div>
+          <div class="rtest-chip" id="rtest_${esc(r.id)}" hidden style="margin-top:6px"></div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
+          <button class="rb" data-rtest="${r.id}" title="${esc(I18N.t('preview.btn_t','Check this rule against live signals now — read-only, sends nothing.'))}">${I18N.t('preview.test','Test')}</button>
           <label class="cap" style="display:flex;align-items:center;gap:5px">
             <input type="checkbox" data-rtoggle="${r.id}" ${r.enabled?'checked':''}> ${I18N.t('rules.enabled','enabled')}</label>
           <button class="rb" data-rsnooze="${r.id}">${I18N.t('rules.snooze','Snooze 1h')}</button>
           <button class="rb" data-rdel="${r.id}">${I18N.t('btn.delete','Delete')}</button>
         </div></div>`;
     }).join('');
+    const rulesById={}; (j.rules||[]).forEach(r=>{ rulesById[r.id]=r; });
+    box.querySelectorAll('[data-rtest]').forEach(el=>el.onclick=async()=>{
+      const r=rulesById[el.dataset.rtest]; if(!r) return;
+      const spec={name:r.name, ctype:r.ctype, params:r.params||{},
+        channel:r.channel, level:r.level, cooldown_min:r.cooldown_min};
+      await previewRuleSpec(spec, document.getElementById('rtest_'+r.id));
+    });
     box.querySelectorAll('[data-rtoggle]').forEach(el=>el.onchange=async()=>{
       await fetch('/api/alerts/rules/'+el.dataset.rtoggle,{method:'PATCH',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({enabled:el.checked})}); loadRules();
@@ -5375,7 +5386,9 @@ async function addMaintenance(){
   if(j.ok){ document.getElementById('m_label').value=''; showAlertStatus('ok',I18N.t('maint.added','Maintenance window added.')); loadMaintenance(); }
   else showAlertStatus('critical', j.error||'Could not add window.');
 }
-async function addRule(){
+// Read the current rule-authoring form into a spec (the shape /api/alerts/rules
+// accepts). Shared by "Add rule" (save) and "Test — would it fire now?" (dry-run).
+function ruleFormSpec(){
   const t=document.getElementById('r_type').value;
   let params={};
   if(t==='anomaly')      params={series:document.getElementById('r_p_series').value};
@@ -5393,7 +5406,7 @@ async function addRule(){
       params.burn_threshold=parseFloat(document.getElementById('r_p_burn').value||'1.0');
     }
   }
-  const body={
+  return {
     name: document.getElementById('r_name').value.trim(),
     ctype: t, params,
     channel: document.getElementById('r_channel').value,
@@ -5401,10 +5414,55 @@ async function addRule(){
     cooldown_min: parseInt(document.getElementById('r_cooldown').value||'60',10),
     enabled: true,
   };
+}
+async function addRule(){
+  const body=ruleFormSpec();
   let j; try{ j=await(await fetch('/api/alerts/rules',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)})).json(); }catch(e){ showAlertStatus('critical','Could not add rule: '+e); return; }
   if(j.ok){ document.getElementById('r_name').value=''; showAlertStatus('ok',I18N.t('rules.added','Rule added.')); loadRules(); }
   else showAlertStatus('critical', j.error||'Could not add rule.');
+}
+// ── "Would it fire now?" — read-only, side-effect-free rule dry-run ───────────
+// POST /api/alerts/rules/preview evaluates a spec's CONDITION against live signals
+// with ZERO side effects (no notification, no cooldown/state write, nothing saved).
+// Renders the verdict into a unified .chip inside `el`.
+function renderPreviewChip(el, j){
+  if(!el) return;
+  el.hidden=false;
+  let cls, icon, label;
+  if(!j || j.valid===false){
+    cls='warn'; icon='⚠';
+    label=I18N.t('preview.invalid','Fix the rule first');
+  } else if(j.would_fire===true){
+    cls='crit'; icon='✅';
+    label=I18N.t('preview.fires','Would fire now');
+  } else if(j.would_fire===false){
+    cls='ok'; icon='○';
+    label=I18N.t('preview.notfiring','Not firing');
+  } else {
+    cls='info'; icon='ℹ';
+    label=I18N.t('preview.na','Can’t preview now');
+  }
+  const detail=(j&&j.detail)?j.detail:'';
+  el.innerHTML='<span class="chip '+cls+'" role="status">'
+    +'<span aria-hidden="true">'+esc(icon)+'</span> <b>'+esc(label)+'</b>'
+    +(detail?' — '+esc(detail):'')+'</span>';
+}
+async function previewRuleSpec(spec, el){
+  if(el){ el.hidden=false; el.innerHTML='<span class="chip info" role="status">'
+    +esc(I18N.t('preview.checking','Checking live signals…'))+'</span>'; }
+  let j; try{
+    j=await(await fetch('/api/alerts/rules/preview',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(spec)})).json();
+  }catch(e){
+    if(el){ el.hidden=false; el.innerHTML='<span class="chip warn" role="status">'
+      +esc(I18N.t('preview.unavailable','Preview unavailable — try again.'))+'</span>'; }
+    return;
+  }
+  renderPreviewChip(el, j);
+}
+function previewRuleForm(){
+  previewRuleSpec(ruleFormSpec(), document.getElementById('rule_preview_chip'));
 }
 // ── AI-native: draft a rule from plain English, pre-fill the manual form ──────
 // Calls POST /api/alerts/rules/from_text (the ONLY LLM caller here). The LLM only
@@ -5523,6 +5581,7 @@ async function loadAlertHistory(){
 document.getElementById('r_type').onchange = ruleParamsVisibility;
 document.getElementById('r_p_slopolicy').onchange = ruleParamsVisibility;
 document.getElementById('r_add').onclick = addRule;
+document.getElementById('r_preview').onclick = previewRuleForm;
 document.getElementById('nlrule_go').onclick = draftRuleFromText;
 document.getElementById('nlrule_text').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); draftRuleFromText(); } });
 document.getElementById('r_test_btn').onclick = testRuleChannel;
