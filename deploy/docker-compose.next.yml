@@ -54,10 +54,13 @@ services:
       HOST_ROOT: "/rootfs"
       DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # container health, names & model APIs
+      # Read-write, same as the shipped docker-compose.yml — ALLOW_SELF_UPDATE
+      # and ENABLE_CONTROLS default on, and both need write access to these
+      # two sockets (see website/configuration.md#write-actions).
+      - /var/run/docker.sock:/var/run/docker.sock
       - /:/rootfs:ro                                    # read-only host fs for disk usage
       - ./data-next:/data                               # separate history DB — never touches prod's ./data
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 
   # Label-scoped Watchtower: only manages containers carrying the enable label
   # above, so it redeploys the preview instance and nothing else. Drop this

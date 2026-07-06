@@ -113,7 +113,7 @@ Once connected, skip the tab-hunting and just **ask** — the agent picks the ri
 
 ## Security
 
-This is a host monitor: it runs with host access and a read-only Docker socket, root mount, and D-Bus socket — a broad footprint by design. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
+This is a host monitor: it runs with host access, plus a read-write Docker socket and D-Bus socket (self-update and the Containers/Services tabs' start/stop/restart controls are on by default — set `ALLOW_SELF_UPDATE=0`/`ENABLE_CONTROLS=0`, or use `docker-compose.readonly.yml`, to lock it down to pure monitoring) and a read-only root mount — a broad footprint by design. The dashboard itself has **no login/auth** — it's meant for a trusted LAN. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
 
 ## ⭐ Support the project
 

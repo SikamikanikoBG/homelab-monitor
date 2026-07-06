@@ -1,0 +1,17 @@
+# Opt-OUT override for the cautious — use alongside docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.readonly.yml up -d
+#
+# Self-update and container/service controls are ON by default (see
+# ALLOW_SELF_UPDATE / ENABLE_CONTROLS in docker-compose.yml). This override
+# restores the fully read-only posture: both features off, and both the
+# docker socket and the systemd D-Bus socket back to :ro. Use this if you'd
+# rather this box stay pure monitoring, no write path at all.
+services:
+  homelab-monitor:
+    environment:
+      ALLOW_SELF_UPDATE: "0"
+      ENABLE_CONTROLS: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro

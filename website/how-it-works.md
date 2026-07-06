@@ -25,10 +25,15 @@ orchestrator can pick it up the same way.
 ## Security model
 
 This is a host monitor, so it runs with `pid: host`, `network_mode: host`, a
-**read-only** Docker socket (to read container names/health and query model APIs), a
-**read-only** mount of `/` (for disk usage), and a **read-only** D-Bus socket (for
-systemd state). That's a broad footprint by design — **please keep it behind your
-LAN/VPN/firewall and don't expose it to the public internet.**
+**read-write** Docker socket, and a **read-write** D-Bus socket (for systemd
+state) — read-write by default because the dashboard's write actions
+(one-click self-update, and the Containers/Services tabs' start/stop/restart
+controls) are on by default too; see
+[Configuration → Write actions](configuration.md#write-actions-allow_self_update-enable_controls)
+to lock either or both back down. `/` is still mounted **read-only** (for disk
+usage). The dashboard has no login — that's a broad footprint by design —
+**please keep it behind your LAN/VPN/firewall and don't expose it to the
+public internet.**
 
 For the multi-host registry: pubkey auth only (passwords disabled), per-host SSH
 timeouts so a slow remote can never block the loop, and the "Run on remote" sudo

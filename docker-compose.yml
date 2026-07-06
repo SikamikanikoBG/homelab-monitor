@@ -64,14 +64,21 @@ services:
       DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket"
       # WATCH_CONTAINERS: "ollama,immich_machine_learning"  # extra containers to scan for OOM
       # WATCH_SERVICES: "tailscaled,sshd"   # always show these systemd units, even if vendor-shipped
-      # ALLOW_SELF_UPDATE is set by docker-compose.self-update.yml — use that override to enable the one-click update button
+      # ALLOW_SELF_UPDATE: "0"   # the one-click self-update button is ON by default — set to "0" to turn it off
+      # ENABLE_CONTROLS: "0"     # container/service start/stop/restart controls are ON by default — set to "0" to turn them off
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # container health, names & model APIs
+      # Read-write: powers container health/names/model APIs AND (by default,
+      # see ENABLE_CONTROLS/ALLOW_SELF_UPDATE above) the one-click self-update
+      # and the Containers tab's start/stop/restart/restart-policy actions.
+      # Use docker-compose.readonly.yml to lock this back down to :ro.
+      - /var/run/docker.sock:/var/run/docker.sock
       - /:/rootfs:ro                                    # read-only host fs for disk usage
       - ./data:/data                                    # SQLite history persists here
-      # systemd service health (optional): expose the host's D-Bus system socket
-      # read-only. Remove this line and the Services panel just shows "unavailable".
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      # systemd service health + (by default) service controls. Read-write for
+      # the same reason as the docker socket above — see docker-compose.readonly.yml
+      # to lock it down, or remove this line entirely and the Services panel
+      # just shows "unavailable".
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
     # NOTE: intentionally no `deploy.resources.reservations.devices: nvidia` here.
     # A hard GPU reservation makes `docker compose up` fail on any host without the
     # NVIDIA runtime — the monitor is useful without a GPU, so we let it start

@@ -15,12 +15,13 @@
   <Category>Tools:Utilities, Status:Stable</Category>
   <Date>2026-06-27</Date>
   <Changes>
+    [2026-07-06] - Docker socket now mounted read-write by default: self-update and the Containers/Services tabs' start/stop/restart controls are on by default (set ALLOW_SELF_UPDATE=0 / ENABLE_CONTROLS=0 to turn either off).
     [2026-06-27] - Initial Unraid Community Applications template for HomeLab Monitor v0.21.0
   </Changes>
   <Config Name="Dashboard Port" Target="9800" Default="9800" Mode="tcp" Description="Web dashboard port" Type="Port" Display="always" Required="true" Mask="false">9800</Config>
   <Config Name="MCP Server Port" Target="9810" Default="9810" Mode="tcp" Description="MCP server port for AI agent integration (optional — only expose if you use Claude/AI tools)" Type="Port" Display="advanced" Required="false" Mask="false">9810</Config>
   <Config Name="AppData" Target="/app/data" Default="/mnt/user/appdata/homelab-monitor" Mode="rw" Description="Persistent storage for historical metrics and settings" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/homelab-monitor</Config>
-  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Docker socket — needed to monitor container health and resource usage" Type="Path" Display="advanced" Required="false" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Description="Docker socket — powers container health/resource usage, one-click self-update, and the Containers tab's start/stop/restart/restart-policy controls (all on by default; set ALLOW_SELF_UPDATE=0 and ENABLE_CONTROLS=0 as extra Variables below if you'd rather keep this read-only)" Type="Path" Display="advanced" Required="false" Mask="false">/var/run/docker.sock</Config>
   <Config Name="SAMPLE_INTERVAL_SECONDS" Target="SAMPLE_INTERVAL_SECONDS" Default="10" Description="How often to poll metrics (seconds). 5-60 is sensible." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
   <Config Name="HISTORY_DAYS" Target="HISTORY_DAYS" Default="180" Description="Days of metric history to keep in SQLite." Type="Variable" Display="advanced" Required="false" Mask="false">180</Config>
 </Container>

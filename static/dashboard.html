@@ -496,6 +496,14 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
 .btn-mini.danger:hover{border-color:var(--crit)}
+.btn-mini:disabled{opacity:.35;cursor:not-allowed}
+/* Container/service action buttons (Controls column) — a tight icon row, plus
+   the restart-policy <select> underneath it on the Containers tab. */
+.ctlbtns{display:flex;gap:4px;flex-wrap:nowrap}
+.ctlbtns .btn-mini{padding:3px 7px;line-height:1}
+.ctl-policy{margin-top:5px}
+.ctl-policy select{width:100%;font-size:11px;padding:2px 4px}
+.ctl-locked{color:var(--mut);font-size:12px}
 /* Uptime checks — each check IS a cockpit .mc-panel (same glass surface, radius and
    soft depth as the GPU/Cost cards on the Overview). State is shown the cockpit way:
    an .mc-sdot status dot + an .mc-pill, not a bespoke rail/badge. */
@@ -1808,6 +1816,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <!-- ───────── Containers ───────── -->
 <section data-tab="containers" hidden>
   <div class="card"><h2 data-i18n="containers.title">📦 Docker containers</h2>
+    <div id="ct-ctl-notice"></div>
     <div class="grid" id="ctkpis"></div>
     <table style="margin-top:14px"><thead><tr>
       <th data-i18n="col.container">Container</th><th data-i18n="col.state">State</th>
@@ -1817,6 +1826,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <th title="GPU memory held by this container's processes (nvidia-smi compute-apps, attributed via /proc/<pid>/cgroup). Blank when the container isn't using the GPU." data-i18n="col.vram">VRAM</th>
       <th data-col="disk" title="Writable layer + the container's volumes &amp; read-write bind mounts (so model/data volumes are included, not just the thin writable layer). Mounts shared by several containers are excluded so they aren't counted against each one." data-i18n="col.disk">Disk</th>
       <th data-i18n="col.status">Status</th>
+      <th data-col="ctl" data-i18n="col.controls">Controls</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
   </div>
 </section>
@@ -1824,6 +1834,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <!-- ───────── Services ───────── -->
 <section data-tab="services" hidden>
   <div class="card"><h2 id="svctitle">🧩 systemd services</h2>
+    <div id="svc-ctl-notice"></div>
     <div id="svcbody"></div>
   </div>
 </section>
@@ -3846,6 +3857,9 @@ function renderHealth(){
 
   // Containers
   const dk=HH.docker||{}, ds=dk.summary||{};
+  document.getElementById('ct-ctl-notice').innerHTML = (dk.available && !dk.controls_enabled)
+    ? `<div class="ins info"><div class="ic">🔒</div><div><div class="t">${I18N.t('ct.controls_off_title','Container controls are off')}</div><div class="d">${I18N.t('ct.controls_off_body','Someone set ENABLE_CONTROLS=0 (or dropped docker-compose.readonly.yml) on this box — unset it to start, stop, restart containers and change their restart policy from here. See website/configuration.md.')}</div></div></div>`
+    : '';
   document.getElementById('ctkpis').innerHTML = dk.available? [
     {v:ds.total||0,l:I18N.t('kpi.containers','Containers')},{v:ds.running||0,l:I18N.t('kpi.running','Running')},
     {v:ds.problems||0,l:I18N.t('kpi.need_attention','Need attention')},{v:(ds.total||0)-(ds.running||0),l:I18N.t('kpi.stopped','Stopped')},
@@ -3859,12 +3873,23 @@ function renderHealth(){
     if(c.vram_bytes){tVram+=c.vram_bytes; anyVram=true;}
     if(c.disk_bytes){tDisk+=c.disk_bytes; anyDisk=true;} });
   const running = ctlist.filter(c=>c.state==='running').length;
+  const RESTART_POLICIES = ['no','unless-stopped','on-failure','always'];
   document.getElementById('cttbl').innerHTML = ctlist.map(c=>{
     // Uptime now has its own column, so trim it out of the status text and
     // keep only the trailing health/exit detail (if any).
     const stext = c.status_text || '';
     const upStripped = stext.replace(/^Up\s+[^()]+\s*/i,'').trim() || (stext.startsWith('Up ') ? '' : stext);
-    return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
+    const rp = c.restart_policy && c.restart_policy.name;
+    const ctl = dk.controls_enabled ? `
+      <div class="ctlbtns">
+        <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
+        <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
+        <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+      </div>
+      <div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
+        ${RESTART_POLICIES.map(p=>`<option value="${p}" ${rp===p?'selected':''}>${p}</option>`).join('')}
+      </select></div>` : `<span class="ctl-locked">🔒</span>`;
+    return `<tr class="ctrow" data-ct="${esc(c.name)}" data-self="${c.is_self?1:0}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}${c.is_self?` <span class="pill" title="${I18N.t('ct.is_self','This is the container running this dashboard.')}">${I18N.t('ct.this_dashboard','this dashboard')}</span>`:''}</td>
      <td><span class="badge ${c.status}">${esc(c.label)}</span></td>
      <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.image)}">${esc(c.image)}</td>
      <td>${renderPorts(c.ports)}</td>
@@ -3872,7 +3897,8 @@ function renderHealth(){
      <td class="muted">${fmtBytes(c.mem_bytes)}</td>
      <td class="muted">${c.vram_bytes!=null?fmtBytes(c.vram_bytes):'—'}</td>
      <td data-col="disk" class="muted">${fmtBytes(c.disk_bytes)}</td>
-     <td class="muted">${upStripped?esc(upStripped):'—'}</td></tr>`;
+     <td class="muted">${upStripped?esc(upStripped):'—'}</td>
+     <td data-col="ctl">${ctl}</td></tr>`;
   }).join('')
     + (ctlist.length ? `<tr class="cttot">
         <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:running})}</span></td>
@@ -3880,13 +3906,26 @@ function renderHealth(){
         <td><b>${fmtBytes(tRam)}</b></td>
         <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
         <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
-        <td></td></tr>` : '')
-    || (dk.available?'<tr><td colspan="9" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
+        <td></td><td data-col="ctl"></td></tr>` : '')
+    || (dk.available?'<tr><td colspan="10" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
   // Click any container row to tail its logs in the side drawer (issue #28) —
-  // except its copy button (#220), which must copy the name, not open logs.
+  // except its copy button (#220) or a control (button/select), which must not
+  // also open the log drawer.
   document.getElementById('cttbl').onclick = e => {
     if(e.target.closest('.copybtn')) return;
+    const actBtn = e.target.closest('.ct-act');
+    if(actBtn){ e.stopPropagation();
+      const tr = actBtn.closest('.ctrow');
+      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1');
+      return;
+    }
+    if(e.target.closest('.ctl-policy')) return;
     const tr = e.target.closest('.ctrow'); if(tr && tr.dataset.ct) openLogDrawer(tr.dataset.ct);
+  };
+  document.getElementById('cttbl').onchange = e => {
+    const sel = e.target.closest('.ct-policy'); if(!sel) return;
+    const tr = sel.closest('.ctrow');
+    setContainerRestartPolicy(tr.dataset.ct, sel.value);
   };
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
@@ -3907,6 +3946,14 @@ function renderServicesBlock(sd){
   const win = fam==='windows';
   const title = document.getElementById('svctitle');
   if(title) title.textContent = win ? I18N.t('svc.title_win','🧩 Windows services') : I18N.t('svc.title_systemd','🧩 systemd services');
+  // ENABLE_CONTROLS is one hub-wide switch (local + every remote host), so the
+  // local /api/health payload is always the source of truth — HOST_DATA per-host
+  // blobs come straight from probe.py/probe.ps1, which have no notion of it.
+  const controlsEnabled = !!(HH && HH.systemd && HH.systemd.controls_enabled);
+  const notice = document.getElementById('svc-ctl-notice');
+  if(notice) notice.innerHTML = (sd.available && !controlsEnabled)
+    ? `<div class="ins info"><div class="ic">🔒</div><div><div class="t">${I18N.t('svc.controls_off_title','Service controls are off')}</div><div class="d">${I18N.t('svc.controls_off_body','Someone set ENABLE_CONTROLS=0 (or dropped docker-compose.readonly.yml) on this box — unset it to start, stop and restart services from here. See website/configuration.md.')}</div></div></div>`
+    : '';
   if(!sd.available){
     svc.innerHTML = `<div class="ins info"><div class="ic">ℹ️</div><div><div class="t">${win?I18N.t('svc.off_win','service monitoring is off'):I18N.t('svc.off_systemd','systemd monitoring is off')}</div><div class="d">${esc(sd.reason||(win?I18N.t('svc.reason_win','No services returned.'):I18N.t('svc.reason_systemd','No D-Bus / systemd detected.')))}</div></div></div>`;
     return;
@@ -3922,22 +3969,126 @@ function renderServicesBlock(sd){
     const upCell = s.status==='crit' && s.exit_status!=null
       ? `exit ${s.exit_status}`
       : (s.uptime_s ? fmtUpShort(s.uptime_s) : '—');
-    return `<tr><td><span class="sdot" style="background:${SC[s.status]}"></span>${svcLogo(s.name,s.desc)}${copyable(s.name)}
+    const isUp = s.active === 'active';
+    const ctl = controlsEnabled ? `
+      <div class="ctlbtns">
+        <button type="button" class="btn-mini svc-act" data-act="start" ${isUp?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
+        <button type="button" class="btn-mini danger svc-act" data-act="stop" ${!isUp?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
+        <button type="button" class="btn-mini svc-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+      </div>` : `<span class="ctl-locked">🔒</span>`;
+    return `<tr data-svc="${esc(s.name)}"><td><span class="sdot" style="background:${SC[s.status]}"></span>${svcLogo(s.name,s.desc)}${copyable(s.name)}
        ${s.admin?'<span class="pill">yours</span>':''}${s.watched?'<span class="pill">watched</span>':''}</td>
      <td><span class="badge ${s.status}">${esc(s.active)}${s.sub&&s.sub!==s.active?' / '+esc(s.sub):''}</span></td>
      <td>${renderPorts(s.ports, portHost)}</td>
      <td class="muted">${upCell}</td>
      <td class="muted">${fmtBytes(s.mem_bytes)}</td>
-     <td class="muted">${esc(s.desc)}</td></tr>`;
+     <td class="muted">${esc(s.desc)}</td>
+     <td data-col="ctl">${ctl}</td></tr>`;
   }).join('')
-    || '<tr><td colspan="6" class="muted">'+I18N.t('svc.none','No user-deployed or failed services found.')+'</td></tr>';
+    || '<tr><td colspan="7" class="muted">'+I18N.t('svc.none','No user-deployed or failed services found.')+'</td></tr>';
   svc.innerHTML=`<div class="grid">${kpis}</div>
     <table style="margin-top:14px"><thead><tr>
-      <th>${I18N.t('col.unit','Unit')}</th><th>${I18N.t('col.state','State')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.memory','Memory')}</th><th>${I18N.t('col.description','Description')}</th>
+      <th>${I18N.t('col.unit','Unit')}</th><th>${I18N.t('col.state','State')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.memory','Memory')}</th><th>${I18N.t('col.description','Description')}</th><th data-col="ctl">${I18N.t('col.controls','Controls')}</th>
     </tr></thead><tbody>${rows}</tbody></table>
     <p class="cap">${win
       ? 'Showing this host\'s <b>Automatic</b>-start Windows services (green = running, amber = stopped). Manual and disabled services are hidden to keep the table readable.'
-      : 'Showing the units you deployed (under <code>/etc/systemd/system</code>) plus any failed unit. Vendor services are hidden by default to keep the table readable.'}</p>`;
+      : 'Showing the units you deployed (under <code>/etc/systemd/system</code>) plus any failed unit. Vendor services are hidden by default to keep the table readable.'}</p>
+    ${controlsEnabled && CURRENT_HOST !== 'local' ? `<p class="cap">${win
+      ? I18N.t('svc.win_admin_hint','Actions need the hub\'s key in this Windows account\'s <b>admin</b> authorized_keys (chosen during onboarding) — otherwise they fail with "Access is denied".')
+      : I18N.t('svc.linux_sudo_hint','Actions run over SSH; most system services need root, so you may be asked for a sudo password (used once, never stored).')}</p>` : ''}`;
+  svc.onclick = e => {
+    const b = e.target.closest('.svc-act'); if(!b) return;
+    const tr = b.closest('tr'); if(!tr || !tr.dataset.svc) return;
+    serviceAction(tr.dataset.svc, b.dataset.act, CURRENT_HOST, fam);
+  };
+}
+
+async function serviceAction(unit, action, host, family){
+  const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
+  const local = !host || host === 'local';
+  if(local){
+    if(!confirm(`${verb} service '${unit}'?`)) return;
+    let j; try{
+      j = await(await fetch(`/api/services/${encodeURIComponent(unit)}/action`,
+        {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+    } catch(e){ toast('critical', `${verb} failed: ${e}`); return; }
+    if(j.ok) toast('ok', `${verb === 'Restart' ? 'Restarted' : verb === 'Start' ? 'Started' : 'Stopped'} ${unit}.`);
+    else toast('critical', j.error || `${verb} failed.`);
+    await loadHealth();
+    return;
+  }
+  // Remote: an inline panel (same idea as the Hosts tab's "Run on remote") so
+  // stdout/stderr from the SSH call — and, for Linux, an optional sudo password
+  // — are visible right where the click happened.
+  openServiceActionPanel(unit, action, host, family);
+}
+
+function openServiceActionPanel(unit, action, host, family){
+  const tbl = document.querySelector('#svcbody table');
+  if(!tbl) return;
+  const old = tbl.querySelector('tr.svc-panel-row'); if(old) old.remove();
+  let anchorRow = null;
+  tbl.querySelectorAll('tbody tr').forEach(r => { if(r.dataset.svc === unit) anchorRow = r; });
+  const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
+  const needsSudo = family !== 'windows';
+  const colspan = tbl.querySelectorAll('thead th').length;
+  const tr = document.createElement('tr');
+  tr.className = 'svc-panel-row';
+  tr.innerHTML = `<td colspan="${colspan}"><div class="runpanel">
+    <div class="hd"><span class="lbl">${esc(verb)} ${esc(unit)} on ${esc(host)}</span>
+      <button class="btn-mini svc-panel-cancel" type="button" style="margin-left:auto">Cancel</button></div>
+    ${needsSudo ? `
+      <div class="row">
+        <input type="password" class="svc-pw" autocomplete="off" spellcheck="false" placeholder="sudo password (optional — blank runs as the SSH user)">
+        <button class="rb on svc-panel-go" type="button">▶ ${esc(verb)}</button>
+      </div>
+      <div class="note">🔒 <span>Used once over the SSH-encrypted channel to authenticate this single command, then discarded — never stored, logged, or put in any process's argv. Leave blank if the SSH user can already manage services (e.g. passwordless sudo).</span></div>
+    ` : `
+      <div class="row"><span class="rc">Runs over SSH as the account the hub's key authenticates as.</span>
+        <button class="rb on svc-panel-go" type="button" style="margin-left:auto">▶ ${esc(verb)}</button></div>
+    `}
+  </div></td>`;
+  if(anchorRow) anchorRow.after(tr); else tbl.querySelector('tbody').prepend(tr);
+  tr.scrollIntoView({block:'nearest'});
+  tr.querySelector('.svc-panel-cancel').onclick = () => tr.remove();
+  const pwInput = tr.querySelector('.svc-pw');
+  if(pwInput){ pwInput.focus(); pwInput.addEventListener('keydown', e => { if(e.key==='Enter') go(); }); }
+  tr.querySelector('.svc-panel-go').onclick = go;
+
+  async function go(){
+    const btn = tr.querySelector('.svc-panel-go'); btn.disabled = true; btn.textContent = '⏳ Running…';
+    const body = {action, host};
+    if(pwInput){ body.sudo_password = pwInput.value; pwInput.value = ''; }
+    let j; try{
+      j = await(await fetch(`/api/services/${encodeURIComponent(unit)}/action`,
+        {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
+    } catch(e){ j = {ok:false, error:String(e)}; }
+    body.sudo_password = null;
+    renderServiceActionResult(tr, j);
+  }
+}
+
+function renderServiceActionResult(tr, j){
+  const panel = tr.querySelector('.runpanel');
+  panel.querySelectorAll('.row, .note').forEach(n => n.remove());
+  const ok = !!j.ok;
+  const stdout = j.stdout || '';
+  const stderr = j.stderr || (!ok ? (j.error || '') : '');
+  const result = document.createElement('div');
+  result.innerHTML = `
+    <div class="row" style="margin-top:4px">
+      <span class="rc">${ok ? '✅ done' : '❌ failed'}${j.ms != null ? ` · ${j.ms} ms` : ''}</span>
+      <button class="btn-mini svc-panel-close" type="button" style="margin-left:auto">Close</button>
+    </div>
+    ${stdout ? `<pre class="out ok">${esc(stdout)}</pre>` : ''}
+    ${stderr ? `<pre class="out err">${esc(stderr)}</pre>` : ''}
+  `;
+  panel.appendChild(result);
+  // No forced re-poll here — same as the Hosts tab's "Run on remote": the
+  // result panel would just vanish under the user before they read it. The
+  // next scheduled poll (or leaving/returning to the tab) picks up the new state.
+  panel.querySelector('.svc-panel-close').onclick = () => tr.remove();
+  toast(ok ? 'ok' : 'critical', ok ? 'Command ran successfully.' : (j.error || 'Command failed.'));
 }
 
 async function renderServicesTab(){
@@ -7565,6 +7716,33 @@ function burstSparkles(){
     if(!wasStarred) burstSparkles();   // reward the first click only
   });
 })();
+// ── Container controls (opt-in, ENABLE_CONTROLS) — local host only, the
+//    Containers tab has no remote inventory yet. ───────────────────────────────
+async function containerAction(name, action, isSelf){
+  const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
+  const msg = isSelf
+    ? `${verb} ${name} — this is the container running this dashboard. ${action==='stop'?"You'll lose the UI until it's started again.":'The page may go briefly unreachable while it restarts.'} Continue?`
+    : `${verb} container '${name}'?`;
+  if(!confirm(msg)) return;
+  let j; try{
+    j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/action`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+  } catch(e){ toast('critical', `${verb} failed: ${e}`); return; }
+  if(j.ok) toast('ok', `${verb === 'Restart' ? 'Restarted' : verb === 'Start' ? 'Started' : 'Stopped'} ${name}.`);
+  else toast('critical', j.error || `${verb} failed.`);
+  await loadHealth();
+}
+
+async function setContainerRestartPolicy(name, policy){
+  let j; try{
+    j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/restart-policy`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy})})).json();
+  } catch(e){ toast('critical', `Could not change restart policy: ${e}`); return; }
+  if(j.ok) toast('ok', `${name} will now restart: ${policy}.`);
+  else toast('critical', j.error || 'Could not change restart policy.');
+  await loadHealth();
+}
+
 // ── Container logs side drawer (issue #28) ───────────────────────────────────
 let LOG_ES=null, LOG_NAME=null;
 function openLogDrawer(name){
