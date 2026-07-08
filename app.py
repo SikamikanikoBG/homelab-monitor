@@ -3751,6 +3751,9 @@ SETTING_DEFAULTS = {
     "brief_time":          "08:00",    # local time-of-day "HH:MM" to send
     "brief_channel":       "",         # one of: email|discord|telegram|ntfy|slack|webhook (must be configured)
     "brief_theme":         "dark",     # "dark" | "light" — palette for the HTML brief
+    # ── Public status page (#217 follow-up) — Settings-driven toggle so it
+    # doesn't require an env-var restart to turn on/off ─────────────────────
+    "public_status_enabled": "0",     # "0" / "1"
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 

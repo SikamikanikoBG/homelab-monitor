@@ -2049,6 +2049,16 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
         <p class="cap" style="margin-top:6px" data-i18n="brief.note" data-i18n-def="Settings here save automatically when you leave a field. Preview and Send test use your saved settings.">Settings here save automatically when you leave a field. Preview and Send test use your saved settings.</p>
       </div>
     </div>
+
+    <!-- Public status page (#217 follow-up) -->
+    <div style="margin-top:24px;border-top:1px solid var(--bd);padding-top:16px;max-width:800px">
+      <h2 class="card-sub" data-i18n="pubstatus.title" data-i18n-def="Public status page">Public status page</h2>
+      <p class="cap" data-i18n="pubstatus.intro" data-i18n-def="A shareable, read-only status page for the checks you mark public no auth, no host internals leaked.">A shareable, read-only status page for the checks you mark public no auth, no host internals leaked.</p>
+      <label style="display:flex;align-items:center;gap:9px;margin:10px 0">
+        <input type="checkbox" id="al_public_status_enabled">
+        <span data-i18n-html="pubstatus.enabled_label"><b>Public status page enabled</b> available at /public without needing a restart.</span>
+      </label>
+    </div>
     </div><!-- /set-pane-alerts -->
     <div id="set-pane-costs" hidden>
       <p class="cap" style="margin:2px 0 12px" data-i18n-html="costset.intro">Set your electricity price so the dashboard can turn power into money on the <b>💰 Costs</b> page. Don't know your rates? Pick your country for a typical, editable estimate.</p>
@@ -4607,6 +4617,7 @@ function configuredChannels(s){
 }
 function fillBrief(s){
   document.getElementById('al_brief_enabled').checked = s.brief_enabled==='1';
+  document.getElementById('al_public_status_enabled').checked = s.public_status_enabled==='1';
   document.getElementById('al_brief_time').value = s.brief_time || '08:00';
   document.getElementById('al_brief_theme').value = (s.brief_theme==='light') ? 'light' : 'dark';
   const sel=document.getElementById('al_brief_channel');
@@ -4698,6 +4709,7 @@ function collectSettingsBody(){
     mlflow_uri:        (document.getElementById('al_mlflow_uri')||{}).value || '',
     country:          document.getElementById('al_country').value,
     brief_enabled:    document.getElementById('al_brief_enabled').checked ? '1' : '0',
+    public_status_enabled: document.getElementById('al_public_status_enabled').checked ? '1' : '0',
     brief_time:       document.getElementById('al_brief_time').value || '08:00',
     brief_channel:    document.getElementById('al_brief_channel').value || '',
     brief_theme:      document.getElementById('al_brief_theme').value || 'dark',
@@ -4772,7 +4784,7 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_telegram_token','al_email_host','al_email_port','al_email_tls','al_email_from','al_email_to',
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
-  'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme'];
+  'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme','al_public_status_enabled'];
 function wireAutoSave(){
   AUTOSAVE_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('change', scheduleAutoSave); });
   // Tariff mode is toggled by buttons (no change event) — autosave on those too.
