@@ -9,11 +9,11 @@
 /* The dashboard's own tokens — this status page is part of the product, dark-first. */
 :root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;
 --crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;--inset:#0d1117;--hover:#1c2230;
---okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--infobg:#58a6ff18;
 --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
 [data-theme="light"]{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;
 --crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;--inset:#f6f8fa;--hover:#eef1f4;
---okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14}
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--infobg:#0969da14}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);min-height:100vh;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -21,7 +21,7 @@ body{background:var(--bg);color:var(--tx);min-height:100vh;
 .wrap{max-width:860px;margin:0 auto;padding:30px 18px 60px}
 a{color:inherit;text-decoration:none}
 .sd{width:9px;height:9px;border-radius:50%;flex:none;background:var(--mut)}
-.sd.ok{background:var(--ok)}.sd.warn{background:var(--warn)}.sd.crit{background:var(--crit)}.sd.unknown,.sd.info{background:var(--mut)}
+.sd.ok{background:var(--ok)}.sd.warn{background:var(--warn)}.sd.crit{background:var(--crit)}.sd.unknown,.sd.info{background:var(--mut)}.sd.maint{background:var(--info)}
 
 /* header — brand uses the app's radar logo, not an emoji */
 .top{display:flex;align-items:center;gap:11px;margin-bottom:26px}
@@ -64,7 +64,7 @@ a.comp:hover{border-color:var(--accent)}
 .comp-nm{font-weight:600;font-size:15px}
 .comp-host{color:var(--mut);font-size:12px;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .comp-st{font-size:12px;font-weight:600;color:var(--mut)}
-.comp-st.ok{color:var(--ok)}.comp-st.crit{color:var(--crit)}.comp-st.warn{color:var(--warn)}
+.comp-st.ok{color:var(--ok)}.comp-st.crit{color:var(--crit)}.comp-st.warn{color:var(--warn)}.comp-st.maint{color:var(--info)}
 a.comp:hover .comp-arr{color:var(--accent)}
 .comp-arr{color:var(--mut);font-size:15px;margin-left:4px}
 
@@ -101,6 +101,7 @@ a.comp:hover .comp-arr{color:var(--accent)}
 .statepill{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:5px 13px;border-radius:999px;border:1px solid var(--bd);color:var(--mut)}
 .statepill.ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
 .statepill.crit{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.statepill.maint{color:var(--info);border-color:var(--info);background:var(--infobg)}
 .dsub{color:var(--mut);font-size:13px;font-family:var(--mono);margin-bottom:22px}
 .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
 .tile{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:14px;text-align:center}
@@ -142,8 +143,8 @@ function relTime(ts){ if(!ts) return '—'; const s=Date.now()/1000-ts;
   if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
 function tsDate(ts){ return new Date(ts*1000).toLocaleDateString([], {month:'short',day:'numeric'}); }
 function tsTime(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
-function stLabel(s){ return s==='up'?'Operational':s==='down'?'Down':'No data'; }
-function stCls(s){ return s==='up'?'ok':s==='down'?'crit':'unknown'; }
+function stLabel(s,maint){ return maint?'In maintenance':s==='up'?'Operational':s==='down'?'Down':'No data'; }
+function stCls(s,maint){ return maint?'maint':s==='up'?'ok':s==='down'?'crit':'unknown'; }
 
 // theme: dark-first (the app's identity), persisted; toggle dark <-> light
 let THEME=localStorage.getItem('pub_theme')||'dark';
@@ -163,11 +164,11 @@ function dayBar(daily){
   return h+'</div>';
 }
 function component(m){
-  const cls=stCls(m.state);
+  const cls=stCls(m.state,m.in_maintenance);
   return `<a class="comp" href="/public/${encodeURIComponent(m.id)}">
     <div class="comp-h"><span class="sd ${cls}"></span><span class="comp-nm">${esc(m.label)}</span>
       <span class="comp-host">${esc(m.host||'')}</span><span class="spring"></span>
-      <span class="comp-st ${cls}">${stLabel(m.state)}</span><span class="comp-arr">›</span></div>
+      <span class="comp-st ${cls}">${stLabel(m.state,m.in_maintenance)}</span><span class="comp-arr">›</span></div>
     ${dayBar(m.daily)}
     <div class="axis"><span>90 days ago</span><span class="mid">${pct(m.uptime90)} uptime</span><span>Today</span></div></a>`;
 }
@@ -185,9 +186,9 @@ async function renderIndex(){
   let d; try{ const r=await fetch('/api/public-status'); if(!r.ok) return notEnabled(); d=await r.json(); }catch(e){ return; }
   setBrand(d);
   const su=d.monitors_summary||{}, down=su.down||0;
-  const ok=d.status==='ok', crit=d.status==='crit';
-  const bcls=crit?'crit':ok?'ok':'warn';
-  const btxt=crit?(down?`${down} service${down>1?'s':''} down`:'Major outage'):ok?'All systems operational':'Degraded performance';
+  const ok=d.status==='ok', crit=d.status==='crit', maint=d.status==='maintenance';
+  const bcls=crit?'crit':maint?'maint':ok?'ok':'warn';
+  const btxt=crit?(down?`${down} service${down>1?'s':''} down`:'Major outage'):maint?'Maintenance in progress':ok?'All systems operational':'Degraded performance';
   const sys=(d.overview||[]).map(c=>`<div class="syscard"><div class="h"><span class="sd ${c.status||'unknown'}"></span>${esc(c.label||c.key)}</div>
     <div class="m">${esc(c.metric||'—')}</div><div class="d">${esc(c.detail||'')}</div></div>`).join('');
   const mons=d.monitors||[];
@@ -217,7 +218,7 @@ function spark(series){
 async function renderDetail(id){
   let d; try{ const r=await fetch('/api/public-status/'+encodeURIComponent(id)); if(r.status===404){ location.href='/public'; return; } d=await r.json(); }catch(e){ return; }
   try{ const s=await (await fetch('/api/public-status')).json(); setBrand(s); }catch(e){}
-  const cls=stCls(d.state);
+  const cls=stCls(d.state,d.in_maintenance);
   const since=d.up_since?('up for '+fmtDur(Date.now()/1000-d.up_since)):(d.state==='down'?'currently down':'');
   const u=d.uptime||{};
   const tiles=[['24h',u['24h']],['7 days',u['7d']],['30 days',u['30d']],['90 days',u['90d']]]
@@ -228,7 +229,7 @@ async function renderDetail(id){
   if(d.cert_days_remaining!=null) cert=`TLS valid · ${d.cert_days_remaining}d left · `;
   $('view').innerHTML=`<a class="back" href="/public">‹ back to status</a>
     <div class="dhead"><span class="sd ${cls}" style="width:12px;height:12px"></span><h1>${esc(d.label)}</h1>
-      <span class="statepill ${cls}">${d.state==='up'?'Operational':d.state==='down'?'Down':'Unknown'}</span></div>
+      <span class="statepill ${cls}">${d.in_maintenance?'In maintenance':d.state==='up'?'Operational':d.state==='down'?'Down':'Unknown'}</span></div>
     <div class="dsub">${esc(d.host||'')}${since?' · '+since:''}</div>
     <div class="tiles">${tiles}</div>
     <div class="panel"><h3>Uptime · last 90 days<span class="meta">${(d.daily||[]).length} days tracked</span></h3>

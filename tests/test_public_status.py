@@ -134,3 +134,21 @@ def test_monitors_key_is_not_the_blocked_services_key(client):
     assert "services" not in data            # the blocked private key
     assert "monitors" in data                 # our public uptime summary
     _wipe()
+
+
+def test_public_monitor_shows_in_maintenance(client):
+    _wipe()
+    _app.create_maintenance_window(
+        label="test window", kind="uptime", pattern="*",
+        start_ts=int(_time.time()) - 60, end_ts=int(_time.time()) + 3600
+    )
+    cid = _mk_check(True)
+    data = client.get("/api/public-status").get_json()
+    mon = next(m for m in data["monitors"] if m["id"] == cid)
+    assert mon["in_maintenance"] is True
+    assert data["status"] == "maintenance"
+    detail = client.get(f"/api/public-status/{cid}").get_json()
+    assert detail["in_maintenance"] is True
+    _app.DB.execute("DELETE FROM maintenance_windows")
+    _app.DB.commit()
+    _wipe()
