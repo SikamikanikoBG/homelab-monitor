@@ -6205,6 +6205,11 @@ def _public_overall_status(cards, monitors):
         return "ok"
     return "warn"
 
+def _public_status_enabled():
+    """On if either the PUBLIC_STATUS env var or the Settings toggle is set --
+    env var kept for backward compatibility, Settings toggle needs no restart."""
+    return bool(_os.environ.get("PUBLIC_STATUS")) or get_settings().get("public_status_enabled") == "1"
+
 
 if __name__ == "__main__":
     print(

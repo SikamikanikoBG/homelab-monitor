@@ -113,7 +113,7 @@ def api_brief_test():
 @bp.route("/api/public-status")
 def api_public_status():
     import app as _app
-    if not _app._os.environ.get("PUBLIC_STATUS"):
+    if not _app._public_status_enabled():
         abort(404)
     cfg = _app.get_settings()
     gpu_avail = _app.LATEST.get("gpu_avail")
@@ -144,7 +144,7 @@ def api_public_status():
 @bp.route("/api/public-status/<cid>")
 def api_public_status_one(cid):
     import app as _app
-    if not _app._os.environ.get("PUBLIC_STATUS"):
+    if not _app._public_status_enabled():
         abort(404)
     detail = _app._public_status_detail(cid, int(time.time()))
     if detail is None:
@@ -157,7 +157,7 @@ def api_public_status_one(cid):
 @bp.route("/public/<cid>")
 def public_status(cid=None):
     import app as _app
-    if not _app._os.environ.get("PUBLIC_STATUS"):
+    if not _app._public_status_enabled():
         abort(404)
     return send_from_directory("static", "public.html")
 
