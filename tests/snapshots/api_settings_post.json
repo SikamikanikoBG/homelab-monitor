@@ -26,6 +26,7 @@
     "night_start": "22:00",
     "ntfy_server": "https://ntfy.sh",
     "ntfy_topic": "",
+    "retention_days": "180",
     "slack_webhook_url_set": false,
     "system_idle_watts": "",
     "tariff_mode": "single",
