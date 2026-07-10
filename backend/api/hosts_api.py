@@ -122,6 +122,8 @@ def api_hosts_run(name):
     on the remote, NEVER stored in the _app.DB, NEVER written to logs, NEVER
     in any process's argv. Don't pass arbitrary cmd from untrusted users —
     the API is reachable to anyone on the LAN who can hit the dashboard."""
+    if not _app.ENABLE_CONTROLS:
+        return jsonify({"ok": False, "error": "Controls are disabled (ENABLE_CONTROLS=0)."}), 403
     body = request.get_json(silent=True) or {}
     cmd = (body.get("cmd") or "").strip()
     sudo_password = body.get("sudo_password") or None

@@ -1847,6 +1847,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <button type="button" class="subtab on" data-sp="alerts" data-i18n="set.tab_alerts">🔔 Alerts</button>
       <button type="button" class="subtab"    data-sp="costs" data-i18n="set.tab_costs">💰 Costs</button>
       <button type="button" class="subtab"    data-sp="integrations" data-i18n="set.tab_integrations">🧪 Integrations</button>
+      <button type="button" class="subtab"    data-sp="general" data-i18n="set.tab_general" data-i18n-def="⚙️ General">⚙️ General</button>
     </div>
 
     <!-- ── Alerts sub-page ── -->
@@ -2190,6 +2191,22 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
       </div>
       <div id="intg_status" class="cap" style="margin-top:6px"></div>
     </div><!-- /set-pane-integrations -->
+
+    <!-- ── General sub-page ── -->
+    <div id="set-pane-general" hidden>
+      <p class="cap" style="margin:2px 0 12px" data-i18n-html="general.intro" data-i18n-def="General system settings. Changes take effect immediately — no restart required.">General system settings. Changes take effect immediately — no restart required.</p>
+      <div id="general-status" class="ins info" style="display:none"></div>
+      <div style="display:grid;grid-template-columns:1fr;gap:14px;max-width:680px">
+        <div>
+          <div class="flabel" data-i18n="general.retention_label" data-i18n-def="Data retention (days)">Data retention (days)</div>
+          <input type="number" id="al_retention_days" min="1" max="3650" step="1" class="field" style="max-width:160px">
+          <p class="cap" style="margin-top:4px" data-i18n-html="general.retention_cap" data-i18n-def="How many days of metric history to keep. Older rows are pruned every ~6 minutes. Default: 180.">How many days of metric history to keep. Older rows are pruned every ~6 minutes. Default: 180.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <button class="rb on" id="al_save_general" data-i18n="btn.save">Save</button>
+        </div>
+      </div>
+    </div><!-- /set-pane-general -->
   </div>
 </section>
 
@@ -3926,6 +3943,9 @@ function renderHealth(){
   document.getElementById('cttbl').onchange = e => {
     const sel = e.target.closest('.ct-policy'); if(!sel) return;
     const tr = sel.closest('.ctrow');
+    if(!confirm(`Change restart policy for "${tr.dataset.ct}" to "${sel.value}"?`)){
+      loadHealth(); return; // revert the select to server state
+    }
     setContainerRestartPolicy(tr.dataset.ct, sel.value);
   };
 
@@ -4544,6 +4564,7 @@ async function loadAlerts(){
   document.getElementById('al_email_user').value  = s.email_username||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
+  document.getElementById('al_retention_days').value = s.retention_days||'180';
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
@@ -4688,7 +4709,8 @@ function collectSettingsBody(){
     email_to:         document.getElementById('al_email_to').value.trim(),
     email_username:   document.getElementById('al_email_user').value.trim(),
     alert_min_level:  document.getElementById('al_minlevel').value,
-    disk_alert_pct:   String(parseInt(document.getElementById('al_disk').value||'90',10)||90),
+    disk_alert_pct:   (v=>{const n=parseInt(v,10);return String(isNaN(n)?90:Math.max(0,Math.min(99,n)));})(document.getElementById('al_disk').value),
+    retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
     kwh_price:        document.getElementById('al_kwh').value.trim(),
     currency:         document.getElementById('al_currency').value.trim()||'$',
     tariff_mode:      TARIFF_DUAL ? 'dual' : 'single',
@@ -4773,7 +4795,8 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_telegram_token','al_email_host','al_email_port','al_email_tls','al_email_from','al_email_to',
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
-  'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme'];
+  'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme',
+  'al_retention_days'];
 function wireAutoSave(){
   AUTOSAVE_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('change', scheduleAutoSave); });
   // Tariff mode is toggled by buttons (no change event) — autosave on those too.
@@ -7549,6 +7572,8 @@ document.getElementById('al_brief_test').onclick = briefTest;
 wireUptime();
 const al_save_costs = document.getElementById('al_save_costs');
 if(al_save_costs) al_save_costs.onclick = saveAlerts;   // both panes persist all settings
+const al_save_general = document.getElementById('al_save_general');
+if(al_save_general) al_save_general.onclick = saveAlerts;
 wireAutoSave();   // settings also persist on field focus-out (no Save-button hunt)
 document.getElementById('al_mode_single').onclick = () => setTariffMode(false);
 document.getElementById('al_mode_dual').onclick   = () => setTariffMode(true);

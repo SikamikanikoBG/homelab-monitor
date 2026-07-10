@@ -38,7 +38,8 @@ VERSION      = "0.24.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
-RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
+_RETENTION_DAYS_DEFAULT = int(os.environ.get("RETENTION_DAYS", "180"))
+RETENTION    = _RETENTION_DAYS_DEFAULT * 86400
 _DISK_IO_RETENTION = 7 * 86400   # per-device disk-I/O history: dense, 7-day ring
 _PROC_IO_RETENTION = 72 * 3600   # per-process I/O ring: short, spike-attribution only
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
@@ -107,13 +108,32 @@ app.register_blueprint(_hosts_api_bp)
 app.register_blueprint(_integrations_bp)
 
 # ── Prometheus gauges (defined once at module level) ──────────────────────────
+_GAUGES: dict = {}
 def _make_gauge(name, doc, labels=None):
-    """Create a Gauge, reusing the existing one if already registered (safe for multi-import)."""
+    """Create a Gauge once; return the cached instance on re-import (safe for multi-import)."""
+    if name in _GAUGES:
+        return _GAUGES[name]
     try:
-        return Gauge(name, doc, labels or [])
-    except ValueError:
-        from prometheus_client import REGISTRY
-        return REGISTRY._names_to_collectors.get(name) or REGISTRY._names_to_collectors.get(name + "_total")
+        g = Gauge(name, doc, labels or [])
+    except (ValueError, AttributeError):
+        # ValueError  — already in the global REGISTRY (Flask debug-reloader or double-import).
+        # AttributeError — prometheus_client internals renamed (version mismatch).
+        # Recover by scanning the registry; _names_to_collectors is private so we guard
+        # the whole block and raise loudly if we still can't find it — better than
+        # caching None and getting AttributeError later on .set() / .clear().
+        try:
+            from prometheus_client import REGISTRY
+            g = next((c for c in REGISTRY._names_to_collectors.values()
+                      if getattr(c, "_name", None) == name), None)
+        except Exception:
+            g = None
+        if g is None:
+            raise RuntimeError(
+                f"prometheus_client: could not recover gauge {name!r} from REGISTRY "
+                "after duplicate-registration — check for double-import or version mismatch"
+            )
+    _GAUGES[name] = g
+    return g
 
 if _PROM_OK:
     _G = {
@@ -1455,7 +1475,8 @@ _docker_enrich = {"data": {}, "at": 0}
 # spinning disk can take minutes; once the kernel has cached the metadata the
 # same scan is seconds, so we allow a generous per-mount timeout and keep the
 # last known value when a scan overruns it.
-_DOCKER_DISK_TTL = 1800
+_DOCKER_DISK_TTL   = 1800
+_DOCKER_POLICY_TTL = 1800  # restart policies change rarely; no need to inspect every 30 s
 _docker_disk = {"data": {}, "at": 0, "busy": False}
 
 def _docker_status(state, status):
@@ -1696,7 +1717,7 @@ def collect_docker():
     _maybe_refresh_docker_disk()   # background; first pass leaves disk_bytes None until it lands
     # Restart policy only matters to the (opt-in) controls UI — skip the extra
     # inspect round-trip entirely when controls are off.
-    if ENABLE_CONTROLS and time.time() - _docker_policy["at"] > _DOCKER_ENRICH_TTL:
+    if ENABLE_CONTROLS and time.time() - _docker_policy["at"] > _DOCKER_POLICY_TTL:
         _docker_policy["data"] = _refresh_docker_policies([c["id"] for c in items])
         _docker_policy["at"] = time.time()
     # Per-container GPU VRAM, attributed by the GPU sampler (nvidia-smi
@@ -1704,7 +1725,21 @@ def collect_docker():
     # keyed by service name (== container name for container-owned PIDs); host /
     # unattributed PIDs use "host:"/"pid:" keys that never match a container.
     vram_mb = {p.get("service"): p.get("mem") for p in (LATEST.get("procs") or [])}
-    self_id = (os.environ.get("HOSTNAME") or "")[:12]
+    # Prefer /proc/self/cgroup (reliable even when docker-compose overrides hostname:).
+    # cgroups v1 encodes the full 64-char container ID in the cgroup path; v2 doesn't,
+    # so fall back to the HOSTNAME env var (still the container short-ID by default).
+    self_id = ""
+    try:
+        with open("/proc/self/cgroup") as _f:
+            for _ln in _f:
+                _part = _ln.strip().split("/")[-1]
+                if len(_part) == 64 and all(c in "0123456789abcdef" for c in _part):
+                    self_id = _part[:12]
+                    break
+    except OSError:
+        pass
+    if not self_id:
+        self_id = (os.environ.get("HOSTNAME") or "")[:12]
     for c in items:
         e = _docker_enrich["data"].get(c["id"]) or {}
         c["mem_bytes"]  = e.get("mem_bytes")
@@ -3716,6 +3751,7 @@ def run_on_host_windows(name, ps_script):
 _ensure_ssh_keypair()
 
 SETTING_DEFAULTS = {
+    "retention_days":     str(_RETENTION_DAYS_DEFAULT),  # history retention in days
     "alerts_enabled":     "0",       # "0" / "1"
     "discord_webhook_url": "",
     "ntfy_topic":          "",
@@ -3845,6 +3881,30 @@ def save_settings(updates):
         DB.executemany("INSERT INTO settings(key,value) VALUES(?,?) "
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
+
+def get_retention_secs():
+    """Return the effective retention window in seconds, read live from settings."""
+    try:
+        days = int(get_settings().get("retention_days") or _RETENTION_DAYS_DEFAULT)
+        days = max(1, min(days, 3650))
+    except (ValueError, TypeError):
+        days = _RETENTION_DAYS_DEFAULT
+    return days * 86400
+
+def _validate_retention_settings(updates):
+    """Return an error string if retention_days is invalid, else None."""
+    if "retention_days" not in updates:
+        return None
+    val = (updates["retention_days"] or "").strip()
+    if not val:
+        return None
+    try:
+        days = int(val)
+    except ValueError:
+        return "Retention days must be a whole number."
+    if days < 1 or days > 3650:
+        return "Retention days must be between 1 and 3650."
+    return None
 
 # ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
 # User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
