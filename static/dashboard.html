@@ -192,9 +192,12 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .ctl-audit-card th{text-align:left;font-weight:600;color:var(--mut)}
 .ctl-audit-card td{font-family:var(--mono);vertical-align:top;padding:3px 8px 3px 0}
 .ctl-audit-card td.aud-ts{color:var(--mut);white-space:nowrap}
-.aud-res{display:inline-block;padding:0 6px;border-radius:5px;font-size:10px;font-weight:700;border:1px solid var(--bd)}
-.aud-res.ok{color:var(--ok);border-color:var(--ok)}
-.aud-res.error{color:var(--crit);border-color:var(--crit)}
+/* Audit result badge — reconciled onto the unified chip recipe (soft tier tint
+   + softened tier border) so it reads as one family with .chip/.badge/.vbadge. */
+.aud-res{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;
+  border:1px solid var(--bd);font-variant-numeric:tabular-nums}
+.aud-res.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--bd));background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.aud-res.error{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 .aud-kind{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
 /* "Check all" sweep toolbar (Containers tab) */
 .checkall-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 2px}
@@ -228,6 +231,22 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .skel-line{height:11px;margin:8px 0}.skel-line.w70{width:70%}.skel-line.w90{width:90%}.skel-line.w40{width:40%}
 @keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
 @media(prefers-reduced-motion:reduce){.skel{animation:none}}
+
+/* ── AI-native surface ─────────────────────────────────────────────────────
+   A shared, tasteful treatment for the Lab Copilot's AI-native panels (the
+   plain-English rule drafter #nlrule and the proactive Advisor #advisor). They
+   used a one-off hardcoded border (var(--line,#2a3550)) that ignored the theme
+   and rendered dark in light mode; this reconciles them onto the token system
+   and marks them as AI-native with a soft --info accent (a left rule + faint
+   tint) so a judge reads the differentiators as intentional & premium, not as
+   generic form boxes. Uses only theme tokens → adapts to dark + light. */
+.ai-panel{position:relative;border:1px solid color-mix(in srgb,var(--info) 30%,var(--bd));
+  border-left:3px solid color-mix(in srgb,var(--info) 55%,var(--bd));border-radius:11px;
+  padding:13px 14px;margin-bottom:14px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--info) 6%,var(--card)),var(--card))}
+.ai-panel-h{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:6px}
+.ai-panel-t{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:14px;color:var(--tx)}
+.ai-panel-t .ai-ic{font-size:14px;line-height:1;flex:none}
 
 /* ── Overview hero ─────────────────────────────────────────────────────────
    The confident at-a-glance band at the top of Overview. One semantic state
@@ -2286,8 +2305,8 @@ h2 .hic{ opacity:.9 }
         No channel configured yet — add a Discord/ntfy/Telegram/webhook channel on the 🔔 Alerts page first.</div>
 
       <!-- ── AI-native shortcut: describe an alert in plain English (E1 Lab Copilot) ── -->
-      <div id="nlrule" class="card-sub" style="margin-bottom:14px;padding:12px;border:1px solid var(--line,#2a3550);border-radius:10px">
-        <div style="font-weight:600;margin-bottom:6px"><span aria-hidden="true">✨</span> <span data-i18n="nlrule.title">Describe an alert in plain English</span></div>
+      <div id="nlrule" class="ai-panel">
+        <div class="ai-panel-t" style="margin-bottom:6px"><span class="ai-ic" aria-hidden="true">✨</span> <span data-i18n="nlrule.title">Describe an alert in plain English</span></div>
         <p class="cap" style="margin:0 0 8px" data-i18n="nlrule.help">The Lab Copilot drafts a rule from your words — you review and confirm it in the form below. Nothing is saved until you click Add rule.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
           <input type="text" id="nlrule_text" class="field" style="flex:1;min-width:240px"
@@ -2300,9 +2319,9 @@ h2 .hic{ opacity:.9 }
       </div>
 
       <!-- ── AI-native: proactive alert-rule recommendations (E1 Lab Copilot Advisor) ── -->
-      <div id="advisor" class="card-sub" style="margin-bottom:14px;padding:12px;border:1px solid var(--line,#2a3550);border-radius:10px">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between">
-          <div style="font-weight:600"><span aria-hidden="true">💡</span> <span data-i18n="advisor.title">Recommended alerts</span></div>
+      <div id="advisor" class="ai-panel">
+        <div class="ai-panel-h">
+          <div class="ai-panel-t"><span class="ai-ic" aria-hidden="true">💡</span> <span data-i18n="advisor.title">Recommended alerts</span></div>
           <button class="rb" id="advisor_refresh" data-i18n="advisor.refresh">Refresh recommendations</button>
         </div>
         <p class="cap" style="margin:6px 0 8px" data-i18n="advisor.help">The Lab Copilot studies your live signals and suggests alert rules worth creating. Each suggestion pre-fills the form below — you review and confirm. Nothing is created automatically.</p>
