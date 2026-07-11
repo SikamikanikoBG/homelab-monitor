@@ -16073,6 +16073,304 @@ def api_alert_rule_preview():
                     "observed": observed}), 200
 
 
+# ── Alert Advisor — proactive alert-rule recommendations ─────────────────────
+# The Copilot studies the monitor's OWN live/historical signals (the SAME
+# read-only bundle _eval_rule/preview consume) and derives VALID alert-rule
+# candidates a user should probably create — each with a plain-English rationale
+# and a one-click path into the EXISTING validated draft/create form. This is
+# strictly advice: the advisor NEVER persists a rule, dispatches, or writes any
+# state. The ranking and every rule spec are DETERMINISTIC; the local LLM may
+# only ENRICH the rationale prose on the explicit advisor action (never on any
+# poll path), and its absence degrades gracefully (deterministic rationale
+# stands). Suggestions flow through the human-confirmed create path only.
+
+def _advisor_covered(existing, ctype, params):
+    """True if the user already has a rule of this ctype whose target matches, so
+    we never suggest a duplicate. Matching is per-ctype: series for anomaly,
+    check_id (with 'any' subsuming a specific target) for the uptime family, and
+    a bare presence match for the single-target types (disk_eta/vram_eta/
+    cost_budget/incident) — one such rule is enough coverage."""
+    want_series = (params or {}).get("series")
+    want_cid = (params or {}).get("check_id")
+    for r in existing:
+        if r.get("ctype") != ctype:
+            continue
+        rp = r.get("params") or {}
+        if ctype == "anomaly":
+            rs = rp.get("series") or "any"
+            if rs == "any" or rs == want_series:
+                return True
+        elif ctype in ("uptime_down", "cert_expiry", "slo_burn"):
+            rc = rp.get("check_id") or "any"
+            if rc == "any" or rc == want_cid:
+                return True
+        else:
+            # disk_eta / vram_eta / cost_budget / incident: single-subject types.
+            return True
+    return False
+
+
+def _advisor_candidates(signals, existing, now=None):
+    """Deterministically derive alert-rule recommendations from the live signal
+    bundle. Returns a list of dicts:
+      {ctype, spec, severity, rationale, evidence, already_covered}
+    where `spec` is a candidate rule in the EXACT shape create_rule/_validate_rule
+    accept (name/ctype/channel/level/cooldown_min/params/enabled). PURE: no I/O,
+    no LLM, no mutation. Ranked by severity then urgency; caller caps the list.
+    `already_covered` candidates are still emitted (marked) so the UI can grey
+    them; the caller filters them out of the actionable list."""
+    now = now or int(time.time())
+    out = []
+
+    def add(ctype, params, level, severity, rationale, evidence, name):
+        spec = {"name": name, "ctype": ctype, "channel": "all",
+                "level": level, "cooldown_min": 60, "params": params,
+                "enabled": False}
+        # Defense in depth: every suggested spec MUST pass the real _validate_rule
+        # (the exact create path). If a targeted check_id can't validate (e.g. the
+        # id isn't a DB-backed uptime_checks row), fall back to "any" so the
+        # one-click create never bounces; drop the candidate only if even that
+        # fails. The one_click form still lets the user pick a specific check.
+        _clean, verr = _validate_rule(spec)
+        if verr:
+            if ctype in ("uptime_down", "cert_expiry", "slo_burn"):
+                params = {**params, "check_id": "any"}
+                spec = {**spec, "params": params}
+                _clean, verr = _validate_rule(spec)
+            if verr:
+                print("advisor: dropped invalid candidate %s: %s" % (ctype, verr),
+                      flush=True)
+                return
+        out.append({
+            "ctype": ctype, "spec": spec, "severity": severity,
+            "rationale": rationale, "evidence": evidence,
+            "already_covered": _advisor_covered(existing, ctype, params),
+        })
+
+    # 1) Disk fill ETA — suggest a disk_eta rule with a threshold above the ETA. --
+    for d in (signals.get("disk") or []):
+        if d.get("status") != "filling":
+            continue
+        eta = d.get("eta_days")
+        if eta is None:
+            continue
+        mount = d.get("mount") or "?"
+        # Threshold: round the ETA up to a sensible headroom (14d floor) so the
+        # rule warns BEFORE the disk actually fills.
+        thr = 14 if eta <= 14 else int(math.ceil(eta / 7.0) * 7)
+        sev = "crit" if eta < RECO_DISK_CRIT_DAYS else "warn"
+        gbpd = d.get("gb_per_day")
+        rationale = ("%s is filling ~%s GB/day (now %s%% full) — I recommend "
+                     "alerting when it's projected to fill within %d days "
+                     "(currently ~%s days out)." % (
+                         mount, _reco_num(gbpd), _reco_num(d.get("pct")), thr,
+                         _reco_num(eta)))
+        add("disk_eta", {"days": thr}, "warning", sev, rationale,
+            {"mount": mount, "eta_days": eta, "gb_per_day": gbpd,
+             "pct": d.get("pct")},
+            "Disk %s fills within %dd" % (mount, thr))
+
+    # 2) VRAM fill ETA — suggest a vram_eta rule when the GPU VRAM is trending up. -
+    v = signals.get("vram") or {}
+    if v.get("status") == "filling" and v.get("eta_min") is not None:
+        eta_days = v.get("eta_min") / 1440.0
+        thr = 3 if eta_days <= 3 else int(math.ceil(eta_days))
+        sev = "crit" if eta_days < 1 else "warn"
+        rationale = ("GPU VRAM is climbing ~%s MB/min (now %s%% used) — I "
+                     "recommend alerting when it's projected to fill within %d "
+                     "day(s) (currently ~%s day(s) out)." % (
+                         _reco_num(v.get("mb_per_min")), _reco_num(v.get("pct")),
+                         thr, _reco_num(round(eta_days, 2))))
+        add("vram_eta", {"days": thr}, "warning", sev, rationale,
+            {"eta_min": v.get("eta_min"), "mb_per_min": v.get("mb_per_min"),
+             "pct": v.get("pct")},
+            "GPU VRAM fills within %dd" % thr)
+
+    # 3) Recurring / active anomaly series — suggest an anomaly rule scoped to it. -
+    anoms = (signals.get("anomalies") or {}).get("items") or []
+    seen_series = set()
+    for a in anoms:
+        key = a.get("key")
+        if not key or key in seen_series:
+            continue
+        # Only suggest a scoped anomaly rule for series the engine can target.
+        valid_series = {k for k, *_ in _ANOMALY_SERIES}
+        if key not in valid_series:
+            continue
+        seen_series.add(key)
+        rationale = ("%s is anomalous right now (%s to %s%s vs ~%s%s baseline, "
+                     "z=%s) — I recommend an anomaly alert scoped to %s so you're "
+                     "paged when it deviates again." % (
+                         key, a.get("direction"), a.get("value"), a.get("unit"),
+                         a.get("baseline"), a.get("unit"), _reco_num(a.get("z")),
+                         key))
+        add("anomaly", {"series": key}, "warning", "warn", rationale,
+            {"series": key, "z": a.get("z"), "value": a.get("value"),
+             "baseline": a.get("baseline"), "direction": a.get("direction")},
+            "Anomaly on %s" % key)
+
+    # 4) Open incident — suggest an incident rule at/above the observed severity. --
+    opens = [i for i in (signals.get("incidents") or []) if i.get("state") == "open"]
+    if opens:
+        worst = max(opens, key=lambda i: (1 if i.get("severity") == "critical" else 0,
+                                          i.get("opened_at") or 0))
+        want = "critical" if worst.get("severity") == "critical" else "warning"
+        n = len([m for m in (worst.get("members") or []) if m.get("active")]) or \
+            len(worst.get("members") or [])
+        sev = "crit" if want == "critical" else "warn"
+        rationale = ("A %s incident is open now (%d correlated series) — I "
+                     "recommend an incident alert at/above %s severity so one "
+                     "notification covers the whole correlated event." % (
+                         want, n, want))
+        add("incident", {"severity": want}, want, sev, rationale,
+            {"severity": want, "member_count": n},
+            "%s incident opens" % want.capitalize())
+
+    # 5) Uptime family — per check: down / cert-expiry / SLO burn. ----------------
+    checks = signals.get("uptime") or []
+    # cert nearing expiry (any cert check currently in its warn window)
+    cert_warn = [c for c in checks if c.get("type") == "cert" and c.get("enabled")
+                 and c.get("state") == "up" and c.get("cert_warn")]
+    if cert_warn:
+        cert_warn.sort(key=lambda c: (c.get("days_to_expiry")
+                                      if c.get("days_to_expiry") is not None else 1 << 30))
+        c = cert_warn[0]
+        label = _redact_target(str(c.get("label") or c.get("id") or "cert"))
+        d = c.get("days_to_expiry")
+        rationale = ("The TLS cert for '%s' expires in ~%s days — I recommend a "
+                     "cert-expiry alert so you renew before it lapses." % (
+                         label, _reco_num(d)))
+        add("cert_expiry", {"check_id": c.get("id")}, "warning", "warn",
+            rationale, {"label": label, "days_to_expiry": d},
+            "Cert expiring — %s" % label)
+    # SLO burn: any enabled check burning budget / over budget with enough data.
+    def _slo_breaching(c):
+        slo = c.get("slo") or {}
+        if not c.get("enabled") or not slo.get("data_sufficient"):
+            return False
+        if slo.get("over_budget"):
+            return True
+        b1 = slo.get("burn_1h")
+        return b1 is not None and b1 >= 1.0
+    slo_hits = [c for c in checks if _slo_breaching(c)]
+    if slo_hits:
+        slo_hits.sort(key=lambda c: (c.get("slo") or {}).get("burn_1h") or 0.0,
+                      reverse=True)
+        c = slo_hits[0]
+        label = _redact_target(str(c.get("label") or c.get("id") or "check"))
+        slo = c.get("slo") or {}
+        bc = slo.get("budget_consumed_pct")
+        rationale = ("'%s' is burning its SLO error budget (%s%% consumed, "
+                     "burn %s×/h) — I recommend a multi-window SLO-burn alert "
+                     "(fast page + slow ticket) on it." % (
+                         label, _reco_num(bc), _reco_num(slo.get("burn_1h"))))
+        add("slo_burn",
+            {"check_id": c.get("id"), "policy": "multi_window",
+             "fast_burn": 14.4, "slow_burn": 6.0},
+            "warning", "warn", rationale,
+            {"label": label, "budget_consumed_pct": bc,
+             "burn_1h": slo.get("burn_1h")},
+            "SLO burn — %s" % label)
+
+    # Rank: severity desc (crit > warn), covered-last, then rationale stable.
+    _sev = {"crit": 2, "warn": 1, "info": 0}
+    out.sort(key=lambda it: (
+        0 if it["already_covered"] else 1,
+        _sev.get(it["severity"], 0),
+    ), reverse=True)
+    return out
+
+
+def _advisor_llm_prompt(items):
+    """Small, secret-free prompt: hand the LLM the ALREADY-COMPUTED deterministic
+    rationales and ask for one short sentence per item, plainer/friendlier. We
+    send only the ctype + rationale text the panel already shows (targets are
+    already _redact_target'd upstream). Bounded to the actionable set."""
+    lines = []
+    for i, it in enumerate(items):
+        lines.append("%d. [%s] %s" % (i + 1, it["ctype"], it["rationale"]))
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "Below are alert rules the monitor recommends the owner create, each with "
+        "a rationale it already computed from live data. For EACH numbered item, "
+        "rewrite its rationale as ONE short, friendly plain-English sentence that "
+        "keeps every number and the recommended action. Use ONLY the given facts; "
+        "invent nothing. Reply as a numbered list matching the input numbers, no "
+        "markdown.\n\nRECOMMENDATIONS:\n" + "\n".join(lines) + "\n\nREWRITTEN:")
+
+
+def _advisor_apply_llm(items, text):
+    """Merge the LLM's numbered rewrite back onto the deterministic items in place,
+    setting `rationale_llm` per item. Never raises; a line that can't be parsed
+    just leaves that item's LLM rationale unset (deterministic prose still shows).
+    The deterministic `rationale` is NEVER overwritten — the LLM prose is additive."""
+    if not text:
+        return
+    by_num = {}
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+)[.)\]]\s*(.+)", line)
+        if m:
+            by_num[int(m.group(1))] = m.group(2).strip()
+    for i, it in enumerate(items):
+        rew = by_num.get(i + 1)
+        if rew:
+            it["rationale_llm"] = rew[:400]
+
+
+@app.route("/api/alerts/advisor", methods=["GET", "POST"])
+def api_alert_advisor():
+    """Proactive alert-rule recommendations from the lab's OWN live signals.
+
+    Builds the SAME read-only signal bundle _eval_rule/preview consume, derives
+    VALID candidate rule specs deterministically (disk_eta / vram_eta / anomaly /
+    incident / cert_expiry / slo_burn), skips ones the user already covers, and
+    returns them with plain-English rationales. Advice-only: it NEVER persists a
+    rule, dispatches, or writes state — suggestions flow through the existing
+    human-confirmed create path.
+
+    The local LLM optionally ENRICHES the rationale prose, and ONLY on an explicit
+    `?llm=1` (or POST {"llm":true}) call — never on any poll/GET-default path. The
+    RANKING and rule specs are deterministic with or without the LLM; if it's
+    off/unreachable the deterministic rationale stands (llm_status carries why).
+    Always 200, graceful-degrade, read-only."""
+    now = int(time.time())
+    body = request.get_json(silent=True) or {} if request.method == "POST" else {}
+    want_llm = (request.args.get("llm") in ("1", "true", "yes")
+                or bool(body.get("llm")))
+    try:
+        signals = _live_signal_bundle(now)
+    except Exception as e:
+        print("advisor signal error:", e, flush=True)
+        signals = {}
+    try:
+        existing = list_rules()
+    except Exception as e:
+        print("advisor rules error:", e, flush=True)
+        existing = []
+    try:
+        cands = _advisor_candidates(signals, existing, now)
+    except Exception as e:
+        print("advisor candidates error:", e, flush=True)
+        cands = []
+    # Actionable set = not already covered, capped. Covered ones are dropped from
+    # the returned list (we never suggest duplicates).
+    recos = [c for c in cands if not c["already_covered"]][:RECO_MAX_ITEMS]
+    out = {"ok": True, "now": now, "recommendations": recos,
+           "count": len(recos), "model": COPILOT_MODEL,
+           "enabled": COPILOT_ENABLED, "llm_used": False, "llm_status": "skipped"}
+    # LLM enrichment ONLY on the explicit action — never on the default GET poll.
+    if want_llm and recos:
+        text, err = _ollama_generate(_advisor_llm_prompt(recos),
+                                     timeout=min(COPILOT_TIMEOUT, 20))
+        if text is not None:
+            _advisor_apply_llm(recos, text)
+            out["llm_used"] = True
+            out["llm_status"] = "ok"
+        else:
+            out["llm_status"] = err
+    return jsonify(out)
+
+
 @app.route("/api/alerts/rules", methods=["GET", "POST"])
 def api_alert_rules():
     if request.method == "POST":

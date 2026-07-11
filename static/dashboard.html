@@ -2272,6 +2272,17 @@ h2 .hic{ opacity:.9 }
         <div id="nlrule_assumptions" style="margin-top:8px;display:none"></div>
       </div>
 
+      <!-- ── AI-native: proactive alert-rule recommendations (E1 Lab Copilot Advisor) ── -->
+      <div id="advisor" class="card-sub" style="margin-bottom:14px;padding:12px;border:1px solid var(--line,#2a3550);border-radius:10px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+          <div style="font-weight:600"><span aria-hidden="true">💡</span> <span data-i18n="advisor.title">Recommended alerts</span></div>
+          <button class="rb" id="advisor_refresh" data-i18n="advisor.refresh">Refresh recommendations</button>
+        </div>
+        <p class="cap" style="margin:6px 0 8px" data-i18n="advisor.help">The Lab Copilot studies your live signals and suggests alert rules worth creating. Each suggestion pre-fills the form below — you review and confirm. Nothing is created automatically.</p>
+        <div id="advisor_status" class="cap" style="display:none"></div>
+        <div id="advisor_list" style="margin-top:8px"></div>
+      </div>
+
       <div class="card-sub" style="font-weight:600;margin-bottom:8px" data-i18n="rules.add_title">➕ Add a rule</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:880px;align-items:end">
         <div>
@@ -5305,6 +5316,68 @@ async function loadRules(){
   loadMaintenance();
   loadRoutes();
   loadAlertHistory();
+  loadAdvisor(false);   // deterministic, LLM-FREE on view; LLM only on explicit Refresh
+}
+
+// ── AI-native: proactive alert-rule recommendations (Advisor) ─────────────────
+// GET /api/alerts/advisor derives VALID rule specs from live signals and returns
+// a plain-English rationale per suggestion. Deterministic on view (llm-free); the
+// "Refresh" button opts into `?llm=1` to enrich the prose. Each suggestion's
+// button pre-fills the SAME manual form NL-authoring uses — the user reviews and
+// saves through the normal validated create path. Nothing here creates a rule.
+const ADVISOR_SEV = {crit:'crit', warn:'warn', info:'info'};
+let ADVISOR_LAST=[];
+function advisorSetStatus(level, text){
+  const s=document.getElementById('advisor_status');
+  if(!s) return;
+  s.style.display=text?'':'none'; s.className='cap ins '+(level||'');
+  s.textContent=text||'';
+}
+function renderAdvisor(recos){
+  const box=document.getElementById('advisor_list');
+  if(!box) return;
+  ADVISOR_LAST = recos||[];
+  if(!ADVISOR_LAST.length){
+    box.innerHTML='<p class="cap">'+esc(I18N.t('advisor.none','No new alert-rule suggestions — your live signals look well covered.'))+'</p>';
+    return;
+  }
+  box.innerHTML = ADVISOR_LAST.map((r,i)=>{
+    const sev = ADVISOR_SEV[r.severity]||'info';
+    const chip = `<span class="badge ${sev}">${esc(I18N.t('advisor.sev_'+(r.severity||'info'), (r.severity||'info')))}</span>`;
+    const prose = r.rationale_llm || r.rationale || '';
+    return `<div class="ins" style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px">`
+      +`<div style="flex:1;min-width:220px"><div style="margin-bottom:4px">${chip} <b>${esc(r.spec&&r.spec.name||r.ctype||'')}</b></div>`
+      +`<div class="cap">${esc(prose)}</div></div>`
+      +`<button class="rb on" data-advuse="${i}">${esc(I18N.t('advisor.use','Review & pre-fill'))}</button></div>`;
+  }).join('');
+  box.querySelectorAll('[data-advuse]').forEach(el=>el.onclick=()=>{
+    const r=ADVISOR_LAST[+el.dataset.advuse];
+    if(!r||!r.spec) return;
+    prefillRuleForm(r.spec);
+    renderAssumptions([]);
+    nlSetStatus('info', I18N.t('advisor.prefilled','Suggestion pre-filled below — review it, then click Add rule to save.'));
+    document.getElementById('r_name').scrollIntoView({behavior:'smooth',block:'nearest'});
+  });
+}
+async function loadAdvisor(withLlm){
+  advisorSetStatus('info', withLlm
+    ? I18N.t('advisor.thinking','Asking the Lab Copilot…')
+    : I18N.t('advisor.loading','Checking your live signals…'));
+  const btn=document.getElementById('advisor_refresh');
+  if(btn) btn.disabled=true;
+  let j;
+  try{ j=await(await fetch('/api/alerts/advisor'+(withLlm?'?llm=1':''))).json(); }
+  catch(e){
+    advisorSetStatus('warning', I18N.t('advisor.unavailable','Recommendations unavailable — try again.'));
+    if(btn) btn.disabled=false; return;
+  }
+  if(btn) btn.disabled=false;
+  renderAdvisor(j.recommendations||[]);
+  if(withLlm && j.llm_status && j.llm_status!=='ok'){
+    advisorSetStatus('warning', I18N.t('advisor.llm_off','Local LLM unavailable — showing the deterministic rationale.'));
+  } else {
+    advisorSetStatus('', '');
+  }
 }
 
 // ── Notification routing rules ────────────────────────────────────────────────
@@ -5639,6 +5712,7 @@ document.getElementById('r_p_slopolicy').onchange = ruleParamsVisibility;
 document.getElementById('r_add').onclick = addRule;
 document.getElementById('r_preview').onclick = previewRuleForm;
 document.getElementById('nlrule_go').onclick = draftRuleFromText;
+document.getElementById('advisor_refresh').onclick = ()=>loadAdvisor(true);
 document.getElementById('nlrule_text').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); draftRuleFromText(); } });
 document.getElementById('r_test_btn').onclick = testRuleChannel;
 document.getElementById('m_kind').onchange = maintKindVisibility;
