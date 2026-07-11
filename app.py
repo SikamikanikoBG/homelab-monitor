@@ -211,6 +211,12 @@ CREATE TABLE IF NOT EXISTS alert_history(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, rule_id TEXT, rule_name TEXT,
   level TEXT, channel TEXT, status TEXT, title TEXT, detail TEXT, acked INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_alerthist_ts ON alert_history(ts);
+-- Built-in notifier edge-state (the `_NOTIFIED` dict). Each key (container:NAME,
+-- systemd:UNIT, disk:MOUNT, gpu:vram_pressure, oom:SVC:TS) is "armed" while its
+-- condition is still true and a notification has already been sent; it clears when
+-- the condition recovers. This table survives a restart so an already-fired,
+-- still-true condition does NOT spuriously re-fire on the next post-restart scan.
+CREATE TABLE IF NOT EXISTS notified_state(key TEXT PRIMARY KEY, notified_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS maintenance_windows(
   id TEXT PRIMARY KEY, label TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
   recurring INTEGER NOT NULL DEFAULT 0,
@@ -4622,6 +4628,53 @@ def save_settings(updates):
 # next failure re-fires exactly once.
 _NOTIFIED = {}            # key -> 1, "armed" alerts pending recovery
 _NOTIFIER_LOCK = threading.Lock()
+# Cap on persisted notifier edge-state rows. The keyspace is dynamic (container /
+# systemd / disk names, plus per-event oom:SVC:TS keys), so unlike the rule engine
+# it isn't naturally bounded by a fixed table — an armed key clears on recovery, but
+# a churn of ephemeral container names or OOM events could accumulate. We prune the
+# oldest rows past this cap on restore so the table can never grow without bound.
+_NOTIFIED_STATE_CAP = 500
+
+def _persist_notified(key, on):
+    """Write-through one notifier edge-state key to SQLite. Defensive: a persistence
+    failure must NEVER break alert evaluation/dispatch — the in-memory `_NOTIFIED`
+    dict remains the source of truth for the running process; the table is only a
+    restart-durable mirror. Caller already holds _NOTIFIER_LOCK."""
+    try:
+        with LOCK:
+            if on:
+                DB.execute("INSERT INTO notified_state(key,notified_at) VALUES(?,?) "
+                           "ON CONFLICT(key) DO NOTHING", (key, int(time.time())))
+            else:
+                DB.execute("DELETE FROM notified_state WHERE key=?", (key,))
+            DB.commit()
+    except Exception as e:
+        print("notified_state persist error:", e, flush=True)
+
+def restore_notified_state():
+    """On startup, hydrate the in-memory `_NOTIFIED` dict from SQLite so the first
+    post-restart notifier scan does NOT treat an already-fired-and-still-true
+    condition as a fresh edge (which would re-fire a duplicate notification). Prunes
+    the table to the newest _NOTIFIED_STATE_CAP rows first. Defensive: any failure
+    just leaves _NOTIFIED empty (the pre-persistence behaviour)."""
+    try:
+        with LOCK:
+            over = DB.execute(
+                "SELECT COUNT(*) FROM notified_state").fetchone()[0] - _NOTIFIED_STATE_CAP
+            if over > 0:
+                DB.execute(
+                    "DELETE FROM notified_state WHERE key IN "
+                    "(SELECT key FROM notified_state ORDER BY notified_at ASC LIMIT ?)",
+                    (over,))
+                DB.commit()
+            rows = DB.execute("SELECT key FROM notified_state").fetchall()
+        with _NOTIFIER_LOCK:
+            for (k,) in rows:
+                _NOTIFIED[k] = 1
+        if rows:
+            print(f"restored {len(rows)} armed notifier edge-state key(s)", flush=True)
+    except Exception as e:
+        print("notified_state restore error:", e, flush=True)
 LEVELS  = {"info": 0, "warning": 1, "critical": 2}
 # Every notification channel the rule engine / digest / test paths may target.
 # "all" fans out to every configured channel; the rest are the individual senders.
@@ -4817,13 +4870,16 @@ def _emit(s, key, level, title, detail):
         if _NOTIFIED.get(key):
             return
         _NOTIFIED[key] = 1
+        _persist_notified(key, True)
     for ch, ok, err in dispatch_alert(s, level, title, detail):
         if not ok:
             print(f"notifier {ch} error:", err, flush=True)
 
 def _clear(key):
     with _NOTIFIER_LOCK:
-        _NOTIFIED.pop(key, None)
+        existed = _NOTIFIED.pop(key, None)
+        if existed:
+            _persist_notified(key, False)
 
 def notify_scan():
     s = get_settings()
@@ -4902,6 +4958,7 @@ def notify_scan():
                 already = key in _NOTIFIED
                 if not already:
                     _NOTIFIED[key] = 1
+                    _persist_notified(key, True)
             if already:
                 continue
             if LEVELS["critical"] < LEVELS.get(s.get("alert_min_level", "warning"), 1):
@@ -16825,6 +16882,10 @@ _seed_demo_data()    # no-op unless DEMO_MODE is on and the DB is fresh
 # phantom "now" cell between a test's wipe and its request. Skip them when the test
 # runner is in control; production (python app.py / gunicorn) never imports pytest.
 if "pytest" not in sys.modules:
+    # Hydrate the notifier edge-state from SQLite BEFORE the collector's first
+    # notify_scan(), so an already-fired-and-still-true built-in alert (crashed
+    # container, full disk, VRAM pressure) does not re-fire a duplicate on restart.
+    restore_notified_state()
     threading.Thread(target=collector, daemon=True).start()
     threading.Thread(target=host_poller, daemon=True).start()
     threading.Thread(target=uptime_worker, daemon=True).start()
