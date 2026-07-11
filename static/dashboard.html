@@ -178,6 +178,15 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .imgck-res.warn{color:var(--warn)} .imgck-res.err{color:var(--crit)}
 .imgck-res.busy{color:var(--mut)} .imgck-res.unknown{color:var(--mut)}
 @media(prefers-reduced-motion:reduce){.imgck{transition:none}}
+/* Container / service control buttons (opt-in; rendered only when ENABLE_CONTROLS) */
+.ctl-cell{white-space:nowrap}
+.ctl-btn{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;line-height:1.4;
+  padding:2px 8px;margin:1px 2px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--bd);background:var(--inset);color:var(--fg);white-space:nowrap}
+.ctl-btn:hover{border-color:var(--ok);color:var(--ok)}
+.ctl-btn.danger:hover{border-color:var(--crit);color:var(--crit)}
+.ctl-btn:disabled{opacity:.5;cursor:progress}
+.ctl-hint .t{font-weight:600}
 /* "Check all" sweep toolbar (Containers tab) */
 .checkall-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 2px}
 .checkall-btn{margin-left:0;font-size:11px;padding:3px 11px}
@@ -2022,7 +2031,9 @@ h2 .hic{ opacity:.9 }
       <th title="GPU memory held by this container's processes (nvidia-smi compute-apps, attributed via /proc/<pid>/cgroup). Blank when the container isn't using the GPU." data-i18n="col.vram">VRAM</th>
       <th data-col="disk" title="Writable layer + the container's volumes &amp; read-write bind mounts (so model/data volumes are included, not just the thin writable layer). Mounts shared by several containers are excluded so they aren't counted against each one." data-i18n="col.disk">Disk</th>
       <th data-i18n="col.status">Status</th>
+      <th data-col="ctl" data-i18n="col.actions">Actions</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
+    <div id="ctl-hint-docker"></div>
   </div>
 </section>
 
@@ -2030,6 +2041,7 @@ h2 .hic{ opacity:.9 }
 <section data-tab="services" hidden>
   <div class="card"><h2 id="svctitle">🧩 systemd services</h2>
     <div id="svcbody"></div>
+    <div id="ctl-hint-systemd"></div>
   </div>
 </section>
 
@@ -3457,12 +3469,14 @@ function setDemoBadge(on){
 }
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
+  if(HH && HH.controls) CONTROLS = Object.assign(CONTROLS, HH.controls);
   setDemoBadge(!!(HH && HH.demo));
   renderHealth();
   if(HH && HH.version) maybeWhatsNew(HH.version);   // one-time post-upgrade modal
   try{ renderMcpPill(await(await fetch('/api/mcp-status')).json()); }
   catch(e){ /* leave the pill unchanged on a transient fetch error */ }
 }
+function refreshHealth(){ return loadHealth(); }
 
 // ── Renderers (history-backed tabs) ───────────────────────────────────────────
 function renderData(){
@@ -4275,7 +4289,8 @@ function renderHealth(){
      <td class="muted">${fmtBytes(c.mem_bytes)}</td>
      <td class="muted">${c.vram_bytes!=null?fmtBytes(c.vram_bytes):'—'}</td>
      <td data-col="disk" class="muted">${fmtBytes(c.disk_bytes)}</td>
-     <td class="muted">${upStripped?esc(upStripped):'—'}</td></tr>`;
+     <td class="muted">${upStripped?esc(upStripped):'—'}</td>
+     <td data-col="ctl" class="ctl-cell">${ctlButtons('container', c.name, c.state)}</td></tr>`;
   }).join('')
     + (ctlist.length ? `<tr class="cttot">
         <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:running})}</span></td>
@@ -4283,15 +4298,18 @@ function renderHealth(){
         <td><b>${fmtBytes(tRam)}</b></td>
         <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
         <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
-        <td></td></tr>` : '')
-    || (dk.available?'<tr><td colspan="9" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
+        <td></td><td data-col="ctl"></td></tr>` : '')
+    || (dk.available?'<tr><td colspan="10" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
   // Click any container row to tail its logs in the side drawer (issue #28).
   // The per-row "Check now" button is handled first (and stops the row click).
   document.getElementById('cttbl').onclick = e => {
+    const cb = e.target.closest('[data-ctl]');
+    if(cb){ e.stopPropagation(); doControl(cb.dataset.ctlKind, cb.dataset.ctlName, cb.dataset.ctl, cb); return; }
     const ck = e.target.closest('.imgck');
     if(ck && ck.dataset.ctcheck){ e.stopPropagation(); checkImageNow(ck.dataset.ctcheck, ck); return; }
     const tr = e.target.closest('.ctrow'); if(tr && tr.dataset.ct) openLogDrawer(tr.dataset.ct);
   };
+  ctlReadonlyHint('container');
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
   if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
@@ -4321,6 +4339,10 @@ function renderServicesBlock(sd){
   const kpis=[{v:ss.loaded||0,l:I18N.t('kpi.loaded_services','Loaded services')},{v:ss.running||0,l:I18N.t('kpi.running','Running')},
               {v:ss.failed||0,l:I18N.t('kpi.failed','Failed')},{v:ss.admin||0,l:I18N.t('kpi.your_units','Your units')}]
     .map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div></div>`).join('');
+  // systemd controls are a LOCAL-host, non-Windows capability only: the D-Bus
+  // control path issues StartUnit/StopUnit on THIS box. Remote/Windows rows stay
+  // read-only. When off, the column is present but empty (+ the read-only hint).
+  const svcCtl = CONTROLS.enabled && CURRENT_HOST==='local' && !win;
   const rows=(sd.services||[]).map(s=>{
     // For failed units, the exit code is more useful than a zero uptime.
     const upCell = s.status==='crit' && s.exit_status!=null
@@ -4332,16 +4354,22 @@ function renderServicesBlock(sd){
      <td>${renderPorts(s.ports, portHost)}</td>
      <td class="muted">${upCell}</td>
      <td class="muted">${fmtBytes(s.mem_bytes)}</td>
-     <td class="muted">${esc(s.desc)}</td></tr>`;
+     <td class="muted">${esc(s.desc)}</td>
+     <td data-col="ctl" class="ctl-cell">${svcCtl?ctlButtons('service', s.name, s.active):''}</td></tr>`;
   }).join('')
-    || '<tr><td colspan="6" class="muted">'+I18N.t('svc.none','No user-deployed or failed services found.')+'</td></tr>';
+    || '<tr><td colspan="7" class="muted">'+I18N.t('svc.none','No user-deployed or failed services found.')+'</td></tr>';
   svc.innerHTML=`<div class="grid">${kpis}</div>
-    <table style="margin-top:14px"><thead><tr>
-      <th>${I18N.t('col.unit','Unit')}</th><th>${I18N.t('col.state','State')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.memory','Memory')}</th><th>${I18N.t('col.description','Description')}</th>
+    <table style="margin-top:14px" id="svctbl"><thead><tr>
+      <th>${I18N.t('col.unit','Unit')}</th><th>${I18N.t('col.state','State')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.memory','Memory')}</th><th>${I18N.t('col.description','Description')}</th><th data-col="ctl">${I18N.t('col.actions','Actions')}</th>
     </tr></thead><tbody>${rows}</tbody></table>
     <p class="cap">${win
       ? 'Showing this host\'s <b>Automatic</b>-start Windows services (green = running, amber = stopped). Manual and disabled services are hidden to keep the table readable.'
       : 'Showing the units you deployed (under <code>/etc/systemd/system</code>) plus any failed unit. Vendor services are hidden by default to keep the table readable.'}</p>`;
+  const svctbl = document.getElementById('svctbl');
+  if(svctbl) bindControlClicks(svctbl);
+  // Read-only hint only for local systemd (where controls could apply).
+  const hintEl = document.getElementById('ctl-hint-systemd');
+  if(hintEl){ if(CURRENT_HOST==='local' && !win) ctlReadonlyHint('service'); else hintEl.innerHTML=''; }
 }
 
 async function renderServicesTab(){
@@ -5113,6 +5141,88 @@ function toast(level,text){
 
     setTimeout(remove,3000);
   }
+
+// ── Container / service controls (opt-in; OFF by default on the server) ────────
+// CONTROLS is populated from HH.controls on every /api/health poll. When the
+// server flag is OFF (the default, and how the live arena runs) no action button
+// is ever rendered — only an honest read-only hint. Destructive actions
+// (stop/restart) are confirm-guarded. Targets are re-validated server-side against
+// the enumerated set; the client only ever sends a name the table already shows.
+let CONTROLS = {enabled:false, docker:false, systemd:false, actions:['start','stop','restart']};
+const CTL_ICON = {start:'▶', stop:'■', restart:'⟳'};
+const CTL_DESTRUCTIVE = new Set(['stop','restart']);
+
+function ctlButtons(kind, name, state){
+  // kind: 'container' | 'service'. Returns the action-button HTML for one row,
+  // or '' when controls are off (so the column is simply empty, read-only).
+  if(!CONTROLS.enabled) return '';
+  const running = (kind==='container') ? state==='running'
+                                       : (state==='active' || state==='activating' || state==='reloading');
+  const acts = [];
+  if(!running) acts.push('start'); else { acts.push('restart'); acts.push('stop'); }
+  return acts.map(a=>{
+    const lbl = I18N.t('ctl.'+a, a);
+    const cls = CTL_DESTRUCTIVE.has(a) ? 'ctl-btn danger' : 'ctl-btn';
+    return `<button type="button" class="${cls}" data-ctl="${a}" data-ctl-kind="${kind}" `
+      + `data-ctl-name="${escAttr(name)}" `
+      + `title="${escAttr(I18N.tf('ctl.aria','{action} {name}',{action:lbl,name:name}))}" `
+      + `aria-label="${escAttr(I18N.tf('ctl.aria','{action} {name}',{action:lbl,name:name}))}">`
+      + `${CTL_ICON[a]||''} ${esc(lbl)}</button>`;
+  }).join(' ');
+}
+
+function ctlReadonlyHint(kind){
+  // Honest affordance shown when controls are OFF: the app is read-only and how
+  // to enable. Rendered under the containers/services tables (never a fake button).
+  const el = document.getElementById(kind==='container' ? 'ctl-hint-docker' : 'ctl-hint-systemd');
+  if(!el) return;
+  if(CONTROLS.enabled){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="ins info ctl-hint" style="margin-top:12px"><div class="ic">🔒</div><div>`
+    + `<div class="t">${esc(I18N.t('ctl.readonly_title','Controls are read-only'))}</div>`
+    + `<div class="d">${esc(I18N.t('ctl.readonly_hint','Start / stop / restart is off. Set ENABLE_CONTROLS=1 on this instance to turn on confirm-guarded controls.'))}</div>`
+    + `</div></div>`;
+}
+
+async function doControl(kind, name, action, btn){
+  if(!CONTROLS.enabled) return;
+  if(CTL_DESTRUCTIVE.has(action)){
+    const q = I18N.tf('ctl.confirm','{action} {name}?\n\nThis affects the running host.',
+      {action:I18N.t('ctl.'+action,action), name:name});
+    if(!confirm(q)) return;
+  }
+  const path = kind==='container'
+    ? `/api/containers/${encodeURIComponent(name)}/action`
+    : `/api/services/${encodeURIComponent(name)}/action`;
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action})});
+    const j = await r.json().catch(()=>({}));
+    if(r.ok && j.ok){
+      toast('ok', I18N.tf('ctl.done','{name}: {action} requested',
+        {name:name, action:I18N.t('ctl.'+action,action)}));
+      // Reflect the new state quickly.
+      setTimeout(()=>{ if(typeof refreshHealth==='function') refreshHealth(); }, 600);
+    } else {
+      const msg = (j && j.error) ? j.error : ('HTTP '+r.status);
+      toast('crit', I18N.tf('ctl.failed','{name}: {msg}',{name:name, msg:msg}));
+      if(btn) btn.disabled = false;
+    }
+  }catch(e){
+    toast('crit', I18N.tf('ctl.failed','{name}: {msg}',{name:name, msg:String(e)}));
+    if(btn) btn.disabled = false;
+  }
+}
+
+function bindControlClicks(root){
+  if(!root) return;
+  root.addEventListener('click', e=>{
+    const b = e.target.closest('[data-ctl]');
+    if(!b) return;
+    e.stopPropagation();  // don't trigger the container-row log drawer
+    doControl(b.dataset.ctlKind, b.dataset.ctlName, b.dataset.ctl, b);
+  });
+}
 
 function showAlertStatus(level,text){
   toast(level,text);

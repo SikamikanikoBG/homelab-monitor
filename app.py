@@ -73,6 +73,16 @@ UPDATE_REPO   = os.environ.get("UPDATE_REPO", "SikamikanikoBG/homelab-monitor")
 # start_self_update() and website/configuration.md.
 ALLOW_SELF_UPDATE = os.environ.get("ALLOW_SELF_UPDATE", "").strip().lower() in ("1", "true", "yes", "on")
 SELF_UPDATE_HELPER_IMAGE = os.environ.get("SELF_UPDATE_HELPER_IMAGE", "docker:cli")
+# Opt-in container/service controls (start/stop/restart). OFF by default: this is
+# the ONLY surface that mutates the host's runtime state (docker start/stop, unit
+# start/stop). With it unset/false the control endpoints are hard-disabled — they
+# return a clean 403 and never touch docker or D-Bus. The live arena runs OFF.
+# Every mutation validates its target against the set the monitor already
+# enumerates (no free-form names, no shell) — see api_container_action /
+# api_service_action. This monitor can run with host mounts, which is exactly why
+# default-OFF + opt-in + target-validation is load-bearing.
+ENABLE_CONTROLS = os.environ.get("ENABLE_CONTROLS", "").strip().lower() in ("1", "true", "yes", "on")
+CONTROL_ACTIONS = ("start", "stop", "restart")
 # Split cache: once we know there's an update, the answer won't change for hours
 # so we can cache it long. But "no update found" / network errors should expire
 # sooner — otherwise a release published right after deploy stays invisible for
@@ -12795,6 +12805,166 @@ def api_logs_summarize(container):
         out.update({"summary": "", "source": "none", "llm_status": gerr})
     return jsonify(out)
 
+
+# ── Container / service controls (opt-in, OFF by default) ─────────────────────
+# start / stop / restart for Docker containers and systemd units. The ONLY host-
+# mutating surface besides self-update, and it is HARD-GATED behind ENABLE_CONTROLS
+# (default OFF — the live arena runs OFF, so these are inert there).
+#
+# SECURITY (the reviewer verifies each — this touches the real host):
+#   • OFF by default. With ENABLE_CONTROLS unset/false EVERY endpoint returns a
+#     clean 403 and never touches docker or D-Bus. No side-effect, no traceback.
+#   • Target validation. The client value is RESOLVED against the set the monitor
+#     already enumerates — containers via _resolve_container (live docker list),
+#     units via _resolve_unit (HEALTH systemd inventory). Anything not in that set
+#     gets a clean 404. No free-form names ever reach docker / systemd.
+#   • No shell, no name-kill. Docker uses the Engine API socket (argv-free HTTP
+#     path with a validated 12-hex id). systemd uses the D-Bus Manager methods
+#     StartUnit / StopUnit / RestartUnit with the resolved unit NAME — never
+#     pkill/killall/kill-by-name, never subprocess+shell.
+#   • Idempotent + honest errors. docker/D-Bus unavailable, or target vanished →
+#     a clean JSON error (no 500, no leaked paths/secrets).
+
+def _controls_state():
+    """What the dashboard needs to decide whether to render action buttons.
+    docker/systemd capability is reported so the UI can grey out a control the
+    host can't actually service even when the flag is on."""
+    return {
+        "enabled": ENABLE_CONTROLS,
+        "actions": list(CONTROL_ACTIONS),
+        "docker": bool((HEALTH.get("docker") or {}).get("available")),
+        "systemd": bool((HEALTH.get("systemd") or {}).get("available")),
+    }
+
+
+def _resolve_unit(unit):
+    """Resolve a client-supplied systemd unit name to a KNOWN unit name from the
+    monitor's live inventory, or None. This is the injection/whitelist gate for
+    the systemd control path: only a unit the monitor already enumerates is ever
+    handed to D-Bus. Accepts the bare name too (`nginx` → `nginx.service`)."""
+    if not unit or not isinstance(unit, str):
+        return None
+    # Cheap syntactic guard first — a systemd unit name is a restricted charset;
+    # anything else can't match the inventory anyway and is rejected outright.
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.@:\\-]{0,255}$", unit):
+        return None
+    want = unit if unit.endswith(".service") else unit + ".service"
+    sysd = HEALTH.get("systemd") or {}
+    if not sysd.get("available"):
+        return None
+    for s in sysd.get("services", []):
+        if s.get("name") == want:
+            return s["name"]
+    return None
+
+
+def _systemd_control(unit, action):
+    """Issue StartUnit/StopUnit/RestartUnit over the host system D-Bus (same
+    jeepney path collect_systemd() reads through). `unit` is already resolved to a
+    KNOWN unit name; `action` is a validated enum. Returns (ok, error) and never
+    raises. No subprocess, no shell, no kill-by-name."""
+    method = {"start": "StartUnit", "stop": "StopUnit", "restart": "RestartUnit"}.get(action)
+    if not method:
+        return False, "invalid action"
+    try:
+        from jeepney import DBusAddress, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+    except Exception:
+        return False, "systemd control unavailable"
+    try:
+        conn = open_dbus_connection(bus="SYSTEM")
+    except Exception:
+        return False, "systemd control unavailable"
+    try:
+        mgr = DBusAddress("/org/freedesktop/systemd1", bus_name="org.freedesktop.systemd1",
+                          interface="org.freedesktop.systemd1.Manager")
+        # (unit_name: s, mode: s) → job object path. "replace" is systemd's normal
+        # interactive mode: supersede a conflicting queued job rather than fail.
+        reply = conn.send_and_get_reply(new_method_call(mgr, method, "ss", (unit, "replace")))
+        if getattr(reply, "header", None) and getattr(reply.header, "message_type", None) \
+                and str(reply.header.message_type).endswith("error"):
+            return False, "systemd rejected the request"
+        return True, None
+    except Exception:
+        # Never leak the D-Bus error text (may carry unit paths) — a generic
+        # message is enough for the UI and safe to show.
+        return False, "systemd rejected the request"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _docker_control(cid, action):
+    """POST /containers/<id>/<action> over the docker socket. `cid` is already a
+    resolved, known 12-hex id (see _resolve_container) so the URL path can't be
+    poisoned. Returns (ok, error). 204/304 are both success (304 = already in the
+    requested state → idempotent). Never raises, never leaks internals."""
+    if action not in CONTROL_ACTIONS:
+        return False, "invalid action"
+    try:
+        status, _ = _docker_req("POST", f"/containers/{cid}/{action}", timeout=20)
+    except Exception:
+        return False, "docker unavailable"
+    if status in (204, 304):
+        return True, None
+    if status == 404:
+        return False, "container not found"
+    return False, "docker rejected the request"
+
+
+def _control_action_from_request():
+    """Extract + validate the {action} enum from the request body (JSON) or form.
+    Returns (action, error_response_tuple_or_None)."""
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or request.form.get("action") or "").strip().lower()
+    if action not in CONTROL_ACTIONS:
+        return None, (jsonify({"ok": False, "error": "invalid action",
+                               "actions": list(CONTROL_ACTIONS)}), 400)
+    return action, None
+
+
+@app.route("/api/containers/<name>/action", methods=["POST"])
+def api_container_action(name):
+    """Start/stop/restart a Docker container. Body: {action: start|stop|restart}.
+    HARD-GATED behind ENABLE_CONTROLS (403 when off, the default). The target is
+    validated against the live container set — unknown/injection-y names → 404."""
+    if not ENABLE_CONTROLS:
+        return jsonify({"ok": False, "error": "controls disabled",
+                        "hint": "Set ENABLE_CONTROLS=1 to enable start/stop/restart."}), 403
+    action, err = _control_action_from_request()
+    if err:
+        return err
+    cid, cname = _resolve_container(name)
+    if not cid:
+        return jsonify({"ok": False, "error": "unknown container"}), 404
+    ok, cerr = _docker_control(cid, action)
+    if not ok:
+        return jsonify({"ok": False, "error": cerr, "container": cname, "action": action}), 502
+    _ct_cache["at"] = 0   # force the next enumeration to reflect the new state
+    return jsonify({"ok": True, "container": cname, "action": action})
+
+
+@app.route("/api/services/<unit>/action", methods=["POST"])
+def api_service_action(unit):
+    """Start/stop/restart a systemd unit. Body: {action: start|stop|restart}.
+    HARD-GATED behind ENABLE_CONTROLS (403 when off, the default). The target is
+    validated against the monitor's live unit inventory — anything else → 404."""
+    if not ENABLE_CONTROLS:
+        return jsonify({"ok": False, "error": "controls disabled",
+                        "hint": "Set ENABLE_CONTROLS=1 to enable start/stop/restart."}), 403
+    action, err = _control_action_from_request()
+    if err:
+        return err
+    resolved = _resolve_unit(unit)
+    if not resolved:
+        return jsonify({"ok": False, "error": "unknown service"}), 404
+    ok, serr = _systemd_control(resolved, action)
+    if not ok:
+        return jsonify({"ok": False, "error": serr, "service": resolved, "action": action}), 502
+    return jsonify({"ok": True, "service": resolved, "action": action})
+
 @app.route("/api/network")
 def api_network():
     """Host NIC throughput + per-container top talkers over a range (#30). Rates
@@ -14575,6 +14745,7 @@ def api_health():
     update["self_update_enabled"] = ALLOW_SELF_UPDATE
     return jsonify({"version": VERSION, "updated": HEALTH["at"], "now": now,
                     "demo": DEMO_MODE, "status_page": STATUS_PAGE,
+                    "controls": _controls_state(),
                     "docker": docker, "systemd": systemd, "update": update,
                     "disk_io": disk_io,
                     "processes": HEALTH["processes"],
