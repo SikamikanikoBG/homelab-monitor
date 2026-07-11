@@ -187,6 +187,15 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .ctl-btn.danger:hover{border-color:var(--crit);color:var(--crit)}
 .ctl-btn:disabled{opacity:.5;cursor:progress}
 .ctl-hint .t{font-weight:600}
+/* Controls audit log (accountability panel; read-only) */
+.ctl-audit-card table{width:100%;font-size:12px}
+.ctl-audit-card th{text-align:left;font-weight:600;color:var(--mut)}
+.ctl-audit-card td{font-family:var(--mono);vertical-align:top;padding:3px 8px 3px 0}
+.ctl-audit-card td.aud-ts{color:var(--mut);white-space:nowrap}
+.aud-res{display:inline-block;padding:0 6px;border-radius:5px;font-size:10px;font-weight:700;border:1px solid var(--bd)}
+.aud-res.ok{color:var(--ok);border-color:var(--ok)}
+.aud-res.error{color:var(--crit);border-color:var(--crit)}
+.aud-kind{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
 /* "Check all" sweep toolbar (Containers tab) */
 .checkall-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 2px}
 .checkall-btn{margin-left:0;font-size:11px;padding:3px 11px}
@@ -2034,6 +2043,12 @@ h2 .hic{ opacity:.9 }
       <th data-col="ctl" data-i18n="col.actions">Actions</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
     <div id="ctl-hint-docker"></div>
+    <!-- Controls audit log (accountability for every host mutation) — read-only. -->
+    <div class="card ctl-audit-card" id="ctl-audit" style="margin-top:16px">
+      <h2 style="font-size:15px" data-i18n="ctlaudit.title">🧾 Controls audit log</h2>
+      <p class="cap" style="margin:2px 0 10px" data-i18n="ctlaudit.cap">Every executed start/stop/restart of a container or service is recorded here — success and failure both. Read-only and append-only: this is a record, not a control.</p>
+      <div id="ctl-audit-body"></div>
+    </div>
   </div>
 </section>
 
@@ -4310,6 +4325,7 @@ function renderHealth(){
     const tr = e.target.closest('.ctrow'); if(tr && tr.dataset.ct) openLogDrawer(tr.dataset.ct);
   };
   ctlReadonlyHint('container');
+  renderCtlAudit();   // accountability panel: recent host-mutation actions (read-only)
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
   if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
@@ -5222,6 +5238,47 @@ function bindControlClicks(root){
     e.stopPropagation();  // don't trigger the container-row log drawer
     doControl(b.dataset.ctlKind, b.dataset.ctlName, b.dataset.ctl, b);
   });
+}
+
+// Controls audit log (accountability for every host mutation) — read-only render.
+// Pulls /api/controls/log (authed, private) and paints recent actions newest-first.
+// XSS-safe: every value goes through esc(). Empty state is the correct default view
+// on the live arena (controls OFF → nothing recorded yet).
+async function renderCtlAudit(){
+  const body = document.getElementById('ctl-audit-body');
+  if(!body) return;
+  let j;
+  try{ j = await (await fetch('/api/controls/log?limit=50')).json(); }
+  catch(e){ return; }   // leave the last render in place on a transient fetch error
+  const items = (j && j.items) || [];
+  if(!items.length){
+    const msg = (j && j.enabled)
+      ? I18N.t('ctlaudit.empty_enabled','No control actions recorded yet.')
+      : I18N.t('ctlaudit.empty','No control actions recorded — controls are read-only.');
+    body.innerHTML = `<div class="ins info"><div class="ic">🔒</div><div>`
+      + `<div class="t">${esc(msg)}</div></div></div>`;
+    return;
+  }
+  const rows = items.map(it=>{
+    const when = (function(){ try{ return new Date(it.ts*1000).toLocaleString(); }catch(e){ return String(it.ts); } })();
+    const res = (it.result==='ok') ? 'ok' : 'error';
+    const resLbl = I18N.t('ctlaudit.res_'+res, res==='ok'?'ok':'error');
+    const actLbl = I18N.t('ctl.'+it.action, it.action);
+    const detail = it.detail ? ` <span class="cap">${esc(it.detail)}</span>` : '';
+    const actor = it.actor ? esc(it.actor) : '—';
+    return `<tr><td class="aud-ts">${esc(when)}</td>`
+      + `<td><span class="aud-kind">${esc(it.kind)}</span> ${esc(it.target)}</td>`
+      + `<td>${esc(actLbl)}</td>`
+      + `<td><span class="aud-res ${res}">${esc(resLbl)}</span>${detail}</td>`
+      + `<td class="aud-ts">${actor}</td></tr>`;
+  }).join('');
+  body.innerHTML = `<table><thead><tr>`
+    + `<th>${esc(I18N.t('ctlaudit.col_when','When'))}</th>`
+    + `<th>${esc(I18N.t('ctlaudit.col_target','Target'))}</th>`
+    + `<th>${esc(I18N.t('ctlaudit.col_action','Action'))}</th>`
+    + `<th>${esc(I18N.t('ctlaudit.col_result','Result'))}</th>`
+    + `<th>${esc(I18N.t('ctlaudit.col_actor','Actor'))}</th>`
+    + `</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function showAlertStatus(level,text){

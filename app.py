@@ -83,6 +83,10 @@ SELF_UPDATE_HELPER_IMAGE = os.environ.get("SELF_UPDATE_HELPER_IMAGE", "docker:cl
 # default-OFF + opt-in + target-validation is load-bearing.
 ENABLE_CONTROLS = os.environ.get("ENABLE_CONTROLS", "").strip().lower() in ("1", "true", "yes", "on")
 CONTROL_ACTIONS = ("start", "stop", "restart")
+# Controls audit log: keep at most this many rows (append-only ring). A control
+# action is a rare, deliberate event — a few hundred rows is plenty of history
+# and keeps the table unconditionally bounded (pruned on every write).
+_CONTROL_AUDIT_RETENTION = 500
 # Split cache: once we know there's an update, the answer won't change for hours
 # so we can cache it long. But "no update found" / network errors should expire
 # sooner — otherwise a release published right after deploy stays invisible for
@@ -256,6 +260,20 @@ CREATE TABLE IF NOT EXISTS uptime_results(
   check_id TEXT NOT NULL, ts INTEGER NOT NULL, up INTEGER NOT NULL,
   latency_ms REAL, code INTEGER, err TEXT, days_to_expiry INTEGER);
 CREATE INDEX IF NOT EXISTS idx_uptime_results ON uptime_results(check_id, ts);
+-- Controls audit log (accountability for every host mutation): an append-only,
+-- bounded record of every EXECUTED control action (start/stop/restart of a
+-- container/service) that passed the ENABLE_CONTROLS gate and reached resolution.
+-- Both success AND failure are recorded — a rejected action is exactly what you
+-- want audited. `target` is the RESOLVED tracked name/id (never raw user input);
+-- `detail` is a short generic phrase (NO secrets/paths/tracebacks); `actor` is a
+-- coarse, best-effort client identifier (remote address only — no new PII). This
+-- table is PRIVATE: the authed LAN dashboard + /api/controls/log only; it NEVER
+-- reaches /status, /api/status, or any public feed.
+CREATE TABLE IF NOT EXISTS control_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+  kind TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL,
+  result TEXT NOT NULL, detail TEXT, actor TEXT);
+CREATE INDEX IF NOT EXISTS idx_ctrlaudit_ts ON control_audit(ts);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
@@ -12925,6 +12943,73 @@ def _control_action_from_request():
     return action, None
 
 
+def _audit_actor():
+    """A coarse, best-effort client identifier for the audit log. Reuses only
+    what Flask already has (the request's remote address) — no new PII collection,
+    no tracking. Trims to a bounded length and never raises."""
+    try:
+        # request.remote_addr is the immediate peer; behind the arena's reverse
+        # proxy that's often the proxy itself — coarse by design, that's fine.
+        return (getattr(request, "remote_addr", None) or "unknown")[:45]
+    except Exception:
+        return "unknown"
+
+
+def _record_control_audit(kind, target, action, ok, detail=""):
+    """Append one row to the controls audit log (accountability for host
+    mutations), then prune to the retention cap. Called from INSIDE the control
+    endpoints AFTER the action resolves — recording BOTH success and failure.
+
+    This is a side-record of an already-authorized action: it is NOT a mutation
+    capability of its own, and it must NEVER break the control response. Every
+    failure mode is swallowed. `detail` is expected to already be a short generic
+    phrase (the same safe string the endpoint returns to the UI) — we still cap
+    its length so nothing large or stray lands in the ring."""
+    try:
+        det = (str(detail) if detail else "")[:120]
+        row = (int(time.time()), str(kind)[:16], str(target)[:200],
+               str(action)[:16], "ok" if ok else "error", det, _audit_actor())
+        with LOCK:
+            DB.execute(
+                "INSERT INTO control_audit(ts,kind,target,action,result,detail,actor) "
+                "VALUES(?,?,?,?,?,?,?)", row)
+            # Prune to the retention cap: keep the newest _CONTROL_AUDIT_RETENTION
+            # rows, drop everything older. Bounded on every write → never grows.
+            DB.execute(
+                "DELETE FROM control_audit WHERE id NOT IN "
+                "(SELECT id FROM control_audit ORDER BY id DESC LIMIT ?)",
+                (_CONTROL_AUDIT_RETENTION,))
+            DB.commit()
+    except Exception:
+        # A logging failure must never fail or 500 the control request.
+        pass
+
+
+@app.route("/api/controls/log")
+def api_controls_log():
+    """Read-only controls audit log — recent host-mutation actions, newest-first.
+    PRIVATE (authed LAN dashboard + API only); NEVER exposed on /status or any
+    public feed. This endpoint ONLY reads: it grants no new mutation capability.
+    ?limit= is clamped to a sane cap."""
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, _CONTROL_AUDIT_RETENTION))
+    items = []
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts,kind,target,action,result,detail,actor FROM control_audit "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        for ts, kind, target, action, result, detail, actor in rows:
+            items.append({"ts": ts, "kind": kind, "target": target, "action": action,
+                          "result": result, "detail": detail or "", "actor": actor or ""})
+    except Exception:
+        items = []
+    return jsonify({"enabled": ENABLE_CONTROLS, "count": len(items), "items": items})
+
+
 @app.route("/api/containers/<name>/action", methods=["POST"])
 def api_container_action(name):
     """Start/stop/restart a Docker container. Body: {action: start|stop|restart}.
@@ -12940,6 +13025,8 @@ def api_container_action(name):
     if not cid:
         return jsonify({"ok": False, "error": "unknown container"}), 404
     ok, cerr = _docker_control(cid, action)
+    # Audit the outcome (success AND failure) — a side-record only, never fatal.
+    _record_control_audit("container", cname, action, ok, "" if ok else cerr)
     if not ok:
         return jsonify({"ok": False, "error": cerr, "container": cname, "action": action}), 502
     _ct_cache["at"] = 0   # force the next enumeration to reflect the new state
@@ -12961,6 +13048,8 @@ def api_service_action(unit):
     if not resolved:
         return jsonify({"ok": False, "error": "unknown service"}), 404
     ok, serr = _systemd_control(resolved, action)
+    # Audit the outcome (success AND failure) — a side-record only, never fatal.
+    _record_control_audit("service", resolved, action, ok, "" if ok else serr)
     if not ok:
         return jsonify({"ok": False, "error": serr, "service": resolved, "action": action}), 502
     return jsonify({"ok": True, "service": resolved, "action": action})
