@@ -479,7 +479,7 @@ def api_settings():
         # to clear without revealing the current value.
         updates = {k: body[k] for k in body if k in _app.SETTING_DEFAULTS}
         err = (_app._validate_url_settings(updates) or _app._validate_email_settings(updates)
-               or _app._validate_brief_settings(updates))
+               or _app._validate_brief_settings(updates) or _app._validate_retention_settings(updates))
         if err:
             return jsonify({"ok": False, "error": err}), 400
         _app.save_settings(updates)

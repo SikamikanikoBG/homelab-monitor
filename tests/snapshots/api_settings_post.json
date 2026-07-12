@@ -27,6 +27,7 @@
     "ntfy_server": "https://ntfy.sh",
     "ntfy_topic": "",
     "public_status_enabled": "0",
+    "retention_days": "180",
     "slack_webhook_url_set": false,
     "system_idle_watts": "",
     "tariff_mode": "single",

@@ -261,6 +261,9 @@ def sample_once():
         return
     from backend.db.repos import system as system_repo
     from backend.db.repos import experiments as exp_repo
+    # Read retention before acquiring LOCK — get_settings() also takes LOCK
+    # (non-reentrant), so calling it inside the block would deadlock the thread.
+    _retention = _app.get_retention_secs() if ts % 360 < _app.INTERVAL else None
     with _app.LOCK:
         # When the GPU is absent/failed, store NULL for the GPU columns (not 0) so
         # history charts skip the gap via AVG() instead of showing a fake 0 dip;
@@ -319,9 +322,9 @@ def sample_once():
                 if _pio_rows:
                     _app.DB.executemany("INSERT INTO proc_io_samples(ts,pid,comm,read_bps,write_bps) "
                                    "VALUES(?,?,?,?,?)", _pio_rows)
-        if ts % 360 < _app.INTERVAL:
+        if _retention is not None:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc"):
-                _app.DB.executemany(f"DELETE FROM {t} WHERE ts<?", [(ts - _app.RETENTION,)])
+                _app.DB.executemany(f"DELETE FROM {t} WHERE ts<?", [(ts - _retention,)])
             _app.DB.executemany("DELETE FROM disk_io_samples WHERE ts<?", [(ts - _app._DISK_IO_RETENTION,)])
             _app.DB.executemany("DELETE FROM proc_io_samples WHERE ts<?", [(ts - _app._PROC_IO_RETENTION,)])
         if ts % 60 < _app.INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
