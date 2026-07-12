@@ -1194,6 +1194,8 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 .hcheck .rem pre{margin:5px 0 0;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:var(--tx)}
 .hcheck .rem .cp{margin-top:5px}
 .hcheck .rem .osvars{margin:6px 0 8px}
+.mini-select{background:var(--inset);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:4px 8px;font:inherit;font-size:12px;cursor:pointer}
+.mini-select:hover{border-color:var(--mut)}
 .btn-mini{background:var(--inset);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:4px 9px;cursor:pointer;font:inherit;font-size:12px}
 .btn-mini:hover{border-color:var(--mut)}
 .btn-mini.danger{color:var(--crit);border-color:#f8514955}
@@ -2107,6 +2109,25 @@ h2 .hic{ opacity:.9 }
     <div class="card ctl-audit-card" id="ctl-audit" style="margin-top:16px">
       <h2 style="font-size:15px" data-i18n="ctlaudit.title">🧾 Controls audit log</h2>
       <p class="cap" style="margin:2px 0 10px" data-i18n="ctlaudit.cap">Every executed start/stop/restart of a container or service is recorded here — success and failure both. Read-only and append-only: this is a record, not a control.</p>
+      <div class="ctl-audit-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+        <select id="ctl-audit-f-result" class="mini-select" aria-label="Filter by result">
+          <option value="" data-i18n="ctlaudit.f_result_any">Any result</option>
+          <option value="ok" data-i18n="ctlaudit.res_ok">ok</option>
+          <option value="error" data-i18n="ctlaudit.res_error">error</option>
+        </select>
+        <select id="ctl-audit-f-action" class="mini-select" aria-label="Filter by action">
+          <option value="" data-i18n="ctlaudit.f_action_any">Any action</option>
+          <option value="start" data-i18n="ctl.start">start</option>
+          <option value="stop" data-i18n="ctl.stop">stop</option>
+          <option value="restart" data-i18n="ctl.restart">restart</option>
+        </select>
+        <select id="ctl-audit-f-kind" class="mini-select" aria-label="Filter by kind">
+          <option value="" data-i18n="ctlaudit.f_kind_any">Any kind</option>
+          <option value="container" data-i18n="ctlaudit.f_kind_container">container</option>
+          <option value="service" data-i18n="ctlaudit.f_kind_service">service</option>
+        </select>
+        <button type="button" id="ctl-audit-export" class="btn-mini" data-i18n="ctlaudit.export">⬇ Export CSV</button>
+      </div>
       <div id="ctl-audit-body"></div>
     </div>
   </div>
@@ -4385,6 +4406,7 @@ function renderHealth(){
     const tr = e.target.closest('.ctrow'); if(tr && tr.dataset.ct) openLogDrawer(tr.dataset.ct);
   };
   ctlReadonlyHint('container');
+  bindCtlAuditToolbar();
   renderCtlAudit();   // accountability panel: recent host-mutation actions (read-only)
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
@@ -5304,11 +5326,39 @@ function bindControlClicks(root){
 // Pulls /api/controls/log (authed, private) and paints recent actions newest-first.
 // XSS-safe: every value goes through esc(). Empty state is the correct default view
 // on the live arena (controls OFF → nothing recorded yet).
+// Build the read-only filter query string from the toolbar selects. Only known
+// values are ever emitted; empty = "no filter". Shared by the render fetch and the
+// CSV export so both honour the SAME filters the user has selected.
+function ctlAuditQuery(){
+  const p = new URLSearchParams();
+  p.set('limit','50');
+  const get = id => (document.getElementById(id)||{}).value || '';
+  const r = get('ctl-audit-f-result'); if(r) p.set('result', r);
+  const a = get('ctl-audit-f-action'); if(a) p.set('action', a);
+  const k = get('ctl-audit-f-kind');   if(k) p.set('kind', k);
+  return p.toString();
+}
+// Wire the filter selects (re-render on change) and the Export CSV button (opens
+// the .csv endpoint with the CURRENT filters). Idempotent — binds only once.
+let _ctlAuditBound = false;
+function bindCtlAuditToolbar(){
+  if(_ctlAuditBound) return;
+  _ctlAuditBound = true;
+  ['ctl-audit-f-result','ctl-audit-f-action','ctl-audit-f-kind'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('change', renderCtlAudit);
+  });
+  const btn = document.getElementById('ctl-audit-export');
+  if(btn) btn.addEventListener('click', ()=>{
+    // Reuse the exact same filter query so the export mirrors the on-screen view.
+    window.location.href = '/api/controls/log.csv?' + ctlAuditQuery();
+  });
+}
 async function renderCtlAudit(){
   const body = document.getElementById('ctl-audit-body');
   if(!body) return;
   let j;
-  try{ j = await (await fetch('/api/controls/log?limit=50')).json(); }
+  try{ j = await (await fetch('/api/controls/log?'+ctlAuditQuery())).json(); }
   catch(e){ return; }   // leave the last render in place on a transient fetch error
   const items = (j && j.items) || [];
   if(!items.length){
