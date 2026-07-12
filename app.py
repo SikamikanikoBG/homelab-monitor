@@ -313,7 +313,21 @@ _LLM_SAMPLES_MIGRATIONS = ("energy_wh REAL",)
 # was sent for this incident (the auto-explain worker's at-most-once dedup flag);
 # NULL until sent / for old rows. Never involves the LLM — set on notification send.
 _INCIDENTS_MIGRATIONS = ("ai_explanation TEXT", "ai_explained_at INTEGER", "ai_model TEXT",
-                         "ai_cause_notified_at INTEGER")
+                         "ai_cause_notified_at INTEGER",
+                         # ── AI incident postmortem (E1) — the capstone of the
+                         # incidents+AI thread. Written ONLY for RESOLVED (cleared)
+                         # incidents, from an explicit "Generate postmortem" action or
+                         # the dedicated off-poll postmortem worker — NEVER on any poll
+                         # path. All nullable; old rows read as NULL (drawer simply
+                         # shows the deterministic skeleton / a Generate affordance).
+                         # postmortem_json = the persisted structured postmortem blob
+                         # (JSON: {probable_cause, impact, recommended_action}); the
+                         # deterministic facts (timeline, duration, members) are NEVER
+                         # stored here — they are re-derived from the incident row on
+                         # every read so they can never drift. postmortem_at = unix ts
+                         # it was generated; postmortem_model = the model that produced
+                         # it. ONE at-most-once atomic claim via postmortem_at.
+                         "postmortem_json TEXT", "postmortem_at INTEGER", "postmortem_model TEXT")
 
 def _data_dir():
     return os.path.dirname(os.path.abspath(DB_PATH)) or "."
@@ -4571,6 +4585,15 @@ SETTING_DEFAULTS = {
     # after it persists an explanation (still-open, dedup'd, suppression-respecting).
     # When "0" (default): notification behaviour is byte-identical to before.
     "notify_ai_cause":           "0",        # "0" / "1" — opt-in
+    # ── AI incident postmortem on resolution (E1) — OFF by default ──────────────
+    # When "1", a correlated incident that RESOLVES (state→cleared) gets a short
+    # structured postmortem auto-generated — but ONLY on the dedicated off-poll
+    # postmortem worker (a cheap enqueue AFTER the DB LOCK is released, never inside
+    # evaluate_incidents/collect/health_scan/the sample loop), at most once per
+    # incident. When "0" (default): zero new auto behaviour — a postmortem is only
+    # ever produced by the explicit "Generate postmortem" action in the drawer. Its
+    # off-poll discipline mirrors incident_auto_explain exactly.
+    "incident_auto_postmortem":  "0",        # "0" / "1" — master switch
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "api_key", "mlflow_token", "webhook_url", "mqtt_pass", "slack_webhook_url", "smtp_pass"}   # never round-tripped to the UI in full (generic webhook URLs embed Slack/n8n/HA secrets)
 
@@ -6325,6 +6348,7 @@ def evaluate_incidents(anomalies, now=None):
     items = (anomalies or {}).get("items") or []
     active = {a["key"]: a for a in items if a.get("key")}
     newly_opened = False          # a fresh incident opened this pass → auto-explain candidate
+    newly_cleared = None          # an incident RESOLVED this pass → auto-postmortem candidate
     result = None
     try:
         with LOCK:
@@ -6379,6 +6403,7 @@ def evaluate_incidents(anomalies, now=None):
                     DB.execute("UPDATE incidents SET state='cleared', cleared_at=?, updated_at=?, miss=? WHERE id=?",
                                (now, now, miss, iid))
                     DB.execute("UPDATE incident_members SET active=0 WHERE incident_id=?", (iid,))
+                    newly_cleared = iid       # off-poll auto-postmortem candidate
                     _trim_incidents()
                 else:
                     DB.execute("UPDATE incidents SET miss=?, updated_at=? WHERE id=?", (miss, now, iid))
@@ -6389,6 +6414,11 @@ def evaluate_incidents(anomalies, now=None):
         # poll's DB lock: a cheap enqueue that no-ops unless the opt-in is on.
         if newly_opened and result:
             _enqueue_incident_explain(result)
+        # An incident RESOLVED this pass → enqueue an off-poll postmortem (opt-in,
+        # default OFF; a cheap enqueue AFTER LOCK release; the atomic claim inside
+        # get_incident_postmortem makes it at-most-once). NEVER an LLM call here.
+        if newly_cleared:
+            _enqueue_incident_postmortem(newly_cleared)
         return result
     except Exception as e:
         print("evaluate_incidents error:", e, flush=True)
@@ -6543,13 +6573,14 @@ def list_incidents(limit=50):
         with LOCK:
             rows = DB.execute(
                 "SELECT id, state, severity, opened_at, updated_at, cleared_at, "
-                "ai_explanation, ai_explained_at, ai_model FROM incidents "
+                "ai_explanation, ai_explained_at, ai_model, postmortem_at FROM incidents "
                 "ORDER BY (state='open') DESC, opened_at DESC LIMIT ?", (int(limit),)).fetchall()
             cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at",
-                    "ai_explanation", "ai_explained_at", "ai_model")
+                    "ai_explanation", "ai_explained_at", "ai_model", "postmortem_at")
             out = []
             for r in rows:
                 d = dict(zip(cols, r))
+                d["has_postmortem"] = bool(d.pop("postmortem_at", None))
                 d["members"] = _incident_members(d["id"])
                 d["member_count"] = len(d["members"])
                 d["active_count"] = sum(1 for m in d["members"] if m["active"])
@@ -6571,12 +6602,14 @@ def get_incident(iid):
         with LOCK:
             row = DB.execute(
                 "SELECT id, state, severity, opened_at, updated_at, cleared_at, miss, "
-                "ai_explanation, ai_explained_at, ai_model "
+                "ai_explanation, ai_explained_at, ai_model, "
+                "postmortem_json, postmortem_at, postmortem_model "
                 "FROM incidents WHERE id=?", (iid,)).fetchone()
             if not row:
                 return None
             cols = ("id", "state", "severity", "opened_at", "updated_at", "cleared_at", "miss",
-                    "ai_explanation", "ai_explained_at", "ai_model")
+                    "ai_explanation", "ai_explained_at", "ai_model",
+                    "postmortem_json", "postmortem_at", "postmortem_model")
             inc = dict(zip(cols, row))
             inc["members"] = _incident_members(iid)
         inc["member_count"] = len(inc["members"])
@@ -6601,6 +6634,12 @@ def get_incident(iid):
         _sio = _incident_spike_io(inc)
         if _sio:
             inc["spike_io"] = _sio
+        # Glanceable flag for the drawer: does a RESOLVED incident already have a
+        # persisted postmortem? (a boolean — the prose itself is fetched lazily via
+        # the dedicated postmortem endpoint, keeping this poll payload lean + never
+        # shipping the LLM prose on the default drawer poll). The raw JSON blob is
+        # NOT exposed on this read path (the API boundary strips it).
+        inc["has_postmortem"] = bool(inc.get("postmortem_json"))
         return inc
     except Exception as e:
         print("get_incident error:", e, flush=True)
@@ -9058,6 +9097,10 @@ def api_incident_one(iid):
     inc = get_incident(iid)
     if inc is None:
         return jsonify({"error": "unknown incident"}), 404
+    # Keep the drawer poll lean + LLM-prose-free: the raw postmortem JSON blob is
+    # never shipped on this read path (only a `has_postmortem` boolean). The prose
+    # is fetched lazily via GET /api/incidents/<id>/postmortem.
+    inc = {k: v for k, v in inc.items() if k != "postmortem_json"}
     return jsonify({"now": int(time.time()), "incident": inc})
 
 @app.route("/api/incidents/<iid>/explain", methods=["POST"])
@@ -9080,6 +9123,44 @@ def api_incident_explain(iid):
     res.setdefault("id", iid)
     res["now"] = int(time.time())
     res["model"] = COPILOT_MODEL
+    res["enabled"] = COPILOT_ENABLED
+    return jsonify(res)
+
+@app.route("/api/incidents/<iid>/postmortem", methods=["GET", "POST"])
+def api_incident_postmortem(iid):
+    """The AI incident postmortem for a RESOLVED incident — the capstone of the
+    incidents+AI thread. This + the explain endpoint are the ONLY incident
+    endpoints that may reach the LLM; the plain reads (/api/incidents and
+    /api/incidents/<id>) stay cache-only.
+
+    • GET (default): returns the PERSISTED postmortem for a resolved incident, plus
+      the deterministic facts (timeline/duration/members) — ZERO LLM call. A
+      resolved incident with no postmortem yet returns the deterministic skeleton
+      with llm_status "ungenerated"; an OPEN incident returns resolved:false.
+    • GET ?generate=1 / POST: EXPLICIT generation — assembles grounding from the
+      real incident data and asks the local LLM to compose the prose (JSON mode).
+      At-most-once via an atomic claim; ?regenerate=1 / {"regenerate":true} forces
+      a fresh generation. LLM off/garbage → deterministic skeleton, honest
+      llm_status, never a 500.
+
+    Always 200 except a clean 404 for an unknown id. Never mutates the host /
+    incident lifecycle / any alert; the ONLY write is the cached postmortem row.
+    PRIVATE (authed) — never on the public status/RSS surface."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    def _flag(name):
+        v = request.args.get(name)
+        if v is not None:
+            return str(v).strip().lower() in ("1", "true", "yes", "on")
+        return bool(isinstance(payload, dict) and payload.get(name))
+    force = _flag("regenerate")
+    generate = force or _flag("generate") or request.method == "POST"
+    res = get_incident_postmortem(iid, generate=generate, force=force)
+    if res.get("llm_status") == "unknown":
+        return jsonify({"error": "unknown incident"}), 404
+    res["now"] = int(time.time())
     res["enabled"] = COPILOT_ENABLED
     return jsonify(res)
 
@@ -11729,6 +11810,348 @@ def generate_incident_explanation(iid, force=False, now=None):
     if inf:
         out["inference"] = inf
     return out
+
+
+# ── AI incident postmortem (E1) — the capstone of the incidents+AI thread ─────
+# When a correlated incident RESOLVES (state→'cleared'), the dashboard can write
+# its own short, structured postmortem: a deterministic timeline + duration +
+# member list (from the DB — never the LLM) plus LLM-composed prose for probable
+# cause / impact / recommended action. Generated ONLY from an explicit user action
+# (POST/?generate=1) or the dedicated off-poll postmortem worker — NEVER on any
+# poll path. Persisted at-most-once via an atomic claim of postmortem_at, so a
+# resolution never triggers a generation storm. Regeneration is explicit only.
+# Graceful degrade: LLM off/garbage → no prose, but the deterministic skeleton
+# (timeline/duration/members) still renders. Series keys only — NEVER a check
+# target / URL / credential — so it stays consistent with the incidents' privacy
+# contract (these never reach the public /status surface).
+_POSTMORTEM_FIELD_MAX = 600     # hard cap per LLM prose field (chars)
+
+# JSON-Schema for the structured postmortem prose. The deterministic facts
+# (timeline/duration/members) come from the DB, NOT the model — the model only
+# composes the three prose fields from the grounding facts.
+POSTMORTEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "probable_cause": {"type": "string"},
+        "impact": {"type": "string"},
+        "recommended_action": {"type": "string"},
+    },
+    "required": ["probable_cause", "impact", "recommended_action"],
+}
+
+
+def _incident_postmortem_facts_deterministic(inc):
+    """The DETERMINISTIC half of a postmortem, derived purely from the incident row
+    — never the LLM. Timeline (opened→member joins→cleared), duration (opened→
+    cleared), severity, and the member list. Re-derived on every read so it can
+    never drift from the DB. Series keys only. Never raises."""
+    opened = inc.get("opened_at") or 0
+    cleared = inc.get("cleared_at") or 0
+    dur = (cleared - opened) if (cleared and opened and cleared >= opened) else None
+    members = []
+    for m in (inc.get("members") or []):
+        members.append({
+            "series": m.get("series"),
+            "label": _EXPLAIN_LABELS.get(m.get("series") or "", m.get("series")),
+            "direction": m.get("direction"),
+            "peak_z": (round(abs(m.get("peak_z") or 0), 1)
+                       if m.get("peak_z") is not None else None),
+            "peak_value": m.get("peak_value"), "baseline": m.get("baseline"),
+            "unit": m.get("unit"),
+            "first_seen": m.get("first_seen"), "last_seen": m.get("last_seen"),
+        })
+    return {
+        "id": inc.get("id"), "severity": inc.get("severity"),
+        "opened_at": opened or None, "cleared_at": cleared or None,
+        "duration_s": dur, "member_count": len(members), "members": members,
+        # the DB-derived lifecycle timeline get_incident already computed
+        "timeline": inc.get("timeline") or [],
+    }
+
+
+def _incident_postmortem_grounding(inc, det):
+    """Terse deterministic English lines grounding the LLM postmortem: what fired,
+    for how long, how bad, plus any already-persisted probable-cause and spike-time
+    I/O attribution. This is the model's ONLY source material — it must not invent
+    anything beyond these facts. Doubles as the no-LLM prose fallback seed. Series
+    keys only. Never raises."""
+    lines = []
+    sev = det.get("severity") or "warning"
+    n = det.get("member_count") or 0
+    dur = det.get("duration_s")
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(det.get("opened_at") or 0))
+    durtxt = _human_dur(dur) if dur is not None else "an unknown duration"
+    lines.append(
+        "A {sev} correlated incident opened {when}, ran for {d}, then all {n} "
+        "signal(s) returned to baseline (resolved).".format(
+            sev=sev, when=when, d=durtxt, n=n))
+    for m in (det.get("members") or [])[:6]:
+        name = m.get("label") or m.get("series") or "a series"
+        direction = m.get("direction") or "change"
+        u = m.get("unit") or ""
+        seg = "{name}: {dir}".format(name=name, dir=direction)
+        if m.get("peak_value") is not None and m.get("baseline") is not None:
+            seg += " to {v}{u} (baseline ~{b}{u})".format(
+                v=m.get("peak_value"), u=u, b=m.get("baseline"))
+        if m.get("peak_z") is not None:
+            seg += " at {z}σ".format(z=m.get("peak_z"))
+        seg += "."
+        lines.append(seg)
+    # Reuse the already-persisted probable-cause (never a fresh LLM call) if present.
+    cause = (inc.get("ai_explanation") or "").strip()
+    if cause:
+        lines.append("Prior probable-cause note: " + cause)
+    # Spike-time I/O attribution (pure cached ring read, comm only) if present.
+    sio = inc.get("spike_io") or {}
+    if sio.get("writer") and sio["writer"].get("name"):
+        lines.append("Heaviest writer during the spike: {n} ({r}).".format(
+            n=sio["writer"]["name"], r=sio["writer"].get("write_h") or ""))
+    if sio.get("reader") and sio["reader"].get("name"):
+        lines.append("Heaviest reader during the spike: {n} ({r}).".format(
+            n=sio["reader"]["name"], r=sio["reader"].get("read_h") or ""))
+    return lines
+
+
+def _postmortem_prompt(facts):
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "A correlated monitoring incident has just RESOLVED. Write a short "
+        "post-incident review using ONLY the facts below (deterministic readings "
+        "from the lab — do NOT invent hostnames, numbers, times or causes not "
+        "present in the facts). Return a JSON object with: \"probable_cause\" "
+        "(1-2 plain-English sentences naming the most likely cause; say it is "
+        "unclear if the facts don't point to one), \"impact\" (1 sentence on what "
+        "this likely affected, grounded in the signals that fired), and "
+        "\"recommended_action\" (one short, concrete follow-up the operator could "
+        "take, or \"\" if none). No markdown.\n\n"
+        "FACTS:\n- " + "\n- ".join(facts) + "\n")
+
+
+def _postmortem_structured(facts, capture=None):
+    """Ask the LLM for the typed postmortem prose via ollama JSON mode; parse it
+    defensively. Returns (dict, error) where the dict is
+    {'probable_cause','impact','recommended_action'} (each a bounded string,
+    recommended_action possibly ''). Graceful degrade: LLM down / no text / not
+    valid JSON / missing probable_cause → returns (None, error_code); the caller
+    then persists nothing and the deterministic skeleton still renders. Never
+    raises. `capture` (a list) receives the one metrics dict for cost accounting."""
+    _scap = []
+    text, err = _ollama_generate(
+        _postmortem_prompt(facts), capture=_scap, fmt=POSTMORTEM_SCHEMA)
+    if text is None:
+        return None, (err or "unreachable")
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return None, "bad_response"
+    if not isinstance(obj, dict):
+        return None, "bad_response"
+    cause = obj.get("probable_cause")
+    if not (isinstance(cause, str) and cause.strip()):
+        return None, "bad_response"
+    def _fld(v):
+        if not isinstance(v, str):
+            return ""
+        return " ".join(v.split())[:_POSTMORTEM_FIELD_MAX]
+    out = {"probable_cause": _fld(cause),
+           "impact": _fld(obj.get("impact")),
+           "recommended_action": _fld(obj.get("recommended_action"))}
+    if isinstance(capture, list):
+        capture.append(_scap[0] if _scap else None)
+    return out, None
+
+
+def _incident_postmortem_payload(inc, prose=None, model=None, at=None,
+                                 llm_status="none"):
+    """Assemble the full postmortem payload for the drawer: the DETERMINISTIC facts
+    (always present) + the LLM prose (when generated/cached). Never raises."""
+    det = _incident_postmortem_facts_deterministic(inc)
+    pm = {"deterministic": det, "generated": bool(prose),
+          "probable_cause": (prose or {}).get("probable_cause") if prose else None,
+          "impact": (prose or {}).get("impact") if prose else None,
+          "recommended_action": (prose or {}).get("recommended_action") if prose else None,
+          "model": model, "generated_at": at, "llm_status": llm_status}
+    return pm
+
+
+def _load_persisted_postmortem(inc):
+    """Return the persisted LLM prose dict for an incident (or None), from the
+    postmortem_json column. Never raises."""
+    raw = inc.get("postmortem_json")
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and obj.get("probable_cause"):
+            return obj
+    except Exception:
+        pass
+    return None
+
+
+def get_incident_postmortem(iid, generate=False, force=False, now=None):
+    """THE reader/writer of an incident postmortem. Cache-only unless explicitly
+    asked to generate.
+
+    • Unknown incident        → {"llm_status":"unknown", "resolved":False, ...}.
+    • Open (not resolved)     → {"resolved":False, "postmortem":None} — an open
+                                incident has no postmortem yet. NEVER an LLM call.
+    • Resolved + cache        → returns the persisted prose + deterministic facts,
+                                ZERO LLM call (unless force).
+    • Resolved + generate     → assembles grounding under LOCK, RELEASES it, calls
+                                the model (JSON mode, no lock held). On success
+                                ATOMICALLY claims postmortem_at (at-most-once) and
+                                persists the prose. LLM down/garbage → persists
+                                nothing; the deterministic skeleton still returns
+                                with an honest llm_status. force re-generates.
+
+    Returns {"ok", "incident_id", "resolved", "postmortem":{...}|None, "model",
+    "llm_status"}. Never mutates the host / incident lifecycle / any alert. Never
+    raises."""
+    now = int(now if now is not None else time.time())
+    inc = get_incident(iid)             # cached read — zero LLM
+    if inc is None:
+        return {"ok": False, "incident_id": iid, "resolved": False,
+                "postmortem": None, "model": COPILOT_MODEL, "llm_status": "unknown"}
+    resolved = inc.get("state") == "cleared"
+    if not resolved:
+        # An open incident has no postmortem yet — clean null, no LLM.
+        return {"ok": True, "incident_id": iid, "resolved": False,
+                "postmortem": None, "model": COPILOT_MODEL, "llm_status": "open"}
+    cached = _load_persisted_postmortem(inc)
+    if cached and not force:
+        pm = _incident_postmortem_payload(
+            inc, prose=cached, model=inc.get("postmortem_model"),
+            at=inc.get("postmortem_at"), llm_status="ok")
+        return {"ok": True, "incident_id": iid, "resolved": True,
+                "postmortem": pm, "model": inc.get("postmortem_model") or COPILOT_MODEL,
+                "llm_status": "ok", "cached": True}
+    if not generate:
+        # Resolved but not yet generated and not asked to → deterministic skeleton.
+        pm = _incident_postmortem_payload(inc, llm_status="ungenerated")
+        return {"ok": True, "incident_id": iid, "resolved": True, "postmortem": pm,
+                "model": COPILOT_MODEL, "llm_status": "ungenerated", "cached": False}
+    # ── explicit generation (LOCK released before the model call) ──────────────
+    det = _incident_postmortem_facts_deterministic(inc)
+    facts = _incident_postmortem_grounding(inc, det)
+    _cap = []
+    prose, err = _postmortem_structured(facts, capture=_cap)   # NO lock held here
+    if prose is None:
+        # LLM off/garbage → persist nothing, still return the deterministic skeleton.
+        pm = _incident_postmortem_payload(inc, llm_status=err or "unreachable")
+        return {"ok": True, "incident_id": iid, "resolved": True, "postmortem": pm,
+                "model": COPILOT_MODEL, "llm_status": err or "unreachable",
+                "cached": False}
+    blob = json.dumps(prose)
+    # Atomic at-most-once claim: on a first generation (not force) only write when
+    # nothing is persisted yet — so two concurrent generates never both persist.
+    # force overwrites unconditionally (explicit regenerate).
+    try:
+        with LOCK:
+            if force:
+                cur = DB.execute(
+                    "UPDATE incidents SET postmortem_json=?, postmortem_at=?, "
+                    "postmortem_model=? WHERE id=? AND state='cleared'",
+                    (blob, now, COPILOT_MODEL, iid))
+            else:
+                cur = DB.execute(
+                    "UPDATE incidents SET postmortem_json=?, postmortem_at=?, "
+                    "postmortem_model=? WHERE id=? AND state='cleared' "
+                    "AND postmortem_at IS NULL",
+                    (blob, now, COPILOT_MODEL, iid))
+            claimed = cur.rowcount
+            DB.commit()
+    except Exception as e:
+        print("store incident postmortem error:", e, flush=True)
+        try: DB.rollback()
+        except Exception: pass
+        claimed = 0
+    if not claimed and not force:
+        # Someone else won the claim — return the now-persisted version (no re-gen).
+        inc2 = get_incident(iid)
+        cached2 = _load_persisted_postmortem(inc2) if inc2 else None
+        pm = _incident_postmortem_payload(
+            inc2 or inc, prose=cached2, model=(inc2 or inc).get("postmortem_model"),
+            at=(inc2 or inc).get("postmortem_at"), llm_status="ok")
+        return {"ok": True, "incident_id": iid, "resolved": True, "postmortem": pm,
+                "model": COPILOT_MODEL, "llm_status": "ok", "cached": True}
+    pm = _incident_postmortem_payload(inc, prose=prose, model=COPILOT_MODEL,
+                                      at=now, llm_status="ok")
+    out = {"ok": True, "incident_id": iid, "resolved": True, "postmortem": pm,
+           "model": COPILOT_MODEL, "llm_status": "ok", "cached": False}
+    inf = _inference_cost(_cap[0] if _cap else None, now)
+    if inf:
+        out["inference"] = inf
+    return out
+
+
+# ── Off-poll postmortem worker (E1) — dedicated, decoupled ────────────────────
+# When `incident_auto_postmortem` is "1", an incident that RESOLVES gets a
+# postmortem generated automatically — but ONLY here, on a single daemon worker
+# draining a queue, NEVER inside evaluate_incidents/collect/health_scan/the sample
+# loop. The collector merely ENQUEUES the id (a cheap put AFTER the DB LOCK is
+# released). Rate-limited, one at a time, de-duplicated. The atomic claim in
+# get_incident_postmortem guarantees at-most-once even if enqueued twice.
+_INCIDENT_PM_Q = queue.Queue()
+_INCIDENT_PM_QUEUED = set()
+_INCIDENT_PM_QLOCK = threading.Lock()
+_INCIDENT_PM_MIN_GAP = float(os.environ.get("INCIDENT_PM_MIN_GAP", "10"))
+_incident_pm_worker_started = False
+
+
+def _incident_postmortem_worker():
+    """Drain the postmortem queue one id at a time, rate-limited. Runs forever on a
+    daemon thread; every generation is a graceful no-op when the LLM is down."""
+    last = 0.0
+    while True:
+        iid = _INCIDENT_PM_Q.get()
+        try:
+            with _INCIDENT_PM_QLOCK:
+                _INCIDENT_PM_QUEUED.discard(iid)
+            gap = _INCIDENT_PM_MIN_GAP - (time.time() - last)
+            if gap > 0:
+                time.sleep(gap)
+            # The opt-in may have flipped OFF since enqueue — re-check before any
+            # LLM work. get_incident_postmortem is itself cache-safe (skips the
+            # model when a postmortem already exists / the incident isn't resolved).
+            if get_settings().get("incident_auto_postmortem") == "1":
+                get_incident_postmortem(iid, generate=True, force=False)
+            last = time.time()
+        except Exception as e:
+            print("incident postmortem worker error:", e, flush=True)
+        finally:
+            _INCIDENT_PM_Q.task_done()
+
+
+def _ensure_incident_postmortem_worker():
+    """Lazily start the single worker thread on first real enqueue (so a process
+    that never opts in — and the test suite — never spawns it)."""
+    global _incident_pm_worker_started
+    with _INCIDENT_PM_QLOCK:
+        if _incident_pm_worker_started:
+            return
+        threading.Thread(target=_incident_postmortem_worker, name="incident-postmortem",
+                         daemon=True).start()
+        _incident_pm_worker_started = True
+
+
+def _enqueue_incident_postmortem(iid):
+    """Queue a just-RESOLVED incident for auto-postmortem IF the opt-in is on. A
+    cheap, DB-LOCK-free trigger called ONLY after evaluate_incidents releases LOCK;
+    reads the setting (its own lock), de-dupes, and hands the id to the worker. A
+    no-op when the toggle is off (the default). Never raises, never blocks the
+    caller on the LLM."""
+    try:
+        if not iid or get_settings().get("incident_auto_postmortem") != "1":
+            return
+        with _INCIDENT_PM_QLOCK:
+            if iid in _INCIDENT_PM_QUEUED:
+                return
+            _INCIDENT_PM_QUEUED.add(iid)
+        _ensure_incident_postmortem_worker()
+        _INCIDENT_PM_Q.put(iid)
+    except Exception as e:
+        print("enqueue incident postmortem error:", e, flush=True)
 
 
 # JSON-Schema for the ask-box's structured answer — mirrors EXPLAIN_SCHEMA so the

@@ -838,6 +838,14 @@ tr.reg-dead td{opacity:1}
 .incd-sec-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin-bottom:10px}
 .incd-meta{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
 .incd-meta dt{color:var(--mut)}
+/* Postmortem section */
+.incd-pm-facts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.incd-pm-chip{font-size:11px;font-weight:600;color:var(--mut);background:var(--inset);
+  border:1px solid var(--bd);border-radius:999px;padding:2px 9px}
+.incd-pm-fld{margin-bottom:10px}
+.incd-pm-fld:last-child{margin-bottom:0}
+.incd-pm-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);margin-bottom:3px}
+.incd-pm-val{font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .incd-meta dd{margin:0;font-family:var(--mono);font-size:12.5px}
 .incd-dur{color:var(--info);font-family:inherit;font-size:12px}
 /* glanceable spike-time disk-I/O attribution ("who wrote DURING the spike") */
@@ -8298,8 +8306,13 @@ function _incdRender(inc){
       +'<div class="incd-why-out" id="incd-why-'+mi+'" hidden style="margin-top:8px"></div></div>'
       +'</div>';
   }).join('') || '<div class="muted" style="font-size:13px">'+esc(I18N.t('incd.no_members','No member signals.'))+'</div>';
+  // Postmortem section — RESOLVED (cleared) incidents only. The prose is fetched
+  // lazily from the dedicated endpoint; the default drawer poll never ships it.
+  const pmSec = open ? '' :
+    '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.pm_title','🧾 Postmortem'))+'</div><div id="incd-pm"></div></section>';
   body.innerHTML=
     '<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.ai_title','AI explanation'))+'</div><div id="incd-ai"></div></section>'
+   +pmSec
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.overview','Overview'))+'</div>'+meta+_incdSpikeIo(inc)+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.timeline','Timeline'))+'</div>'+tlHtml+'</section>'
    +'<section class="incd-sec"><div class="incd-sec-h">'+esc(I18N.t('incd.members','Signals'))+'</div>'+memHtml+'</section>';
@@ -8307,6 +8320,100 @@ function _incdRender(inc){
     btn.onclick=()=>_incdExplain(inc, +btn.getAttribute('data-incd-why'), btn);
   });
   _incdAiRender(inc);
+  if(!open) _incdPmRender(inc);
+}
+// ── AI incident postmortem in the drawer (RESOLVED incidents only) ────────────
+// On drawer open of a resolved incident, does a ONE cache-only GET of the
+// postmortem endpoint (never the LLM). If already generated → renders the prose.
+// If not → renders the deterministic skeleton (timeline/duration/members already
+// in the drawer) with a "Generate" affordance that POSTs to trigger a one-shot
+// generation. The 30s drawer refresh never re-fetches the postmortem (INCD_PM_STATE
+// guards it). All LLM prose is XSS-escaped (untrusted).
+let INCD_PM_STATE=null;
+function _incdPmRender(inc){
+  const box=document.getElementById('incd-pm'); if(!box) return;
+  // (re)initialise per-open state on a new incident id
+  if(!INCD_PM_STATE || String(INCD_PM_STATE.iid)!==String(inc.id))
+    INCD_PM_STATE={iid:String(inc.id), busy:false, tried:false, result:null};
+  const st=INCD_PM_STATE;
+  if(st.busy){ box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>'; return; }
+  if(st.result){ _incdPmPaint(box, st.result, inc.id); return; }
+  if(!st.tried){                                     // first open → one cache-only GET
+    box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+    _incdPmFetch(inc.id, false, false);
+    return;
+  }
+  box.innerHTML='<div class="muted">'+esc(I18N.t('incd.pm_none','No postmortem yet.'))+'</div>';
+}
+function _incdPmActions(iid, generated, model, at){
+  let meta='';
+  if(generated && model) meta='<span class="muted" style="font-size:11px;margin-right:8px">'
+    +esc(I18N.tf('incd.ai_by','via {m}',{m:model}))+(at?' · '+esc(relTime(at)):'')+'</span>';
+  const lbl=generated?I18N.t('incd.pm_regen','Regenerate'):I18N.t('incd.pm_generate','Generate postmortem');
+  return '<div style="margin-top:10px">'+meta
+    +'<button type="button" class="reco-link" id="incd-pm-gen">'+esc(lbl)+'</button></div>';
+}
+function _incdPmPaint(box, j, iid){
+  if(!box) return;
+  const pm=(j&&j.postmortem)||null;
+  if(!pm){ box.innerHTML='<div class="muted">'+esc(I18N.t('incd.pm_none','No postmortem yet.'))+'</div>'; return; }
+  const det=pm.deterministic||{};
+  let html='';
+  // deterministic summary line (duration · signals) — always present, no LLM
+  const durTxt=_incdDur(det.opened_at, det.cleared_at);
+  html+='<div class="incd-pm-facts">'
+    +'<span class="incd-pm-chip">'+esc(I18N.tf('incd.pm_ran','ran {d}',{d:durTxt||'—'}))+'</span>'
+    +'<span class="incd-pm-chip">'+esc(I18N.tf('inc.signals_n','{t} signals',{t:det.member_count||0}))+'</span>'
+    +'</div>';
+  if(pm.generated){
+    html+=_incdPmField('incd.pm_cause','Probable cause', pm.probable_cause);
+    html+=_incdPmField('incd.pm_impact','Impact', pm.impact);
+    html+=_incdPmField('incd.pm_action','Recommended action', pm.recommended_action);
+  }else{
+    // graceful skeleton — honest note when the LLM is off/unreachable/ungenerated
+    const st=(j&&j.llm_status)||'';
+    const note=(st==='ungenerated')
+      ? I18N.t('incd.pm_ungenerated','A postmortem hasn’t been written for this resolved incident yet.')
+      : I18N.t('incd.pm_offline','The local AI is unavailable, so only the deterministic timeline and duration are shown.');
+    html+='<div class="muted" style="font-size:13px;margin-top:6px">'+esc(note)+'</div>';
+  }
+  html+=_incdPmActions(iid, pm.generated, pm.model, pm.generated_at);
+  box.innerHTML=html;
+  const gb=document.getElementById('incd-pm-gen');
+  if(gb) gb.onclick=()=>_incdPmFetch(iid, true, pm.generated);   // force only if already generated
+}
+function _incdPmField(key, en, val){
+  if(!val) return '';
+  return '<div class="incd-pm-fld"><div class="incd-pm-lbl">'+esc(I18N.t(key,en))+'</div>'
+    +'<div class="incd-pm-val">'+esc(val)+'</div></div>';
+}
+async function _incdPmFetch(iid, generate, force){
+  const st=INCD_PM_STATE;
+  if(!st || String(st.iid)!==String(iid) || st.busy) return;
+  st.busy=true; st.tried=true;
+  const box=document.getElementById('incd-pm');
+  if(box && generate) box.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  let j=null;
+  try{
+    // GET (cache-only) on first open; POST to explicitly generate/regenerate.
+    if(generate){
+      j=await(await fetch('/api/incidents/'+encodeURIComponent(iid)+'/postmortem',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({regenerate:!!force})})).json();
+    }else{
+      j=await(await fetch('/api/incidents/'+encodeURIComponent(iid)+'/postmortem')).json();
+    }
+  }catch(e){ j={resolved:true,postmortem:null,llm_status:'unreachable'}; }
+  if(!INCD_PM_STATE || String(INCD_PM_STATE.iid)!==String(iid)) return;   // drawer changed
+  st.busy=false; st.result=j;
+  // reflect a freshly-generated postmortem into the row cache so the badge appears
+  if(j && j.postmortem && j.postmortem.generated) _incApplyPostmortem(iid);
+  _incdPmPaint(document.getElementById('incd-pm'), j, iid);
+}
+function _incApplyPostmortem(iid){
+  try{
+    const it=((INCIDENTS&&INCIDENTS.incidents)||[]).find(x=>String(x.id)===String(iid));
+    if(it && !it.has_postmortem){ it.has_postmortem=true; renderIncidents(); }
+  }catch(e){}
 }
 // ── Persisted incident AI explanation in the drawer ───────────────────────────
 // Shows the CACHED explanation immediately if present (with model/time + a
