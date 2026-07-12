@@ -109,6 +109,44 @@ class TestNotifiedPersist(unittest.TestCase):
         self.assertNotIn("container:c0", app._NOTIFIED)
         self.assertIn(f"container:c{cap + 24}", app._NOTIFIED)
 
+    def test_runtime_bound_holds_without_restart(self):
+        # OOM keys (`oom:SVC:TS`) are per-event and never _clear()ed. Prove the
+        # table stays bounded during ONE long-lived process — i.e. WITHOUT any
+        # restart/restore — by persisting many distinct transient keys through the
+        # normal write-through path and asserting the count never materially
+        # exceeds the cap. This exercises the occasional runtime prune.
+        cap = app._NOTIFIED_STATE_CAP
+        s = {**app.SETTING_DEFAULTS}
+        with patch.object(app, "dispatch_alert", side_effect=lambda *a, **k: []):
+            # Emit far more distinct keys than the cap, no restore in between.
+            for i in range(cap * 2 + 137):
+                app._emit(s, f"oom:svc:{i}", "critical", "T", "B")
+        remaining = app.DB.execute(
+            "SELECT COUNT(*) FROM notified_state").fetchone()[0]
+        # Never grows past the cap by more than one prune interval's worth of
+        # inserts (the prune runs every _NOTIFIED_PRUNE_EVERY inserts).
+        self.assertLessEqual(remaining, cap + app._NOTIFIED_PRUNE_EVERY)
+        # And an explicit prune call brings it exactly to the cap.
+        app._prune_notified_state()
+        remaining2 = app.DB.execute(
+            "SELECT COUNT(*) FROM notified_state").fetchone()[0]
+        self.assertEqual(remaining2, cap)
+
+    def test_prune_failure_does_not_break_dispatch(self):
+        # A prune failure (as opposed to a persist failure) must also never break
+        # alert dispatch — the prune is wrapped independently.
+        calls = []
+        s = {**app.SETTING_DEFAULTS}
+        with patch.object(app, "_prune_notified_state",
+                          side_effect=RuntimeError("prune boom")):
+            with patch.object(app, "dispatch_alert",
+                              side_effect=lambda *a, **k: calls.append(a) or []):
+                # Force a key count that lands on the prune interval.
+                for i in range(app._NOTIFIED_PRUNE_EVERY):
+                    app._emit(s, f"container:x{i}", "warning", "T", "B")
+        # Every emit dispatched despite the prune raising on the interval hit.
+        self.assertEqual(len(calls), app._NOTIFIED_PRUNE_EVERY)
+
     def test_persist_failure_does_not_break_dispatch(self):
         # A forced DB error inside the write-through path must NOT prevent the alert
         # from being dispatched, and must leave the in-memory arm intact.

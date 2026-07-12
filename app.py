@@ -4634,29 +4634,18 @@ _NOTIFIER_LOCK = threading.Lock()
 # a churn of ephemeral container names or OOM events could accumulate. We prune the
 # oldest rows past this cap on restore so the table can never grow without bound.
 _NOTIFIED_STATE_CAP = 500
+# Prune the notified_state table back to the cap at runtime once every N inserts,
+# not on every single insert — the per-event OOM keys (`oom:SVC:TS`) are never
+# _clear()ed, so within one long-lived process the table would otherwise grow
+# unbounded until the next restart-time prune. An occasional bounded prune keeps
+# it from ever materially exceeding the cap while staying cheap on the hot path.
+_NOTIFIED_PRUNE_EVERY = 50
+_notified_insert_count = 0
 
-def _persist_notified(key, on):
-    """Write-through one notifier edge-state key to SQLite. Defensive: a persistence
-    failure must NEVER break alert evaluation/dispatch — the in-memory `_NOTIFIED`
-    dict remains the source of truth for the running process; the table is only a
-    restart-durable mirror. Caller already holds _NOTIFIER_LOCK."""
-    try:
-        with LOCK:
-            if on:
-                DB.execute("INSERT INTO notified_state(key,notified_at) VALUES(?,?) "
-                           "ON CONFLICT(key) DO NOTHING", (key, int(time.time())))
-            else:
-                DB.execute("DELETE FROM notified_state WHERE key=?", (key,))
-            DB.commit()
-    except Exception as e:
-        print("notified_state persist error:", e, flush=True)
-
-def restore_notified_state():
-    """On startup, hydrate the in-memory `_NOTIFIED` dict from SQLite so the first
-    post-restart notifier scan does NOT treat an already-fired-and-still-true
-    condition as a fresh edge (which would re-fire a duplicate notification). Prunes
-    the table to the newest _NOTIFIED_STATE_CAP rows first. Defensive: any failure
-    just leaves _NOTIFIED empty (the pre-persistence behaviour)."""
+def _prune_notified_state():
+    """Delete the oldest rows so the table holds at most _NOTIFIED_STATE_CAP rows.
+    Cheap no-op when already under the cap. Defensive: a prune failure must NEVER
+    break alert evaluation/dispatch. Caller must NOT hold LOCK."""
     try:
         with LOCK:
             over = DB.execute(
@@ -4667,6 +4656,41 @@ def restore_notified_state():
                     "(SELECT key FROM notified_state ORDER BY notified_at ASC LIMIT ?)",
                     (over,))
                 DB.commit()
+    except Exception as e:
+        print("notified_state prune error:", e, flush=True)
+
+def _persist_notified(key, on):
+    """Write-through one notifier edge-state key to SQLite. Defensive: a persistence
+    failure must NEVER break alert evaluation/dispatch — the in-memory `_NOTIFIED`
+    dict remains the source of truth for the running process; the table is only a
+    restart-durable mirror. Caller already holds _NOTIFIER_LOCK."""
+    global _notified_insert_count
+    try:
+        with LOCK:
+            if on:
+                DB.execute("INSERT INTO notified_state(key,notified_at) VALUES(?,?) "
+                           "ON CONFLICT(key) DO NOTHING", (key, int(time.time())))
+            else:
+                DB.execute("DELETE FROM notified_state WHERE key=?", (key,))
+            DB.commit()
+        # Occasional runtime prune so per-event keys (OOM) can't grow the table
+        # unbounded across a long uptime. Bounded work, off the per-insert path.
+        if on:
+            _notified_insert_count += 1
+            if _notified_insert_count % _NOTIFIED_PRUNE_EVERY == 0:
+                _prune_notified_state()
+    except Exception as e:
+        print("notified_state persist error:", e, flush=True)
+
+def restore_notified_state():
+    """On startup, hydrate the in-memory `_NOTIFIED` dict from SQLite so the first
+    post-restart notifier scan does NOT treat an already-fired-and-still-true
+    condition as a fresh edge (which would re-fire a duplicate notification). Prunes
+    the table to the newest _NOTIFIED_STATE_CAP rows first. Defensive: any failure
+    just leaves _NOTIFIED empty (the pre-persistence behaviour)."""
+    try:
+        _prune_notified_state()
+        with LOCK:
             rows = DB.execute("SELECT key FROM notified_state").fetchall()
         with _NOTIFIER_LOCK:
             for (k,) in rows:
@@ -13304,29 +13328,130 @@ def _record_control_audit(kind, target, action, ok, detail=""):
         pass
 
 
+# Whitelists for the read-only audit-log filters. Any value NOT in these sets is
+# ignored gracefully (treated as "no filter") — never interpolated into SQL.
+_AUDIT_FILTER_RESULTS = ("ok", "error")
+_AUDIT_FILTER_ACTIONS = ("start", "stop", "restart")
+_AUDIT_FILTER_KINDS   = ("container", "service")
+
+def _audit_filters_from_request():
+    """Parse the optional read-only filters on /api/controls/log(.csv):
+      ?result=ok|error  ?action=start|stop|restart  ?kind=container|service
+      ?since=<unix_ts>
+    Returns (where_sql, params, echo) where `echo` is the sanitized filter dict
+    reflected back to the client. Unknown/invalid values are dropped silently —
+    only whitelisted, parametrized clauses ever reach SQL (no injection surface)."""
+    where, params, echo = [], [], {}
+    result = (request.args.get("result") or "").strip().lower()
+    if result in _AUDIT_FILTER_RESULTS:
+        where.append("result=?"); params.append(result); echo["result"] = result
+    action = (request.args.get("action") or "").strip().lower()
+    if action in _AUDIT_FILTER_ACTIONS:
+        where.append("action=?"); params.append(action); echo["action"] = action
+    kind = (request.args.get("kind") or "").strip().lower()
+    if kind in _AUDIT_FILTER_KINDS:
+        where.append("kind=?"); params.append(kind); echo["kind"] = kind
+    since_raw = request.args.get("since")
+    if since_raw is not None:
+        try:
+            since = int(float(since_raw))
+            if since >= 0:
+                where.append("ts>=?"); params.append(since); echo["since"] = since
+        except (TypeError, ValueError):
+            pass
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    return where_sql, params, echo
+
+def _audit_limit_from_request():
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    return max(1, min(limit, _CONTROL_AUDIT_RETENTION))
+
+def _query_control_audit(where_sql, params, limit):
+    """Read filtered audit rows newest-first, bounded by `limit`. Read-only; never
+    raises out (returns [] on any DB error)."""
+    try:
+        with LOCK:
+            rows = DB.execute(
+                "SELECT ts,kind,target,action,result,detail,actor FROM control_audit"
+                + where_sql + " ORDER BY id DESC LIMIT ?",
+                tuple(params) + (limit,)).fetchall()
+        return [{"ts": ts, "kind": kind, "target": target, "action": action,
+                 "result": result, "detail": detail or "", "actor": actor or ""}
+                for ts, kind, target, action, result, detail, actor in rows]
+    except Exception:
+        return []
+
+def _csv_neutralize(val):
+    """Neutralize CSV/spreadsheet formula injection: any field whose first char is
+    one of = + - @ (or a leading tab/CR that some parsers strip to reach them) is
+    prefixed with a single quote so Excel/Sheets/LibreOffice treat it as text, not
+    a formula. Everything is stringified first; the stdlib csv writer still handles
+    quoting/escaping of delimiters and newlines on top of this."""
+    s = "" if val is None else str(val)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+def _control_audit_to_csv(items):
+    """Render audit rows to RFC-4180 CSV (stdlib csv module). Every cell passes
+    through _csv_neutralize so a crafted target/detail can't inject a spreadsheet
+    formula. Same privacy contract as the JSON endpoint (detail is already the
+    generic phrase the endpoint returned)."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ts", "utc", "kind", "target", "action", "result", "detail", "actor"])
+    for it in items:
+        ts = it.get("ts")
+        try:
+            utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(ts)))
+        except Exception:
+            utc = ""
+        w.writerow([_csv_neutralize(ts), _csv_neutralize(utc),
+                    _csv_neutralize(it.get("kind")), _csv_neutralize(it.get("target")),
+                    _csv_neutralize(it.get("action")), _csv_neutralize(it.get("result")),
+                    _csv_neutralize(it.get("detail")), _csv_neutralize(it.get("actor"))])
+    return buf.getvalue()
+
 @app.route("/api/controls/log")
 def api_controls_log():
     """Read-only controls audit log — recent host-mutation actions, newest-first.
     PRIVATE (authed LAN dashboard + API only); NEVER exposed on /status or any
     public feed. This endpoint ONLY reads: it grants no new mutation capability.
-    ?limit= is clamped to a sane cap."""
-    try:
-        limit = int(request.args.get("limit", 50))
-    except (TypeError, ValueError):
-        limit = 50
-    limit = max(1, min(limit, _CONTROL_AUDIT_RETENTION))
-    items = []
-    try:
-        with LOCK:
-            rows = DB.execute(
-                "SELECT ts,kind,target,action,result,detail,actor FROM control_audit "
-                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        for ts, kind, target, action, result, detail, actor in rows:
-            items.append({"ts": ts, "kind": kind, "target": target, "action": action,
-                          "result": result, "detail": detail or "", "actor": actor or ""})
-    except Exception:
-        items = []
-    return jsonify({"enabled": ENABLE_CONTROLS, "count": len(items), "items": items})
+
+    Optional read-only filters (any combination; unknown values ignored):
+      ?result=ok|error  ?action=start|stop|restart  ?kind=container|service
+      ?since=<unix_ts>
+    ?limit= is clamped to a sane cap. ?format=csv streams the same (filtered)
+    rows as a downloadable, formula-injection-safe CSV (see /api/controls/log.csv).
+    No params → byte-for-byte the pre-filter behaviour (back-compat)."""
+    limit = _audit_limit_from_request()
+    where_sql, params, echo = _audit_filters_from_request()
+    items = _query_control_audit(where_sql, params, limit)
+    if (request.args.get("format") or "").strip().lower() == "csv":
+        return _controls_log_csv_response(items)
+    return jsonify({"enabled": ENABLE_CONTROLS, "count": len(items),
+                    "filters": echo, "items": items})
+
+def _controls_log_csv_response(items):
+    """Build the CSV download Response for the audit log. Static filename (no user
+    text in headers → no header/filename injection); content is formula-safe."""
+    fn = "controls-audit-log.csv"
+    return Response(_control_audit_to_csv(items),
+                    content_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fn})
+
+@app.route("/api/controls/log.csv")
+def api_controls_log_csv():
+    """CSV export of the (filtered) controls audit log — a portable compliance
+    artifact ("every change made to the host"). Same read-only filters, same limit
+    cap, and same privacy contract as /api/controls/log; formula-injection-safe."""
+    limit = _audit_limit_from_request()
+    where_sql, params, _ = _audit_filters_from_request()
+    items = _query_control_audit(where_sql, params, limit)
+    return _controls_log_csv_response(items)
 
 
 @app.route("/api/containers/<name>/action", methods=["POST"])
