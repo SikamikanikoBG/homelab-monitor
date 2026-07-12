@@ -40,7 +40,10 @@ VERSION      = "0.18.0-ai"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
-RETENTION    = int(os.environ.get("RETENTION_DAYS", "180")) * 86400
+_RETENTION_DAYS_DEFAULT = int(os.environ.get("RETENTION_DAYS", "180"))
+RETENTION    = _RETENTION_DAYS_DEFAULT * 86400   # startup/fallback default; live value comes from get_retention_secs()
+_RETENTION_DAYS_MIN = 1       # clamp floor — always keep at least a day of history
+_RETENTION_DAYS_MAX = 3650    # clamp ceiling — ~10y; guards the DB from unbounded growth
 _DISK_IO_RETENTION = 7 * 86400   # per-device disk-I/O history: dense, 7-day ring
 _PROC_IO_RETENTION = 72 * 3600   # per-process I/O ring: short, spike-attribution only
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
@@ -4494,6 +4497,14 @@ def run_on_host(name, cmd, sudo_password=None):
 _ensure_ssh_keypair()
 
 SETTING_DEFAULTS = {
+    # ── Data lifecycle — history retention (DB-only; never touches the host) ─────
+    # How many days of the monitor's OWN time-series history to keep in its SQLite
+    # DB. Read LIVE each pruning cycle (see get_retention_secs), so a change takes
+    # effect within ~6 min without a restart. Clamped to [1, 3650]; a garbage value
+    # silently falls back to the default. Default matches the previous hardcoded
+    # window so out-of-the-box behaviour is byte-identical. This is data lifecycle
+    # only — it prunes samples/proc/models/…/status_history/llm_samples, never the host.
+    "retention_days":     str(_RETENTION_DAYS_DEFAULT),
     "alerts_enabled":     "0",       # "0" / "1"
     "discord_webhook_url": "",
     "ntfy_topic":          "",
@@ -4643,6 +4654,40 @@ def save_settings(updates):
         DB.executemany("INSERT INTO settings(key,value) VALUES(?,?) "
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", safe)
         DB.commit()
+
+def get_retention_days():
+    """Effective history-retention window in DAYS, read live from settings and
+    clamped to [_RETENTION_DAYS_MIN, _RETENTION_DAYS_MAX]. A blank/garbage value
+    falls back to the default — never raises, so the prune path can't break."""
+    try:
+        days = int(str(get_settings().get("retention_days") or _RETENTION_DAYS_DEFAULT).strip())
+    except (ValueError, TypeError):
+        days = _RETENTION_DAYS_DEFAULT
+    return max(_RETENTION_DAYS_MIN, min(days, _RETENTION_DAYS_MAX))
+
+def get_retention_secs():
+    """Effective history-retention window in SECONDS (see get_retention_days).
+    Callers that hold LOCK must read this BEFORE entering the lock: get_settings()
+    also takes the (non-reentrant) LOCK, so reading it inside would deadlock."""
+    return get_retention_days() * 86400
+
+def _validate_retention_settings(updates):
+    """Return an error string if retention_days is present-but-invalid, else None.
+    An empty value is allowed (clears back to the default). Out-of-range whole
+    numbers are rejected here so the UI shows a clear error; even if one slipped
+    through, get_retention_days() clamps defensively so the DB is never at risk."""
+    if "retention_days" not in updates:
+        return None
+    val = (updates["retention_days"] or "").strip()
+    if not val:
+        return None
+    try:
+        days = int(val)
+    except ValueError:
+        return "retention_days must be a whole number of days."
+    if days < _RETENTION_DAYS_MIN or days > _RETENTION_DAYS_MAX:
+        return f"retention_days must be between {_RETENTION_DAYS_MIN} and {_RETENTION_DAYS_MAX}."
+    return None
 
 # ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
@@ -7153,6 +7198,9 @@ def sample_once():
     ts = int(time.time())
     if _DB_MAINTENANCE:
         return
+    # Read the live retention window BEFORE taking LOCK: get_settings() also grabs
+    # the (non-reentrant) LOCK, so reading it inside the block below would deadlock.
+    _retention = get_retention_secs()
     with LOCK:
         # When the GPU is absent/failed, store NULL for the GPU columns (not 0) so
         # history charts skip the gap via AVG() instead of showing a fake 0 dip;
@@ -7225,7 +7273,7 @@ def sample_once():
                                    "VALUES(?,?,?,?,?)", _pio_rows)
         if ts % 360 < INTERVAL:
             for t in ("samples", "proc", "models", "edges", "events", "gpu_samples", "net_samples", "power_proc", "disk_samples"):
-                DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - RETENTION,))
+                DB.execute(f"DELETE FROM {t} WHERE ts<?", (ts - _retention,))
             DB.execute("DELETE FROM status_history WHERE ts<?", (ts - _STATHIST_RETENTION,))
             DB.execute("DELETE FROM disk_io_samples WHERE ts<?", (ts - _DISK_IO_RETENTION,))
             DB.execute("DELETE FROM proc_io_samples WHERE ts<?", (ts - _PROC_IO_RETENTION,))
@@ -9365,6 +9413,7 @@ def _persist_llm_sample(m):
     Never raises; a DB error here must never break the copilot path."""
     try:
         energy_wh = _sample_energy_wh(m)  # NULL when GPU power/timing absent
+        _retention = get_retention_secs()  # read BEFORE LOCK (get_settings takes LOCK)
         with LOCK:
             DB.execute(
                 "INSERT INTO llm_samples(ts,model,tps,ttft_ms,prompt_tps,eval_count,energy_wh) "
@@ -9373,7 +9422,7 @@ def _persist_llm_sample(m):
                  m.get("prompt_tps"), m.get("eval_count"), energy_wh))
             # Retention: drop rows past the global window, then cap to the ring
             # size so a chatty copilot can't grow the table without bound.
-            DB.execute("DELETE FROM llm_samples WHERE ts < ?", (m["ts"] - RETENTION,))
+            DB.execute("DELETE FROM llm_samples WHERE ts < ?", (m["ts"] - _retention,))
             DB.execute(
                 "DELETE FROM llm_samples WHERE ts < "
                 "(SELECT MIN(ts) FROM (SELECT ts FROM llm_samples ORDER BY ts DESC LIMIT ?))",
@@ -16832,7 +16881,7 @@ def api_settings():
         # Secrets pass through the "_set: false" sentinel from the UI as a way
         # to clear without revealing the current value.
         updates = {k: body[k] for k in body if k in SETTING_DEFAULTS}
-        err = _validate_url_settings(updates)
+        err = _validate_url_settings(updates) or _validate_retention_settings(updates)
         if err:
             return jsonify({"ok": False, "error": err}), 400
         save_settings(updates)

@@ -2804,6 +2804,24 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
 <!-- ───────── Backup (Settings) ───────── -->
 <section data-tab="backup" hidden>
   <div class="card">
+    <h2 data-i18n="retention.title">🗄️ Data retention</h2>
+    <p class="cap" style="margin:-4px 0 12px" data-i18n-html="retention.intro">
+      How many days of the monitor's own time-series history to keep in its database. This only prunes
+      the monitor's SQLite history — it <b>never</b> touches your host or its data. Changes take effect
+      within a few minutes; no restart needed. Lowering this removes older history on the next cleanup.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:520px">
+      <div>
+        <div class="flabel" data-i18n="retention.days_label">History retention (days)</div>
+        <input type="number" id="al_retention_days" min="1" max="3650" step="1" placeholder="180" class="field">
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap">
+      <button class="rb on" id="retention_save" data-i18n="btn.save" type="button">Save</button>
+      <span class="cap" id="retention_state"></span>
+    </div>
+    <p class="cap" style="margin-top:8px" data-i18n="retention.range_cap">Allowed range: 1–3650 days. Default: 180.</p>
+  </div>
+  <div class="card">
     <h2 data-i18n="backup.title">💾 Backup &amp; Restore</h2>
     <p class="cap" style="margin:-4px 0 12px" data-i18n-html="backup.intro">
       Export your SQLite history, events, alert settings, and host registry — or restore a snapshot after a container recreate or disk move.
@@ -5152,6 +5170,7 @@ async function loadAlerts(){
   document.getElementById('al_telegram_chat_id').value = s.telegram_chat_id||'';
   document.getElementById('al_minlevel').value    = s.alert_min_level||'warning';
   document.getElementById('al_disk').value        = s.disk_alert_pct||'90';
+  { const _rd = document.getElementById('al_retention_days'); if (_rd) _rd.value = s.retention_days||'180'; }
   document.getElementById('al_slo').value          = s.slo_target||'99.9';
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
@@ -10404,6 +10423,7 @@ function intgStatus(level,msg){
   const mqs=document.getElementById('mqtt_save'); if(mqs) mqs.onclick=saveMqtt;
   const mqt=document.getElementById('mqtt_test'); if(mqt) mqt.onclick=testMqtt;
   const iqs=document.getElementById('imgupd_save'); if(iqs) iqs.onclick=saveImgUpd;
+  const rts=document.getElementById('retention_save'); if(rts) rts.onclick=saveRetention;
 })();
 
 async function saveImgUpd(){
@@ -10418,6 +10438,22 @@ async function saveImgUpd(){
   ALERTS_LOADED=false; await loadAlerts();
   if(st) st.textContent='✓ '+I18N.t('toast.settings_saved','Settings saved.');
   intgStatus('ok',I18N.t('toast.settings_saved','Settings saved.'));
+}
+
+async function saveRetention(){
+  const el=document.getElementById('al_retention_days');
+  const st=document.getElementById('retention_state');
+  let days=parseInt((el&&el.value||'').trim(),10);
+  if(!Number.isFinite(days)) days=180;
+  days=Math.max(1,Math.min(3650,days));          // clamp client-side; server clamps too
+  if(el) el.value=String(days);
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({retention_days:String(days)})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.ok===false){ if(st) st.textContent=(j.error||I18N.t('retention.save_fail','Could not save.')); return; }
+  }catch(e){ if(st) st.textContent=I18N.t('retention.save_fail','Could not save.'); return; }
+  ALERTS_LOADED=false; await loadAlerts();
+  if(st) st.textContent='✓ '+I18N.t('toast.settings_saved','Settings saved.');
 }
 
 function _mqttBodyFromForm(){
