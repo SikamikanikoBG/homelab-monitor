@@ -10371,9 +10371,17 @@ def _digest_sections(now=None):
     except Exception:
         pm = None
     if pm and pm.get("cause"):
-        when = (" (%s)" % pm["when"]) if pm.get("when") else ""
+        # One combined parenthetical: "<n signals>, <when>" — never two adjacent
+        # runs like "(1 signal) (2026-...)". Either part may be absent.
+        n = pm.get("signals")
+        bits = []
+        if isinstance(n, int) and n >= 0:
+            bits.append("%d signal%s" % (n, "" if n == 1 else "s"))
+        if pm.get("when"):
+            bits.append(pm["when"])
+        meta = (" (%s)" % ", ".join(bits)) if bits else ""
         sections.append(("Latest postmortem",
-                         ["%s%s — %s." % (pm.get("title") or "incident", when, pm["cause"])]))
+                         ["%s%s — %s." % (pm.get("title") or "incident", meta, pm["cause"])]))
 
     return sections
 
@@ -12038,10 +12046,13 @@ def _latest_postmortem_citation():
         members = []
     n = len(members)
     sev_txt = (sev or "warning").capitalize()
-    title = "%s incident #%s (%d signal%s)" % (sev_txt, iid, n, "" if n == 1 else "s")
+    # Title carries NO parenthetical of its own — the digest joins the signal count
+    # and timestamp into a SINGLE parenthetical so the line never reads
+    # "... (1 signal) (2026-... )". `signals` is surfaced separately for that join.
+    title = "%s incident #%s" % (sev_txt, iid)
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(cleared or opened or 0)) \
         if (cleared or opened) else None
-    return {"id": iid, "title": title, "cause": first, "when": when}
+    return {"id": iid, "title": title, "cause": first, "when": when, "signals": n}
 
 
 def get_incident_postmortem(iid, generate=False, force=False, now=None):
