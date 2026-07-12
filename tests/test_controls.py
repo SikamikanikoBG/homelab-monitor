@@ -232,6 +232,31 @@ class TestPublicSurfaceNoControls(unittest.TestCase):
             sc.assert_not_called()
 
 
+class TestHostRunGatedByControls(unittest.TestCase):
+    """/api/hosts/<name>/run executes an arbitrary command on a registered host
+    over SSH — the most powerful host-mutating surface we expose. It MUST be
+    fail-closed behind ENABLE_CONTROLS, exactly like the container/service routes:
+    with the flag off (the default, how the live arena runs) it returns a clean
+    403 and NEVER reaches run_on_host / SSH."""
+
+    def test_host_run_403_when_disabled(self):
+        with patch.object(app, "ENABLE_CONTROLS", False), \
+             patch("app.run_on_host") as roh:
+            r = _client().post("/api/hosts/anyhost/run", json={"cmd": "reboot"})
+            self.assertEqual(r.status_code, 403)
+            self.assertFalse(r.get_json()["ok"])
+            # Hard gate: the SSH executor is never even reached.
+            roh.assert_not_called()
+
+    def test_host_run_reaches_executor_when_enabled(self):
+        with patch.object(app, "ENABLE_CONTROLS", True), \
+             patch("app.run_on_host", return_value={"ok": True, "exit_code": 0,
+                    "stdout": "", "stderr": "", "ms": 1}) as roh:
+            r = _client().post("/api/hosts/anyhost/run", json={"cmd": "uptime"})
+            self.assertEqual(r.status_code, 200)
+            roh.assert_called_once()
+
+
 class TestHealthExposesFlag(unittest.TestCase):
     def test_health_payload_carries_controls_block(self):
         with patch.object(app, "ENABLE_CONTROLS", False):

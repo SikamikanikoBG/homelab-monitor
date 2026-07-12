@@ -16779,7 +16779,15 @@ def api_hosts_run(name):
     The sudo password is processed in-memory: piped via stdin to `sudo -S`
     on the remote, NEVER stored in the DB, NEVER written to logs, NEVER
     in any process's argv. Don't pass arbitrary cmd from untrusted users —
-    the API is reachable to anyone on the LAN who can hit the dashboard."""
+    the API is reachable to anyone on the LAN who can hit the dashboard.
+
+    HARD-GATED behind ENABLE_CONTROLS (403 when off, the default): this runs an
+    arbitrary command on a registered host over SSH — the most powerful host-
+    mutating surface we expose — so it must be inert unless controls are opted in,
+    exactly like the container/service action routes. When off, no SSH ever runs."""
+    if not ENABLE_CONTROLS:
+        return jsonify({"ok": False, "error": "controls disabled",
+                        "hint": "Set ENABLE_CONTROLS=1 to enable running commands on hosts."}), 403
     body = request.get_json(silent=True) or {}
     cmd = (body.get("cmd") or "").strip()
     sudo_password = body.get("sudo_password") or None

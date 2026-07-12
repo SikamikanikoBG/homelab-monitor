@@ -160,16 +160,21 @@ class TestRetentionPruneHonoursSetting(unittest.TestCase):
         with app.LOCK:
             app.DB.execute("INSERT OR REPLACE INTO samples(ts,util) VALUES(?,?)", (ts30, 1))
             app.DB.commit()
-        # 60-day window keeps a 30-day-old row.
+        # 60-day window keeps a 30-day-old row. Read the retention window BEFORE
+        # taking LOCK — get_retention_secs()->get_settings() also grabs the
+        # (non-reentrant) LOCK, so reading it inside the block would deadlock.
+        # This mirrors the production contract in sample_once()/_persist_llm_sample.
         app.save_settings({"retention_days": "60"})
+        retention = app.get_retention_secs()
         with app.LOCK:
-            app.DB.execute("DELETE FROM samples WHERE ts<?", (now - app.get_retention_secs(),))
+            app.DB.execute("DELETE FROM samples WHERE ts<?", (now - retention,))
             app.DB.commit()
             self.assertEqual(app.DB.execute("SELECT COUNT(*) FROM samples").fetchone()[0], 1)
         # Lower to 7 days → the same row is now beyond the window.
         app.save_settings({"retention_days": "7"})
+        retention = app.get_retention_secs()
         with app.LOCK:
-            app.DB.execute("DELETE FROM samples WHERE ts<?", (now - app.get_retention_secs(),))
+            app.DB.execute("DELETE FROM samples WHERE ts<?", (now - retention,))
             app.DB.commit()
             self.assertEqual(app.DB.execute("SELECT COUNT(*) FROM samples").fetchone()[0], 0)
 
