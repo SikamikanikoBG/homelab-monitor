@@ -462,15 +462,24 @@ def probe_host(name):
         checks.append({"id": "dbus", "label": "systemd D-Bus", "status": "info",
                        "detail": "not present — services panel will be hidden for this host"})
 
-    # 5) nvidia-smi
+    # 5) GPU — NVIDIA via nvidia-smi, else AMD via the amdgpu sysfs interface (no ROCm).
     _, out, _, _ = _app._ssh(user, host, port,
                         "command -v nvidia-smi >/dev/null && "
                         "nvidia-smi --query-gpu=name --format=csv,noheader -i 0 2>/dev/null | head -1 || echo missing")
     if out and out != "missing":
-        checks.append({"id": "nvidia", "label": "nvidia-smi", "status": "ok", "detail": out[:120]})
+        checks.append({"id": "nvidia", "label": "GPU (NVIDIA)", "status": "ok", "detail": out[:120]})
     else:
-        checks.append({"id": "nvidia", "label": "nvidia-smi", "status": "info",
-                       "detail": "not found — GPU panel will be hidden for this host"})
+        # No NVIDIA — look for an AMD card (PCI vendor 0x1002) in /sys/class/drm.
+        _, amd, _, _ = _app._ssh(user, host, port,
+                        "for c in /sys/class/drm/card*/device; do "
+                        "if [ \"$(cat $c/vendor 2>/dev/null)\" = 0x1002 ]; then "
+                        "cat $c/product_name 2>/dev/null || echo 'AMD GPU'; break; fi; done")
+        if amd:
+            checks.append({"id": "nvidia", "label": "GPU (AMD)", "status": "ok",
+                           "detail": ("%s · amdgpu sysfs" % amd[:110])})
+        else:
+            checks.append({"id": "nvidia", "label": "GPU", "status": "info",
+                           "detail": "no NVIDIA or AMD GPU found — GPU panel will be hidden for this host"})
 
     result = {"checks": checks, "summary": _app._summarize(checks), "os": os_info}
     _app._record_check(name, result)

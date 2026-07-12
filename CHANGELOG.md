@@ -7,6 +7,10 @@ release notes.
 
 ## [Unreleased]
 
+**Fixed**
+- **AMD GPUs are now detected reliably — including on hosts without nvidia-smi, and alongside an NVIDIA card.** Two gaps in the amdgpu back-end (#1): the collector called nvidia-smi unguarded, so on a machine without it the GPU read aborted before the AMD sysfs reader ever ran — a pure-AMD box reported "no GPU" even though the reader worked; and detection was NVIDIA-*or*-AMD, hiding the AMD card on hybrid machines. nvidia-smi is now read defensively and both back-ends always run, with their cards merged (AMD re-indexed so per-card history stays distinct) and VRAM/util/temp aggregated across all of them; per-process attribution still applies to the NVIDIA cards only. Utilisation also survives the amdgpu `gpu_busy_percent` EBUSY quirk — the intermittent "Device or resource busy" race — by retrying once instead of reporting 0%.
+- **GPU diagnostics are now vendor-aware — an AMD host is no longer told to install the NVIDIA runtime.** The local requirements panel (and the remote-host probe's GPU check) hard-coded an "NVIDIA GPU" row with nvidia-ctk-only remediation, so a machine with a working AMD Radeon — read via the amdgpu sysfs back-end since v0.21.0 — still showed a confusing "no NVIDIA GPU detected" message. The row now reports the real vendor (GPU (AMD) / GPU (NVIDIA)), and the no-GPU remedy explains that AMD is detected automatically from the kernel (no ROCm needed), with a one-liner to confirm the card's sysfs nodes exist. (#1)
+
 ## [0.24.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.24.0) — 2026-07-09 · **A restructured engine underneath, and controls on by default**
 *The ~7,600-line `app.py` monolith is now a proper `backend/` module tree — behavior unchanged, backed by a 71-snapshot test suite and a CI gate that fails the build on a silent `except: pass`. Separately, container/service start-stop-restart controls (plus self-update) flip from opt-in to on by default — worth a glance at your compose file before you upgrade.*
 

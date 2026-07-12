@@ -18,7 +18,7 @@ Adding a new monitor (it's meant to be easy):
   2. Populate it from `health_scan()` so the background thread keeps it fresh.
   3. Expose it via `/api/health` and add a matching tab/panel in dashboard.html.
 """
-import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, smtplib, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, email.message, fnmatch
+import os, re, sys, glob, time, json, socket, sqlite3, threading, subprocess, smtplib, http.client, urllib.parse, urllib.request, urllib.error, ipaddress, shlex, struct, shutil, tempfile, secrets, hmac, uuid, hashlib, email.message, fnmatch, errno
 from functools import wraps
 try:
     import fcntl                       # Linux-only; used for per-iface IPv4 (SIOCGIFADDR)
@@ -379,7 +379,7 @@ _apply_schema_migrations(DB)
 _backfill_rollups(DB)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
-          "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None, "gpus": [], "gpu_extra": {},
+          "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None, "gpu_vendor": None, "gpus": [], "gpu_extra": {},
           "model_meta": {}, "serving": [], "training": [], "devtools": [], "model_catalog": []}
 # Current state of the "status" monitors (Docker + systemd). The background
 # collector refreshes these; /api/health just serves the cached snapshot.
@@ -2596,20 +2596,35 @@ def _diag(checks, cid, label, status, detail, remedy=None):
 def local_diagnostics():
     checks = []
     # GPU (optional) — info, not a failure: the monitor is useful without one.
+    # Vendor-aware: NVIDIA is read via nvidia-smi, AMD via the amdgpu sysfs interface
+    # (no ROCm). We keep the diagnostic id "nvidia" (stable i18n/DOM key) but label
+    # and remediate for whichever vendor is actually present, so an AMD user isn't
+    # told to install the NVIDIA runtime.
+    vram = round(LATEST.get("mem_total") or 0)
     if LATEST.get("gpu_avail"):
-        _diag(checks, "nvidia", "NVIDIA GPU", "ok",
-              f"nvidia-smi OK · {round(LATEST.get('mem_total') or 0)} MB VRAM")
+        label, src = {
+            "amd":    ("GPU (AMD)", "amdgpu sysfs"),
+            "hybrid": ("GPU (NVIDIA + AMD)", "nvidia-smi + amdgpu sysfs"),
+        }.get(LATEST.get("gpu_vendor"), ("GPU (NVIDIA)", "nvidia-smi"))
+        _diag(checks, "nvidia", label, "ok", f"{src} OK · {vram} MB VRAM")
     else:
-        _diag(checks, "nvidia", "NVIDIA GPU", "info",
+        _diag(checks, "nvidia", "GPU", "info",
               "no GPU detected — GPU panels are hidden (everything else works)",
-              {"where": "on the host — only if it actually has an NVIDIA GPU. "
-                        "GPU containers use the env vars below only when nvidia is "
-                        "Docker's DEFAULT runtime; the recreate step is what was "
-                        "missing if a previous attempt 'did nothing'.",
-               "cmd": "sudo nvidia-ctk runtime configure --runtime=docker --set-as-default\n"
+              {"where": "on the host, if it has a GPU. AMD (amdgpu) is picked up "
+                        "automatically from the kernel's sysfs — no ROCm, no extra "
+                        "config; if a Radeon still isn't seen, check the sysfs nodes "
+                        "below exist (older kernels/APUs may not expose them). NVIDIA "
+                        "needs nvidia-smi injected: the env vars below only take effect "
+                        "when nvidia is Docker's DEFAULT runtime, and the recreate step "
+                        "is what was missing if a previous attempt 'did nothing'.",
+               "cmd": "# AMD — confirm the kernel exposes the card (no install needed):\n"
+                      "for c in /sys/class/drm/card*/device; do echo \"$c:\"; "
+                      "cat $c/vendor $c/mem_info_vram_total $c/gpu_busy_percent 2>&1; done\n"
+                      "# NVIDIA — make nvidia Docker's default runtime, then RECREATE:\n"
+                      "sudo nvidia-ctk runtime configure --runtime=docker --set-as-default\n"
                       "sudo systemctl restart docker\n"
                       "docker compose up -d --force-recreate   # recreate — restart keeps the old runtime\n"
-                      "# don't want nvidia as the global default? skip all three lines above and instead run:\n"
+                      "# don't want nvidia as the global default? skip the three lines above and instead run:\n"
                       "#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d"})
     # Docker socket — powers Containers + Services + model APIs.
     try:
@@ -4728,7 +4743,18 @@ def _amd_read_int(path):
     try:
         with open(path) as f:
             return int(f.read().strip())
-    except (OSError, ValueError):
+    except OSError as e:
+        # amdgpu's gpu_busy_percent intermittently returns EBUSY ("Device or
+        # resource busy") — a known driver quirk; one retry usually clears it.
+        # Any other OS error means the node is genuinely absent → treat as None.
+        if getattr(e, "errno", None) == errno.EBUSY:
+            try:
+                with open(path) as f:
+                    return int(f.read().strip())
+            except (OSError, ValueError):
+                return None
+        return None
+    except ValueError:
         return None
 
 def _amd_hwmon(dev, fname):
