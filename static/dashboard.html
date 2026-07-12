@@ -5037,8 +5037,9 @@ function renderAnomalyTimeline(){
       cell.style.background=_atlColor(c);
       if((c.score||0) > 0){
         const z=Math.round((c.score*j.threshold)*10)/10;       // recover approx |z|
-        const dir=I18N.t('anom.'+(c.dir==='dip'?'dip':(c.dir==='flat'?'quiet':'spike')),
-                          c.dir||'');
+        // This block only runs for cells with score>0; 'flat' cells always score 0,
+        // so only spike/dip are reachable here (no dead 'quiet' key lookup).
+        const dir=I18N.t('anom.'+(c.dir==='dip'?'dip':'spike'), c.dir||'');
         const when=fmtLabels([c.ts])[0]||'';
         // A cell is "hot" (worth an explanation) when it fired the detector: a real,
         // directional deviation at/above the ribbon threshold. Quiet ('flat') and

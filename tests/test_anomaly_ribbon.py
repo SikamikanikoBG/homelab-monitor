@@ -212,11 +212,137 @@ class TestNoLeakAndLLMFree(_SamplesFixture):
             app.STATUS_PAGE = sp
 
 
+class _DiskIoFixture(unittest.TestCase):
+    """Clears and restores the recent `disk_io_samples` window around each test."""
+    def setUp(self):
+        self.c = app.app.test_client()
+        self.WINDOW = 6 * 3600
+        with app.LOCK:
+            self._saved = app.DB.execute(
+                "SELECT ts,device,read_mb_s,write_mb_s,util_pct FROM disk_io_samples"
+            ).fetchall()
+            app.DB.execute("DELETE FROM disk_io_samples")
+            app.DB.commit()
+
+    def tearDown(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM disk_io_samples")
+            app.DB.executemany(
+                "INSERT INTO disk_io_samples(ts,device,read_mb_s,write_mb_s,util_pct) "
+                "VALUES(?,?,?,?,?)", self._saved)
+            app.DB.commit()
+
+    def _seed_dev(self, device, baseline_total, latest_total, n=240):
+        """Seed a device's read+write throughput across the full 6h window: `n`
+        baseline points (split read/write) then a final spike/dip. Returns `now`."""
+        now = int(app.time.time())
+        seq = [baseline_total + (i % 3) for i in range(n)] + [latest_total]
+        step = self.WINDOW / (len(seq) + 1)
+        with app.LOCK:
+            for i, tot in enumerate(seq):
+                ts = int(now - self.WINDOW + (i + 1) * step)
+                r = tot * 0.6
+                w = tot - r
+                app.DB.execute(
+                    "INSERT INTO disk_io_samples(ts,device,read_mb_s,write_mb_s,util_pct) "
+                    "VALUES(?,?,?,?,?)", (ts, device, r, w, 0.0))
+            app.DB.commit()
+        return now
+
+
+class TestDiskIoRibbonRows(_DiskIoFixture):
+    def test_disk_io_row_appears_after_gpu_power_series(self):
+        # Seed one device with enough history → a disk_io:<dev> row must appear,
+        # AFTER the fixed GPU/power series (stable order).
+        self._seed_dev("sda", 20.0, 300.0)
+        j = self.c.get("/api/anomaly_ribbon").get_json()
+        keys = [s["key"] for s in j["series"]]
+        self.assertIn("disk_io:sda", keys)
+        # GPU/power series come first, disk_io rows after.
+        gpu_idx = keys.index("gpu_util")
+        dio_idx = keys.index("disk_io:sda")
+        self.assertGreater(dio_idx, gpu_idx)
+        row = next(s for s in j["series"] if s["key"] == "disk_io:sda")
+        self.assertEqual(row["unit"], "MB/s")
+        self.assertIn("sda", row["label"])
+        self.assertEqual(len(row["cells"]), app._RIBBON_BUCKETS)
+
+    def test_disk_io_score_matches_detector_baseline_on_spike(self):
+        # The ribbon's disk_io peak bucket must agree with _disk_io_anomaly_items:
+        # same baseline maths (mean + pop-stddev over the window EXCLUDING latest),
+        # same MIN_DEV gate, spike direction, |z|≥threshold ⇒ clamped score 1.0.
+        base_tot, spike_tot, n = 20.0, 400.0, 240
+        now = self._seed_dev("nvme0n1", base_tot, spike_tot, n=n)
+        with app.LOCK:
+            items, checked, enough = app._disk_io_anomaly_items(
+                app.DB.cursor(), now, self.WINDOW, 30, 3.0)
+            ribbon = app._anomaly_ribbon(app.DB.cursor(), now)
+        card = [a for a in items if a["key"] == "disk_io:nvme0n1"]
+        self.assertTrue(card, "detector should flag disk_io:nvme0n1")
+        self.assertEqual(card[0]["direction"], "spike")
+
+        row = next(s for s in ribbon["series"] if s["key"] == "disk_io:nvme0n1")
+        self.assertEqual(row["status"], "ok")
+        scored = [c for c in row["cells"] if c is not None]
+        peak = max(scored, key=lambda c: c["score"])
+        self.assertEqual(peak["dir"], "spike")
+        self.assertEqual(peak["score"], 1.0)          # |z| ≥ Z_THRESH ⇒ clamped to 1
+
+        # Recompute the baseline exactly and confirm the spike clears threshold with
+        # the min-dev gate the detector uses.
+        vals = [base_tot + (i % 3) for i in range(n)] + [spike_tot]
+        b = vals[:-1]
+        m = sum(b) / len(b)
+        sd = (sum((v - m) ** 2 for v in b) / len(b)) ** 0.5
+        self.assertGreaterEqual(abs(spike_tot - m), app._DISK_IO_MIN_DEV)
+        self.assertGreaterEqual(abs((spike_tot - m) / sd), ribbon["threshold"])
+
+    def test_dip_direction_for_disk_io(self):
+        self._seed_dev("sdb", 300.0, 20.0)
+        j = self.c.get("/api/anomaly_ribbon").get_json()
+        row = next(s for s in j["series"] if s["key"] == "disk_io:sdb")
+        peak = max((c for c in row["cells"] if c), key=lambda c: c["score"])
+        self.assertEqual(peak["dir"], "dip")
+
+    def test_no_disk_io_history_no_row_no_500(self):
+        # With disk_io_samples empty, the endpoint must still 200 and simply carry
+        # no disk_io:* rows (the GPU/power rows are unaffected).
+        r = self.c.get("/api/anomaly_ribbon")
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertFalse(any(s["key"].startswith("disk_io:") for s in j["series"]))
+
+    def test_short_disk_io_history_is_collecting(self):
+        # Fewer than MIN_PTS points for a device → a collecting row (all-null cells),
+        # never a crash — mirroring the GPU/power collecting semantics.
+        self._seed_dev("sdc", 20.0, 21.0, n=5)
+        j = self.c.get("/api/anomaly_ribbon").get_json()
+        row = next(s for s in j["series"] if s["key"] == "disk_io:sdc")
+        self.assertEqual(row["status"], "collecting")
+        self.assertTrue(all(c is None for c in row["cells"]))
+
+    def test_disk_io_row_llm_free_and_not_public(self):
+        self._seed_dev("sda", 20.0, 400.0)
+        with _LLMGuard() as g:
+            r = self.c.get("/api/anomaly_ribbon")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(g.calls, 0)
+        sp = app.STATUS_PAGE
+        app.STATUS_PAGE = True
+        try:
+            for path in ("/api/status", "/status"):
+                body = self.c.get(path).get_data(as_text=True)
+                self.assertNotIn("disk_io:", body)
+        finally:
+            app.STATUS_PAGE = sp
+
+
 class TestI18nParity(unittest.TestCase):
     NEW_KEYS = [
         "ribbon.timeline_title", "ribbon.timeline_cap",
         "ribbon.no_anomalies", "ribbon.building", "ribbon.peak",
     ]
+    DEAD_KEYS = ["anom.quiet", "ribbon.timeline_explain_hint"]
 
     def setUp(self):
         with open(EN, encoding="utf-8") as f:
@@ -234,6 +360,25 @@ class TestI18nParity(unittest.TestCase):
         zh_keys = {k for k in self.zh if not k.startswith("_")}
         self.assertEqual(en_keys - zh_keys, set())
         self.assertEqual(zh_keys - en_keys, set())
+
+    def test_dead_keys_removed_from_both_locales(self):
+        # The two reviewer-flagged dead keys must be gone from BOTH locales so parity
+        # holds and nothing references a missing/dangling string.
+        for k in self.DEAD_KEYS:
+            self.assertNotIn(k, self.en, f"en.json still carries dead key {k}")
+            self.assertNotIn(k, self.zh, f"zh-CN.json still carries dead key {k}")
+
+
+class TestNoDeadKeyReferences(unittest.TestCase):
+    """The renderer must not look up the removed dead i18n keys (the guarded-
+    unreachable 'quiet' branch and the unused explain-hint caption key)."""
+
+    def test_renderer_drops_dead_quiet_and_hint_lookups(self):
+        with open(os.path.join(ROOT, "static", "dashboard.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertNotIn("ribbon.timeline_explain_hint", html)
+        self.assertNotIn("'flat'?'quiet'", html)
+        self.assertNotIn("anom.quiet", html)
 
 
 if __name__ == "__main__":

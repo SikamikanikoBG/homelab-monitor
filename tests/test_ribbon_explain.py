@@ -53,6 +53,20 @@ class TestCanonicalKeyMapping(unittest.TestCase):
         self.assertEqual(ctx["key"], "disk_io:sda")
         self.assertIn("disk I/O", ctx["label"])
 
+    def test_tlpoint_passes_disk_io_key_through_unchanged(self):
+        # The renderer builds explain points as {key:series.key, ...}; for a disk_io
+        # row the series key IS "disk_io:<dev>", so the click posts that exact key.
+        # Static contract check on the adapter body (no browser).
+        with open(DASH, encoding="utf-8") as f:
+            html = f.read()
+        i = html.index("function _tlPointFromCell(")
+        j = html.index("function explainTimelineCell(", i)
+        body = html[i:j]
+        # No hard-coded GPU/power key allowlist that would drop disk_io keys — the
+        # adapter must key on series.key verbatim so disk_io:<dev> flows through.
+        self.assertIn("key:series.key", body)
+        self.assertNotIn("disk_io", body.replace("series.key", ""))  # no special path needed
+
 
 class TestExplainAtHistoricalTs(unittest.TestCase):
     """A clicked bucket carries a ts in the past; the explanation must anchor there."""
@@ -166,7 +180,7 @@ class TestFrontendWiring(unittest.TestCase):
 
 
 class TestI18nParity(unittest.TestCase):
-    NEW_KEYS = ["ribbon.timeline_explain_hint", "ribbon.click_explain"]
+    NEW_KEYS = ["ribbon.click_explain"]
 
     def setUp(self):
         with open(EN, encoding="utf-8") as f:

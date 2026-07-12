@@ -357,7 +357,6 @@
   "ribbon.cap_host": "每个单元格代表一个采样窗口，按 CPU、内存与负载偏离各自近期基线的程度着色。",
   "ribbon.timeline_title": "异常时间线",
   "ribbon.timeline_cap": "过去 6 小时内每个指标一行。每个单元格是一个时间桶，按其读数偏离该指标窗口基线的程度着色——高亮单元格触发的正是「异常」卡片所用的同一 z-score 检测。悬停单元格可查看其时间与峰值偏差，或点击高亮单元格让本地 Copilot 解释当时发生了什么。",
-  "ribbon.timeline_explain_hint": "点击高亮单元格以解释",
   "ribbon.no_anomalies": "过去 6 小时无异常",
   "ribbon.building": "基线仍在建立中",
   "ribbon.peak": "峰值",

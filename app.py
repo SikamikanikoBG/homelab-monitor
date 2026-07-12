@@ -8317,6 +8317,66 @@ def _anomaly_ribbon(cur, now):
         series_out.append({
             "key": key, "unit": unit, "label": _RIBBON_LABEL.get(key, key),
             "status": "ok", "cells": cells})
+
+    # ── Per-device disk-I/O rows (full parity with the Anomalies card) ──────────
+    # One indexed range scan over the SAME 6h window, combining (read+write) MB/s
+    # per sample EXACTLY like `_disk_io_anomaly_items`; ONE baseline per device
+    # (mean + population stddev, EXCLUDING the latest point); the SAME fixed 60
+    # buckets and score = min(1,|z|/Z_THRESH). `_DISK_IO_MIN_DEV` gates the min
+    # deviation so the ribbon and the card agree on what counts as a spike. Rows
+    # come AFTER the GPU/power series (stable order); a device with < MIN_PTS
+    # history in the window is 'collecting' (all-null cells), not a 500.
+    try:
+        dio_rows = cur.execute(
+            "SELECT ts, device, read_mb_s, write_mb_s FROM disk_io_samples "
+            "WHERE ts>=? ORDER BY device, ts", (since,)).fetchall()
+    except Exception:
+        dio_rows = []
+    by_dev = {}
+    for ts, dev, r, w in dio_rows:
+        by_dev.setdefault(dev, []).append((ts, (r or 0.0) + (w or 0.0)))
+    for dev in sorted(by_dev.keys()):                  # deterministic row order
+        samples_ = by_dev[dev]
+        key = "disk_io:" + dev
+        label = "Disk I/O (" + dev + ")"
+        if len(samples_) < MIN_PTS:
+            series_out.append({
+                "key": key, "unit": "MB/s", "label": label,
+                "status": "collecting", "cells": [None] * B})
+            continue
+        vals = [v for _ts, v in samples_]
+        base = vals[:-1]                               # exclude latest, mirror detector
+        n = len(base)
+        mean = sum(base) / n
+        sd = (sum((v - mean) ** 2 for v in base) / n) ** 0.5   # population stddev
+        sums = [0.0] * B
+        counts = [0] * B
+        for ts, v in samples_:
+            bi = int((ts - since) / span)
+            if bi < 0:
+                bi = 0
+            elif bi >= B:
+                bi = B - 1
+            sums[bi] += v
+            counts[bi] += 1
+        cells = []
+        for bi in range(B):
+            if counts[bi] == 0:
+                cells.append(None)                     # gap — render empty, not zero
+                continue
+            bmean = sums[bi] / counts[bi]
+            dev_amt = bmean - mean
+            if sd <= 0 or abs(dev_amt) < _DISK_IO_MIN_DEV:
+                cells.append({"ts": bucket_ts[bi], "score": 0.0, "dir": "flat"})
+                continue
+            z = dev_amt / sd
+            score = min(1.0, abs(z) / Z_THRESH)
+            cells.append({"ts": bucket_ts[bi], "score": round(score, 4),
+                          "dir": "spike" if z > 0 else "dip"})
+        series_out.append({
+            "key": key, "unit": "MB/s", "label": label,
+            "status": "ok", "cells": cells})
+
     any_ok = any(s["status"] == "ok" for s in series_out)
     return {"ok": True, "now": now, "window_h": WINDOW // 3600,
             "buckets": B, "threshold": Z_THRESH,
