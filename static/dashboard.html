@@ -11159,18 +11159,30 @@ function toggleCmdk(){ CMDK.open?closeCmdk():openCmdk(); }
    on close, ←/→/Esc keys, reduced-motion honoured. No body scroll-lock is set. */
 const TOUR_KEY='hl_tour_v1';
 const TOUR_STEPS=[
+  // Lead with the headline AI-native moments (overview health → fix-plan → copilot),
+  // then the forecast/incident/postmortem/advisor story, then the "responsible power"
+  // controls, and close on the share/integration surface. Each step lists candidate
+  // selectors (first visible wins) and is SKIPPED cleanly when none resolve.
   {tab:'overview', sel:['#hero'],                    ic:'🛰️',
    title:'tour.s_hero_t',  body:'tour.s_hero_b'},
+  {tab:'overview', sel:['#hero-score'],              ic:'🧭',
+   title:'tour.s_fix_t',   body:'tour.s_fix_b'},
   {tab:'overview', sel:['#copilotcard'],             ic:'🧠',
    title:'tour.s_copilot_t', body:'tour.s_copilot_b'},
   {tab:'gpu',      sel:['#vramfc-card','#costfc-card','#diskfc-card'], ic:'🔮',
    title:'tour.s_forecast_t', body:'tour.s_forecast_b'},
   {tab:'gpu',      sel:['#inc-card','#anom-card'],   ic:'🚨',
    title:'tour.s_inc_t',   body:'tour.s_inc_b'},
+  {tab:'gpu',      sel:['.inc-pm-chip','#inc-pm-filter-wrap','#inc-auto-pm-wrap','#inc-card'], ic:'🧾',
+   title:'tour.s_pm_t',    body:'tour.s_pm_b'},
+  {tab:'alerts',   sel:['#advisor'],                 ic:'💡',
+   title:'tour.s_advisor_t', body:'tour.s_advisor_b'},
   {tab:'uptime',   sel:['#uptimegrid .upslo','#uptimegrid','[data-tab="uptime"] .card'], ic:'🎯',
    title:'tour.s_slo_t',   body:'tour.s_slo_b'},
   {tab:'diskio',   sel:['#diskio-body','[data-tab="diskio"] .card'], ic:'💽',
    title:'tour.s_diskio_t', body:'tour.s_diskio_b'},
+  {tab:'containers', sel:['#ctl-audit','[data-tab="containers"] .card'], ic:'🎛️',
+   title:'tour.s_ctl_t',   body:'tour.s_ctl_b'},
   {tab:null,       sel:['#sharebtn'],                ic:'🌐',
    title:'tour.s_status_t', body:'tour.s_status_b'},
   {tab:'overview', sel:['#mcpcard'],                 ic:'🔌',
