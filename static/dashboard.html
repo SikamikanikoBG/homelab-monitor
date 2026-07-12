@@ -130,6 +130,19 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .ribbon-tip .tz{font-variant-numeric:tabular-nums}
 .ribbon-cur{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--tx);opacity:.55;pointer-events:none;transform:translateX(-1px)}
 
+/* ── 🌈 Anomaly timeline: one dense deviation-heat row per metric (Netdata-style) ── */
+.atl{display:grid;grid-template-columns:max-content 1fr;gap:6px 12px;align-items:center;margin-top:4px}
+.atl-lbl{font-size:12.5px;color:var(--tx);white-space:nowrap;font-variant-numeric:tabular-nums}
+.atl-lbl .u{color:var(--mut);font-size:11px;margin-left:4px}
+.atl-row{display:flex;height:15px;width:100%;border:1px solid var(--bd);border-radius:5px;overflow:hidden;background:var(--inset)}
+.atl-cell{flex:1 1 0;min-width:0;height:100%}
+.atl-cell.gap{background:transparent}
+.atl-empty{grid-column:1 / -1;font-size:12px;color:var(--mut);padding:5px 2px}
+.atl-legend{display:inline-flex;align-items:center;gap:10px;font-size:11px;color:var(--mut)}
+.atl-legend .lg{display:inline-flex;align-items:center;gap:4px}
+.atl-legend .sw{width:11px;height:8px;border-radius:2px;display:inline-block}
+.atl-legend .sw.sp{background:var(--crit)}.atl-legend .sw.dp{background:var(--info)}.atl-legend .sw.gp{border:1px dashed var(--bd)}
+
 /* ── Card cohesion: a shared flex header so every newer card lines up the same way ── */
 .card-h{display:flex;align-items:center;gap:9px;margin:0 0 13px}
 .card-h h2{margin:0;flex:0 1 auto}
@@ -1897,6 +1910,20 @@ h2 .hic{ opacity:.9 }
     </div>
     <div id="anom-body"></div>
     <p class="cap" data-i18n-html="anom.cap">Latest GPU &amp; power readings scored against their own recent baseline (rolling mean ± stddev). A flag means the value is far enough from normal to be worth a look — flat or idle series never raise one.</p>
+    <!-- 🌈 Anomaly timeline: per-metric deviation-heat ribbon over the last 6h (server-computed, LLM-free). -->
+    <div class="ribbon-wrap" id="anom-timeline-wrap" style="margin-top:14px">
+      <div class="ribbon-head">
+        <span class="rl">🌈 <span data-i18n="ribbon.timeline_title">Anomaly timeline</span></span>
+        <span class="rspace"></span>
+        <span class="atl-legend">
+          <span class="lg"><span class="sw sp"></span><span data-i18n="anom.spike">spike</span></span>
+          <span class="lg"><span class="sw dp"></span><span data-i18n="anom.dip">dip</span></span>
+          <span class="lg"><span class="sw gp"></span><span data-i18n="ribbon.collecting">no data</span></span>
+        </span>
+      </div>
+      <div id="anom-timeline"></div>
+      <p class="cap" data-i18n="ribbon.timeline_cap">One row per metric across the last 6h. Each cell is a time bucket, shaded by how far its readings sat from the metric's own window baseline — hot cells fired the same z-score detector as the Anomalies card. Hover a cell for its time and peak deviation.</p>
+    </div>
   </div>
   <div class="card" id="inc-card" hidden>
     <div class="card-h">
@@ -3503,6 +3530,9 @@ function applyTheme(){
   const ic = document.querySelector('#themeBtn .thicon'), nm = document.querySelector('#themeBtn .thlabel');
   if(ic) ic.textContent = icon; if(nm) nm.textContent = name;
   if(typeof buildCharts === 'function') buildCharts();   // re-colour charts for the new theme
+  // Anomaly timeline colours are baked from theme tokens at draw time → recolour it
+  // (from cache, no refetch) when the theme flips, so hues track light/dark.
+  if(typeof renderAnomalyTimeline === 'function' && typeof ANOM_TL !== 'undefined' && ANOM_TL) renderAnomalyTimeline();
 }
 function initTheme(){
   applyTheme();
@@ -3541,7 +3571,7 @@ function showTab(id){
     else renderLocalOnlyNotice(id);
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadReco(); loadHero(); }
-  if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); }   // refresh Anomalies + Incidents + LLM engine on view
+  if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); loadAnomalyTimeline(); }   // refresh Anomalies + Incidents + LLM engine + anomaly timeline on view
   if(id==='models') loadRegistry();   // on-disk model inventory (load on view; no aggressive poll)
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -4906,6 +4936,100 @@ async function explainRibbonCell(c){
                  unit:c.unit, direction:(c.z>0?'spike':'dip'), magnitude:Math.round(Math.abs(c.value-c.baseline)*10)/10};
   if(!out) return;
   await _copilotExplainStream(payload,out);
+}
+
+// ── 🌈 Anomaly timeline ─────────────────────────────────────────────────────────
+// Server-computed per-metric deviation-heat ribbon over a FIXED 6h / 60-bucket
+// window (GET /api/anomaly_ribbon). One dense row per series; each cell's opacity =
+// score (min(1,|z|/3)) and hue = direction (spike→--crit, dip→--info) using EXISTING
+// theme tokens so it works in light AND dark. Empty buckets render as transparent
+// gaps. LLM-free + read-only; fetched ONCE on GPU-tab activation (NOT on the metrics
+// poll). Tooltips are set via title/textContent only — XSS-safe.
+let ANOM_TL = null;
+async function loadAnomalyTimeline(){
+  const wrap=document.getElementById('anom-timeline-wrap'); if(!wrap) return;
+  try{ ANOM_TL = await (await fetch('/api/anomaly_ribbon')).json(); }
+  catch(e){ return; }                          // silent: it's a nice-to-have panel
+  renderAnomalyTimeline();
+}
+function _atlColor(cell){
+  // Returns a CSS color for a scored cell, hued by direction, opacity by score.
+  const s=Math.max(0,Math.min(1, cell.score||0));
+  if(cell.dir==='flat' || s<=0) return 'transparent';
+  const base = cell.dir==='dip' ? cv('--info') : cv('--crit');
+  // Blend base over --inset by alpha so faint cells stay readable on both themes.
+  const a = 0.18 + 0.82*s;                      // floor so a just-fired cell is visible
+  return _mixToken(base, a);
+}
+// Mix a token color toward the panel inset at the given alpha (theme-safe, no hex
+// literals of our own — we read both endpoints from CSS variables at draw time).
+function _mixToken(fg, a){
+  const bg=cv('--inset');
+  const pf=_parseColor(fg), pb=_parseColor(bg);
+  if(!pf) return fg; if(!pb) return fg;
+  const r=Math.round(pf[0]*a+pb[0]*(1-a)), g=Math.round(pf[1]*a+pb[1]*(1-a)), b=Math.round(pf[2]*a+pb[2]*(1-a));
+  return 'rgb('+r+','+g+','+b+')';
+}
+function _parseColor(c){
+  c=(c||'').trim(); if(!c) return null;
+  let m=c.match(/^#([0-9a-f]{3})$/i); if(m){const h=m[1];return [parseInt(h[0]+h[0],16),parseInt(h[1]+h[1],16),parseInt(h[2]+h[2],16)];}
+  m=c.match(/^#([0-9a-f]{6})$/i); if(m){const h=m[1];return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+  m=c.match(/^rgba?\(([^)]+)\)$/i); if(m){const p=m[1].split(',').map(x=>parseFloat(x));return [p[0]||0,p[1]||0,p[2]||0];}
+  return null;
+}
+function renderAnomalyTimeline(){
+  const wrap=document.getElementById('anom-timeline-wrap');
+  const host=document.getElementById('anom-timeline');
+  if(!wrap||!host||!ANOM_TL){ return; }
+  const j=ANOM_TL, series=(j.series||[]).filter(s=>s.status==='ok');
+  host.textContent='';
+  if(!series.length){
+    // Nothing scored yet (short/no history) → clean "baseline still building" note.
+    const e=document.createElement('div'); e.className='atl-empty';
+    e.textContent=I18N.t('ribbon.building','Baseline still building');
+    host.appendChild(e); wrap.hidden=false; return;
+  }
+  const grid=document.createElement('div'); grid.className='atl';
+  let anyHot=false;
+  for(const s of series){
+    const lbl=document.createElement('div'); lbl.className='atl-lbl';
+    lbl.appendChild(document.createTextNode(I18N.t('anom.series.'+s.key, s.label||s.key)));
+    if(s.unit){ const u=document.createElement('span'); u.className='u'; u.textContent=s.unit; lbl.appendChild(u); }
+    grid.appendChild(lbl);
+    const row=document.createElement('div'); row.className='atl-row';
+    row.setAttribute('role','img');
+    // Track the peak deviation for this series to enrich the row aria-label.
+    let peak=0, peakDir=null, peakTs=null;
+    for(const c of (s.cells||[])){
+      const cell=document.createElement('div'); cell.className='atl-cell';
+      if(c==null){ cell.classList.add('gap'); row.appendChild(cell); continue; }
+      cell.style.background=_atlColor(c);
+      if((c.score||0) > 0){
+        const z=Math.round((c.score*j.threshold)*10)/10;       // recover approx |z|
+        const dir=I18N.t('anom.'+(c.dir==='dip'?'dip':(c.dir==='flat'?'quiet':'spike')),
+                          c.dir||'');
+        const when=fmtLabels([c.ts])[0]||'';
+        // title = XSS-safe hover: "<time> · <dir> · |z|≈N.Nσ"
+        cell.title=when+' · '+dir+' · |z|≈'+z+'σ';
+        if(c.score>=1 || c.dir!=='flat') anyHot = anyHot || (c.score>0 && c.dir!=='flat');
+        if(c.score>peak){ peak=c.score; peakDir=c.dir; peakTs=c.ts; }
+      }
+      row.appendChild(cell);
+    }
+    const zpk=Math.round((peak*j.threshold)*10)/10;
+    const pkTxt = peak>0
+      ? (I18N.t('anom.series.'+s.key, s.label||s.key)+' — '+I18N.t('ribbon.peak','peak')+' |z|≈'+zpk+'σ')
+      : I18N.t('anom.series.'+s.key, s.label||s.key);
+    row.setAttribute('aria-label', pkTxt);
+    grid.appendChild(row);
+  }
+  host.appendChild(grid);
+  if(!anyHot){
+    const e=document.createElement('div'); e.className='atl-empty'; e.style.marginTop='7px';
+    e.textContent=I18N.t('ribbon.no_anomalies','No anomalies in the last 6h');
+    host.appendChild(e);
+  }
+  wrap.hidden=false;
 }
 // Read a theme token at draw time so charts re-colour with the theme.
 const cv = n => (getComputedStyle(document.documentElement).getPropertyValue(n)||'').trim() || '#888';

@@ -8233,6 +8233,124 @@ def _zscore_anomalies(cur, now):
     return {"status": status, "checked": checked, "threshold": Z_THRESH,
             "window_h": WINDOW // 3600, "items": out}
 
+
+# ── 🌈 Anomaly ribbon timeline (E2/E4) — the Netdata "deviation heat" trick ─────
+# A time-bucketed VISUAL of the SAME z-score anomaly maths the Anomalies card uses,
+# so the ribbon and the card always agree. For each series we take ONE baseline over
+# the trailing window (mean + POPULATION stddev, EXCLUDING the latest point — exactly
+# like `_zscore_anomalies`), then split the window into a FIXED bucket count and score
+# each bucket's mean against that one baseline: score = min(1, |z| / Z_THRESH). Empty
+# buckets → null (a gap, not a zero). Series with < MIN_PTS history → status
+# 'collecting' with all-null cells, mirroring the detector's empty-state semantics.
+#
+# Guardrails: LLM-FREE (no _ollama_* anywhere near here), bounded (fixed window +
+# fixed 60 buckets, ONE pass over `samples`), read-only (no writes), and PRIVATE —
+# never wired into any poll path or any public surface (build_public_status /
+# /api/status / /status / feed / report). It's a one-shot Overview fetch only.
+_RIBBON_BUCKETS = 60          # fixed cell count across the whole window (Netdata-style)
+
+def _anomaly_ribbon(cur, now):
+    """Build the bucketed deviation-heat ribbon for each anomaly series. Pure stdlib,
+    never raises on short/flat/absent history. Returns the endpoint payload dict."""
+    WINDOW   = 6 * 3600       # trailing window — same as _zscore_anomalies (~6h)
+    MIN_PTS  = 30             # same min-history gate as the detector
+    Z_THRESH = 3.0            # same threshold constant as the detector
+    B        = _RIBBON_BUCKETS
+    since    = now - WINDOW
+    # ONE pass over samples: pull ts + every series column in a single query (same
+    # column set / query shape the detector uses — no second heavy scan).
+    cols = ", ".join(c for _, c, _, _ in _ANOMALY_SERIES)
+    try:
+        rows = cur.execute(
+            f"SELECT ts, {cols} FROM samples WHERE ts>=? ORDER BY ts", (since,)).fetchall()
+    except Exception:
+        rows = []
+    span = float(WINDOW) / B                       # seconds per bucket
+    # Fixed bucket boundaries anchored to `now` so cells align to wall-clock, not to
+    # whatever the first sample happened to be. Bucket i covers [since+i*span, +span).
+    bucket_ts = [int(since + (i + 0.5) * span) for i in range(B)]
+    series_out = []
+    for idx, (key, _col, unit, min_dev) in enumerate(_ANOMALY_SERIES):
+        col_i = idx + 1                            # +1: ts is column 0
+        vals = [r[col_i] for r in rows if r[col_i] is not None]
+        if len(vals) < MIN_PTS:
+            # Not enough history to have a baseline — collecting, all-empty cells.
+            series_out.append({
+                "key": key, "unit": unit, "label": _RIBBON_LABEL.get(key, key),
+                "status": "collecting", "cells": [None] * B})
+            continue
+        # ONE baseline for the whole window, EXCLUDING the latest point (mirror the
+        # detector exactly so the ribbon's peak agrees with the card's flag).
+        base = vals[:-1]
+        n = len(base)
+        mean = sum(base) / n
+        sd = (sum((v - mean) ** 2 for v in base) / n) ** 0.5   # population stddev
+        # Bucket the samples by timestamp, then score each bucket's MEAN vs baseline.
+        sums = [0.0] * B
+        counts = [0] * B
+        for r in rows:
+            v = r[col_i]
+            if v is None:
+                continue
+            bi = int((r[0] - since) / span)
+            if bi < 0:
+                bi = 0
+            elif bi >= B:
+                bi = B - 1
+            sums[bi] += v
+            counts[bi] += 1
+        cells = []
+        for bi in range(B):
+            if counts[bi] == 0:
+                cells.append(None)                 # gap — render empty, not zero
+                continue
+            bmean = sums[bi] / counts[bi]
+            dev = bmean - mean
+            if sd <= 0 or abs(dev) < min_dev:
+                # Flat/idle or sub-threshold deviation → a real, scored, quiet cell.
+                cells.append({"ts": bucket_ts[bi], "score": 0.0, "dir": "flat"})
+                continue
+            z = dev / sd
+            score = min(1.0, abs(z) / Z_THRESH)
+            cells.append({"ts": bucket_ts[bi], "score": round(score, 4),
+                          "dir": "spike" if z > 0 else "dip"})
+        series_out.append({
+            "key": key, "unit": unit, "label": _RIBBON_LABEL.get(key, key),
+            "status": "ok", "cells": cells})
+    any_ok = any(s["status"] == "ok" for s in series_out)
+    return {"ok": True, "now": now, "window_h": WINDOW // 3600,
+            "buckets": B, "threshold": Z_THRESH,
+            "status": "ok" if any_ok else "collecting", "series": series_out}
+
+
+# Human-readable series labels for the ribbon rows (the UI re-localizes via the
+# anom.series.<key> i18n keys; these are the English fallbacks / API convenience).
+_RIBBON_LABEL = {
+    "gpu_util":  "GPU utilization",
+    "gpu_vram":  "GPU VRAM used",
+    "gpu_power": "GPU power",
+    "gpu_temp":  "GPU temperature",
+    "power_draw": "Total power draw",
+}
+
+
+@app.route("/api/anomaly_ribbon")
+def api_anomaly_ribbon():
+    """Time-bucketed anomaly deviation-heat ribbon (the Netdata glance trick), built
+    from the SAME z-score maths as the Anomalies card. PURE MATH: makes ZERO LLM
+    calls and never mutates. Bounded (fixed 6h window + fixed 60 buckets, one pass).
+    Authed dashboard surface only — NOT on the public /status pages. Always 200;
+    graceful-degrade (short/no history → 'collecting'), never 500."""
+    now = int(time.time())
+    try:
+        with LOCK:
+            payload = _anomaly_ribbon(DB.cursor(), now)
+    except Exception:
+        payload = {"ok": True, "now": now, "window_h": 6, "buckets": _RIBBON_BUCKETS,
+                   "threshold": 3.0, "status": "collecting", "series": []}
+    return jsonify(payload)
+
+
 # ── Demo mode (E4): seed realistic synthetic history on a fresh DB ─────────────
 # When DEMO_MODE is on AND the DB has no recent real history, lay down ~7 days of
 # believable per-sample series plus a slice of the previous calendar month, so the
