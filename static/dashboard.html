@@ -539,6 +539,7 @@ section[data-tab="overview"].booted .hero::after{
 .inc-time{font-size:12px;color:var(--mut);font-family:var(--mono)}
 .inc-count{margin-left:auto;font-size:11px;color:var(--mut);font-family:var(--mono);white-space:nowrap}
 .inc-count b{color:var(--tx)}
+.inc-pm-chip{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent);white-space:nowrap}
 .inc-members{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
 .inc-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 9px;border-radius:999px;
   border:1px solid var(--bd);background:var(--card);color:var(--tx);max-width:100%;cursor:pointer;
@@ -1898,6 +1899,14 @@ h2 .hic{ opacity:.9 }
       <label class="inc-auto" title="" id="inc-cause-wrap" hidden>
         <input type="checkbox" id="inc-notify-cause">
         <span data-i18n="inc.notify_cause">Notify probable cause</span>
+      </label>
+      <label class="inc-auto" title="" id="inc-auto-pm-wrap" hidden>
+        <input type="checkbox" id="inc-auto-postmortem">
+        <span data-i18n="inc.auto_postmortem">Auto-postmortem on resolve</span>
+      </label>
+      <label class="inc-auto" title="" id="inc-pm-filter-wrap" hidden>
+        <input type="checkbox" id="inc-pm-filter">
+        <span data-i18n="inc.pm_filter">Only with postmortem</span>
       </label>
     </div>
     <div id="inc-body"></div>
@@ -7961,10 +7970,29 @@ function renderIncidents(){
   const j=INCIDENTS||{}, card=document.getElementById('inc-card'), body=document.getElementById('inc-body');
   if(!card||!body) return;
   card.hidden=false;
-  const items=(j.incidents||[]);
+  const allItems=(j.incidents||[]);
   const summary=j.summary||{open:0};
   _incChip(summary.open?'open':'quiet', summary.open||0, !!(summary.top&&summary.top.severity==='critical'));
+  // Client-side "only with postmortem" filter over the already-fetched list —
+  // reuses the has_postmortem flag on the payload, no new endpoint/query.
+  const anyPm=allItems.some(x=>x&&x.has_postmortem);
+  const fwrap=document.getElementById('inc-pm-filter-wrap');
+  const fcb=document.getElementById('inc-pm-filter');
+  if(fwrap){
+    fwrap.hidden=!anyPm;
+    fwrap.title=I18N.t('inc.pm_filter_tip','Show only resolved incidents that already have an AI postmortem. Filters the list you already loaded — no new request.');
+    if(fcb&&!fcb._wired){ fcb._wired=true; fcb.onchange=()=>renderIncidents(); }
+  }
+  const pmOnly=!!(fcb&&fcb.checked&&anyPm);
+  const items=pmOnly?allItems.filter(x=>x&&x.has_postmortem):allItems;
   if(!items.length){
+    if(pmOnly){
+      body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🧾</div><div><div class="t">'
+        +esc(I18N.t('inc.pm_none_title','No incidents with a postmortem'))+'</div><div class="d">'
+        +esc(I18N.t('inc.pm_none_d','No resolved incident in this list has an AI postmortem yet.'))
+        +'</div></div></div>';
+      return;
+    }
     // calm, intentional quiet state — not an alarm, not "broken"
     body.innerHTML='<div class="ins ok" style="margin:2px 0"><div class="ic">🛟</div><div><div class="t">'
       +I18N.t('inc.none_title','No incidents')+'</div><div class="d">'
@@ -7990,7 +8018,9 @@ function renderIncidents(){
       +`<span class="badge ${sev==='critical'?'crit':'warn'}">${esc(sevTxt)}</span>`
       +`<span class="inc-state">${esc(stateTxt)}</span>`
       +`<span class="inc-time">${esc(timeTxt)}</span>`
-      +`<span class="inc-count">${esc(count)}</span></div>`
+      +`<span class="inc-count">${esc(count)}</span>`
+      +(it.has_postmortem?`<span class="chip inc-pm-chip" title="${escAttr(I18N.t('inc.pm_badge_tip','This resolved incident has an AI postmortem. Open Details to read it.'))}">🧾 ${esc(I18N.t('inc.pm_badge','Postmortem'))}</span>`:'')
+      +`</div>`
       +`<div class="inc-members">${chips}</div>`
       +_incAiOneLiner(it)
       +`<div class="inc-open-row">`
@@ -8032,11 +8062,13 @@ async function _incAutoInit(){
   if(INC_AUTO_INIT) return; INC_AUTO_INIT=true;
   const wrap=document.getElementById('inc-auto-wrap'), cb=document.getElementById('inc-auto-explain');
   const cwrap=document.getElementById('inc-cause-wrap'), ccb=document.getElementById('inc-notify-cause');
+  const pwrap=document.getElementById('inc-auto-pm-wrap'), pcb=document.getElementById('inc-auto-postmortem');
   if(!wrap||!cb) return;
   try{
     const s=(await(await fetch('/api/settings')).json()).settings||{};
     cb.checked = s.incident_auto_explain==='1';
     if(ccb) ccb.checked = s.notify_ai_cause==='1';
+    if(pcb) pcb.checked = s.incident_auto_postmortem==='1';
   }catch(e){ /* leave OFF (default) */ }
   wrap.hidden=false;
   wrap.title=I18N.t('inc.auto_explain_tip','When on, newly-opened incidents get a plain-English AI explanation generated automatically (local LLM, off the metrics path). Off by default.');
@@ -8052,6 +8084,15 @@ async function _incAutoInit(){
       try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({notify_ai_cause: ccb.checked?'1':'0'})}); }
       catch(e){ ccb.checked=!ccb.checked; }
+    };
+  }
+  if(pwrap&&pcb){
+    pwrap.hidden=false;
+    pwrap.title=I18N.t('inc.auto_postmortem_tip','When on, a correlated incident that resolves gets a short AI postmortem generated automatically (local LLM, off the metrics path, at most once per incident). Off by default.');
+    pcb.onchange=async()=>{
+      try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({incident_auto_postmortem: pcb.checked?'1':'0'})}); }
+      catch(e){ pcb.checked=!pcb.checked; }
     };
   }
 }

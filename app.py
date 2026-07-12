@@ -10363,6 +10363,18 @@ def _digest_sections(now=None):
     elif anoms_block.get("status") == "quiet":
         sections.append(("Anomalies", ["No anomalies — all monitored series are within range."]))
 
+    # ── Latest postmortem: cite the most-recent PERSISTED incident postmortem ────
+    # Deterministic — reads already-persisted prose only, NEVER a new LLM call.
+    # Omitted cleanly when no postmortem has ever been generated.
+    try:
+        pm = _latest_postmortem_citation()
+    except Exception:
+        pm = None
+    if pm and pm.get("cause"):
+        when = (" (%s)" % pm["when"]) if pm.get("when") else ""
+        sections.append(("Latest postmortem",
+                         ["%s%s — %s." % (pm.get("title") or "incident", when, pm["cause"])]))
+
     return sections
 
 
@@ -11987,6 +11999,49 @@ def _load_persisted_postmortem(inc):
     except Exception:
         pass
     return None
+
+
+def _latest_postmortem_citation():
+    """Deterministic citation for the most-recently-RESOLVED incident that has an
+    ALREADY-PERSISTED postmortem — for embedding in the digest. Reads only the
+    persisted prose (postmortem_json) + the incident row; NEVER generates and NEVER
+    calls the LLM. Returns {"id","title","cause","when"} or None (no persisted
+    postmortem exists). Series keys only — same privacy contract as the drawer.
+    Never raises."""
+    try:
+        with LOCK:
+            row = DB.execute(
+                "SELECT id, severity, opened_at, cleared_at, postmortem_json, postmortem_at "
+                "FROM incidents WHERE state='cleared' AND postmortem_at IS NOT NULL "
+                "ORDER BY COALESCE(cleared_at, opened_at) DESC, postmortem_at DESC "
+                "LIMIT 1", ()).fetchone()
+    except Exception as e:
+        print("latest postmortem citation error:", e, flush=True)
+        return None
+    if not row:
+        return None
+    iid, sev, opened, cleared, pm_json, pm_at = row
+    prose = _load_persisted_postmortem({"postmortem_json": pm_json})
+    if not prose:
+        return None
+    cause = (prose.get("probable_cause") or "").strip()
+    if not cause:
+        return None
+    # First sentence / clause of the cause, bounded — keep the digest line tight.
+    first = cause.split(". ")[0].strip().rstrip(".")
+    if len(first) > 200:
+        first = first[:197].rstrip() + "…"
+    # Deterministic, series-key-only title: "<severity> incident #<id> (<n> signals)".
+    try:
+        members = _incident_members(iid)
+    except Exception:
+        members = []
+    n = len(members)
+    sev_txt = (sev or "warning").capitalize()
+    title = "%s incident #%s (%d signal%s)" % (sev_txt, iid, n, "" if n == 1 else "s")
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(cleared or opened or 0)) \
+        if (cleared or opened) else None
+    return {"id": iid, "title": title, "cause": first, "when": when}
 
 
 def get_incident_postmortem(iid, generate=False, force=False, now=None):
