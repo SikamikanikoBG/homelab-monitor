@@ -1414,6 +1414,8 @@
   "tour.s_forecast_b": "Linear fits over your own history project disk-fill and VRAM-exhaustion ETAs plus a cost trend, so you can act days ahead instead of reacting.",
   "tour.s_inc_t": "Correlated incidents",
   "tour.s_inc_b": "Anomalies that fire together become one incident with per-member sparklines, an AI probable-cause line and spike-time attribution — who was writing when it spiked.",
+  "tour.s_ribbon_t": "Anomaly timeline — deviation-heat at a glance",
+  "tour.s_ribbon_b": "One ribbon row per metric (plus disk I/O) across the last 6h, each cell shaded by how far it strayed from that metric's own baseline — hot cells fired the very same z-score detector as the Anomalies card, so a whole day's turbulence reads in one glance. Click any hot cell and the local Copilot explains what was actually running at that exact moment. All computed on-box: no anomaly maths and no local LLM means the other side simply can't build this.",
   "tour.s_slo_t": "SLO error-budget & burn-rate",
   "tour.s_slo_b": "Each uptime check tracks its monthly error budget with SRE-grade multi-window burn-rate — you learn you're burning budget long before you breach.",
   "tour.s_diskio_t": "Disk I/O with per-process attribution",
