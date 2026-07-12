@@ -298,6 +298,16 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
   display:inline-block;transition:transform .15s ease}
 .hero-score[aria-expanded="true"] .hs-band::after{transform:rotate(180deg)}
 @media(prefers-reduced-motion:reduce){.hero-score .hs-arc{transition:stroke .3s ease}.hero-score .hs-band::after{transition:none}}
+/* Incident-recency chip — proof the incident system is real + has history, even at
+   100% health. Neutral by default; a dot tinted by the last incident's severity. */
+.hero-score .hs-incdot{display:inline-flex;align-items:center;gap:5px;margin-top:2px;
+  font-size:10.5px;font-weight:600;color:var(--mut);line-height:1.1;white-space:nowrap}
+.hero-score .hs-incdot[hidden]{display:none}
+.hero-score .hs-incdot::before{content:'';width:6px;height:6px;border-radius:50%;
+  background:var(--mut);flex:none}
+.hero-score .hs-incdot.sev-critical::before{background:var(--crit)}
+.hero-score .hs-incdot.sev-warning::before{background:var(--warn)}
+.hero-score .hs-incdot.sev-none::before{background:var(--ok)}
 /* Breakdown panel — worst-first factor rows, each with its deduction + plain detail */
 .hero-score-panel{margin:0 20px 14px;padding:12px 14px;border:1px solid var(--bd);border-radius:11px;
   background:var(--inset);animation:hsp-in .18s ease}
@@ -1740,7 +1750,8 @@ h2 .hic{ opacity:.9 }
         </svg>
         <span class="hs-face"><span class="hs-num" id="hero-score-num">—</span></span>
         <span class="hs-meta"><span class="hs-lead" id="hero-score-lead"></span>
-          <span class="hs-band" id="hero-score-band"></span></span>
+          <span class="hs-band" id="hero-score-band"></span>
+          <span class="hs-incdot" id="hero-score-incident" hidden></span></span>
       </button>
       <span class="chip hero-status-chip" id="hero-chip" role="status"></span>
     </div>
@@ -7065,7 +7076,36 @@ function renderHeroScore(){
   el.setAttribute('aria-label',
     I18N.tf('hero.hs_aria','Lab Health Score {n} of 100 — {band}. {c} factors reducing it. Activate to see the breakdown.',
       {n:score,band:bandTxt,c:factors.length}));
+  _renderHeroIncidentRecency(h);
   _renderHeroScorePanel(h,factors,bandTxt);
+}
+// Incident-recency chip under the ring. Proves the incident system is REAL + has
+// history even when everything is green. Severity → fixed class map (never
+// interpolated); all text via esc(). Empty/never-had-an-incident states are clean.
+const _HS_SEV_CLASS={critical:'sev-critical',warning:'sev-warning'};
+function _renderHeroIncidentRecency(h){
+  const el=document.getElementById('hero-score-incident'); if(!el) return;
+  const li=(h&&h.last_incident)||null;
+  // No payload at all (older backend) → hide silently, never a broken chip.
+  if(!li){ el.hidden=true; el.textContent=''; el.className='hs-incdot'; return; }
+  const days=(typeof li.window_days==='number' && li.window_days>0)?li.window_days:30;
+  let cls='hs-incdot', txt;
+  if(!li.id || li.ago_human==null){
+    // DB has no incidents ever recorded.
+    cls+=' sev-none';
+    txt=I18N.t('hero.inc_none','No incidents recorded');
+  } else if(li.within_window===false){
+    // Most recent incident is older than the retention window → clean-streak framing.
+    cls+=' sev-none';
+    txt=I18N.tf('hero.inc_clean','No incidents in {d}d',{d:days});
+  } else {
+    const sc=_HS_SEV_CLASS[li.severity]||'';
+    if(sc) cls+=' '+sc;
+    txt=I18N.tf('hero.inc_last','Last incident {ago} ago',{ago:li.ago_human});
+  }
+  el.className=cls;
+  el.textContent=txt;   // textContent = XSS-safe; no HTML interpolation
+  el.hidden=false;
 }
 const _HS_FAC_LBL={uptime:['Uptime checks','hero.hsf_uptime'],incidents:['Open incidents','hero.hsf_incidents'],
   slo:['SLO error budget','hero.hsf_slo'],disk:['Disk capacity','hero.hsf_disk'],

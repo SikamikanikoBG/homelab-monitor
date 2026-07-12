@@ -14,6 +14,7 @@ Coverage:
 """
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -290,6 +291,113 @@ class TestApiEndpoints(unittest.TestCase):
             body = r.get_data(as_text=True)
             self.assertNotIn("health_score", body)
             self.assertNotIn("\"score\"", body)
+
+
+class TestLastIncidentChip(unittest.TestCase):
+    """The hero's incident-recency chip (proof the incident system is real + has
+    history even at 100% health). Backed by _hs_last_incident() + carried on the
+    health payload of /api/health_score and /api/forecast. Authed-only; must NOT
+    reach any public surface."""
+
+    def setUp(self):
+        self.c = app.app.test_client()
+        with app.LOCK:
+            self._saved = app.DB.execute(
+                "SELECT id,state,severity,opened_at,updated_at,cleared_at,miss "
+                "FROM incidents").fetchall()
+            app.DB.execute("DELETE FROM incidents")
+            app.DB.commit()
+
+    def tearDown(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM incidents")
+            for r in self._saved:
+                app.DB.execute(
+                    "INSERT INTO incidents(id,state,severity,opened_at,updated_at,"
+                    "cleared_at,miss) VALUES(?,?,?,?,?,?,?)", r)
+            app.DB.commit()
+
+    def _seed(self, iid, severity, state, opened_at, cleared_at=None):
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO incidents(id,state,severity,opened_at,updated_at,"
+                "cleared_at,miss) VALUES(?,?,?,?,?,?,0)",
+                (iid, state, severity, opened_at, opened_at, cleared_at))
+            app.DB.commit()
+
+    def test_empty_db_returns_null_shape(self):
+        now = int(time.time())
+        li = app._hs_last_incident(now)
+        self.assertIsInstance(li, dict)
+        self.assertIsNone(li["id"])
+        self.assertIsNone(li["ago_human"])
+        self.assertFalse(li["within_window"])
+        self.assertIsInstance(li["window_days"], int)
+
+    def test_recent_cleared_incident_reports_ago(self):
+        now = int(time.time())
+        self._seed("inc-old", "warning", "cleared", now - 20 * 86400,
+                   cleared_at=now - 19 * 86400)
+        self._seed("inc-new", "critical", "cleared", now - 3 * 86400 - 100,
+                   cleared_at=now - 3 * 86400)
+        li = app._hs_last_incident(now)
+        # Most-recent by cleared_at wins.
+        self.assertEqual(li["id"], "inc-new")
+        self.assertEqual(li["severity"], "critical")
+        self.assertEqual(li["ago_human"], "3d")
+        self.assertTrue(li["within_window"])
+        self.assertEqual(li["ago_secs"], 3 * 86400)
+
+    def test_open_incident_uses_opened_at(self):
+        now = int(time.time())
+        self._seed("inc-open", "warning", "open", now - 3600)
+        li = app._hs_last_incident(now)
+        self.assertEqual(li["id"], "inc-open")
+        self.assertEqual(li["state"], "open")
+        self.assertEqual(li["ago_human"], "1h")
+
+    def test_old_incident_flags_outside_window(self):
+        now = int(time.time())
+        window = app.get_retention_days()
+        self._seed("inc-ancient", "warning", "cleared",
+                   now - (window + 40) * 86400,
+                   cleared_at=now - (window + 30) * 86400)
+        li = app._hs_last_incident(now)
+        self.assertEqual(li["id"], "inc-ancient")
+        self.assertFalse(li["within_window"])
+
+    def test_ago_human_buckets(self):
+        self.assertEqual(app._hs_ago_human(0), "just now")
+        self.assertEqual(app._hs_ago_human(59), "just now")
+        self.assertEqual(app._hs_ago_human(120), "2m")
+        self.assertEqual(app._hs_ago_human(7200), "2h")
+        self.assertEqual(app._hs_ago_human(3 * 86400), "3d")
+        self.assertIsNone(app._hs_ago_human(None))
+
+    def test_health_endpoints_carry_last_incident(self):
+        now = int(time.time())
+        self._seed("inc-x", "warning", "cleared", now - 5 * 86400,
+                   cleared_at=now - 5 * 86400 + 60)
+        for path in ("/api/health_score", "/api/forecast"):
+            j = self.c.get(path).get_json()
+            h = j if path.endswith("health_score") else j["health"]
+            self.assertIn("last_incident", h)
+            self.assertEqual(h["last_incident"]["id"], "inc-x")
+
+    def test_last_incident_never_reaches_public_surface(self):
+        now = int(time.time())
+        self._seed("inc-secret", "critical", "cleared", now - 86400,
+                   cleared_at=now - 86400 + 30)
+        sp = app.STATUS_PAGE
+        app.STATUS_PAGE = True
+        try:
+            for path in ("/api/status", "/status"):
+                body = self.c.get(path).get_data(as_text=True)
+                self.assertNotIn("last_incident", body)
+                self.assertNotIn("inc-secret", body)
+                self.assertNotIn("ago_human", body)
+        finally:
+            app.STATUS_PAGE = sp
 
 
 if __name__ == "__main__":

@@ -8712,6 +8712,60 @@ def _hs_incident_counts():
     except Exception:
         return {"open": 0, "critical": 0}
 
+def _hs_ago_human(secs):
+    """Coarse, English 'time-ago' string for a non-negative gap in SECONDS. Kept
+    deliberately compact ('3d', '5h', '12m', 'just now') so the hero chip stays
+    glanceable; the UI localises the surrounding label, this is only the magnitude."""
+    try:
+        s = int(secs)
+    except (TypeError, ValueError):
+        return None
+    if s < 0:
+        s = 0
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h"
+    return f"{s // 86400}d"
+
+def _hs_last_incident(now=None):
+    """Most-recent incident (by cleared_at when set, else opened_at) for the hero's
+    incident-recency chip. Returns {id, when_ts, ago_secs, ago_human, severity,
+    state, window_days, within_window} or None when the DB has no incidents at all.
+    ONE tiny bounded query; degrades to None, never raises. PRIVATE (authed hero)
+    surface only — never fed to any public/status payload."""
+    if now is None:
+        now = int(time.time())
+    try:
+        window_days = get_retention_days()
+    except Exception:
+        window_days = _RETENTION_DAYS_DEFAULT
+    try:
+        with LOCK:
+            row = DB.execute(
+                "SELECT id, severity, state, opened_at, cleared_at FROM incidents "
+                "ORDER BY COALESCE(cleared_at, opened_at) DESC LIMIT 1").fetchone()
+    except Exception:
+        return None
+    if not row:
+        return {"id": None, "when_ts": None, "ago_secs": None, "ago_human": None,
+                "severity": None, "state": None, "window_days": int(window_days),
+                "within_window": False}
+    iid, sev, state, opened_at, cleared_at = row
+    when_ts = cleared_at if cleared_at else opened_at
+    try:
+        when_ts = int(when_ts)
+    except (TypeError, ValueError):
+        when_ts = None
+    ago_secs = max(0, int(now) - when_ts) if when_ts is not None else None
+    within = (ago_secs is not None and ago_secs <= int(window_days) * 86400)
+    return {"id": iid, "when_ts": when_ts, "ago_secs": ago_secs,
+            "ago_human": _hs_ago_human(ago_secs) if ago_secs is not None else None,
+            "severity": (sev or None), "state": (state or None),
+            "window_days": int(window_days), "within_window": bool(within)}
+
 def _hs_gpu_signal():
     """Live GPU thermal signal for the health score, from the cached snapshot the
     UI already has. Empty (→ no thermal penalty) when no GPU is present, so a
@@ -8756,7 +8810,9 @@ def api_health_score():
     LLM calls and never mutates. Authed dashboard surface only — NOT exposed on the
     public /status pages. Always 200; graceful-degrade, never 500."""
     now = int(time.time())
-    return jsonify(compute_health_score(_gather_health_signals(now), now))
+    hs = compute_health_score(_gather_health_signals(now), now)
+    hs["last_incident"] = _hs_last_incident(now)
+    return jsonify(hs)
 
 # ── 🧭 "What to fix first" — an AI-prioritized remediation plan layered on the
 # deterministic Lab Health Score. The PRIORITY (worst-first, by |delta|) and the
@@ -9083,6 +9139,9 @@ def api_forecast():
         "uptime": uptime_checks, "incidents": _hs_incident_counts(),
         "anomalies": anomalies, "disk": disks, "vram": vram,
         "gpu": _hs_gpu_signal()}, now)
+    # Incident-recency chip (authed hero only — NEVER a public surface): proof the
+    # incident system is real + has history even when the lab is 100% healthy.
+    health["last_incident"] = _hs_last_incident(now)
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
                     "anomalies": anomalies, "vram": vram,
                     "incidents": incidents,
