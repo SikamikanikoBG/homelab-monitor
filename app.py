@@ -8647,6 +8647,260 @@ def api_health_score():
     now = int(time.time())
     return jsonify(compute_health_score(_gather_health_signals(now), now))
 
+# ── 🧭 "What to fix first" — an AI-prioritized remediation plan layered on the
+# deterministic Lab Health Score. The PRIORITY (worst-first, by |delta|) and the
+# DEEP-LINK targets are 100% deterministic — the local LLM may only reword the
+# human-readable what/why/next-step prose, never reorder, invent a factor, or
+# change a link. Read-only: it SUGGESTS + deep-links to EXISTING surfaces; it
+# never persists and never mutates the host. NO LLM on any poll path — enrichment
+# is behind the explicit `?llm=1` action only. ────────────────────────────────
+#
+# Per health-factor key → the concrete recommended action + the deep-link target.
+# `tab` is an EXISTING dashboard tab id (see the <section data-tab="…"> set); the
+# UI reuses the same showTab()/#hash mechanism the hero chips already use. `anchor`
+# is an existing element id to scroll to (optional). We invent NO new routes.
+_HS_FIX = {
+    "uptime": {
+        "tab": "uptime", "anchor": None, "severity": "crit",
+        "title": "Bring the down check(s) back up",
+        "action": ("Open Uptime, find the check(s) showing DOWN, and restore the "
+                   "target service (or pause the check if the endpoint is retired)."),
+        "why": ("A monitored check being down is the hardest failure signal — it "
+                "usually means users can't reach something the lab is meant to serve."),
+    },
+    "incidents": {
+        "tab": "gpu", "anchor": "inc-card", "severity": "crit",
+        "title": "Work the open incident(s)",
+        "action": ("Open the Incidents panel, read the correlated anomalies in each "
+                   "open incident, and address the underlying cause; it clears itself "
+                   "once every member signal settles back to normal."),
+        "why": ("Open incidents group anomalies that fired together — they point at a "
+                "real, ongoing problem rather than one noisy sample."),
+    },
+    "slo": {
+        "tab": "uptime", "anchor": None, "severity": "warn",
+        "title": "Protect the burning error budget",
+        "action": ("Open Uptime and review the check(s) over budget or burning fast; "
+                   "reduce the failing requests, or widen the objective if the target "
+                   "was set too tight."),
+        "why": ("An exhausted or fast-burning error budget means reliability is "
+                "trending the wrong way and will breach the objective if it continues."),
+    },
+    "disk": {
+        "tab": "disks", "anchor": None, "severity": "warn",
+        "title": "Reclaim space before the disk fills",
+        "action": ("Open Disks, scan the filling mount to find the biggest folders, "
+                   "and clear or relocate what's growing before the ETA lands."),
+        "why": ("A full disk stops writes — logs, backups and databases fail once the "
+                "mount is out of space."),
+    },
+    "vram": {
+        "tab": "gpu", "anchor": None, "severity": "warn",
+        "title": "Free GPU VRAM before it's exhausted",
+        "action": ("Open GPU, see which loaded models hold VRAM, and unload the ones "
+                   "you don't need so new work still fits."),
+        "why": ("When VRAM is exhausted the GPU can't load the next model or batch — "
+                "inference stalls or falls back to slow CPU."),
+    },
+    "anomalies": {
+        "tab": "gpu", "anchor": "anom-card", "severity": "warn",
+        "title": "Check what's firing anomalies",
+        "action": ("Open GPU and read the Anomalies panel — each firing signal names "
+                   "the metric (util / VRAM / power / temp) that's off its baseline."),
+        "why": ("Active z-score anomalies mean a live metric is well outside its "
+                "recent normal — often the first sign of a developing problem."),
+    },
+    "thermal": {
+        "tab": "gpu", "anchor": None, "severity": "warn",
+        "title": "Cool the GPU down",
+        "action": ("Open GPU, check the temperature and load, and improve airflow or "
+                   "cap the power/clocks; a card near its throttle ceiling loses "
+                   "performance."),
+        "why": ("A GPU running hot enough to (thermal-)throttle runs slower and wears "
+                "faster — sustained heat shortens the card's life."),
+    },
+}
+# Shown when the score is excellent / nothing is firing — a calm all-clear, NOT a
+# fabricated problem. Deep-links to the Overview so the user lands on the score.
+_HS_FIX_ALLCLEAR = {
+    "key": "all_clear", "priority": 1, "severity": "ok",
+    "title": "All clear — nothing to fix",
+    "why": "No signals are currently reducing your lab health.",
+    "action": "Keep an eye on the Lab Health Score; it'll flag the first thing that slips.",
+    "deep_link": {"tab": "overview", "anchor": "hero-score"},
+}
+
+def build_fixplan(health):
+    """DETERMINISTIC remediation plan from a computed health-score dict. Takes the
+    firing factors worst-first (the score's own `factors` are already sorted by
+    delta) and maps each factor `key` → a concrete action + an EXISTING deep-link
+    target from `_HS_FIX`. This ordered list is the SOURCE OF TRUTH for priority +
+    links; the LLM (if used) may only reword prose against these exact items.
+
+    Returns a list of {key, priority, title, why, action, deep_link, severity,
+    detail}. Empty firing set → a single calm all-clear item (never fabricated
+    problems). Pure: NO I/O, NO LLM, never raises."""
+    factors = (health or {}).get("factors") or []
+    factors = [f for f in factors if isinstance(f, dict) and f.get("key") in _HS_FIX]
+    if not factors:
+        return [dict(_HS_FIX_ALLCLEAR)]
+    plan = []
+    for i, f in enumerate(factors):
+        spec = _HS_FIX[f["key"]]
+        plan.append({
+            "key": f["key"],
+            "priority": i + 1,
+            "severity": spec["severity"],
+            "title": spec["title"],
+            "why": spec["why"],
+            "action": spec["action"],
+            # `detail` carries the live number the score already computed, so the
+            # item is grounded (e.g. "/backup fills in ~3d") without any new I/O.
+            "detail": f.get("detail") or "",
+            "deep_link": {"tab": spec["tab"], "anchor": spec["anchor"]},
+        })
+    return plan
+
+
+def _fixplan_llm_prompt(plan, score, band):
+    """Small, secret-free prompt: hand the LLM the ALREADY-COMPUTED deterministic
+    plan items (title + why + action + the live detail) and ask it to reword the
+    prose per item, plainer/friendlier, KEEPING the numbers and the recommended
+    step. We send only the fields the panel already shows — no targets, no host
+    internals. Bounded to the plan set. The item numbers are the contract the
+    validator maps back against."""
+    lines = []
+    for i, it in enumerate(plan):
+        det = (" (" + it["detail"] + ")") if it.get("detail") else ""
+        lines.append("%d. %s%s — why: %s — next: %s"
+                     % (i + 1, it["title"], det, it["why"], it["action"]))
+    return (
+        "You are the Lab Copilot for a self-hosted homelab monitoring dashboard. "
+        "The Lab Health Score is %d/100 (%s). Below is the monitor's own "
+        "PRIORITIZED fix-it plan, worst problem first, each already derived from "
+        "live data. For EACH numbered item rewrite it as plain, friendly English "
+        "with three short parts — a one-line title, a 'why it matters' sentence, "
+        "and a concrete 'next step' — keeping every number and the recommended "
+        "action. Do NOT add, drop, reorder or renumber items; use ONLY the given "
+        "facts; invent nothing. Reply STRICTLY as JSON: "
+        "{\"items\":[{\"n\":1,\"title\":\"…\",\"why\":\"…\",\"action\":\"…\"}, …]}.\n\n"
+        "PLAN:\n" % (int(score), band) + "\n".join(lines))
+
+
+# JSON-schema so ollama returns structured output we can parse deterministically.
+FIXPLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "why": {"type": "string"},
+                    "action": {"type": "string"},
+                },
+                "required": ["n"],
+            },
+        },
+    },
+    "required": ["items"],
+}
+
+
+def _fixplan_apply_llm(plan, text):
+    """Validate + clamp the LLM's JSON rewrite back against the DETERMINISTIC plan
+    and merge the reworded prose in place (title_llm/why_llm/action_llm). HOSTILE-
+    INPUT SAFE: an item whose `n` doesn't map to a real plan position is DROPPED;
+    the LLM can NOT add a factor, reorder priority, or touch the deep-link/severity/
+    key — those come only from `build_fixplan`. Only string prose fields are copied,
+    length-clamped. Returns the count of items it actually enriched. Never raises;
+    on any parse failure the deterministic prose stands untouched."""
+    if not text:
+        return 0
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return 0
+    items = obj.get("items") if isinstance(obj, dict) else None
+    if not isinstance(items, list):
+        return 0
+    n = 0
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            pos = int(raw.get("n"))
+        except (TypeError, ValueError):
+            continue
+        # `n` is 1-based and MUST map to an existing deterministic item; anything
+        # out of range (a hallucinated / injected extra factor) is dropped.
+        if pos < 1 or pos > len(plan):
+            continue
+        it = plan[pos - 1]
+        touched = False
+        for src, dst in (("title", "title_llm"), ("why", "why_llm"),
+                         ("action", "action_llm")):
+            val = raw.get(src)
+            if isinstance(val, str) and val.strip():
+                it[dst] = val.strip()[:400]
+                touched = True
+        if touched:
+            n += 1
+    return n
+
+
+@app.route("/api/health/fixplan", methods=["GET", "POST"])
+def api_health_fixplan():
+    """🧭 "What to fix first" — an AI-prioritized remediation plan built on the
+    deterministic Lab Health Score.
+
+    Builds the plan DETERMINISTICALLY: the firing health factors, worst-first,
+    each mapped to a concrete recommended action + a deep-link into an EXISTING
+    dashboard tab. That ordered list is the source of truth for BOTH priority and
+    links. The local LLM optionally ENRICHES the prose (title/why/action) — and
+    ONLY on an explicit `?llm=1` (or POST {"llm":true}) call, NEVER on any poll
+    path — schema-locked and validated back against the deterministic items, so it
+    can't invent a factor, reorder priority, or change a link. If it's off /
+    unreachable / returns garbage, the deterministic plan stands and `llm_status`
+    says why. When healthy (no firing factors) it returns a calm all-clear plan,
+    not a fabricated problem.
+
+    Read-only: it SUGGESTS + deep-links only — it NEVER persists and NEVER mutates
+    the host. Authed dashboard surface only (not on public /status). Always 200,
+    graceful-degrade, never 500."""
+    now = int(time.time())
+    body = request.get_json(silent=True) or {} if request.method == "POST" else {}
+    want_llm = (request.args.get("llm") in ("1", "true", "yes")
+                or bool(body.get("llm")))
+    # Deterministic first — this is the source of truth. Computed under the same
+    # pure detectors the score uses; LOCK is released inside _gather_health_signals
+    # BEFORE we ever touch the network below.
+    health = compute_health_score(_gather_health_signals(now), now)
+    plan = build_fixplan(health)
+    all_clear = not any(p.get("key") in _HS_FIX for p in plan)
+    out = {"ok": True, "now": now,
+           "score": health.get("score"), "band": health.get("band"),
+           "tier": health.get("tier"), "all_clear": all_clear,
+           "plan": plan, "model": COPILOT_MODEL, "enabled": COPILOT_ENABLED,
+           "llm_used": False, "llm_status": "skipped"}
+    # LLM enrichment ONLY on the explicit action, and only when there's something to
+    # fix — never on the default GET poll, never on the all-clear plan.
+    if want_llm and not all_clear:
+        if not COPILOT_ENABLED:
+            out["llm_status"] = "disabled"
+        else:
+            text, err = _ollama_generate(
+                _fixplan_llm_prompt(plan, health.get("score"), health.get("band")),
+                timeout=min(COPILOT_TIMEOUT, 20), fmt=FIXPLAN_SCHEMA)
+            if text is not None and _fixplan_apply_llm(plan, text) > 0:
+                out["llm_used"] = True
+                out["llm_status"] = "ok"
+            else:
+                out["llm_status"] = err or "bad_response"
+    return jsonify(out)
+
 @app.route("/api/forecast")
 def api_forecast():
     """Read-only forecasts computed from the history already in SQLite, using pure

@@ -319,6 +319,47 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .hsp-bar>i{display:block;height:100%;background:var(--crit);border-radius:3px}
 .hsp-row.warn .hsp-bar>i{background:var(--warn)}
 @media(max-width:640px){.hero-score .hs-meta{display:none}.hero-score-panel{margin:0 14px 12px}}
+/* 🧭 "What to fix first" — the AI-prioritized remediation plan under the breakdown.
+   Priority + deep-links are deterministic; the LLM only rewords the prose. */
+.hero-fix{margin-top:12px;padding-top:12px;border-top:1px dashed var(--bd)}
+.hero-fix .hf-head{margin:0 0 9px}
+.hero-fix .hf-title{font-size:12.5px;font-weight:700;letter-spacing:.01em}
+.hero-fix .hf-sk{height:54px;border-radius:9px;background:linear-gradient(90deg,var(--bd) 25%,var(--inset) 37%,var(--bd) 63%);
+  background-size:400% 100%;animation:hsp-in .2s ease, hfShimmer 1.3s ease infinite}
+@keyframes hfShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+.hero-fix .hf-empty{color:var(--mut);font-size:12.5px}
+.hero-fix .hf-clear{display:flex;align-items:flex-start;gap:8px;color:var(--ok);font-size:13px}
+.hero-fix .hf-clear strong{display:block;font-weight:700}
+.hero-fix .hf-clear-sub{display:block;color:var(--mut);font-weight:400;margin-top:2px}
+.hero-fix .hf-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.hero-fix .hf-item{border:1px solid var(--bd);border-left:3px solid var(--warn);border-radius:9px;
+  padding:10px 12px;background:var(--bg)}
+.hero-fix .hf-item.sev-crit{border-left-color:var(--crit)}
+.hero-fix .hf-item.sev-ok{border-left-color:var(--ok)}
+.hero-fix .hf-item-h{display:flex;align-items:center;gap:8px}
+.hero-fix .hf-pri{flex:none;width:20px;height:20px;border-radius:50%;background:var(--inset);border:1px solid var(--bd);
+  font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.hero-fix .hf-item-title{font-weight:700;font-size:13px;min-width:0;flex:1}
+.hero-fix .hf-badge{flex:none;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--warn);padding:1px 7px;border:1px solid color-mix(in srgb,var(--warn) 40%,var(--bd));border-radius:20px}
+.hero-fix .hf-item.sev-crit .hf-badge{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 40%,var(--bd))}
+.hero-fix .hf-item.sev-ok .hf-badge{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--bd))}
+.hero-fix .hf-det{display:block;color:var(--mut);font-size:12px;margin:5px 0 0;font-variant-numeric:tabular-nums}
+.hero-fix .hf-why{font-size:12.5px;color:var(--fg);margin-top:6px;line-height:1.5}
+.hero-fix .hf-next{font-size:12.5px;margin-top:5px;line-height:1.5}
+.hero-fix .hf-next-lead{font-weight:600;color:var(--mut)}
+.hero-fix .hf-go{margin-top:8px;font-size:12px;font-weight:600;background:transparent;color:var(--ring,#58a6ff);
+  border:1px solid color-mix(in srgb,var(--ring,#58a6ff) 35%,var(--bd));border-radius:8px;padding:4px 11px;cursor:pointer;
+  transition:background .15s ease,border-color .15s ease}
+.hero-fix .hf-go:hover{background:color-mix(in srgb,var(--ring,#58a6ff) 10%,transparent)}
+.hero-fix .hf-go:focus-visible{outline:2px solid var(--ring,#58a6ff);outline-offset:2px}
+.hero-fix .hf-foot{margin-top:11px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.hero-fix .hf-llm-btn{font-size:12px;font-weight:600;background:transparent;color:var(--fg);
+  border:1px solid var(--bd);border-radius:8px;padding:4px 11px;cursor:pointer}
+.hero-fix .hf-llm-btn[data-busy="1"]{opacity:.6;cursor:progress}
+.hero-fix .hf-llm-btn:hover{border-color:var(--ring,#58a6ff)}
+.hero-fix .hf-llm-on{font-size:11.5px;color:var(--mut);font-style:italic}
+.hero-fix .hf-llm-note{font-size:11.5px;color:var(--mut)}
 /* KPI strip — tabular, calm, evenly divided */
 .hero-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   border-top:1px solid var(--bd)}
@@ -6952,7 +6993,8 @@ function _renderHeroScorePanel(h,factors,bandTxt){
   if(!factors.length){
     head=`<div class="hsp-clear"><span aria-hidden="true">✓</span>`
       +`<span>${esc(I18N.t('hero.hs_allclear','All clear — no signals are reducing your lab health.'))}</span></div>`;
-    p.innerHTML=head;
+    p.innerHTML=head+`<div class="hero-fix" id="hero-fix"></div>`;
+    if(!p.parentElement || !p.hidden) renderFixplan();
     return;
   }
   const sum=factors.reduce((a,f)=>a+(+f.delta||0),0);
@@ -6969,7 +7011,9 @@ function _renderHeroScorePanel(h,factors,bandTxt){
       +`<span class="hsp-body"><span class="hsp-label">${esc(_hsFactorLabel(f))}</span>${detail}</span>`
       +`</div>`;
   }).join('');
-  p.innerHTML=head+`<div class="hsp-list">${rows}</div>`;
+  p.innerHTML=head+`<div class="hsp-list">${rows}</div>`
+    +`<div class="hero-fix" id="hero-fix"></div>`;
+  renderFixplan();   // repaint the fix-it plan (cached if already loaded)
 }
 function _wireHeroScore(){
   const btn=document.getElementById('hero-score'), panel=document.getElementById('hero-score-panel');
@@ -6978,8 +7022,103 @@ function _wireHeroScore(){
     const open=btn.getAttribute('aria-expanded')==='true';
     btn.setAttribute('aria-expanded', open?'false':'true');
     panel.hidden=open;
+    if(!open) loadFixplan();   // fetch the deterministic fix-it plan on expand (LLM-free)
   });
 }
+
+// ── 🧭 "What to fix first" — the AI-prioritized remediation plan on top of the
+// health score. Deterministic priority + deep-links come straight from the API;
+// the LLM only rewords prose (behind the explicit "Explain the plan" button).
+let _FIXPLAN=null, _FIXPLAN_LOADING=false;
+const _FIX_SEV_TXT={crit:['Critical','fix.sev_crit'],warn:['Warning','fix.sev_warn'],ok:['OK','fix.sev_ok']};
+// factor key → localized deep-link button label (falls back to the plain tab name)
+function _fixDeepGo(dl){
+  if(!dl||!dl.tab) return;
+  if(typeof showTab==='function') showTab(dl.tab); else location.hash='#'+dl.tab;
+  if(dl.anchor) setTimeout(()=>{ const c=document.getElementById(dl.anchor);
+    if(c && !c.hidden) c.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth', block:'start'}); }, 140);
+}
+async function loadFixplan(force){
+  if(_FIXPLAN_LOADING) return;
+  if(_FIXPLAN && !force){ renderFixplan(); return; }
+  const box=document.getElementById('hero-fix'); if(box) box.dataset.state='loading';
+  renderFixplan();   // paint skeleton/loading
+  _FIXPLAN_LOADING=true;
+  try{ _FIXPLAN = await(await fetch('/api/health/fixplan')).json(); }   // LLM-free poll path
+  catch(e){ _FIXPLAN={ok:false}; }
+  _FIXPLAN_LOADING=false;
+  renderFixplan();
+}
+async function askFixplanLLM(btn){
+  if(!_FIXPLAN || _FIXPLAN.all_clear) return;
+  if(btn){ btn.disabled=true; btn.dataset.busy='1'; }
+  try{ const r = await(await fetch('/api/health/fixplan?llm=1',{method:'POST'})).json();
+    if(r && r.ok) _FIXPLAN=r;
+  }catch(e){/* keep deterministic plan */}
+  if(btn){ btn.disabled=false; btn.dataset.busy=''; }
+  renderFixplan();
+}
+function _fixText(it,base){ // prefer the LLM prose when present, else deterministic
+  return it[base+'_llm'] || it[base] || '';
+}
+function renderFixplan(){
+  const box=document.getElementById('hero-fix'); if(!box) return;
+  const fp=_FIXPLAN;
+  // If the panel is visible but we've never fetched, kick a (LLM-free) load once.
+  if(!fp && !_FIXPLAN_LOADING){
+    const panel=document.getElementById('hero-score-panel');
+    if(panel && !panel.hidden){ loadFixplan(); return; }
+  }
+  const head=`<div class="hf-head"><span class="hf-title">${esc(I18N.t('fix.title','🧭 What to fix first'))}</span></div>`;
+  if(_FIXPLAN_LOADING && !fp){ box.innerHTML=head+`<div class="hf-sk" aria-hidden="true"></div>`; return; }
+  if(!fp || !fp.ok){
+    box.innerHTML=head+`<div class="hf-empty">${esc(I18N.t('fix.err','Could not load the plan right now.'))}</div>`;
+    return;
+  }
+  const plan=Array.isArray(fp.plan)?fp.plan:[];
+  if(fp.all_clear || (plan.length===1 && plan[0].key==='all_clear')){
+    const it=plan[0]||{};
+    box.innerHTML=head+`<div class="hf-clear"><span aria-hidden="true">✓</span>`
+      +`<span><strong>${esc(I18N.t('fix.allclear','All clear — nothing to fix'))}</strong>`
+      +`<span class="hf-clear-sub">${esc(_fixText(it,'why')||I18N.t('fix.allclear_sub','No signals are currently reducing your lab health.'))}</span></span></div>`;
+    return;
+  }
+  const rows=plan.map(it=>{
+    const [sevEn,sevKey]=_FIX_SEV_TXT[it.severity]||['',null];
+    const sevTxt=sevKey?I18N.t(sevKey,sevEn):sevEn;
+    const det=it.detail?`<span class="hf-det">${esc(it.detail)}</span>`:'';
+    const dl=it.deep_link||{};
+    const goLbl=I18N.t('fix.go','Open →');
+    return `<li class="hf-item sev-${escAttr(it.severity||'warn')}">`
+      +`<div class="hf-item-h"><span class="hf-pri" aria-hidden="true">${esc(String(it.priority||''))}</span>`
+      +`<span class="hf-item-title">${esc(_fixText(it,'title'))}</span>`
+      +`<span class="hf-badge">${esc(sevTxt)}</span></div>`
+      +det
+      +`<div class="hf-why">${esc(_fixText(it,'why'))}</div>`
+      +`<div class="hf-next"><span class="hf-next-lead">${esc(I18N.t('fix.next','Next step'))}:</span> ${esc(_fixText(it,'action'))}</div>`
+      +(dl.tab?`<button type="button" class="hf-go" data-fix-tab="${escAttr(dl.tab)}" data-fix-anchor="${escAttr(dl.anchor||'')}">${esc(goLbl)}</button>`:'')
+      +`</li>`;
+  }).join('');
+  let foot='';
+  if(fp.enabled){
+    if(fp.llm_used){
+      foot=`<div class="hf-foot"><span class="hf-llm-on">${esc(I18N.t('fix.llm_on','✦ Reworded by the local LLM'))}</span></div>`;
+    }else{
+      const busy = `<button type="button" class="hf-llm-btn" data-fix-llm="1">${esc(I18N.t('fix.explain','✦ Explain the plan'))}</button>`;
+      const note = (fp.llm_status && fp.llm_status!=='skipped' && fp.llm_status!=='ok')
+        ? `<span class="hf-llm-note">${esc(I18N.t('fix.llm_'+fp.llm_status, I18N.t('fix.llm_off','Local LLM unavailable — showing the deterministic plan.')))}</span>` : '';
+      foot=`<div class="hf-foot">${busy}${note}</div>`;
+    }
+  }
+  box.innerHTML=head+`<ol class="hf-list">${rows}</ol>`+foot;
+}
+// delegated clicks: deep-link buttons + the "Explain the plan" LLM trigger
+document.addEventListener('click',e=>{
+  const go=e.target.closest && e.target.closest('.hf-go');
+  if(go){ _fixDeepGo({tab:go.getAttribute('data-fix-tab'), anchor:go.getAttribute('data-fix-anchor')||null}); return; }
+  const llm=e.target.closest && e.target.closest('.hf-llm-btn');
+  if(llm){ askFixplanLLM(llm); }
+});
 // Sidebar nav badges: surface where there's something to attend to. Driven by the
 // SAME cheap /api/forecast counts as the hero rollup — never the LLM endpoint.
 // Overview badge = open recommendations + incidents; Uptime badge = checks down.
