@@ -52,6 +52,46 @@ class TestMultiGpu(unittest.TestCase):
         self.assertEqual(g["power"], 0)   # unsupported -> 0, card still present
         self.assertEqual(g["temp"], 0)
 
+    def _sample_hybrid(self, gpu_csv, amd_cards, smi_error=None):
+        """Drive sample_once() with a mocked nvidia-smi (or an error) AND a mocked
+        amd_gpus() list, to exercise the vendor-merge path (issue #1)."""
+        def fake_smi(args):
+            if smi_error is not None:
+                raise smi_error
+            a = " ".join(args)
+            return gpu_csv if "query-gpu" in a else ""   # no compute-apps
+        with patch("app.smi", side_effect=fake_smi), \
+             patch("app.amd_gpus", return_value=amd_cards), \
+             patch("app.containers", return_value=[]), \
+             patch("app.sample_callers", return_value={}), \
+             patch("app.read_host", return_value={"cpu": 0, "ram_used": 0,
+                                                  "ram_total": 0, "load1": 0, "ctemp": 0}):
+            app.sample_once()
+
+    def test_hybrid_nvidia_and_amd_both_shown(self):
+        # One NVIDIA card + one AMD card must BOTH appear (a hybrid box), with the
+        # AMD card re-indexed above the NVIDIA range so gpu_samples.idx can't collide.
+        amd = [{"idx": 0, "name": "AMD Radeon RX 7900 XTX", "util": 20.0,
+                "mem_used": 1024, "mem_total": 8192, "power": 40.0, "temp": 50.0}]
+        self._sample_hybrid("0, NVIDIA GeForce RTX 3090, 50, 8000, 24576, 200, 60", amd)
+        gs = app.LATEST["gpus"]
+        self.assertEqual(len(gs), 2)
+        self.assertEqual(app.LATEST["gpu_vendor"], "hybrid")
+        self.assertEqual(sorted(g["idx"] for g in gs), [0, 1])   # unique, AMD bumped to 1
+        self.assertEqual(app.LATEST["mem_total"], 24576 + 8192)  # pooled across vendors
+        self.assertIn("AMD Radeon RX 7900 XTX", {g["name"] for g in gs})
+
+    def test_amd_only_without_nvidia_smi(self):
+        # The real bug: nvidia-smi missing entirely (FileNotFoundError) must NOT hide
+        # an AMD card — before the fix the exception aborted the whole GPU half.
+        amd = [{"idx": 0, "name": "AMD Radeon RX 7900 XTX", "util": 0.0,
+                "mem_used": 512, "mem_total": 8192, "power": 0.0, "temp": 0.0}]
+        self._sample_hybrid("", amd, smi_error=FileNotFoundError("nvidia-smi"))
+        self.assertTrue(app.LATEST["gpu_avail"])
+        self.assertEqual(app.LATEST["gpu_vendor"], "amd")
+        self.assertEqual(len(app.LATEST["gpus"]), 1)
+        self.assertEqual(app.LATEST["mem_total"], 8192)
+
 
 if __name__ == "__main__":
     unittest.main()

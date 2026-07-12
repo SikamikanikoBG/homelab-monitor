@@ -213,7 +213,7 @@ def notify_scan():
             rows = system_repo.query_oom_events_since(cutoff, conn=_app.DB)
         for ets, svc, detail in rows:
             key = f"oom:{svc}:{ets}"
-            with _NOTIFIER_LOCK:
+            with _app._NOTIFIER_LOCK:
                 already = key in _app._NOTIFIED
                 if not already:
                     _app._NOTIFIED[key] = 1

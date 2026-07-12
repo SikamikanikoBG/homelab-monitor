@@ -154,7 +154,6 @@ def api_public_status_one(cid):
 
 @bp.route("/public/<cid>")
 @bp.route("/public")
-@bp.route("/public/<cid>")
 def public_status(cid=None):
     import app as _app
     if not _app._public_status_enabled():

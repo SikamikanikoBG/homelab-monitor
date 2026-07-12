@@ -9,7 +9,7 @@ Linux with Python 3.6+.
 JSON shape is a deliberate subset of the hub's own /api/health.now block so the
 UI can render local and remote with the same code paths.
 """
-import json, os, re, socket, subprocess, sys, time, glob
+import json, os, re, socket, subprocess, sys, time, glob, errno
 
 # ss listen-row parser, mirrored from app.py so service ports can be attributed
 # on the remote without depending on the iproute2 *Python* bindings.
@@ -408,7 +408,16 @@ def _amd_gpu_sysfs(drm_root="/sys/class/drm"):
         try:
             with open(path) as f:
                 return int(f.read().strip())
-        except (OSError, ValueError):
+        except OSError as e:
+            # gpu_busy_percent intermittently returns EBUSY on amdgpu; retry once.
+            if getattr(e, "errno", None) == errno.EBUSY:
+                try:
+                    with open(path) as f:
+                        return int(f.read().strip())
+                except (OSError, ValueError):
+                    return None
+            return None
+        except ValueError:
             return None
     try:
         entries = sorted(os.listdir(drm_root))
@@ -458,10 +467,17 @@ def _amd_gpu_sysfs(drm_root="/sys/class/drm"):
 
 
 def read_gpu():
-    """First GPU's snapshot for the All-hosts table. NVIDIA via nvidia-smi; when
-    that's unavailable, AMD via the amdgpu sysfs interface (no ROCm needed). {} on
-    a host with neither — the GPU panel is simply hidden."""
-    return _nvidia_gpu() or _amd_gpu_sysfs()
+    """First GPU's snapshot for the All-hosts table. NVIDIA via nvidia-smi and AMD
+    via the amdgpu sysfs interface (no ROCm needed). On a hybrid NVIDIA+AMD host we
+    keep the NVIDIA card as the representative but report the true total card count,
+    so the fleet table isn't blind to the AMD card(s). {} on a host with neither —
+    the GPU panel is simply hidden."""
+    nv, amd = _nvidia_gpu(), _amd_gpu_sysfs()
+    if nv and amd:
+        g = dict(nv["gpu"])
+        g["count"] = nv["gpu"].get("count", 1) + amd["gpu"].get("count", 1)
+        return {"gpu": g}
+    return nv or amd
 
 
 # ── System / Hardware / Network / Security inventory ──────────────────────────

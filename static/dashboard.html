@@ -346,7 +346,8 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 /* hide non-essential columns on narrow screens so the table doesn't horiz-scroll */
 @media(max-width:1100px){
   th[data-col="image"],td[data-col="image"],
-  th[data-col="disk"], td[data-col="disk"]  { display:none }
+  th[data-col="disk"], td[data-col="disk"],
+  th[data-col="ctl"], td[data-col="ctl"]  { display:none }
 }
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
@@ -3803,7 +3804,10 @@ function renderHealth(){
       const r = c.remedy;
       const rem = r ? `<div class="diagrem">${r.where?`<div class="where">${esc(r.where)}</div>`:''}`
                       + `<pre>${esc(r.cmd||'')}</pre></div>` : '';
-      return `<tr class="${c.status}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(I18N.t('diag.lbl.'+c.id, c.label))}</td>`
+      // GPU row (id 'nvidia', kept for capability lookup): its label is vendor-aware
+      // from the backend — "GPU (AMD)"/"GPU (NVIDIA)"/"GPU" — so render that directly
+      // instead of the static i18n string, which would wrongly say "NVIDIA GPU" on AMD.
+      return `<tr class="${c.status}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.id==='nvidia' ? c.label : I18N.t('diag.lbl.'+c.id, c.label))}</td>`
         + `<td><span class="badge ${c.status}">${I18N.t('sectag.'+c.status, SEC_TAG[c.status]||esc(c.status))}</span></td>`
         + `<td class="muted">${esc(c.detail||'')}${rem}</td></tr>`;
     }).join('');
@@ -6501,7 +6505,8 @@ function mcPaintStrip($){
     ? `<span style="color:${checks.some(c=>c.status==='fail')?'var(--crit)':'var(--ok)'}">${okN} / ${checks.length} ${I18N.t('mc.green','green')}</span>` : '';
   $('mc-diag').innerHTML = checks.map(c=>{
     const cls={ok:'mc-ok',info:'mc-info',warn:'mc-warn',fail:'mc-fail'}[c.status]||'mc-info';
-    const lbl=I18N.t('diag.lbl.'+c.id, c.label);
+    // GPU row label is vendor-aware from the backend (see diagnostics table above).
+    const lbl = c.id==='nvidia' ? c.label : I18N.t('diag.lbl.'+c.id, c.label);
     return `<div class="mc-diag"><span class="mc-dd ${cls}"></span><div><b>${esc(lbl)}</b><div class="mc-dsub">${esc(c.detail||'')}</div></div></div>`;
   }).join('') || '<div style="font-size:11px;color:var(--mut)">'+I18N.t('mc.no_checks','No checks reported.')+'</div>';
 }

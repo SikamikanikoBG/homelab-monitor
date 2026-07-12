@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.db.repos.samples import rollup_now as _rollup_now
 from backend.db.repos.samples import rollup_net_now as _rollup_net_now
 from backend._heartbeat import heartbeat as _heartbeat, get_heartbeats as _get_heartbeats
+from backend.probes import _match_probe, _match_probe_key, probe_models
 
 # Re-export so callers can do `from backend.collectors import _HEARTBEATS, _HEARTBEAT_LOCK`
 # (used by tests that import the heartbeat module directly for isolation assertions).
@@ -71,7 +72,7 @@ def host_poller():
                 # Each host gets its own thread for the cycle, so the wall-clock
                 # period is the slowest single probe, not the sum of all of them.
                 with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as ex:
-                    list(ex.map(_poll_one_host, hosts))
+                    list(ex.map(_app._poll_one_host, hosts))
         except Exception as e:
             print("host_poller error:", e, flush=True)
         time.sleep(_app.INTERVAL)
@@ -114,47 +115,60 @@ def sample_once():
     procs = {}
     gpu_pids = {}
     gpu_avail = False
+    gpu_vendor = None   # "nvidia" | "amd" | "hybrid" — drives the vendor-aware GPU diagnostic
     try:
         # One CSV row per card (issue #95). Parse each field defensively: nvidia-_app.smi
         # emits the literal "[N/A]" / "[Not Supported]" for power.draw/temperature
         # on many consumer/laptop GPUs and inside _app.containers, even with `nounits` —
         # so degrade just the bad field to 0 rather than dropping the whole card.
-        rows = _app.smi(["--query-gpu=index,name,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu",
-                    "--format=csv,noheader,nounits"]).splitlines()
-        for line in rows:
-            if not line.strip():
-                continue
-            p = [x.strip() for x in line.split(",")]
-            if len(p) < 7:
-                continue
-            u, mu, mt, pw, tp = (_app._gpu_num(x) for x in p[2:7])
-            gpus.append({"idx": int(_app._gpu_num(p[0])), "name": p[1] or f"GPU {p[0]}",
-                         "util": u, "mem_used": mu, "mem_total": mt, "power": pw, "temp": tp})
-        amd = False
+        # NVIDIA via nvidia-smi. Guarded on its own: a missing nvidia-smi raises
+        # FileNotFoundError, and before this that aborted the whole GPU half — so an
+        # AMD card on a host without nvidia-smi was never read at all (issue #1).
+        nv_gpus = []
+        try:
+            rows = _app.smi(["--query-gpu=index,name,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu",
+                        "--format=csv,noheader,nounits"]).splitlines()
+            for line in rows:
+                if not line.strip():
+                    continue
+                p = [x.strip() for x in line.split(",")]
+                if len(p) < 7:
+                    continue
+                u, mu, mt, pw, tp = (_app._gpu_num(x) for x in p[2:7])
+                nv_gpus.append({"idx": int(_app._gpu_num(p[0])), "name": p[1] or f"GPU {p[0]}",
+                             "util": u, "mem_used": mu, "mem_total": mt, "power": pw, "temp": tp})
+        except Exception:
+            nv_gpus = []   # no nvidia-smi / wedged driver — an AMD card may still be present
+        # AMD via the amdgpu sysfs back-end — read even when NVIDIA is present, so a
+        # hybrid NVIDIA+AMD box shows both vendors (issue #1). Re-index the AMD cards
+        # above the NVIDIA range so per-card history (gpu_samples.idx) never collides.
+        amd_cards = _app.amd_gpus()
+        if amd_cards:
+            base = (max(g["idx"] for g in nv_gpus) + 1) if nv_gpus else 0
+            for i, g in enumerate(amd_cards):
+                g["idx"] = base + i
+        gpus = nv_gpus + amd_cards
         if not gpus:
-            # No NVIDIA card (or no nvidia-_app.smi) — fall back to the AMD amdgpu sysfs
-            # back-end (issue #1). Additive: an NVIDIA host never reaches this.
-            gpus = _app.amd_gpus()
-            amd = bool(gpus)
-            if not gpus:
-                raise ValueError("no NVIDIA or AMD GPU detected")
+            raise ValueError("no NVIDIA or AMD GPU detected")
         gpu_avail = True
-        # Aggregate across cards for the existing single-GPU views: VRAM + power are
-        # the pool, utilisation is averaged, temperature is the hottest card. AMD
-        # cards expose the same keys, so this aggregation is vendor-agnostic.
+        gpu_vendor = ("hybrid" if (nv_gpus and amd_cards)
+                      else "amd" if amd_cards else "nvidia")
+        # Aggregate across ALL cards for the single-GPU views: VRAM + power pool,
+        # utilisation averages, temperature is the hottest card. NVIDIA and AMD
+        # expose identical keys, so this stays vendor-agnostic.
         mem_used  = sum(g["mem_used"] for g in gpus)
         mem_total = sum(g["mem_total"] for g in gpus)
         power     = sum(g["power"] for g in gpus)
         util      = round(sum(g["util"] for g in gpus) / len(gpus))
         temp      = max(g["temp"] for g in gpus)
-        if amd:
-            # Per-card enrichment (clocks/throttle) and per-process VRAM attribution
-            # are nvidia-_app.smi-specific; AMD shows the core panel (util/VRAM/temp/power)
-            # without them. Per-process AMD attribution is a follow-up (issue #1).
-            gpu_extra = {}
-        else:
-            _app._enrich_gpus(gpus)                 # mem-bw util, clocks, power limit, throttle reasons (best-effort)
-            gpu_extra = _app._gpu_extra(gpus)
+        # NVIDIA-only enrichment (clocks/throttle) + per-process VRAM attribution
+        # (nvidia-smi compute-apps), applied to the NVIDIA cards only — the dicts are
+        # the same objects held in `gpus`, so in-place enrichment shows through. AMD
+        # cards show the core panel (util/VRAM/temp/power); per-process AMD
+        # attribution is a follow-up (issue #1).
+        if nv_gpus:
+            _app._enrich_gpus(nv_gpus)
+            gpu_extra = _app._gpu_extra(nv_gpus)
             for line in _app.smi(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).splitlines():
                 if line.strip():
                     pid, mem = (p.strip() for p in line.split(","))
@@ -164,6 +178,8 @@ def sample_once():
                         gpu_pids[int(pid)] = gpu_pids.get(int(pid), 0) + _app._gpu_num(mem)
                     except ValueError:
                         pass
+        else:
+            gpu_extra = {}
     except Exception as e:
         # Log only on the ok→fail edge so a permanently GPU-less host doesn't spam.
         if _app.LATEST.get("gpu_avail"):
@@ -328,7 +344,7 @@ def sample_once():
             print("mlflow sync error:", e, flush=True)
     _app.LATEST.update(ts=ts, util=util, mem_used=mem_used, mem_total=mem_total, power=power, temp=temp,
                   cpu_power=cpu_power, dram_power=dram_power, rapl=rapl.get("domains"),
-                  gpu_avail=gpu_avail, gpus=gpus, gpu_extra=gpu_extra,
+                  gpu_avail=gpu_avail, gpu_vendor=gpu_vendor, gpus=gpus, gpu_extra=gpu_extra,
                   procs=sorted(({"service": s, "mem": round(m)} for s, m in procs.items()), key=lambda x: -x["mem"]),
                   models=[{"service": s, "model": m, "vram": v} for s, m, v in models],
                   model_catalog=model_catalog,

@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify, Response, send_file, send_from_di
 import logging
 
 from backend.db.repos import notify as notify_repo
+from backend.notify import dispatch_alert, _dispatch_to_channels
 
 _log = logging.getLogger(__name__)
 

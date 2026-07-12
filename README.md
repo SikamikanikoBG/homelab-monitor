@@ -24,7 +24,7 @@ docker compose up -d
 
 Open `http://<your-host>:9800` and you're done. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
 
-> 🆕 **v0.23 — Disk I/O gets a real dashboard, AI models span every provider.** Per-device utilisation, op-latency, trend sparklines, z-score anomaly detection and per-process "who's writing right now" attribution on the Disk I/O tab; the AI Models registry now catalogs vLLM/llama.cpp/LM Studio alongside ollama; **tokens/sec** is first-class on Experiments (UI + MCP); click-to-copy reaches the whole dashboard; and **maintenance windows** silence alerts during planned work. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
+> 🆕 **v0.24 — a restructured engine underneath, and controls on by default.** The ~7,600-line `app.py` monolith is now a proper `backend/` module tree (routes, collectors, probes, notify, DB access — all separated, all snapshot-tested) — behavior unchanged. Separately, container/service start-stop-restart controls and self-update flip from opt-in to **on by default** — check `docker-compose.readonly.yml` if you want the old fully read-only posture back. [Release notes](https://github.com/SikamikanikoBG/homelab-monitor/releases) · [changelog](CHANGELOG.md).
 
 ## What you get
 
@@ -138,6 +138,10 @@ Bring a friend, post an idea, open an issue — let's grow a friendly, healthy h
 ## Contributing
 
 Issues and PRs are very welcome — especially new model-server probes, new monitors, and GPU back-ends. This is a hobby tool meant to help fellow home-labbers, so be kind. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Contributors
+
+Thanks to everyone who's filed an issue, opened a PR, or helped shape the roadmap. v0.24.0's `backend/` module-tree refactor came from **[@pehota](https://github.com/pehota)**. v0.23.0's maintenance windows came from **[@1HazyOne707](https://github.com/1HazyOne707)**. See the [changelog](CHANGELOG.md) for the full, ongoing credit trail.
 
 ## License
 
