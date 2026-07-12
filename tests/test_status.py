@@ -275,6 +275,55 @@ class TestPublicStatus(unittest.TestCase):
         self.assertIn("status", j)
         self.assertIsInstance(j["tiles"], list)
 
+    # ── maintenance banner: BOOLEAN ONLY, never window name/reason/times ───────
+    def _clear_windows(self):
+        with app.LOCK:
+            app.DB.execute("DELETE FROM maintenance_windows")
+            app.DB.commit()
+
+    def _seed_active_window(self):
+        now = int(time.time())
+        with app.LOCK:
+            app.DB.execute(
+                "INSERT INTO maintenance_windows(id,label,enabled,recurring,"
+                "start_ts,end_ts,daily_start,daily_end,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("mw-secret", "TOP-SECRET rack swap in DC-42", 1, 0,
+                 now - 600, now + 3600, None, None, now))
+            app.DB.commit()
+
+    def test_maintenance_false_by_default(self):
+        self._clear_windows()
+        try:
+            j = self.c.get("/api/status").get_json()
+            self.assertIn("in_maintenance", j)
+            self.assertIsInstance(j["in_maintenance"], bool)
+            self.assertFalse(j["in_maintenance"])
+        finally:
+            self._clear_windows()
+
+    def test_maintenance_true_when_window_active(self):
+        self._clear_windows()
+        self._seed_active_window()
+        try:
+            j = self.c.get("/api/status").get_json()
+            self.assertTrue(j["in_maintenance"])
+            # BOOLEAN ONLY — the window label/reason/times must never leak.
+            blob = json.dumps(j)
+            for needle in ("TOP-SECRET", "rack swap", "DC-42", "mw-secret"):
+                self.assertNotIn(needle, blob,
+                                 "maintenance leaked window detail %r" % needle)
+            # No window-detail keys appear anywhere in the payload either.
+            leaves = list(_walk_strings(j))
+            present = {k for (_p, kind, k) in leaves if kind == "key"}
+            for forbidden in ("label", "reason", "daily_start", "daily_end",
+                              "start_ts", "end_ts", "next_start", "next_label",
+                              "ends_at", "window", "windows"):
+                self.assertNotIn(forbidden, present,
+                                 "maintenance leaked window key %r" % forbidden)
+        finally:
+            self._clear_windows()
+
 
 class TestHeartbeatHistory(unittest.TestCase):
     """status_history persistence + the /api/status heartbeat series shape, the

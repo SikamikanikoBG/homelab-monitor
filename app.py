@@ -15215,11 +15215,20 @@ def build_public_status():
         print("public monitors error:", e, flush=True)
         monitors = []
 
+    # Maintenance banner — BOOLEAN ONLY. A generic "in maintenance" state so the
+    # public page can show a distinct blue banner. NEVER the window name/reason/
+    # times/target (those are private): we emit strictly the active flag.
+    try:
+        in_maintenance = bool(_in_maintenance(now)[0])
+    except Exception:
+        in_maintenance = False
+
     return {
         "status": _STATUS_BANNER.get(worst, "operational"),
         "updated": HEALTH["at"] or now,
         "now": now,
         "demo": DEMO_MODE,
+        "in_maintenance": in_maintenance,
         "tiles": tiles,
         "gpu": gpu_pub,
         "anomaly_active": anomaly_active,
@@ -15783,7 +15792,8 @@ def api_status():
     except Exception as e:
         print("status error:", e, flush=True)
         return jsonify({"status": "operational", "updated": int(time.time()),
-                        "now": int(time.time()), "demo": DEMO_MODE, "tiles": [],
+                        "now": int(time.time()), "demo": DEMO_MODE,
+                        "in_maintenance": False, "tiles": [],
                         "gpu": {"available": False}, "anomaly_active": False,
                         "counts": {"services": 0, "containers": 0,
                                    "monitored": 0, "problems": 0},

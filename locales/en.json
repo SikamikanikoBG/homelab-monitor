@@ -105,6 +105,7 @@
   "status.up_of": "{up} / {total} up",
   "status.anomaly.active": "Anomaly detected",
   "status.anomaly.clear": "No anomalies",
+  "status.maint.active": "Scheduled maintenance in progress",
   "status.updated": "Last updated {ago}",
   "status.updating": "Updating…",
   "status.refresh": "Refresh",

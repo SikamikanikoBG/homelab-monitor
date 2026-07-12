@@ -132,6 +132,7 @@
   "status.up_of": "{up} / {total} 在线",
   "status.anomaly.active": "检测到异常",
   "status.anomaly.clear": "无异常",
+  "status.maint.active": "计划维护进行中",
   "status.updated": "最近更新于 {ago}",
   "status.updating": "更新中…",
   "status.refresh": "刷新",
