@@ -8843,9 +8843,17 @@ def _fixplan_apply_llm(plan, text):
         for src, dst in (("title", "title_llm"), ("why", "why_llm"),
                          ("action", "action_llm")):
             val = raw.get(src)
-            if isinstance(val, str) and val.strip():
-                it[dst] = val.strip()[:400]
-                touched = True
+            if not isinstance(val, str):
+                continue
+            val = val.strip()
+            # Reject prose with no real words — a tiny model sometimes emits a lone
+            # glyph / replacement char; that must NOT clobber the good deterministic
+            # text (the UI would otherwise show a meaningless '�'). Require at least
+            # a few alphanumerics so only genuine rewrites land.
+            if sum(c.isalnum() for c in val) < 3:
+                continue
+            it[dst] = val[:400]
+            touched = True
         if touched:
             n += 1
     return n

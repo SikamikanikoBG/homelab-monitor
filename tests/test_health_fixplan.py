@@ -118,6 +118,22 @@ class TestFixplanLLMValidation(unittest.TestCase):
         self.assertTrue(all("title_llm" not in p for p in plan))
         self.assertTrue(all(p["title"] for p in plan))
 
+    def test_empty_or_glyph_reword_does_not_clobber_prose(self):
+        # A tiny model sometimes emits a lone glyph / replacement char or blank
+        # string; that must NOT replace the good deterministic prose.
+        plan = app.build_fixplan(_fake_health())
+        junk = ('{"items":[{"n":1,"title":"�","why":"  ","action":"x"},'
+                '{"n":2,"title":"ok","why":"Real reason here","action":"Do this now"}]}')
+        app._fixplan_apply_llm(plan, junk)
+        # Item 1: every field was junk → NOTHING enriched, deterministic stands.
+        self.assertNotIn("title_llm", plan[0])
+        self.assertNotIn("why_llm", plan[0])
+        self.assertNotIn("action_llm", plan[0])
+        # Item 2: the substantive fields landed; the too-short title did not.
+        self.assertNotIn("title_llm", plan[1])
+        self.assertEqual(plan[1]["why_llm"], "Real reason here")
+        self.assertEqual(plan[1]["action_llm"], "Do this now")
+
 
 class TestFixplanEndpoint(unittest.TestCase):
     def setUp(self):
