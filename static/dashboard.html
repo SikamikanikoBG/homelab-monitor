@@ -137,6 +137,10 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .atl-row{display:flex;height:15px;width:100%;border:1px solid var(--bd);border-radius:5px;overflow:hidden;background:var(--inset)}
 .atl-cell{flex:1 1 0;min-width:0;height:100%}
 .atl-cell.gap{background:transparent}
+/* Hot (fired) cells are one-click entries into the Copilot explanation. */
+.atl-cell.hot{cursor:pointer}
+.atl-cell.hot:hover{outline:1.5px solid var(--tx);outline-offset:-1px}
+.atl-cell.hot:focus-visible{outline:2px solid var(--acc,var(--tx));outline-offset:-1px}
 .atl-empty{grid-column:1 / -1;font-size:12px;color:var(--mut);padding:5px 2px}
 .atl-legend{display:inline-flex;align-items:center;gap:10px;font-size:11px;color:var(--mut)}
 .atl-legend .lg{display:inline-flex;align-items:center;gap:4px}
@@ -1922,7 +1926,7 @@ h2 .hic{ opacity:.9 }
         </span>
       </div>
       <div id="anom-timeline"></div>
-      <p class="cap" data-i18n="ribbon.timeline_cap">One row per metric across the last 6h. Each cell is a time bucket, shaded by how far its readings sat from the metric's own window baseline — hot cells fired the same z-score detector as the Anomalies card. Hover a cell for its time and peak deviation.</p>
+      <p class="cap" data-i18n="ribbon.timeline_cap">One row per metric across the last 6h. Each cell is a time bucket, shaded by how far its readings sat from the metric's own window baseline — hot cells fired the same z-score detector as the Anomalies card. Hover a cell for its time and peak deviation, or click a hot cell to ask the local Copilot what happened at that moment.</p>
     </div>
   </div>
   <div class="card" id="inc-card" hidden>
@@ -4772,6 +4776,7 @@ function buildCharts(){
 const RIBBON_WINDOW = 30;     // trailing buckets used as the rolling baseline
 const RIBBON_MINPTS = 8;      // need at least this many prior points to score
 const RIBBON_Z = 3.0;         // |z| at/above this counts as "fired"
+const RIBBON_TL_Z = 3.0;      // 🌈 timeline: |z|≥this makes a cell explainable (same as detector)
 let RIBBON_STATE = {};        // id -> {cells, ts, explainable, w, h}
 
 function _ribbonScore(s){
@@ -4931,11 +4936,37 @@ async function explainRibbonCell(c){
     const el=document.getElementById(slot); if(el) el.scrollIntoView({behavior:'smooth',block:'nearest'});
   }
   const out=document.querySelector('#'+slot+' .anom-explain');
-  const payload={key:c.key, ts:c.ts||null, value:Math.round(c.value*10)/10,
-                 baseline:Math.round(c.baseline*10)/10, z:Math.round(c.z*10)/10,
-                 unit:c.unit, direction:(c.z>0?'spike':'dip'), magnitude:Math.round(Math.abs(c.value-c.baseline)*10)/10};
+  // value/baseline are only present on the older per-metric ribbon; the 🌈 timeline
+  // cell knows only its bucket score/dir, so build the payload defensively and omit
+  // any field we can't compute (the server re-derives context from the DB window at
+  // ts — value/baseline/magnitude are optional grounding, never required).
+  const _r1=v=>(typeof v==='number'&&isFinite(v))?Math.round(v*10)/10:null;
+  const payload={key:c.key, ts:c.ts||null, direction:(c.z>0?'spike':'dip')};
+  const _v=_r1(c.value), _b=_r1(c.baseline), _z=_r1(c.z);
+  if(_v!=null) payload.value=_v;
+  if(_b!=null) payload.baseline=_b;
+  if(_z!=null) payload.z=_z;
+  if(c.unit) payload.unit=c.unit;
+  if(_v!=null && _b!=null) payload.magnitude=Math.round(Math.abs(_v-_b)*10)/10;
   if(!out) return;
   await _copilotExplainStream(payload,out);
+}
+
+// Adapt a 🌈 anomaly-timeline cell {ts,score,dir} + its series into the shape the
+// existing explain drawer expects, then REUSE explainRibbonCell — no second modal,
+// no second endpoint. The series' canonical key (gpu_util/gpu_vram/gpu_power/
+// gpu_temp/power_draw/disk_io:<dev>) is exactly what _explain_context wants; the
+// bucket ts anchors the explanation at the clicked moment. We know score+dir (not
+// the raw value/baseline), so we synthesize a SIGNED approx-z from score·threshold
+// and leave value/baseline unset — the server re-derives them from the DB at ts.
+function _tlPointFromCell(series, cell, threshold){
+  const az=(cell.score||0)*(threshold||RIBBON_TL_Z);       // approx |z| back from score
+  const z=(cell.dir==='dip'? -az : az);                    // sign from direction
+  return {key:series.key, ts:cell.ts, unit:series.unit||'', z:z, dir:cell.dir};
+}
+function explainTimelineCell(series, cell, threshold){
+  if(!series || !cell || cell.dir==='flat') return;        // quiet/null cells are inert
+  return explainRibbonCell(_tlPointFromCell(series, cell, threshold));
 }
 
 // ── 🌈 Anomaly timeline ─────────────────────────────────────────────────────────
@@ -5009,10 +5040,29 @@ function renderAnomalyTimeline(){
         const dir=I18N.t('anom.'+(c.dir==='dip'?'dip':(c.dir==='flat'?'quiet':'spike')),
                           c.dir||'');
         const when=fmtLabels([c.ts])[0]||'';
-        // title = XSS-safe hover: "<time> · <dir> · |z|≈N.Nσ"
-        cell.title=when+' · '+dir+' · |z|≈'+z+'σ';
+        // A cell is "hot" (worth an explanation) when it fired the detector: a real,
+        // directional deviation at/above the ribbon threshold. Quiet ('flat') and
+        // sub-threshold cells stay inert — no button, no LLM.
+        const hot = c.dir!=='flat' && (c.score*j.threshold) >= RIBBON_TL_Z;
+        // title = XSS-safe hover: "<time> · <dir> · |z|≈N.Nσ" (+ explain hint if hot)
+        cell.title=when+' · '+dir+' · |z|≈'+z+'σ'
+          +(hot ? ' · '+I18N.t('ribbon.click_explain','click to explain') : '');
         if(c.score>=1 || c.dir!=='flat') anyHot = anyHot || (c.score>0 && c.dir!=='flat');
         if(c.score>peak){ peak=c.score; peakDir=c.dir; peakTs=c.ts; }
+        if(hot){
+          // Make ONLY hot cells a one-click entry into the Copilot explanation,
+          // anchored at THIS bucket's ts. Keyboard + mouse actionable; the LLM fires
+          // solely on explicit activation (never on ribbon load).
+          cell.classList.add('hot');
+          cell.setAttribute('role','button');
+          cell.setAttribute('tabindex','0');
+          cell.setAttribute('aria-label',
+            I18N.t('anom.series.'+s.key, s.label||s.key)+' · '+dir+' · |z|≈'+z+'σ · '
+            +I18N.t('ribbon.click_explain','click to explain'));
+          const fire=(ev)=>{ ev.preventDefault(); explainTimelineCell(s, c, j.threshold); };
+          cell.addEventListener('click', fire);
+          cell.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' ') fire(e); });
+        }
       }
       row.appendChild(cell);
     }
