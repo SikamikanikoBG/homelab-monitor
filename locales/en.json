@@ -244,6 +244,8 @@
   "anom.why": "Why?",
   "anom.chip_quiet": "all quiet",
   "anom.chip_fired": "{n} firing",
+  "anom.coanom_chip": "{n} correlated moments",
+  "anom.coanom_tip": "≥2 metrics were anomalous at the same time — click to see when",
   "inc.title": "🛟 Incidents",
   "inc.cap": "Anomalies that fire together are grouped into one correlated incident with a lifecycle — opening when the cluster trips and clearing once every member has settled back to normal. One incident, many signals.",
   "inc.chip_one": "1 open",

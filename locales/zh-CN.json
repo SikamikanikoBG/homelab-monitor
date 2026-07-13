@@ -271,6 +271,8 @@
   "anom.why": "为什么？",
   "anom.chip_quiet": "一切正常",
   "anom.chip_fired": "{n} 项触发",
+  "anom.coanom_chip": "{n} 个关联时刻",
+  "anom.coanom_tip": "同一时刻有 ≥2 项指标异常 — 点击查看时间",
   "inc.title": "🛟 事件",
   "inc.cap": "同时触发的异常会被归并为一个关联事件，并具有生命周期——当这组信号触发时打开，待每个成员都恢复正常后关闭。一个事件，多个信号。",
   "inc.chip_one": "1 项进行中",

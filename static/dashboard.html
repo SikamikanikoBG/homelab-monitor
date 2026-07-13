@@ -176,6 +176,16 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 .chip.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* 🔗 Co-anomaly discoverability chip: promotes the "these fired together" signal
+   from the (scrolled-down) ribbon strip up into the Anomalies card header. Reuses
+   the .chip.info token recipe; only the button affordance is new. */
+.coanom-chip{cursor:pointer;font-family:inherit}
+.coanom-chip:hover{border-color:color-mix(in srgb,var(--info) 62%,var(--bd));background:color-mix(in srgb,var(--info) 18%,transparent)}
+.coanom-chip:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+/* Brief "look here" flash on the co-anomaly strip when the chip is clicked. */
+@keyframes coFlash{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent)}100%{box-shadow:0 0 0 6px transparent}}
+.atl-costrip.co-flash{animation:coFlash 1.1s ease-out 2}
+@media(prefers-reduced-motion:reduce){.atl-costrip.co-flash{animation:none}}
 /* Recent-error count badge on each Containers row (Dozzle-style glance). Red when
    errors>0 (clickable → log triage), muted-ok when clean, faint while loading. */
 .errchip.chip.crit{cursor:pointer}
@@ -1954,6 +1964,7 @@ h2 .hic{ opacity:.9 }
     <div class="card-h">
       <h2 data-i18n="anom.title">🚨 Anomalies</h2>
       <span class="chip" id="anom-chip" hidden></span>
+      <button type="button" class="chip info coanom-chip" id="coanom-chip" hidden></button>
       <span class="ch-space"></span>
     </div>
     <div id="anom-body"></div>
@@ -3643,7 +3654,7 @@ function showTab(id){
     else renderLocalOnlyNotice(id);
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadReco(); loadHero(); }
-  if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); loadAnomalyTimeline(); }   // refresh Anomalies + Incidents + LLM engine + anomaly timeline on view
+  if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); loadAnomalyTimeline(); renderCoAnomChip(); }   // refresh Anomalies + Incidents + LLM engine + anomaly timeline (+ 🔗 chip from cache) on view
   if(id==='containers') loadContainerErrors();   // Dozzle-style recent-error badges (off-poll, cached, LLM-free)
   if(id==='models') loadRegistry();   // on-disk model inventory (load on view; no aggressive poll)
   if(id==='experiments') renderExperiments(true);
@@ -5182,6 +5193,35 @@ async function loadAnomalyTimeline(){
   catch(e){ return; }                          // silent: it's a nice-to-have panel
   renderAnomalyTimeline();
 }
+// 🔗 Discoverability chip: derive purely from the already-fetched ribbon payload
+// (ANOM_TL.co_anomaly_windows) — NO new fetch. Shows "🔗 N correlated moment(s)"
+// in the Anomalies card header when >0; hides cleanly when 0 / payload absent /
+// not loaded yet. Idempotent + null-safe so it can be called on ribbon render and
+// on tab activation without going stale or throwing.
+function renderCoAnomChip(){
+  const el=document.getElementById('coanom-chip'); if(!el) return;
+  const n=(ANOM_TL && typeof ANOM_TL.co_anomaly_windows==='number') ? ANOM_TL.co_anomaly_windows : 0;
+  if(!(n>0)){ el.hidden=true; return; }
+  el.textContent='🔗 '+(I18N.tf
+    ? I18N.tf('anom.coanom_chip','{n} correlated moments',{n})
+    : (n+' correlated moments'));
+  el.title=I18N.t('anom.coanom_tip','≥2 metrics were anomalous at the same time — click to see when');
+  el.setAttribute('aria-label', el.textContent+' · '+el.title);
+  if(!el._wired){
+    el._wired=true;
+    el.addEventListener('click', ()=>{
+      const wrap=document.getElementById('anom-timeline-wrap');
+      if(wrap){
+        const rm=window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+        wrap.scrollIntoView({behavior:rm?'auto':'smooth', block:'nearest'});
+        const strip=wrap.querySelector('.atl-costrip');
+        if(strip && !rm){ strip.classList.remove('co-flash'); void strip.offsetWidth; strip.classList.add('co-flash');
+          setTimeout(()=>strip.classList.remove('co-flash'), 2500); }
+      }
+    });
+  }
+  el.hidden=false;
+}
 function _atlColor(cell){
   // Returns a CSS color for a scored cell, hued by direction, opacity by score.
   const s=Math.max(0,Math.min(1, cell.score||0));
@@ -5210,6 +5250,7 @@ function _parseColor(c){
 function renderAnomalyTimeline(){
   const wrap=document.getElementById('anom-timeline-wrap');
   const host=document.getElementById('anom-timeline');
+  renderCoAnomChip();   // keep the header 🔗 chip in sync whenever the payload renders
   if(!wrap||!host||!ANOM_TL){ return; }
   const j=ANOM_TL, series=(j.series||[]).filter(s=>s.status==='ok');
   host.textContent='';
