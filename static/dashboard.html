@@ -5203,8 +5203,8 @@ function renderCoAnomChip(){
   const n=(ANOM_TL && typeof ANOM_TL.co_anomaly_windows==='number') ? ANOM_TL.co_anomaly_windows : 0;
   if(!(n>0)){ el.hidden=true; return; }
   el.textContent='🔗 '+(I18N.tf
-    ? I18N.tf('anom.coanom_chip','{n} correlated moments',{n})
-    : (n+' correlated moments'));
+    ? I18N.tf('anom.coanom_chip','correlated moments: {n}',{n})
+    : ('correlated moments: '+n));
   el.title=I18N.t('anom.coanom_tip','≥2 metrics were anomalous at the same time — click to see when');
   el.setAttribute('aria-label', el.textContent+' · '+el.title);
   if(!el._wired){
