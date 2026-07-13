@@ -1829,6 +1829,14 @@ h2 .hic{ opacity:.9 }
                data-i18n-attr="placeholder:copilot.ask_ph" placeholder="Ask about your lab… e.g. is anything overheating?">
         <button class="btn" type="button" id="copilot-ask-btn" data-i18n="copilot.ask_btn">Ask</button>
       </div>
+      <div id="copilot-chips" class="row" style="gap:7px;align-items:center;margin-top:9px;flex-wrap:wrap">
+        <span class="muted" style="font-size:12px" data-i18n="copilot.try_label">Try:</span>
+        <button type="button" class="osvar copilot-chip" data-q-key="copilot.chip_overheat" data-i18n="copilot.chip_overheat">Is anything overheating right now?</button>
+        <button type="button" class="osvar copilot-chip" data-q-key="copilot.chip_costliest" data-i18n="copilot.chip_costliest">What's my most expensive model today?</button>
+        <button type="button" class="osvar copilot-chip" data-q-key="copilot.chip_diskfill" data-i18n="copilot.chip_diskfill">Which disk will fill up first?</button>
+        <button type="button" class="osvar copilot-chip" data-q-key="copilot.chip_powerspike" data-i18n="copilot.chip_powerspike">Why did GPU power spike recently?</button>
+        <button type="button" class="osvar copilot-chip" data-q-key="copilot.chip_savings" data-i18n="copilot.chip_savings">How much did local inference save vs cloud?</button>
+      </div>
       <div id="copilot-answer" style="margin-top:10px;line-height:1.55"></div>
     </div>
     <details id="digest-sched" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:11px">
@@ -10758,6 +10766,17 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(ab) ab.onclick=copilotAsk;
   const q=document.getElementById('copilot-q');
   if(q) q.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); copilotAsk(); } });
+  // Suggested-question chips: fill the ask input with the localized question and
+  // fire the EXACT same ask flow as typing it (copilotAsk). Purely static strings
+  // until clicked — no fetch/LLM on render; the LLM fires only on this click, and
+  // the chips live inside #copilot-ask so they inherit its hidden/LLM gate.
+  document.querySelectorAll('#copilot-chips .copilot-chip').forEach(chip=>{
+    chip.onclick=()=>{
+      const inp=document.getElementById('copilot-q'); if(!inp) return;
+      inp.value=I18N.t(chip.getAttribute('data-q-key'), chip.textContent);
+      copilotAsk();
+    };
+  });
   // Scheduled digest config: lazy-load when the panel is first opened.
   const sched=document.getElementById('digest-sched');
   if(sched) sched.addEventListener('toggle',()=>{ if(sched.open) loadDigestConfig(); });
