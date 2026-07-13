@@ -167,6 +167,19 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 .chip.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* Monthly power-cost budget gauge — a bar of MTD/budget with the projected
+   month-end marked. Coloured by status (ok/warn/over). Hidden entirely until a
+   budget is set (default off). */
+#budget-gauge{margin:10px 0 2px}
+#budget-gauge .bg-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+#budget-gauge .bg-title{font-weight:600;font-size:.9rem}
+#budget-gauge .bg-track{position:relative;height:14px;border-radius:7px;background:var(--bd);overflow:hidden}
+#budget-gauge .bg-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:7px;background:var(--ok);transition:width .3s}
+#budget-gauge.warn .bg-fill{background:var(--warn)}
+#budget-gauge.over .bg-fill{background:var(--crit)}
+#budget-gauge .bg-proj{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--tx);opacity:.75}
+#budget-gauge .bg-legend{margin-top:6px;font-size:.82rem;color:var(--mut)}
+#budget-gauge .bg-legend .bg-strong{color:var(--tx);font-weight:600}
 /* GPU vendor badge — one fixed class per known vendor (never derived from the
    raw name), plus a neutral fallback. Colour is a hint only; the text label
    carries the meaning for a11y and colour-blind users. Mapped onto the status
@@ -2032,6 +2045,17 @@ h2 .hic{ opacity:.9 }
   <div class="card" id="costfc-card" hidden>
     <h2 data-i18n="forecast.cost_title">🔮 This month's cost (projected)</h2>
     <div class="grid" id="costfc-kpis"></div>
+    <div id="budget-gauge" hidden>
+      <div class="bg-head">
+        <span class="bg-title" data-i18n="budget.title">💶 Monthly budget</span>
+        <span class="chip bg-status" id="budget-status"></span>
+      </div>
+      <div class="bg-track" role="img" aria-label="" id="budget-track">
+        <div class="bg-fill" id="budget-fill"></div>
+        <div class="bg-proj" id="budget-proj" hidden></div>
+      </div>
+      <div class="bg-legend" id="budget-legend"></div>
+    </div>
     <p class="cap" id="costfc-cap" data-i18n="forecast.cost_cap">Month-to-date energy cost extrapolated to a full month at the current daily rate. The estimate firms up as the month progresses.</p>
   </div>
   <div class="card" id="heatmap-card" hidden>
@@ -2704,6 +2728,13 @@ h2 .hic{ opacity:.9 }
         <input type="number" id="al_cloud_per_1k" min="0" step="0.0001" placeholder="e.g. 0.15"
                class="field">
         <div class="cap" style="margin-top:4px" data-i18n-html="costset.cloud_cap">Used only to price the <b>cloud-equivalent</b> of your <b>local</b> LLM generations in the AI Models "Local vs cloud" card — what a hosted API (GPT-4o-mini-tier ≈ 0.15) would have charged for the same tokens. Leave blank to hide the comparison.</div>
+      </div>
+
+      <div style="max-width:340px">
+        <div class="flabel" data-i18n="set.monthly_budget">Monthly cost budget — optional</div>
+        <input type="number" id="al_month_budget" min="0" step="0.01" placeholder="e.g. 40"
+               class="field">
+        <div class="cap" style="margin-top:4px" data-i18n-html="costset.budget_cap">Set a monthly power-cost target to light up a glanceable <b>budget gauge</b> on this Costs page — month-to-date vs budget, with your projected month-end marked, so you can see at a glance if you're on track. Leave blank or 0 to hide it.</div>
       </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
@@ -5370,6 +5401,7 @@ async function loadAlerts(){
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
   { const cp=document.getElementById('al_cloud_per_1k'); if(cp) cp.value = s.cloud_cost_per_1k||''; }
+  { const mb=document.getElementById('al_month_budget'); if(mb){ const v=s.monthly_cost_budget; mb.value = (v && v!=='0') ? v : ''; } }
   document.getElementById('al_night_start').value = s.night_start||'22:00';
   document.getElementById('al_night_end').value   = s.night_end||'06:00';
   const idleW=document.getElementById('al_idle_w'); if(idleW) idleW.value = s.system_idle_watts||'';
@@ -5641,6 +5673,8 @@ async function saveAlerts(){
     night_end:        document.getElementById('al_night_end').value   || '06:00',
     system_idle_watts: (document.getElementById('al_idle_w')||{}).value || '',
     cloud_cost_per_1k: ((document.getElementById('al_cloud_per_1k')||{}).value||'').trim(),
+    // blank budget clears back to "0" (disabled) so the gauge hides
+    monthly_cost_budget: (((document.getElementById('al_month_budget')||{}).value||'').trim() || '0'),
     mlflow_uri:        (document.getElementById('al_mlflow_uri')||{}).value || '',
     country:          document.getElementById('al_country').value,
     smtp_host:        (document.getElementById('al_smtp_host')||{}).value?.trim()||'',
@@ -7925,6 +7959,8 @@ function renderForecast(){
       ck.innerHTML=kpis.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
     }
   }
+  // Monthly power-cost budget gauge (Costs tab) — hidden entirely until a budget is set
+  renderBudgetGauge(j.budget||{});
   // Anomalies card (GPU tab)
   renderAnomalies(j.anomalies||{});
   // VRAM headroom + ETA card (GPU tab)
@@ -7932,6 +7968,50 @@ function renderForecast(){
   // always-visible header signal, driven by the compact summary that rides
   // along on every /api/forecast poll (no extra timer)
   renderIncidentBadge(j.incidents||{open:0,top:null});
+}
+// Glanceable monthly power-cost budget gauge. Every value rendered here is a
+// number formatted via toFixed (no raw server strings interpolated as HTML) and
+// the currency symbol is escaped, so this stays XSS-safe. Hidden entirely when
+// the budget is disabled (enabled:false / budget 0) — no gauge on a fresh install.
+function renderBudgetGauge(b){
+  const box=document.getElementById('budget-gauge');
+  if(!box) return;
+  if(!b || !b.enabled){ box.hidden=true; return; }
+  box.hidden=false;
+  const cur=esc(b.currency||'$'), money=v=>cur+(+v||0).toFixed(2);
+  const status = (b.status==='over'||b.status==='warn') ? b.status : 'ok';
+  box.classList.remove('warn','over');
+  if(status!=='ok') box.classList.add(status);
+  // clamp bar widths to [0,100] for layout; keep the true % in the label
+  const pctUsed=+b.pct_used||0, pctProj=+b.pct_projected||0;
+  const fillW=Math.max(0,Math.min(100,pctUsed));
+  const projW=Math.max(0,Math.min(100,pctProj));
+  const fill=document.getElementById('budget-fill');
+  if(fill) fill.style.width=fillW.toFixed(1)+'%';
+  const proj=document.getElementById('budget-proj');
+  if(proj){ proj.hidden=false; proj.style.left=projW.toFixed(1)+'%'; }
+  const chip=document.getElementById('budget-status');
+  if(chip){
+    chip.classList.remove('ok','warn','crit');
+    chip.classList.add(status==='over'?'crit':(status==='warn'?'warn':'ok'));
+    const label = status==='over' ? I18N.t('budget.over','over budget')
+                : status==='warn' ? I18N.t('budget.warn','projected to exceed')
+                : I18N.t('budget.ok','on track');
+    chip.textContent=label;
+  }
+  const track=document.getElementById('budget-track');
+  if(track) track.setAttribute('aria-label',
+    I18N.tf('budget.aria','{mtd} of {budget} used, {pct}% · projected {proj} ({pctp}%)',
+      {mtd:money(b.month_to_date),budget:money(b.budget),pct:pctUsed.toFixed(0),
+       proj:money(b.projected_month),pctp:pctProj.toFixed(0)}));
+  const leg=document.getElementById('budget-legend');
+  if(leg){
+    // built entirely from formatted numbers + escaped currency (XSS-safe)
+    leg.innerHTML = I18N.tf('budget.legend',
+      '<span class="bg-strong">{mtd} / {budget}</span> · {pct}% used · projected <span class="bg-strong">{proj}</span> ({pctp}%)',
+      {mtd:money(b.month_to_date),budget:money(b.budget),pct:pctUsed.toFixed(0),
+       proj:money(b.projected_month),pctp:pctProj.toFixed(0)});
+  }
 }
 function _vramEtaText(v){
   if(v.status==='full') return I18N.t('forecast.full','full now');

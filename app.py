@@ -4534,6 +4534,14 @@ SETTING_DEFAULTS = {
     "slo_target":          "99.9",
     "kwh_price":           "",         # electricity price per kWh (day/peak in dual mode); empty hides the cost card (#25)
     "currency":            "$",        # symbol shown next to costs
+    # ── Monthly power-cost budget (E1) — OFF by default (0 = disabled) ───────────
+    # A single money target for the current month's machine energy cost. When >0 it
+    # lights up a glanceable budget gauge on the AUTHED cost surface (month-to-date
+    # vs budget, with the projected month-end marked). Pure display off the EXISTING
+    # _cost_projection — no new query, no LLM, no host mutation. AUTHED-only: never
+    # exposed on any public status/feed surface. Blank/garbage/≤0 => byte-identical
+    # to today (no gauge, no budget block). Currency follows the `currency` setting.
+    "monthly_cost_budget": "0",        # money target for the month; "0"/blank => disabled
     # ── dual (day/night) tariff — revamp ──────────────────────────────────────
     "tariff_mode":         "single",   # "single" | "dual"  (default = original flat behaviour)
     "kwh_price_night":     "",         # night price per kWh; blank => silently behaves as single
@@ -4688,6 +4696,62 @@ def _validate_retention_settings(updates):
     if days < _RETENTION_DAYS_MIN or days > _RETENTION_DAYS_MAX:
         return f"retention_days must be between {_RETENTION_DAYS_MIN} and {_RETENTION_DAYS_MAX}."
     return None
+
+def _validate_budget_settings(updates):
+    """Return an error string if monthly_cost_budget is present-but-invalid, else
+    None. Empty is allowed (clears back to the '0'/disabled default). A junk or
+    negative value is rejected so the UI shows a clear error; even if one slipped
+    through, _budget_status() coerces defensively so the read path can't break."""
+    if "monthly_cost_budget" not in updates:
+        return None
+    val = (updates["monthly_cost_budget"] or "").strip()
+    if not val:
+        return None
+    try:
+        b = float(val)
+    except ValueError:
+        return "monthly_cost_budget must be a number."
+    if b < 0:
+        return "monthly_cost_budget must be zero or greater."
+    return None
+
+def _budget_amount():
+    """Effective monthly cost budget as a float ≥ 0, read live from settings.
+    Blank/garbage/negative => 0.0 (disabled). Never raises."""
+    try:
+        b = float(str(get_settings().get("monthly_cost_budget") or "0").strip() or "0")
+    except (ValueError, TypeError):
+        b = 0.0
+    return b if b > 0 else 0.0
+
+def _budget_status(cost_month, budget):
+    """Build the glanceable budget block off the EXISTING _cost_projection result
+    (no new query, no LLM). `budget` is a float; ≤0 => disabled. Returns
+    {enabled:False} when off/unavailable, else {enabled, budget, currency,
+    month_to_date, projected_month, pct_used, pct_projected, status} where status
+    is 'over' (MTD already over budget), 'warn' (projected to exceed) or 'ok'."""
+    if not budget or budget <= 0:
+        return {"enabled": False}
+    if not cost_month or not cost_month.get("enabled"):
+        return {"enabled": False}
+    mtd = float(cost_month.get("month_to_date") or 0.0)
+    proj = float(cost_month.get("projected_month") or 0.0)
+    if mtd > budget:
+        status = "over"
+    elif proj > budget:
+        status = "warn"
+    else:
+        status = "ok"
+    return {
+        "enabled": True,
+        "budget": round(budget, 2),
+        "currency": cost_month.get("currency") or "$",
+        "month_to_date": round(mtd, 2),
+        "projected_month": round(proj, 2),
+        "pct_used": round(100.0 * mtd / budget, 1),
+        "pct_projected": round(100.0 * proj / budget, 1),
+        "status": status,
+    }
 
 # ── Notifier: Discord webhook + ntfy.sh + Telegram ─────────────────────────
 # Edge-triggered: each alert key is remembered in _NOTIFIED so a flapping state
@@ -9290,6 +9354,7 @@ def api_forecast():
     except Exception as e:
         print("forecast error:", e, flush=True)
         return jsonify({"now": now, "disk": [], "cost_month": {"enabled": False},
+                        "budget": {"enabled": False},
                         "anomalies": {"status": "collecting", "checked": 0, "items": []},
                         "vram": {"status": "collecting"},
                         "error": "forecast_unavailable"})
@@ -9320,7 +9385,12 @@ def api_forecast():
     # Incident-recency chip (authed hero only — NEVER a public surface): proof the
     # incident system is real + has history even when the lab is 100% healthy.
     health["last_incident"] = _hs_last_incident(now)
+    # Glanceable monthly-cost budget — pure display off the cost projection just
+    # computed (no new query, no LLM). AUTHED-only: this rides /api/forecast, never
+    # any public status/feed surface. {enabled:False} when no budget is set.
+    budget = _budget_status(cost_month, _budget_amount())
     return jsonify({"now": now, "disk": disks, "cost_month": cost_month,
+                    "budget": budget,
                     "anomalies": anomalies, "vram": vram,
                     "incidents": incidents,
                     "uptime": {"down": down, "total": len(uptime_checks)},
@@ -17136,7 +17206,8 @@ def api_settings():
         # Secrets pass through the "_set: false" sentinel from the UI as a way
         # to clear without revealing the current value.
         updates = {k: body[k] for k in body if k in SETTING_DEFAULTS}
-        err = _validate_url_settings(updates) or _validate_retention_settings(updates)
+        err = (_validate_url_settings(updates) or _validate_retention_settings(updates)
+               or _validate_budget_settings(updates))
         if err:
             return jsonify({"ok": False, "error": err}), 400
         save_settings(updates)
