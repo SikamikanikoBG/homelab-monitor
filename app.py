@@ -8312,6 +8312,10 @@ def _zscore_anomalies(cur, now):
 # never wired into any poll path or any public surface (build_public_status /
 # /api/status / /status / feed / report). It's a one-shot Overview fetch only.
 _RIBBON_BUCKETS = 60          # fixed cell count across the whole window (Netdata-style)
+# The ribbon's "hot"/clickable-cell threshold — MUST equal the frontend RIBBON_TL_Z
+# in static/dashboard.html so the server-computed co_anomaly markers align exactly
+# with the cells the UI makes explainable. hot == dir!='flat' AND score*threshold>=this.
+_RIBBON_TL_Z = 3.0
 
 def _anomaly_ribbon(cur, now):
     """Build the bucketed deviation-heat ribbon for each anomaly series. Pure stdlib,
@@ -8441,10 +8445,45 @@ def _anomaly_ribbon(cur, now):
             "key": key, "unit": "MB/s", "label": label,
             "status": "ok", "cells": cells})
 
+    # ── 🔗 "These fired together" — per-bucket co-anomaly correlation ────────────
+    # Reusing the cells ALREADY in memory (NO new query, NO second scan), count how
+    # many series had a HOT cell in each of the fixed B buckets, then emit only the
+    # buckets where >=2 fired at the SAME moment. "Hot" mirrors the frontend's
+    # clickable-cell rule EXACTLY (static/dashboard.html renderAnomalyTimeline):
+    #     hot  ==  cell.dir != 'flat'  AND  cell.score * threshold >= RIBBON_TL_Z
+    # With RIBBON_TL_Z == threshold == Z_THRESH == 3.0 this is score>=1.0 & !flat —
+    # i.e. exactly the cells that get the `.hot` class and the "click to explain"
+    # entry point, so the co-anomaly markers align one-for-one with clickable cells.
+    # This is honest TEMPORAL co-occurrence (2+ metrics anomalous in the same
+    # bucket), NOT a formal incident and NOT a causal claim — it complements, never
+    # replaces, the incidents system. Bounded (<=B entries), read-only, LLM-free.
+    def _cell_is_hot(c):
+        return (c is not None and c.get("dir") != "flat"
+                and (c.get("score") or 0.0) * Z_THRESH >= _RIBBON_TL_Z)
+    co_anomaly = []
+    for bi in range(B):
+        fired = []                                  # (score, key) of every hot series here
+        for s in series_out:
+            if s.get("status") != "ok":
+                continue
+            cells = s.get("cells") or []
+            c = cells[bi] if bi < len(cells) else None
+            if _cell_is_hot(c):
+                fired.append((c.get("score") or 0.0, s["key"]))
+        if len(fired) >= 2:
+            fired.sort(key=lambda t: (-t[0], t[1]))  # worst (highest score) first, stable
+            co_anomaly.append({
+                "bucket": bi,
+                "ts": bucket_ts[bi],
+                "count": len(fired),
+                "keys": [k for _sc, k in fired],
+            })
+
     any_ok = any(s["status"] == "ok" for s in series_out)
     return {"ok": True, "now": now, "window_h": WINDOW // 3600,
             "buckets": B, "threshold": Z_THRESH,
-            "status": "ok" if any_ok else "collecting", "series": series_out}
+            "status": "ok" if any_ok else "collecting", "series": series_out,
+            "co_anomaly": co_anomaly, "co_anomaly_windows": len(co_anomaly)}
 
 
 # Human-readable series labels for the ribbon rows (the UI re-localizes via the
@@ -8471,7 +8510,8 @@ def api_anomaly_ribbon():
             payload = _anomaly_ribbon(DB.cursor(), now)
     except Exception:
         payload = {"ok": True, "now": now, "window_h": 6, "buckets": _RIBBON_BUCKETS,
-                   "threshold": 3.0, "status": "collecting", "series": []}
+                   "threshold": 3.0, "status": "collecting", "series": [],
+                   "co_anomaly": [], "co_anomaly_windows": 0}
     return jsonify(payload)
 
 

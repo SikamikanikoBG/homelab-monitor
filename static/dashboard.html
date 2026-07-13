@@ -145,7 +145,16 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .atl-legend{display:inline-flex;align-items:center;gap:10px;font-size:11px;color:var(--mut)}
 .atl-legend .lg{display:inline-flex;align-items:center;gap:4px}
 .atl-legend .sw{width:11px;height:8px;border-radius:2px;display:inline-block}
-.atl-legend .sw.sp{background:var(--crit)}.atl-legend .sw.dp{background:var(--info)}.atl-legend .sw.gp{border:1px dashed var(--bd)}
+.atl-legend .sw.sp{background:var(--crit)}.atl-legend .sw.dp{background:var(--info)}.atl-legend .sw.gp{border:1px dashed var(--bd)}.atl-legend .sw.co{background:var(--accent)}
+/* 🔗 co-anomaly strip: a thin row aligned to the ribbon's 60 columns, marking the
+   buckets where >=2 metrics fired together (honest temporal co-occurrence). */
+.atl-colbl{font-size:11.5px;color:var(--mut);white-space:nowrap;display:flex;align-items:center;gap:4px}
+.atl-costrip{display:flex;height:8px;width:100%;border-radius:4px;overflow:hidden;background:var(--inset)}
+.atl-cocell{flex:1 1 0;min-width:0;height:100%}
+.atl-cocell.on{cursor:pointer}
+.atl-cocell.on:hover{outline:1.5px solid var(--tx);outline-offset:-1px}
+.atl-cocell.on:focus-visible{outline:2px solid var(--accent);outline-offset:-1px}
+.atl-cosum{grid-column:1 / -1;font-size:11.5px;color:var(--mut);padding:2px 2px 0;display:flex;align-items:center;gap:5px}
 
 /* ── Card cohesion: a shared flex header so every newer card lines up the same way ── */
 .card-h{display:flex;align-items:center;gap:9px;margin:0 0 13px}
@@ -1958,10 +1967,11 @@ h2 .hic{ opacity:.9 }
           <span class="lg"><span class="sw sp"></span><span data-i18n="anom.spike">spike</span></span>
           <span class="lg"><span class="sw dp"></span><span data-i18n="anom.dip">dip</span></span>
           <span class="lg"><span class="sw gp"></span><span data-i18n="ribbon.collecting">no data</span></span>
+          <span class="lg"><span class="sw co"></span><span data-i18n="ribbon.cofired_label">fired together</span></span>
         </span>
       </div>
       <div id="anom-timeline"></div>
-      <p class="cap" data-i18n="ribbon.timeline_cap">One row per metric across the last 6h. Each cell is a time bucket, shaded by how far its readings sat from the metric's own window baseline — hot cells fired the same z-score detector as the Anomalies card. Hover a cell for its time and peak deviation, or click a hot cell to ask the local Copilot what happened at that moment.</p>
+      <p class="cap" data-i18n="ribbon.timeline_cap">One row per metric across the last 6h. Each cell is a time bucket, shaded by how far its readings sat from the metric's own window baseline — hot cells fired the same z-score detector as the Anomalies card. The 🔗 strip marks moments where 2+ metrics fired together — honest temporal co-occurrence, not a formal incident. Hover a cell for its time and peak deviation, or click a hot cell (or a 🔗 marker) to ask the local Copilot what happened at that moment.</p>
     </div>
   </div>
   <div class="card" id="inc-card" hidden>
@@ -5262,6 +5272,68 @@ function renderAnomalyTimeline(){
       : I18N.t('anom.series.'+s.key, s.label||s.key);
     row.setAttribute('aria-label', pkTxt);
     grid.appendChild(row);
+  }
+  // ── 🔗 "These fired together" — co-anomaly correlation strip ──────────────────
+  // Server-computed (GET /api/anomaly_ribbon → co_anomaly[]): buckets where >=2
+  // metrics were HOT in the SAME time bucket. This is honest TEMPORAL co-occurrence,
+  // NOT a formal incident and NOT a causal claim. Rendered as a thin strip aligned
+  // to the ribbon's 60 columns; markers hued by --acc, intensity by count. Only
+  // shown when there's at least one co-firing moment (clean empty state otherwise).
+  const co=(j.co_anomaly||[]);
+  if(co.length){
+    const coByBucket={}; for(const e of co) coByBucket[e.bucket]=e;
+    // fast lookup: key -> that key's ok-series object, so a marker can open the
+    // strongest series' explanation without re-forking the explain path.
+    const byKey={}; for(const s of series) byKey[s.key]=s;
+    const B=j.buckets||60;
+    let maxCount=1; for(const e of co) if(e.count>maxCount) maxCount=e.count;
+    const clbl=document.createElement('div'); clbl.className='atl-colbl';
+    clbl.appendChild(document.createTextNode('🔗 '+I18N.t('ribbon.cofired_label','fired together')));
+    grid.appendChild(clbl);
+    const strip=document.createElement('div'); strip.className='atl-costrip';
+    strip.setAttribute('role','img');
+    strip.setAttribute('aria-label', I18N.tf
+      ? I18N.tf('ribbon.cofired_aria','{n} moments where 2+ metrics fired together',{n:co.length})
+      : (co.length+' co-anomaly moments'));
+    for(let bi=0; bi<B; bi++){
+      const cc=document.createElement('div'); cc.className='atl-cocell';
+      const e=coByBucket[bi];
+      if(e){
+        // intensity by count: floor so a 2-way still reads, saturating with more.
+        const a=Math.min(1, 0.35 + 0.22*(e.count-2>0? e.count-2 : 0) + 0.30);
+        cc.style.background=_mixToken(cv('--accent'), Math.min(1,a));
+        cc.classList.add('on');
+        const when=fmtLabels([e.ts])[0]||'';
+        const names=(e.keys||[]).map(k=>{
+          const so=byKey[k]; return I18N.t('anom.series.'+k, (so&&so.label)||k);
+        });
+        // XSS-safe hover: "N metrics anomalous at HH:MM: a, b" via title/textContent.
+        cc.title=(I18N.tf
+          ? I18N.tf('ribbon.cofired_tip','{n} metrics anomalous at {t}',{n:e.count,t:when})
+          : (e.count+' metrics anomalous at '+when))
+          +': '+names.join(', ');
+        // Bonus: click opens the existing explain drawer for the STRONGEST series at
+        // this bucket (keys are worst-first), reusing explainTimelineCell — no fork.
+        const topKey=(e.keys||[])[0]; const topS=byKey[topKey];
+        if(topS){
+          const cell=(topS.cells||[])[bi];
+          if(cell){
+            cc.setAttribute('role','button'); cc.setAttribute('tabindex','0');
+            cc.setAttribute('aria-label', cc.title+' · '+I18N.t('ribbon.click_explain','click to explain'));
+            const fire=(ev)=>{ ev.preventDefault(); explainTimelineCell(topS, cell, j.threshold); };
+            cc.addEventListener('click', fire);
+            cc.addEventListener('keydown', ev=>{ if(ev.key==='Enter'||ev.key===' ') fire(ev); });
+          }
+        }
+      }
+      strip.appendChild(cc);
+    }
+    grid.appendChild(strip);
+    const sum=document.createElement('div'); sum.className='atl-cosum';
+    sum.appendChild(document.createTextNode('⚡ '+(I18N.tf
+      ? I18N.tf('ribbon.cofired_summary','{n} moments where 2+ metrics spiked together',{n:co.length})
+      : (co.length+' moments where 2+ metrics spiked together'))));
+    grid.appendChild(sum);
   }
   host.appendChild(grid);
   if(!anyHot){
