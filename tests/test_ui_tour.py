@@ -37,8 +37,10 @@ def _tour_block(html):
     return html[start:end + 2]
 
 
-# A step object literal: {tab:..., sel:[...], ic:'...', title:'...', body:'...'}
-_STEP_RE = re.compile(r"\{tab:(?P<tab>[^,]+),\s*sel:\[(?P<sel>[^\]]*)\]")
+# A step object literal: {key:'…', tab:..., sel:[...], ic:'...', title:'...', body:'...'}
+# `key:` is an optional leading deep-link slug (added for ?tour=<key>); tolerate it.
+_STEP_RE = re.compile(
+    r"\{(?:key:'[^']*',\s*)?tab:(?P<tab>[^,]+),\s*sel:\[(?P<sel>[^\]]*)\]")
 _SEL_RE = re.compile(r"'([^']+)'")
 
 

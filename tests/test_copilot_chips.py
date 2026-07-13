@@ -95,6 +95,41 @@ class TestChipWiring(unittest.TestCase):
         self.assertNotIn("/api/copilot", block)
 
 
+class TestChipAutoHide(unittest.TestCase):
+    """The chip row fades out once an answer is shown / a question is typed, and
+    returns when the input is empty and no answer is present. Presentational-only
+    polish that must not touch the ask flow or the no-LLM-on-render invariant."""
+
+    def setUp(self):
+        self.html = _read(DASH)
+
+    def test_sync_helper_present(self):
+        self.assertIn("function _copilotSyncChips(", self.html)
+
+    def test_helper_toggles_on_answer_and_typed_state(self):
+        src = self.html[self.html.index("function _copilotSyncChips("):]
+        src = src[:src.index("\n}")]
+        self.assertIn("copilot-chips", src)
+        self.assertIn("copilot-answer", src)
+        self.assertIn("copilot-q", src)
+        # hidden when there is an answer OR typed text
+        self.assertIn("chips.hidden = hasAnswer || typed;", src)
+
+    def test_helper_has_no_llm_side_effects(self):
+        # Pure DOM toggle — never fetches or calls the ask flow.
+        src = self.html[self.html.index("function _copilotSyncChips("):]
+        src = src[:src.index("\n}")]
+        for bad in ("fetch(", "copilotAsk(", "EventSource", "/api/copilot"):
+            self.assertNotIn(bad, src, bad)
+
+    def test_sync_called_from_ask_and_on_input(self):
+        ask = self.html[self.html.index("async function copilotAsk("):]
+        ask = ask[:ask.index("\n}")]
+        self.assertIn("_copilotSyncChips();", ask)
+        # input listener re-shows chips when the box is cleared
+        self.assertIn("q.addEventListener('input', _copilotSyncChips)", self.html)
+
+
 class TestI18nParity(unittest.TestCase):
     def setUp(self):
         self.en = json.loads(_read(EN))

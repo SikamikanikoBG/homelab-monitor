@@ -8981,13 +8981,25 @@ async function _copilotAskNonStream(q,out){
   catch(e){ out.innerHTML='<div class="muted">'+I18N.t('copilot.st_unreachable','Local LLM not reachable — start ollama on this host to enable live summaries.')+'</div>'; return; }
   _copilotRenderAnswer(out,j);
 }
+// Show the suggested-question chips only while they're still useful: hide them
+// once an answer is rendered OR the user has typed a question; bring them back
+// when the input is empty AND no answer is shown. Presentational only — never
+// touches the ask flow or the no-LLM-on-render invariant.
+function _copilotSyncChips(){
+  const chips=document.getElementById('copilot-chips'); if(!chips) return;
+  const inp=document.getElementById('copilot-q'), out=document.getElementById('copilot-answer');
+  const hasAnswer=!!(out && out.textContent && out.textContent.trim());
+  const typed=!!(inp && (inp.value||'').trim());
+  chips.hidden = hasAnswer || typed;
+}
 async function copilotAsk(){
   const inp=document.getElementById('copilot-q'), out=document.getElementById('copilot-answer');
   if(!inp||!out||COPILOT_BUSY) return;
   const q=(inp.value||'').trim(); if(!q) return;
   COPILOT_BUSY=true; out.innerHTML='<div class="muted">'+I18N.t('copilot.thinking','Thinking…')+'</div>';
+  _copilotSyncChips();
   try{ await _copilotAskStream(q,out); }
-  finally{ COPILOT_BUSY=false; }
+  finally{ COPILOT_BUSY=false; _copilotSyncChips(); }
 }
 // Live token-streaming ask via SSE over fetch()+ReadableStream. Appends tokens
 // to the answer area as they arrive (typing feel), then renders sources on the
@@ -10766,6 +10778,10 @@ document.getElementById('mcpcopy').onclick = async () => {
   if(ab) ab.onclick=copilotAsk;
   const q=document.getElementById('copilot-q');
   if(q) q.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); copilotAsk(); } });
+  // Suggested-question chips fade out once an answer is on screen (they've served
+  // their purpose) and return when the input is cleared. Frontend-only polish —
+  // does not touch the ask flow. Re-sync on input change and after each ask.
+  if(q) q.addEventListener('input', _copilotSyncChips);
   // Suggested-question chips: fill the ask input with the localized question and
   // fire the EXACT same ask flow as typing it (copilotAsk). Purely static strings
   // until clicked — no fetch/LLM on render; the LLM fires only on this click, and
@@ -11433,31 +11449,31 @@ const TOUR_STEPS=[
   // then the forecast/incident/postmortem/advisor story, then the "responsible power"
   // controls, and close on the share/integration surface. Each step lists candidate
   // selectors (first visible wins) and is SKIPPED cleanly when none resolve.
-  {tab:'overview', sel:['#hero'],                    ic:'🛰️',
+  {key:'hero',    tab:'overview', sel:['#hero'],                    ic:'🛰️',
    title:'tour.s_hero_t',  body:'tour.s_hero_b'},
-  {tab:'overview', sel:['#hero-score'],              ic:'🧭',
+  {key:'fix',     tab:'overview', sel:['#hero-score'],              ic:'🧭',
    title:'tour.s_fix_t',   body:'tour.s_fix_b'},
-  {tab:'overview', sel:['#copilotcard'],             ic:'🧠',
+  {key:'copilot', tab:'overview', sel:['#copilotcard'],             ic:'🧠',
    title:'tour.s_copilot_t', body:'tour.s_copilot_b'},
-  {tab:'gpu',      sel:['#vramfc-card','#costfc-card','#diskfc-card'], ic:'🔮',
+  {key:'forecast', tab:'gpu',     sel:['#vramfc-card','#costfc-card','#diskfc-card'], ic:'🔮',
    title:'tour.s_forecast_t', body:'tour.s_forecast_b'},
-  {tab:'gpu',      sel:['#inc-card','#anom-card'],   ic:'🚨',
+  {key:'incidents', tab:'gpu',    sel:['#inc-card','#anom-card'],   ic:'🚨',
    title:'tour.s_inc_t',   body:'tour.s_inc_b'},
-  {tab:'gpu',      sel:['#anom-timeline-wrap','#anom-timeline','#anom-card'], ic:'🌈',
+  {key:'ribbon',  tab:'gpu',      sel:['#anom-timeline-wrap','#anom-timeline','#anom-card'], ic:'🌈',
    title:'tour.s_ribbon_t', body:'tour.s_ribbon_b'},
-  {tab:'gpu',      sel:['.inc-pm-chip','#inc-pm-filter-wrap','#inc-auto-pm-wrap','#inc-card'], ic:'🧾',
+  {key:'postmortem', tab:'gpu',   sel:['.inc-pm-chip','#inc-pm-filter-wrap','#inc-auto-pm-wrap','#inc-card'], ic:'🧾',
    title:'tour.s_pm_t',    body:'tour.s_pm_b'},
-  {tab:'alerts',   sel:['#advisor'],                 ic:'💡',
+  {key:'advisor', tab:'alerts',   sel:['#advisor'],                 ic:'💡',
    title:'tour.s_advisor_t', body:'tour.s_advisor_b'},
-  {tab:'uptime',   sel:['#uptimegrid .upslo','#uptimegrid','[data-tab="uptime"] .card'], ic:'🎯',
+  {key:'slo',     tab:'uptime',   sel:['#uptimegrid .upslo','#uptimegrid','[data-tab="uptime"] .card'], ic:'🎯',
    title:'tour.s_slo_t',   body:'tour.s_slo_b'},
-  {tab:'diskio',   sel:['#diskio-body','[data-tab="diskio"] .card'], ic:'💽',
+  {key:'diskio',  tab:'diskio',   sel:['#diskio-body','[data-tab="diskio"] .card'], ic:'💽',
    title:'tour.s_diskio_t', body:'tour.s_diskio_b'},
-  {tab:'containers', sel:['#ctl-audit','[data-tab="containers"] .card'], ic:'🎛️',
+  {key:'controls', tab:'containers', sel:['#ctl-audit','[data-tab="containers"] .card'], ic:'🎛️',
    title:'tour.s_ctl_t',   body:'tour.s_ctl_b'},
-  {tab:null,       sel:['#sharebtn'],                ic:'🌐',
+  {key:'status',  tab:null,       sel:['#sharebtn'],                ic:'🌐',
    title:'tour.s_status_t', body:'tour.s_status_b'},
-  {tab:'overview', sel:['#mcpcard'],                 ic:'🔌',
+  {key:'integrations', tab:'overview', sel:['#mcpcard'],            ic:'🔌',
    title:'tour.s_integr_t', body:'tour.s_integr_b'},
 ];
 const TOUR={open:false, i:0, trigger:null, steps:[], raf:0};
@@ -11484,13 +11500,18 @@ function _tourFocusables(){
   const pop=document.getElementById('tour-pop'); if(!pop) return [];
   return [...pop.querySelectorAll('button:not([hidden]):not([disabled])')].filter(_tourVisible);
 }
-function startTour(fromOffer){
+function startTour(fromOffer, startAt){
   if(TOUR.open) return;
   _tourHideOffer(false);
   // Filter to steps whose target can plausibly resolve is done live per-step;
   // keep the full list so late-loading data (e.g. incidents) can still anchor.
   TOUR.steps=TOUR_STEPS.slice();
-  TOUR.open=true; TOUR.i=0; TOUR.trigger=document.activeElement;
+  // Optional start index (deep-link). Clamp into range; default to the beginning.
+  // _tourGo falls FORWARD from here, skipping any not-yet-resolvable step, so a
+  // deep-linked step whose data hasn't loaded still lands on the next live one.
+  let start=0;
+  if(typeof startAt==='number' && startAt>0 && startAt<TOUR.steps.length) start=startAt;
+  TOUR.open=true; TOUR.i=start; TOUR.trigger=document.activeElement;
   // Starting also arms the "seen" flag so a mid-tour reload won't re-pop the offer.
   try{ localStorage.setItem(TOUR_KEY,'seen'); }catch(e){}
   const wrap=document.getElementById('tour'); wrap.hidden=false;
@@ -11499,7 +11520,38 @@ function startTour(fromOffer){
   // these adds (no leaked listeners). _tourReposition no-ops while !TOUR.open.
   window.addEventListener('resize', _tourReposition, {passive:true});
   window.addEventListener('scroll', _tourReposition, {passive:true, capture:true});
-  _tourGo(0, true);
+  _tourGo(start, true);
+}
+// Map a ?tour=<value> deep-link value to a start index, or -1 if it should not
+// launch. Case-insensitive. Known step key -> its index. '1'/'start'/'' -> 0
+// (the beginning). Any other/unknown value -> -1 (no launch; caller no-ops).
+// The raw value is ONLY used to look up a known key/index — never DOM-injected.
+function _tourIndexForDeepLink(raw){
+  if(raw==null) return -1;
+  const v=String(raw).trim().toLowerCase();
+  if(v==='' || v==='1' || v==='start') return 0;
+  for(let k=0;k<TOUR_STEPS.length;k++){
+    if((TOUR_STEPS[k].key||'').toLowerCase()===v) return k;
+  }
+  return -1;
+}
+// Parse ?tour=<key> on load and launch the tour at that step. EXPLICIT launch:
+// fires regardless of the first-visit gate, but never mutates hl_tour_v1 beyond
+// what a normal start does. Unknown value -> no-op. Strips ?tour from the URL so
+// a manual refresh doesn't reopen it.
+function maybeDeepLinkTour(){
+  let params; try{ params=new URLSearchParams(window.location.search); }catch(e){ return; }
+  if(!params.has('tour')) return;
+  const idx=_tourIndexForDeepLink(params.get('tour'));
+  // Clean the URL first (whether or not we launch) so refresh won't re-trigger.
+  try{
+    params.delete('tour');
+    const qs=params.toString();
+    const url=window.location.pathname+(qs?('?'+qs):'')+window.location.hash;
+    history.replaceState(null,'',url);
+  }catch(e){}
+  if(idx<0) return;                       // unknown/invalid -> do nothing
+  if(typeof startTour==='function') startTour(false, idx);
 }
 function endTour(reason){
   if(!TOUR.open) return;
@@ -11644,6 +11696,9 @@ function maybeOfferTour(){
   }, true);
   // Re-anchor the offer on locale change while it's showing (labels re-measure).
   document.addEventListener('lang:changed', ()=>{ const off=document.getElementById('tour-offer'); if(off && !off.hidden) _tourShowOffer(); });
+  // Deep-link launch (?tour=<key>) — explicit, so it bypasses the first-visit
+  // gate; runs before maybeOfferTour so a deep-linked open pre-empts the offer.
+  maybeDeepLinkTour();
   // First-visit-only auto-offer. Runs from this (late) script so the tour fns are
   // defined; a short delay lets the shell settle and i18n hydrate first.
   maybeOfferTour();
