@@ -200,6 +200,18 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .cterr-rollup .rollchip.attn{border-left:3px solid var(--crit);color:var(--crit)}
 .cterr-rollup .rollchip.calm{border-left:3px solid var(--ok);color:var(--mut)}
 .cterr-rollup .rollnote{margin-left:8px;color:var(--mut);font-weight:400;font-size:12px}
+/* 🚨 "Errors only" filter — a two-state pill; reuses the roll-up chip tokens. When
+   engaged (aria-pressed=true) it tints to the crit accent so the collapsed view is
+   obviously active. Pure client-side show/hide over the cached payload — no fetch. */
+.cterr-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+.cterr-bar:empty{display:none}
+.cterr-bar .cterr-rollup{margin-top:0}
+.cterr-filter{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:8px;
+  border:1px solid var(--bd);background:var(--inset);color:var(--mut);font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap}
+.cterr-filter:hover{border-color:var(--crit)}
+.cterr-filter[aria-pressed="true"]{border-color:var(--crit);border-left:3px solid var(--crit);color:var(--crit)}
+.cterr-empty{margin-top:10px;color:var(--mut);font-size:13px}
 /* Monthly power-cost budget gauge — a bar of MTD/budget with the projected
    month-end marked. Coloured by status (ok/warn/over). Hidden entirely until a
    budget is set (default off). */
@@ -2223,7 +2235,16 @@ h2 .hic{ opacity:.9 }
     <!-- 🚨 Container error roll-up chip — derived client-side from the SAME cached
          /api/logs/errors payload the badges use (no extra fetch). Hidden until the
          off-poll loader resolves; degrades to empty (no chip) if unavailable. -->
-    <div id="cterr-rollup" class="cterr-rollup" role="status" aria-live="polite"></div>
+    <div class="cterr-bar">
+      <div id="cterr-rollup" class="cterr-rollup" role="status" aria-live="polite"></div>
+      <!-- 🚨 "Errors only" filter — a pure show/hide over the SAME cached payload; no
+           fetch, non-destructive. Hidden until the loader resolves + there's ≥1 error. -->
+      <button type="button" id="cterr-filter" class="cterr-filter" hidden
+        aria-pressed="false"
+        data-i18n="ct.err_only" data-i18n-attr="title:ct.err_only_hint;aria-label:ct.err_only_aria"
+        title="Show only containers that currently have errors"
+        aria-label="Toggle: show only containers with errors">🚨 Errors only</button>
+    </div>
     <table style="margin-top:14px"><thead><tr>
       <th data-i18n="col.container">Container</th><th data-i18n="col.state">State</th>
       <th data-col="errors" title="Recent error-looking log lines (last 15 min), counted from this container's logs. Read-only, LLM-free, refreshed on this tab. Click a red badge to open the log triage." data-i18n="col.errors">Errors</th>
@@ -2235,6 +2256,10 @@ h2 .hic{ opacity:.9 }
       <th data-i18n="col.status">Status</th>
       <th data-col="ctl" data-i18n="col.actions">Actions</th>
     </tr></thead><tbody id="cttbl"></tbody></table>
+    <!-- Empty note shown only when the 🚨 "Errors only" filter is ON but no container
+         currently has errors — never a blank/broken table. Hidden otherwise. -->
+    <div id="cterr-empty" class="cterr-empty" role="status" aria-live="polite" hidden
+      data-i18n="ct.err_only_empty">No containers with errors right now.</div>
     <div id="ctl-hint-docker"></div>
     <!-- Controls audit log (accountability for every host mutation) — read-only. -->
     <div class="card ctl-audit-card" id="ctl-audit" style="margin-top:16px">
@@ -5061,6 +5086,7 @@ function explainTimelineCell(series, cell, threshold){
 // regex count; the LLM stays behind the explicit Summarize in the log drawer).
 // Counts are ints and names go through esc() → XSS-safe.
 let ERRCOUNTS = null;   // {byName:{name:{errors,last_ts?,unavailable?}}, window_min, scanned, truncated}
+let ERR_ONLY = false;   // 🚨 "Errors only" filter state — persists across poll re-renders
 // Render the badge for one container row. Red + clickable (opens the log drawer,
 // which carries the AI Summarize action) when errors>0; muted "no errors" when
 // clean; a faint placeholder before the fetch resolves.
@@ -5160,11 +5186,50 @@ function applyErrSort(){
   const anchor = tb.querySelector('tr:not(.ctrow)');
   sorted.forEach(r=>{ tb.insertBefore(r, anchor); });
 }
+// 🚨 "Errors only" filter — a PURE show/hide over the SAME cached payload (no fetch,
+// no row rebuild). Hides the container data rows whose cached error count is 0 (matched
+// by data-ct, exactly like applyErrSort/paintErrBadges); the totals footer + any
+// placeholder row (tr:not(.ctrow)) are NEVER hidden so the table never looks broken.
+// Toggling OFF clears every hidden flag → all rows restored (non-destructive). Shows a
+// tiny empty note when ON but nothing has errors. Degrades: no payload → toggle inert.
+function applyErrFilter(){
+  const btn = document.getElementById('cterr-filter');
+  const empty = document.getElementById('cterr-empty');
+  const tb = document.getElementById('cttbl');
+  const byName = (ERRCOUNTS && ERRCOUNTS.byName) || null;
+  // Toggle visibility: only meaningful once the payload is loaded AND ≥1 row has errors.
+  const withErr = byName ? Object.keys(byName).filter(k=>((byName[k]||{}).errors|0)>0).length : 0;
+  if(btn){
+    const show = !!byName && withErr>0;
+    btn.hidden = !show;
+    if(!show){ ERR_ONLY = false; btn.setAttribute('aria-pressed','false'); }
+    else btn.setAttribute('aria-pressed', ERR_ONLY ? 'true':'false');
+  }
+  if(!tb){ if(empty) empty.hidden = true; return; }
+  const rows = Array.prototype.slice.call(tb.querySelectorAll('tr.ctrow'));
+  let shownWithErr = 0;
+  rows.forEach(r=>{
+    if(!ERR_ONLY || !byName){ r.hidden = false; return; }   // OFF → restore every row
+    const name = r.getAttribute('data-ct');
+    const n = name!=null ? ((byName[name]||{}).errors|0) : 0;
+    r.hidden = !(n>0);
+    if(n>0) shownWithErr++;
+  });
+  if(empty) empty.hidden = !(ERR_ONLY && !!byName && shownWithErr===0);
+}
+// Flip the filter state (from the toggle click), then re-apply. Kept tiny so the click
+// binding is trivial and the state lives in one module-level bool.
+function toggleErrOnly(){
+  ERR_ONLY = !ERR_ONLY;
+  const btn = document.getElementById('cterr-filter');
+  if(btn) btn.setAttribute('aria-pressed', ERR_ONLY ? 'true':'false');
+  applyErrFilter();
+}
 // Re-apply the cached error signal (badges already inline in the template; here we
-// redo the tab-level roll-up + the error-first sort) after a poll re-render, WITHOUT
-// a refetch. Safe to call any time; no-ops cleanly when nothing is cached.
+// redo the tab-level roll-up + the error-first sort + the "errors only" filter) after
+// a poll re-render, WITHOUT a refetch. Safe to call any time; no-ops when uncached.
 function reapplyErrSignal(){
-  try{ renderErrRollup(); applyErrSort(); }catch(e){/* never break the tab */}
+  try{ renderErrRollup(); applyErrSort(); applyErrFilter(); }catch(e){/* never break the tab */}
 }
 async function loadContainerErrors(){
   // Local hub only — remotes don't proxy the docker socket for this.
@@ -7724,6 +7789,12 @@ document.addEventListener('click',e=>{
   if(go){ _fixDeepGo({tab:go.getAttribute('data-fix-tab'), anchor:go.getAttribute('data-fix-anchor')||null}); return; }
   const llm=e.target.closest && e.target.closest('.hf-llm-btn');
   if(llm){ askFixplanLLM(llm); }
+});
+// 🚨 "Errors only" filter toggle — delegated so it works regardless of when the
+// (static) button mounts. Flips ERR_ONLY and re-applies the pure show/hide.
+document.addEventListener('click',e=>{
+  const t=e.target.closest && e.target.closest('#cterr-filter');
+  if(t){ e.preventDefault(); toggleErrOnly(); }
 });
 // Sidebar nav badges: surface where there's something to attend to. Driven by the
 // SAME cheap /api/forecast counts as the hero rollup — never the LLM endpoint.
