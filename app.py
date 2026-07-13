@@ -14012,6 +14012,152 @@ def api_logs_summarize(container):
     return jsonify(out)
 
 
+# ── Recent-error counts per running container (Dozzle-style glance badge) ──────
+# A glanceable "this container is spewing errors" signal for the Containers tab.
+# It counts — never interprets — recent error-looking log lines per RUNNING
+# container. Design constraints (the reviewer verifies each):
+#   • READ-ONLY + LLM-FREE. Pure regex over `docker logs` (socket/CLI). The only
+#     LLM log action stays the explicit POST /api/logs/<c>/summarize. This path
+#     never calls ollama, never starts/stops/execs anything.
+#   • BOUNDED. Only running containers (the `containers()` set is running-only),
+#     hard-capped at _ERRCOUNT_CT_CAP per refresh, tail capped at _ERRCOUNT_TAIL.
+#   • CACHED. A module-level dict + TTL (_ERRCOUNT_TTL) so tab re-renders /
+#     repeated hits are served from memory and NEVER re-hit the Docker socket.
+#     This is fetched ONLY on Containers-tab activation — never on the 10s poll.
+#   • DEGRADES, never 500. Docker unreachable / a container read error → that
+#     container reports errors:0 with an `unavailable` flag (or the whole refresh
+#     returns a clean empty shape). No traceback, no leaked log text.
+#   • PRIVATE. Counts + names are authed-dashboard only; they never appear on any
+#     public surface (build_public_status / /status / feed / report). No raw log
+#     line text is ever returned here — only integer counts + an optional ts.
+_ERRCOUNT_TTL      = 50.0                     # seconds — cache lifetime
+_ERRCOUNT_TAIL     = min(_LOG_LINES_CAP, 200) # lines scanned per container
+_ERRCOUNT_CT_CAP   = 40                       # max running containers per refresh
+_ERRCOUNT_WINDOW_S = 15 * 60                  # only count errors within this window
+# Curated, case-insensitive error matcher — TIGHTER than the summarize heuristic
+# (_LOG_ERR_RE, which also matches warn/timeout/etc. to feed the LLM context). For
+# a glance COUNT we want high signal, so we match only unambiguous failure words.
+# A negative lookahead guards the classic false positives ("no error(s)",
+# "0 errors", "without error", "error: none", "errorlevel 0") so a healthy
+# container that merely *mentions* the word error doesn't paint red.
+_ERRCOUNT_RE = re.compile(
+    r"(?<!\w)(?:error|fatal|panic|exception|traceback|segfault|oom)(?!\w)", re.I)
+_ERRCOUNT_FALSEPOS_RE = re.compile(
+    r"\b(?:no|without|zero|0)\s+error|error(?:s|level)?\s*[:=]?\s*(?:none|0|false)\b",
+    re.I)
+_errcount_cache = {"at": 0.0, "data": None}
+_ERRCOUNT_LOCK = threading.Lock()
+
+
+def _line_ts_epoch(ts):
+    """Convert a `docker logs --timestamps` RFC3339(Nano) prefix to epoch seconds,
+    or None if unparseable. Trims sub-µs precision (python < 3.11 chokes on ns) and
+    normalises a trailing Z. Never raises."""
+    if not ts:
+        return None
+    try:
+        from datetime import datetime
+        s = re.sub(r"(\.\d{6})\d+", r"\1", ts.strip()).replace("Z", "+00:00")
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
+
+
+def _count_recent_errors(lines, window_s, now=None):
+    """Count error-looking log lines within the recent window. `lines` is the
+    parsed [{ts?, text}] shape from _docker_logs_tail. A line counts iff its text
+    matches _ERRCOUNT_RE, is NOT a known false positive, AND (when it carries a
+    timestamp) falls inside the window; lines without a parseable ts are counted
+    (a container without --timestamps support shouldn't silently read as 0).
+    Returns (count, last_error_ts|None)."""
+    if now is None:
+        now = time.time()
+    cutoff = now - window_s
+    count, last_ts = 0, None
+    for l in lines:
+        text = l.get("text") or ""
+        if not _ERRCOUNT_RE.search(text):
+            continue
+        if _ERRCOUNT_FALSEPOS_RE.search(text):
+            continue
+        ep = _line_ts_epoch(l.get("ts"))
+        if ep is not None and ep < cutoff:
+            continue
+        count += 1
+        if l.get("ts") and (last_ts is None or l["ts"] > last_ts):
+            last_ts = l["ts"]
+    return count, last_ts
+
+
+def _compute_error_counts():
+    """Scan up to _ERRCOUNT_CT_CAP RUNNING containers for recent error counts.
+    Read-only + LLM-free. Never raises — a bad container yields an `unavailable`
+    entry, a docker-wide failure yields an empty list. Returns the response dict
+    (also what gets cached)."""
+    now = time.time()
+    out = {"window_min": int(_ERRCOUNT_WINDOW_S // 60),
+           "containers": [], "generated_at": int(now),
+           "truncated": False, "scanned": 0}
+    try:
+        live = containers()
+    except Exception:
+        return out                                    # docker unreachable → empty
+    if len(live) > _ERRCOUNT_CT_CAP:
+        live = live[:_ERRCOUNT_CT_CAP]
+        out["truncated"] = True
+    for ct in live:
+        cid, name = ct.get("id"), ct.get("name")
+        entry = {"name": name, "id_short": (cid or "")[:12], "errors": 0}
+        try:
+            lines, _trunc, err = _docker_logs_tail(cid, _ERRCOUNT_TAIL)
+            if err is not None:
+                entry["unavailable"] = True
+            else:
+                cnt, last_ts = _count_recent_errors(lines, _ERRCOUNT_WINDOW_S, now)
+                entry["errors"] = int(cnt)
+                if last_ts:
+                    entry["last_ts"] = last_ts
+        except Exception:
+            entry["errors"] = 0
+            entry["unavailable"] = True
+        out["containers"].append(entry)
+        out["scanned"] += 1
+    if out["truncated"]:
+        print("errcount: container cap hit (%d), truncating scan" % _ERRCOUNT_CT_CAP,
+              flush=True)
+    return out
+
+
+def _error_counts_cached():
+    """TTL-cached wrapper around _compute_error_counts. A second call within
+    _ERRCOUNT_TTL returns the memoised result WITHOUT re-scanning the socket."""
+    now = time.time()
+    with _ERRCOUNT_LOCK:
+        if _errcount_cache["data"] is not None and \
+           now - _errcount_cache["at"] < _ERRCOUNT_TTL:
+            data = dict(_errcount_cache["data"])
+            data["cached"] = True
+            return data
+    data = _compute_error_counts()
+    with _ERRCOUNT_LOCK:
+        _errcount_cache.update(at=time.time(), data=data)
+    result = dict(data)
+    result["cached"] = False
+    return result
+
+
+@app.route("/api/logs/errors")
+def api_logs_error_counts():
+    """Per-running-container recent-error COUNTS for the Containers-tab badges.
+    Authed-dashboard only (never a public surface). Read-only, LLM-free, bounded,
+    and TTL-cached — fetched off-poll on tab activation. Always 200 with a clean
+    shape (empty list when docker is unreachable); never 500, never raw log text.
+
+    Response: {window_min, containers:[{name,id_short,errors,last_ts?,unavailable?}],
+               generated_at, truncated, scanned, cached}"""
+    return jsonify(_error_counts_cached())
+
+
 # ── Container / service controls (opt-in, OFF by default) ─────────────────────
 # start / stop / restart for Docker containers and systemd units. The ONLY host-
 # mutating surface besides self-update, and it is HARD-GATED behind ENABLE_CONTROLS

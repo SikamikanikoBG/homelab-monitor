@@ -167,6 +167,11 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 42%,var(--bd));background:color-mix(in srgb,var(--crit) 12%,transparent)}
 .chip.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 42%,var(--bd));background:color-mix(in srgb,var(--info) 12%,transparent)}
 .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* Recent-error count badge on each Containers row (Dozzle-style glance). Red when
+   errors>0 (clickable → log triage), muted-ok when clean, faint while loading. */
+.errchip.chip.crit{cursor:pointer}
+.errchip.pending{opacity:.55}
+.ct-errcell{white-space:nowrap}
 /* Monthly power-cost budget gauge — a bar of MTD/budget with the projected
    month-end marked. Coloured by status (ok/warn/over). Hidden entirely until a
    budget is set (default off). */
@@ -2187,6 +2192,7 @@ h2 .hic{ opacity:.9 }
     <div class="grid" id="ctkpis"></div>
     <table style="margin-top:14px"><thead><tr>
       <th data-i18n="col.container">Container</th><th data-i18n="col.state">State</th>
+      <th data-col="errors" title="Recent error-looking log lines (last 15 min), counted from this container's logs. Read-only, LLM-free, refreshed on this tab. Click a red badge to open the log triage." data-i18n="col.errors">Errors</th>
       <th data-col="image" data-i18n="col.image">Image</th>
       <th data-i18n="col.ports">Ports</th><th data-i18n="col.uptime">Uptime</th>
       <th title="Resident system RAM the container actually holds — anonymous + shared memory. Excludes reclaimable file cache (e.g. mmap'd model files), so rows sum sensibly against host RAM. GPU memory is the separate VRAM column." data-i18n="col.ram">RAM</th>
@@ -3615,6 +3621,7 @@ function showTab(id){
   }
   if(id==='overview'){ renderFleet(); renderAiBand(); loadCopilot(); loadReco(); loadHero(); }
   if(id==='gpu'){ loadForecast(); loadIncidents(); loadLlm(); loadAnomalyTimeline(); }   // refresh Anomalies + Incidents + LLM engine + anomaly timeline on view
+  if(id==='containers') loadContainerErrors();   // Dozzle-style recent-error badges (off-poll, cached, LLM-free)
   if(id==='models') loadRegistry();   // on-disk model inventory (load on view; no aggressive poll)
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -4498,6 +4505,7 @@ function renderHealth(){
       : '';
     return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[c.status]}"></span>${esc(c.name)}</td>
      <td><span class="badge ${c.status}">${esc(c.label)}</span></td>
+     <td data-col="errors" class="ct-errcell" data-cterr="${esc(c.name)}">${errBadge(c)}</td>
      <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.image)}${updChip}${ckBtn}</td>
      <td>${renderPorts(c.ports)}</td>
      <td class="muted">${c.state==='running'?fmtUpShort(c.uptime_s):'—'}</td>
@@ -4509,12 +4517,12 @@ function renderHealth(){
   }).join('')
     + (ctlist.length ? `<tr class="cttot">
         <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:running})}</span></td>
-        <td></td><td data-col="image"></td><td></td><td class="muted"></td>
+        <td></td><td data-col="errors"></td><td data-col="image"></td><td></td><td class="muted"></td>
         <td><b>${fmtBytes(tRam)}</b></td>
         <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
         <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
         <td></td><td data-col="ctl"></td></tr>` : '')
-    || (dk.available?'<tr><td colspan="10" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
+    || (dk.available?'<tr><td colspan="11" class="muted">'+I18N.t('ct.none','No containers found.')+'</td></tr>':'');
   // Click any container row to tail its logs in the side drawer (issue #28).
   // The per-row "Check now" button is handled first (and stops the row click).
   document.getElementById('cttbl').onclick = e => {
@@ -5006,6 +5014,56 @@ function _tlPointFromCell(series, cell, threshold){
 function explainTimelineCell(series, cell, threshold){
   if(!series || !cell || cell.dir==='flat') return;        // quiet/null cells are inert
   return explainRibbonCell(_tlPointFromCell(series, cell, threshold));
+}
+
+// ── 🚨 Recent-error count badges (Dozzle-style) ─────────────────────────────────
+// A glanceable "N errors · 15m" chip per container row. Fetched OFF-POLL, only on
+// Containers-tab activation, from /api/logs/errors — which is bounded + TTL-cached
+// server-side (repeated hits never re-scan the Docker socket) and LLM-FREE (pure
+// regex count; the LLM stays behind the explicit Summarize in the log drawer).
+// Counts are ints and names go through esc() → XSS-safe.
+let ERRCOUNTS = null;   // {byName:{name:{errors,last_ts?,unavailable?}}, window_min}
+// Render the badge for one container row. Red + clickable (opens the log drawer,
+// which carries the AI Summarize action) when errors>0; muted "no errors" when
+// clean; a faint placeholder before the fetch resolves.
+function errBadge(c){
+  if(!c || c.state!=='running') return '<span class="muted">—</span>';
+  const wm = ERRCOUNTS ? ERRCOUNTS.window_min : 15;
+  const wtxt = I18N.tf('ct.err_window','{n}m',{n:wm});
+  if(!ERRCOUNTS){                                            // still loading
+    return `<span class="chip errchip pending" aria-hidden="true">…</span>`;
+  }
+  const e = (ERRCOUNTS.byName||{})[c.name];
+  if(!e || e.unavailable){
+    return `<span class="chip errchip" title="${esc(I18N.t('ct.err_unavail_hint','Recent-error count unavailable for this container'))}">${esc(I18N.t('ct.err_unavail','logs n/a'))}</span>`;
+  }
+  const n = e.errors|0;
+  if(n>0){
+    const lbl = I18N.tf('ct.err_count','{n} errors · {w}',{n:n,w:wtxt});
+    const hint = I18N.tf('ct.err_count_hint','{n} recent error-looking log lines in the last {w}. Click to open the log tail and AI triage.',{n:n,w:wtxt});
+    return `<span class="chip crit errchip" title="${esc(hint)}" role="button" tabindex="0">🚨 ${esc(lbl)}</span>`;
+  }
+  return `<span class="chip ok errchip" title="${esc(I18N.tf('ct.err_none_hint','No recent error-looking log lines in the last {w}.',{w:wtxt}))}">✓ ${esc(I18N.tf('ct.err_none','no errors · {w}',{w:wtxt}))}</span>`;
+}
+// Repaint just the error cells in-place (no full table re-render, so a click /
+// scroll position isn't disturbed). Called after the async fetch resolves.
+function paintErrBadges(){
+  const dk=(HH&&HH.docker)||{}; const list=dk.containers||[];
+  document.querySelectorAll('#cttbl [data-cterr]').forEach(td=>{
+    const name=td.getAttribute('data-cterr');
+    const c=list.find(x=>x.name===name) || {name,state:'running'};
+    td.innerHTML=errBadge(c);
+  });
+}
+async function loadContainerErrors(){
+  // Local hub only — remotes don't proxy the docker socket for this.
+  if(CURRENT_HOST!=='local') return;
+  try{
+    const j = await (await fetch('/api/logs/errors')).json();
+    const byName={}; (j.containers||[]).forEach(x=>{ byName[x.name]=x; });
+    ERRCOUNTS = {byName, window_min:j.window_min||15};
+  }catch(e){ ERRCOUNTS = {byName:{}, window_min:15}; }        // degrade → muted badges
+  paintErrBadges();
 }
 
 // ── 🌈 Anomaly timeline ─────────────────────────────────────────────────────────
