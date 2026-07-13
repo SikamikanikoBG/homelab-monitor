@@ -172,6 +172,15 @@ h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-tran
 .errchip.chip.crit{cursor:pointer}
 .errchip.pending{opacity:.55}
 .ct-errcell{white-space:nowrap}
+/* 🚨 Container error roll-up chip — a tab-level glance over the per-row badges,
+   computed from the same cached payload. Attention-tinted when N>0, calm when 0. */
+.cterr-rollup{margin-top:10px}
+.cterr-rollup:empty{display:none}
+.cterr-rollup .rollchip{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;
+  border-radius:8px;border:1px solid var(--bd);background:var(--inset);font-size:13px;font-weight:600}
+.cterr-rollup .rollchip.attn{border-left:3px solid var(--crit);color:var(--crit)}
+.cterr-rollup .rollchip.calm{border-left:3px solid var(--ok);color:var(--mut)}
+.cterr-rollup .rollnote{margin-left:8px;color:var(--mut);font-weight:400;font-size:12px}
 /* Monthly power-cost budget gauge — a bar of MTD/budget with the projected
    month-end marked. Coloured by status (ok/warn/over). Hidden entirely until a
    budget is set (default off). */
@@ -2190,6 +2199,10 @@ h2 .hic{ opacity:.9 }
       <span id="checkall-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
     </div>
     <div class="grid" id="ctkpis"></div>
+    <!-- 🚨 Container error roll-up chip — derived client-side from the SAME cached
+         /api/logs/errors payload the badges use (no extra fetch). Hidden until the
+         off-poll loader resolves; degrades to empty (no chip) if unavailable. -->
+    <div id="cterr-rollup" class="cterr-rollup" role="status" aria-live="polite"></div>
     <table style="margin-top:14px"><thead><tr>
       <th data-i18n="col.container">Container</th><th data-i18n="col.state">State</th>
       <th data-col="errors" title="Recent error-looking log lines (last 15 min), counted from this container's logs. Read-only, LLM-free, refreshed on this tab. Click a red badge to open the log triage." data-i18n="col.errors">Errors</th>
@@ -4535,6 +4548,10 @@ function renderHealth(){
   ctlReadonlyHint('container');
   bindCtlAuditToolbar();
   renderCtlAudit();   // accountability panel: recent host-mutation actions (read-only)
+  // Re-apply the cached error signal (tab-level roll-up + error-first row sort) from
+  // the last /api/logs/errors payload — no refetch, so the 10s poll re-render keeps
+  // the roll-up and the sort without extra Docker-socket load. No-ops if unloaded.
+  reapplyErrSignal();
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
   if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
@@ -5022,7 +5039,7 @@ function explainTimelineCell(series, cell, threshold){
 // server-side (repeated hits never re-scan the Docker socket) and LLM-FREE (pure
 // regex count; the LLM stays behind the explicit Summarize in the log drawer).
 // Counts are ints and names go through esc() → XSS-safe.
-let ERRCOUNTS = null;   // {byName:{name:{errors,last_ts?,unavailable?}}, window_min}
+let ERRCOUNTS = null;   // {byName:{name:{errors,last_ts?,unavailable?}}, window_min, scanned, truncated}
 // Render the badge for one container row. Red + clickable (opens the log drawer,
 // which carries the AI Summarize action) when errors>0; muted "no errors" when
 // clean; a faint placeholder before the fetch resolves.
@@ -5055,15 +5072,90 @@ function paintErrBadges(){
     td.innerHTML=errBadge(c);
   });
 }
+// Count containers with errors>0 from the cached payload. Pure int math over the
+// same {byName} we already hold — no second fetch, XSS-safe (ints only).
+function errRollupStats(){
+  if(!ERRCOUNTS) return null;
+  const by = ERRCOUNTS.byName || {};
+  let withErr = 0;
+  Object.keys(by).forEach(k=>{ if(((by[k]||{}).errors|0) > 0) withErr++; });
+  return {withErr, scanned:(ERRCOUNTS.scanned|0), truncated:!!ERRCOUNTS.truncated,
+          window_min:ERRCOUNTS.window_min||15};
+}
+// Render the tab-level roll-up chip from the cached payload. Attention-tinted when
+// N>0, calm "no errors" when 0; empty (chip hidden) before the loader resolves so
+// it DEGRADES cleanly with no JS throw and no flicker on the 10s poll.
+function renderErrRollup(){
+  const el = document.getElementById('cterr-rollup'); if(!el) return;
+  const s = errRollupStats();
+  if(!s){ el.innerHTML=''; return; }                          // not loaded → no chip
+  const wtxt = I18N.tf('ct.err_window','{n}m',{n:s.window_min});
+  // Honour the 40-cap honestly: when truncated, say we only scanned a subset so we
+  // never imply we counted every container.
+  let note='';
+  if(s.truncated){
+    note = ` <span class="rollnote">${esc(I18N.tf('ct.err_rollup_truncated','scanned first {n} containers — count may be incomplete',{n:s.scanned}))}</span>`;
+  }
+  if(s.withErr > 0){
+    const lbl = I18N.tf('ct.err_rollup_some','🚨 {n} containers with errors (last {w})',{n:s.withErr,w:wtxt});
+    el.innerHTML = `<span class="rollchip attn">${esc(lbl)}</span>${note}`;
+  }else{
+    const lbl = I18N.tf('ct.err_rollup_none','✓ No container errors (last {w})',{w:wtxt});
+    el.innerHTML = `<span class="rollchip calm">${esc(lbl)}</span>${note}`;
+  }
+}
+// Return container ROWS re-ordered so error-bearing containers float to the top
+// (highest error count first), the rest keeping their existing order. STABLE +
+// non-destructive: takes the existing <tr> nodes (never rebuilds them) so the row
+// click→log-drawer bridge, controls buttons and totals row all survive untouched.
+// Pure function over (rows, byName) so it's unit-testable and degrades: no payload
+// → returns the rows as-is.
+function sortErrRowsStable(rows, byName){
+  if(!byName) return rows.slice();
+  // decorate-sort-undecorate to keep the sort stable across engines
+  return rows.map((r,i)=>{
+    const name = r.getAttribute && r.getAttribute('data-ct');
+    const e = name!=null ? ((byName[name]||{}).errors|0) : 0;
+    return {r, i, e};
+  }).sort((a,b)=> (b.e - a.e) || (a.i - b.i)).map(o=>o.r);
+}
+// Re-order the live table rows in #cttbl by error count. Moves ONLY the container
+// data rows (.ctrow); the totals footer row and any placeholder row stay put at the
+// bottom. Re-applies from the last known payload on every poll re-render without a
+// refetch, so there's no render loop and no flicker.
+function applyErrSort(){
+  if(!ERRCOUNTS || !ERRCOUNTS.byName) return;                 // no payload → leave order
+  const tb = document.getElementById('cttbl'); if(!tb) return;
+  const rows = Array.prototype.slice.call(tb.querySelectorAll('tr.ctrow'));
+  if(rows.length < 2) return;
+  const sorted = sortErrRowsStable(rows, ERRCOUNTS.byName);
+  // Only touch the DOM if the order actually changed (avoids needless reflow/flicker).
+  let changed = false;
+  for(let k=0;k<rows.length;k++){ if(rows[k]!==sorted[k]){ changed=true; break; } }
+  if(!changed) return;
+  // Re-insert the container rows in their new order, before the first non-.ctrow
+  // sibling (the totals row / placeholder) so the footer stays at the bottom. When
+  // there's no such sibling, anchor is null → the rows append at the end.
+  const anchor = tb.querySelector('tr:not(.ctrow)');
+  sorted.forEach(r=>{ tb.insertBefore(r, anchor); });
+}
+// Re-apply the cached error signal (badges already inline in the template; here we
+// redo the tab-level roll-up + the error-first sort) after a poll re-render, WITHOUT
+// a refetch. Safe to call any time; no-ops cleanly when nothing is cached.
+function reapplyErrSignal(){
+  try{ renderErrRollup(); applyErrSort(); }catch(e){/* never break the tab */}
+}
 async function loadContainerErrors(){
   // Local hub only — remotes don't proxy the docker socket for this.
   if(CURRENT_HOST!=='local') return;
   try{
     const j = await (await fetch('/api/logs/errors')).json();
     const byName={}; (j.containers||[]).forEach(x=>{ byName[x.name]=x; });
-    ERRCOUNTS = {byName, window_min:j.window_min||15};
-  }catch(e){ ERRCOUNTS = {byName:{}, window_min:15}; }        // degrade → muted badges
+    ERRCOUNTS = {byName, window_min:j.window_min||15,
+                 scanned:(j.scanned|0), truncated:!!j.truncated};
+  }catch(e){ ERRCOUNTS = {byName:{}, window_min:15, scanned:0, truncated:false}; } // degrade
   paintErrBadges();
+  reapplyErrSignal();     // paint the roll-up + float error rows to the top
 }
 
 // ── 🌈 Anomaly timeline ─────────────────────────────────────────────────────────
