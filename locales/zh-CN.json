@@ -1555,5 +1555,8 @@
   "mqtt.status_unconf": "已启用但未设置代理主机。",
   "mqtt.status_conn": "已连接。",
   "mqtt.status_disc": "未连接。",
-  "mqtt.status_last": "上次推送："
+  "mqtt.status_last": "上次推送：",
+  "costunlock.title": "解锁成本与能耗洞察",
+  "costunlock.body": "在设置中填入电价（€/kWh 或您的货币），即可解锁成本跟踪、本地与云端的节省对比、成本预测以及每月预算仪表盘。",
+  "costunlock.cta": "⚙ 在设置中设置电价"
 }

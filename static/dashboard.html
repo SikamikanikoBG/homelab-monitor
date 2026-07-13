@@ -2105,6 +2105,19 @@ h2 .hic{ opacity:.9 }
     </div>
     <p class="cap" id="costfc-cap" data-i18n="forecast.cost_cap">Month-to-date energy cost extrapolated to a full month at the current daily rate. The estimate firms up as the month progresses.</p>
   </div>
+  <!-- Cost-unlock nudge: shown ONLY when no electricity price is set (cost_month.enabled==false),
+       turning the empty Costs area into a call-to-action. Hidden the instant a price is set —
+       priced-state rendering is untouched. Driven by the already-polled /api/forecast payload. -->
+  <div class="card" id="cost-unlock-card" hidden>
+    <div class="ins info" style="margin:0">
+      <div class="ic">💡</div>
+      <div>
+        <div class="t" data-i18n="costunlock.title">Unlock cost &amp; energy insights</div>
+        <div class="d" data-i18n="costunlock.body">Set an electricity price (€/kWh or your currency) in Settings to unlock cost tracking, local-vs-cloud savings, cost forecasts &amp; the monthly budget gauge.</div>
+        <div style="margin-top:9px"><button type="button" class="btn" id="cost-unlock-btn" data-i18n="costunlock.cta">⚙ Set a price in Settings</button></div>
+      </div>
+    </div>
+  </div>
   <div class="card" id="heatmap-card" hidden>
     <div class="card-h">
       <h2 data-i18n="heat.title">🗓️ Busy hours — when your lab burns power</h2>
@@ -8291,6 +8304,23 @@ function renderForecast(){
           s: dp==null?'' : (arrow+Math.abs(dp)+'% '+(dp>0?I18N.t('forecast.vs_higher','projected higher'):I18N.t('forecast.vs_lower','projected lower')))});
       }
       ck.innerHTML=kpis.map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
+    }
+  }
+  // Cost-unlock nudge (Costs tab): additive CTA shown ONLY when no price is set
+  // (cost_month.enabled===false). Hidden the moment a price is set, so priced-state
+  // behaviour is byte-identical to before. Reuses the already-polled cost_month flag —
+  // no extra fetch. The CTA reuses the existing Settings-open mechanism (showTab +
+  // setSettingsPane('costs')), the same jump used by the costs-disabled hint.
+  const uc=document.getElementById('cost-unlock-card');
+  if(uc){
+    if(cm.enabled){ uc.hidden=true; }
+    else{
+      uc.hidden=false;
+      const ub=document.getElementById('cost-unlock-btn');
+      if(ub && !ub._wired){
+        ub._wired=true;
+        ub.onclick=()=>{ showTab('alerts'); if(typeof setSettingsPane==='function') setSettingsPane('costs'); };
+      }
     }
   }
   // Monthly power-cost budget gauge (Costs tab) — hidden entirely until a budget is set

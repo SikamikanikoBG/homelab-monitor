@@ -1528,5 +1528,8 @@
   "mqtt.status_unconf": "Enabled but no broker host set.",
   "mqtt.status_conn": "Connected.",
   "mqtt.status_disc": "Not connected.",
-  "mqtt.status_last": "Last publish: "
+  "mqtt.status_last": "Last publish: ",
+  "costunlock.title": "Unlock cost & energy insights",
+  "costunlock.body": "Set an electricity price (€/kWh or your currency) in Settings to unlock cost tracking, local-vs-cloud savings, cost forecasts & the monthly budget gauge.",
+  "costunlock.cta": "⚙ Set a price in Settings"
 }
