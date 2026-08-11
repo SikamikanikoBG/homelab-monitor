@@ -6,6 +6,14 @@
 <script src="/static/chart.min.js" onerror="this.remove();var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';document.head.appendChild(s)"></script>
 <script src="/static/html2canvas.min.js" onerror="this.remove();var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';document.head.appendChild(s)"></script>
 <style>
+/* Reduced-motion kill switch — covers OS prefers-reduced-motion AND the
+   Settings > General "Reduced motion" toggle (applyReducedMotion() sets this
+   attribute). Any transition or @keyframes animation added anywhere in the
+   app, present or future, is silenced by this rule alone — no per-element
+   opt-out needed. See docs/animations.md. */
+html[data-reduced-motion="1"] *,
+html[data-reduced-motion="1"] *::before,
+html[data-reduced-motion="1"] *::after{transition:none!important;animation:none!important}
 :root{--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code",Menlo,Consolas,monospace}
 :root,[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
 --crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;
@@ -6847,8 +6855,14 @@ function renderFleet(){
 // plain value displays. applyReducedMotion() re-derives this whenever the
 // setting loads or changes and repaints the cockpit so it takes effect live.
 let MC_RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function setReducedMotionAttr(on){
+  if(on) document.documentElement.setAttribute('data-reduced-motion','1');
+  else document.documentElement.removeAttribute('data-reduced-motion');
+}
+setReducedMotionAttr(MC_RM);
 function applyReducedMotion(settingOn){
   const next = matchMedia('(prefers-reduced-motion: reduce)').matches || !!settingOn;
+  setReducedMotionAttr(next);
   if(next === MC_RM) return;
   MC_RM = next;
   if(typeof paintMissionControl==='function' && typeof TAB!=='undefined' && TAB==='overview') paintMissionControl();

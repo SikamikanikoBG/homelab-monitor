@@ -121,6 +121,10 @@ external deps would defeat the "agentless" promise.
   for not knowing something.
 - Match the existing code style — short functions, plain names, comments only
   where the *why* isn't obvious from the code.
+- Adding an animation? See [`docs/animations.md`](docs/animations.md) — CSS
+  transitions/`@keyframes` are covered automatically by the reduced-motion
+  kill switch; JS-driven number tweens must go through `mcCountUp()`, not a
+  new `requestAnimationFrame` loop.
 
 ## Submitting a PR
 
