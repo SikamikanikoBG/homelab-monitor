@@ -4392,6 +4392,8 @@ SETTING_DEFAULTS = {
     # ── Public status page (#217 follow-up) — Settings-driven toggle so it
     # doesn't require an env-var restart to turn on/off ─────────────────────
     "public_status_enabled": "0",     # "0" / "1"
+    # ── Display preferences ────────────────────────────────────────────────
+    "reduced_motion":       "0",      # "0" (default, matches prior behaviour) / "1" — disables gauge animations
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 

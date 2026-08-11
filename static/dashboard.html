@@ -2423,6 +2423,12 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
           <input type="number" id="al_retention_days" min="1" max="3650" step="1" class="field" style="max-width:160px">
           <p class="cap" style="margin-top:4px" data-i18n-html="general.retention_cap" data-i18n-def="How many days of metric history to keep. Older rows are pruned every ~6 minutes. Default: 180.">How many days of metric history to keep. Older rows are pruned every ~6 minutes. Default: 180.</p>
         </div>
+        <div>
+          <label style="display:flex;align-items:center;gap:9px;margin:4px 0">
+            <input type="checkbox" id="al_reduced_motion">
+            <span data-i18n-html="general.reduced_motion_label"><b>Reduced motion</b> — turn off gauge animations, gauges just show the current value.</span>
+          </label>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
           <button class="rb on" id="al_save_general" data-i18n="btn.save">Save</button>
         </div>
@@ -5602,6 +5608,8 @@ async function loadAlerts(){
   document.getElementById('al_gpu_fanstall').checked   = (s.gpu_fanstall_alerts||'1')==='1';
   document.getElementById('al_gpu_missing').checked    = (s.gpu_missing_alerts||'1')==='1';
   document.getElementById('al_retention_days').value = s.retention_days||'180';
+  document.getElementById('al_reduced_motion').checked = s.reduced_motion==='1';
+  applyReducedMotion(s.reduced_motion==='1');
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
@@ -5758,6 +5766,7 @@ function collectSettingsBody(){
     gpu_fanstall_alerts:    document.getElementById('al_gpu_fanstall').checked ? '1' : '0',
     gpu_missing_alerts:     document.getElementById('al_gpu_missing').checked ? '1' : '0',
     retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
+    reduced_motion:   document.getElementById('al_reduced_motion').checked ? '1' : '0',
     kwh_price:        document.getElementById('al_kwh').value.trim(),
     currency:         document.getElementById('al_currency').value.trim()||'$',
     tariff_mode:      TARIFF_DUAL ? 'dual' : 'single',
@@ -5844,8 +5853,10 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
   'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme',
-  'al_public_status_enabled','al_retention_days'];
+  'al_public_status_enabled','al_retention_days','al_reduced_motion'];
 function wireAutoSave(){
+  const rmChk=document.getElementById('al_reduced_motion');
+  if(rmChk) rmChk.addEventListener('change', () => applyReducedMotion(rmChk.checked));
   AUTOSAVE_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('change', scheduleAutoSave); });
   // Tariff mode is toggled by buttons (no change event) — autosave on those too.
   ['al_mode_single','al_mode_dual'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('click', scheduleAutoSave); });
@@ -6831,7 +6842,17 @@ function renderFleet(){
 // undefined on the first paint. Only does work when TAB==='overview'. The four
 // legacy Overview cards (#fleet_tbl, #ai-band, #mcpcard, #diagcard) are untouched
 // and keep being driven by renderFleet()/renderAiBand()/renderHealth().
-const MC_RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// True when either the OS-level "prefers-reduced-motion" is set or the user
+// opted into the "Reduced motion" setting — either source turns gauges into
+// plain value displays. applyReducedMotion() re-derives this whenever the
+// setting loads or changes and repaints the cockpit so it takes effect live.
+let MC_RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function applyReducedMotion(settingOn){
+  const next = matchMedia('(prefers-reduced-motion: reduce)').matches || !!settingOn;
+  if(next === MC_RM) return;
+  MC_RM = next;
+  if(typeof paintMissionControl==='function' && typeof TAB!=='undefined' && TAB==='overview') paintMissionControl();
+}
 const MC_AC = {ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', info:'var(--info)'};
 // D.insights use level=critical|warning|ok|info; map to our short keys.
 const MC_LVL = {critical:'crit', warning:'warn', warn:'warn', crit:'crit', ok:'ok', info:'info'};
@@ -7155,7 +7176,7 @@ function mcPaintEngine($, g, gx, host){
     arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,arcPct));
     ring.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)';
     ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,ringPct));
-    m.forEach((mm,i)=>{ const bar=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); bar.style.transition='width 1.2s cubic-bezier(.2,.8,.2,1)'; bar.style.width=Math.min(100,Math.max(0,mm.w))+'%'; });
+    m.forEach((mm,i)=>{ const bar=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); bar.style.transition=MC_RM?'none':'width 1.2s cubic-bezier(.2,.8,.2,1)'; bar.style.width=Math.min(100,Math.max(0,mm.w))+'%'; });
   }));
   // per-GPU breakdown when the focused host is a multi-GPU box
   const exH=$('mc-vitals-extra');
@@ -7219,7 +7240,7 @@ function mcApplyEngine($, V){
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     arc.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.arcPct||0));
     ring.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.ringPct||0));
-    M.forEach((mm,i)=>{ const b=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); b.style.transition='width 1.2s cubic-bezier(.2,.8,.2,1)'; b.style.width=Math.min(100,Math.max(0,mm.w||0))+'%'; });
+    M.forEach((mm,i)=>{ const b=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); b.style.transition=MC_RM?'none':'width 1.2s cubic-bezier(.2,.8,.2,1)'; b.style.width=Math.min(100,Math.max(0,mm.w||0))+'%'; });
   }));
   const ex=$('mc-vitals-extra'); if(ex) ex.innerHTML=mcBreakdownHTML(V.breakdown||[]);
 }
@@ -9102,6 +9123,9 @@ document.getElementById('updcopy').onclick = async () => {
 document.getElementById('updnowbtn').onclick = startSelfUpdate;
 showTab(TAB);
 loadData(); loadHealth(); loadFleet();
+// Pick up the reduced-motion preference before the Settings tab is ever
+// opened — otherwise gauges would animate on first paint regardless of it.
+(async () => { try{ const j=await(await fetch('/api/settings')).json(); applyReducedMotion(j&&j.settings&&j.settings.reduced_motion==='1'); }catch(e){} })();
 
 // ── Live values over SSE, history on a timer ─────────────────────────────────
 // Two cadences instead of one. `/api/stream` pushes the live values the moment
