@@ -3452,6 +3452,56 @@ function renderData(){
 // see mcCountUp().
 let LIVE_TICK = false;
 
+// ── In-place painters ─────────────────────────────────────────────────────────
+// "leave the page structure alone" was the intent of the split, but the panels
+// below still rebuilt their markup with innerHTML on every frame. An innerHTML
+// write destroys and recreates the subtree even when nothing changed, and these
+// panels sit inside a backdrop-filtered .card — so the browser re-composites the
+// blur layer twice a second. That is the flicker. These helpers touch only what
+// actually moved.
+function setText(el, v){ if(el && el.textContent !== v) el.textContent = v; }
+function setHTML(el, html){ if(el && el._sig !== html){ el._sig = html; el.innerHTML = html; } }
+
+// A KPI row is a fixed set of cells whose numbers move every frame, so rebuild
+// the cells only when the row's shape changes and patch the text otherwise.
+function paintKpis(el, items){
+  if(!el) return;
+  if(el.children.length !== items.length){
+    el.innerHTML = items.map(()=>'<div class="kpi"><div class="v"></div><div class="l"></div><div class="s"></div></div>').join('');
+  }
+  items.forEach((t,i)=>{
+    const c = el.children[i];
+    setText(c.children[0], t.v);
+    setText(c.children[1], t.l);
+    setText(c.children[2], t.s || '');
+  });
+}
+
+// Disk bars are keyed by mount: the set only changes when a filesystem appears
+// or goes away, while the numbers change every frame.
+function paintDisks(el, disks){
+  if(!el) return;
+  // NUL is the one byte a mount path cannot contain, so joining on it cannot
+  // collide two different mount sets into one key — the patch loop below
+  // indexes rows one-for-one with `disks`.
+  const key = disks.map(d=>d.mount).join('\u0000');
+  if(el._key !== key){
+    el._key = key;
+    el.innerHTML = disks.map(()=>
+      '<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">'
+      +'<span></span><span class="muted"></span></div>'
+      +'<div class="dbar"><div></div></div></div>').join('');
+  }
+  disks.forEach((dk,i)=>{
+    const row=el.children[i], head=row.children[0], bar=row.children[1].firstElementChild;
+    setText(head.children[0], '💾 '+dk.mount);
+    setText(head.children[1], `${dk.used} / ${dk.total} GB · ${dk.pct}%`);
+    const w=dk.pct+'%', bg=sev(dk.pct);
+    if(bar.style.width !== w) bar.style.width = w;
+    if(bar.style.background !== bg) bar.style.background = bg;
+  });
+}
+
 // The live half: repaint the values, leave the page structure alone.
 function renderLive(opts){
   if(!D || !D.now) return;
@@ -3482,17 +3532,14 @@ function paintLive(){
   // renderHostTab() owns these panels with the remote's polled data.
   if(CURRENT_HOST === 'local'){
     const ramPct = H.ram_total? Math.round(H.ram_used/H.ram_total*100):0;
-    document.getElementById('hostkpis').innerHTML=[
+    paintKpis(document.getElementById('hostkpis'), [
       {v:Math.round(H.cpu||0)+'%',l:I18N.t('kpi.cpu','CPU utilization'),s:I18N.tf('kpi.cores','{n} cores',{n:(H.cores||'?')})},
       {v:ramPct+'%',l:I18N.t('kpi.ram','RAM used'),s:fmtMB(H.ram_used||0)+' / '+fmtMB(H.ram_total||0)},
       {v:(H.load1||0).toFixed(2),l:I18N.t('kpi.load1','Load (1m)'),s:I18N.tf('kpi.of_cores','of {n} cores',{n:(H.cores||'?')})},
       {v:fmtUp(H.uptime||0),l:I18N.t('kpi.uptime','Uptime')},
       {v:(H.ctemp||0)+' °C',l:I18N.t('kpi.temp','CPU/system temp')},
-    ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-    document.getElementById('disks').innerHTML=(H.disks||[]).map(dk=>
-      `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">
-       <span>💾 ${esc(dk.mount)}</span><span class="muted">${dk.used} / ${dk.total} GB · ${dk.pct}%</span></div>
-       <div class="dbar"><div style="width:${dk.pct}%;background:${sev(dk.pct)}"></div></div></div>`).join('');
+    ]);
+    paintDisks(document.getElementById('disks'), H.disks||[]);
   }
 }
 
@@ -3558,8 +3605,8 @@ function renderGpuSpill(n){
     d='';
   }
   el.style.display='flex';
-  el.innerHTML=`<div class="ic" style="color:var(--warn)">${sic('ram')}</div><div><div class="t">${t}</div>`
-    +`<div class="d">${d}${d&&sum?'<br>':''}${sum}</div></div>`;
+  setHTML(el, `<div class="ic" style="color:var(--warn)">${sic('ram')}</div><div><div class="t">${t}</div>`
+    +`<div class="d">${d}${d&&sum?'<br>':''}${sum}</div></div>`);
 }
 
 // ── GPU cockpit ───────────────────────────────────────────────────────────────
@@ -4671,9 +4718,9 @@ function renderModels(){
   live.forEach(m=>{const arr=bySvc[m.service]=bySvc[m.service]||[]; if(!arr.some(x=>x.model===m.model)) arr.push({model:m.model,peak:null,avg:null,vram:m.vram,ram:m.ram,ctxNow:m.ctx_now,runs:0,spilled:0,peakRam:0,usedBy:[]});});
   const host=document.getElementById('modelsbody'); if(!host) return;
   const services=Object.keys(bySvc);
-  if(!services.length){ host.innerHTML='<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'; return; }
+  if(!services.length){ setHTML(host, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'); return; }
   const maxV=Math.max(tot||1, ...sums.map(m=>m.peak||0));
-  host.innerHTML = services.map(svc=>{
+  setHTML(host, services.map(svc=>{
     const ss=svcSum[svc]||{}, c=colorFor(svc);
     const models=bySvc[svc].slice().sort((a,b)=>(b.peak||0)-(a.peak||0));
     const rows=models.map(m=>{
@@ -4721,7 +4768,7 @@ function renderModels(){
       ${callersFor(svc)}
       <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
     </div>`;
-  }).join('');
+  }).join(''));
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
