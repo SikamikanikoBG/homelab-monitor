@@ -3462,11 +3462,21 @@ let LIVE_TICK = false;
 function setText(el, v){ if(el && el.textContent !== v) el.textContent = v; }
 function setHTML(el, html){ if(el && el._sig !== html){ el._sig = html; el.innerHTML = html; } }
 
+// True when `el` holds exactly `n` rows that still match the shape this painter
+// builds — the test for "safe to patch in place rather than rebuild".
+function ourRows(el, n, shaped){
+  return el.children.length === n && [...el.children].every(shaped);
+}
+
 // A KPI row is a fixed set of cells whose numbers move every frame, so rebuild
 // the cells only when the row's shape changes and patch the text otherwise.
+// Both of these panels have a second writer — renderHostTab() paints a remote
+// host into them — so the cells are only patched when they are still the ones
+// this function built. Trusting the cache against someone else's markup is how
+// a painter ends up indexing off the end of it.
 function paintKpis(el, items){
   if(!el) return;
-  if(el.children.length !== items.length){
+  if(!ourRows(el, items.length, c=>c.children.length===3)){
     el.innerHTML = items.map(()=>'<div class="kpi"><div class="v"></div><div class="l"></div><div class="s"></div></div>').join('');
   }
   items.forEach((t,i)=>{
@@ -3485,7 +3495,7 @@ function paintDisks(el, disks){
   // collide two different mount sets into one key — the patch loop below
   // indexes rows one-for-one with `disks`.
   const key = disks.map(d=>d.mount).join('\u0000');
-  if(el._key !== key){
+  if(el._key !== key || !ourRows(el, disks.length, r=>r.children.length===2 && r.children[1].classList.contains('dbar'))){
     el._key = key;
     el.innerHTML = disks.map(()=>
       '<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">'
@@ -8111,23 +8121,22 @@ async function renderHostTab(){
   const dk = document.getElementById('disks');
   if(!HOST_DATA || !HOST_DATA.online){
     renderHostChart();   // still draw whatever history the host left behind
-    hk.innerHTML = '';
+    paintKpis(hk, []);
     const err = HOST_DATA && HOST_DATA.error ? esc(HOST_DATA.error) : I18N.t('host.no_data','no data yet');
     dk.innerHTML = I18N.tf('host.probe_wait','<div class="muted" style="padding:12px 2px">⏳ <b>{host}</b> — {err}. Probes run every {i}s; new hosts take one cycle to populate.</div>',{host:esc(CURRENT_HOST),err,i:(FLEET ? (FLEET.interval||10) : 10)});
     return;
   }
   const ramPct = h.ram_total ? Math.round((h.ram_used||0)*100/h.ram_total) : 0;
-  hk.innerHTML=[
+  // Same painters the live lane uses, so a remote host repaints in place too and
+  // the two writers can never disagree about this markup.
+  paintKpis(hk, [
     {v:Math.round(h.cpu||0)+'%',         l:I18N.t('kpi.cpu','CPU utilization'), s:I18N.tf('kpi.cores','{n} cores',{n:(h.cores||'?')})},
     {v:ramPct+'%',                       l:I18N.t('kpi.ram','RAM used'),        s:fmtMBshort(h.ram_used)+' / '+fmtMBshort(h.ram_total)},
     {v:(h.load1!=null?h.load1.toFixed(2):'—'), l:I18N.t('kpi.load1','Load (1m)'),  s:I18N.tf('kpi.of_cores','of {n} cores',{n:(h.cores||'?')})},
     {v:fmtUpShort(h.uptime),             l:I18N.t('kpi.uptime','Uptime')},
     {v:(h.ctemp!=null?h.ctemp+' °C':'—'),l:I18N.t('kpi.temp','CPU/system temp')},
-  ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-  dk.innerHTML = (h.disks||[]).map(dkk =>
-    `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">
-     <span>💾 ${esc(dkk.mount)}</span><span class="muted">${dkk.used} / ${dkk.total} GB · ${dkk.pct}%</span></div>
-     <div class="dbar"><div style="width:${dkk.pct}%;background:${sev(dkk.pct)}"></div></div></div>`).join('');
+  ]);
+  paintDisks(dk, h.disks||[]);
   renderSysInfo();
   renderRamTree();
   renderTopProcs();      // now that HOST_DATA is this host's

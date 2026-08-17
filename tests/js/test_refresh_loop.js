@@ -543,6 +543,137 @@ suite('gpu   the small-multiples cards refresh in place off a live frame');
     ctxWith(mkBox([0, 1], { hidden: true })).updateGpuCardsLive(d(1, 2)) === false);
 }
 
+// ── in-place painters: the KPI row and disk bars ─────────────────────────────
+// The live lane repaints these every ~2s. Rebuilding their markup destroyed and
+// recreated the subtree on every frame, which re-composited the backdrop-filter
+// on the surrounding .card — the flicker. They are patched in place now.
+//
+// Both panels have a SECOND writer: renderHostTab() paints a remote host (or a
+// "waiting for its first probe" message) into the same elements. A painter that
+// trusted its cache against that markup would index off the end of it and throw,
+// and a throw here kills the whole live frame.
+suite('paint the live panels must repaint in place, and never patch foreign markup');
+{
+  reset();
+
+  const node = () => ({ textContent: '' });
+  const diskRow = () => ({ children: [
+    { children: [node(), node()] },
+    { classList: { contains: c => c === 'dbar' }, firstElementChild: { style: { width: '', background: '' } } },
+  ] });
+  const kpiCell = () => ({ children: [node(), node(), node()] });
+
+  // innerHTML is modelled the way the parser behaves: assigning markup replaces
+  // the children with one row per row-template found in it.
+  function mkHost(kind) {
+    const el = { _children: [], rebuilds: 0, _html: '' };
+    Object.defineProperty(el, 'children', { get: () => el._children });
+    Object.defineProperty(el, 'innerHTML', {
+      get: () => el._html,
+      set(html) {
+        el._html = html; el.rebuilds++;
+        const re = kind === 'disks' ? /class="dbar"/g : /class="kpi"/g;
+        const n = (html.match(re) || []).length;
+        el._children = Array.from({ length: n }, kind === 'disks' ? diskRow : kpiCell);
+      },
+    });
+    return el;
+  }
+  // What renderHostTab() leaves behind: markup this painter did not build.
+  const foreign = (el, kids) => { el._children = kids; };
+
+  function ctx() {
+    const c = build({});
+    c.sev = pct => (pct >= 90 ? 'var(--crit)' : 'var(--ok)');
+    vm.runInContext([
+      takeLine(/^function setText\(.*$/m, 'the setText helper'),
+      takeFunction('ourRows'),
+      takeFunction('paintKpis'),
+      takeFunction('paintDisks'),
+    ].join('\n\n'), c);
+    return c;
+  }
+
+  const disks = (pct) => [
+    { mount: '/', used: 10, total: 100, pct },
+    { mount: '/home', used: 20, total: 200, pct: 5 },
+  ];
+
+  // 1. The anti-flicker invariant: same mounts, new numbers, no rebuild.
+  const c = ctx();
+  const el = mkHost('disks');
+  c.paintDisks(el, disks(50));
+  const built = el.rebuilds;
+  const firstRow = el.children[0];
+  c.paintDisks(el, disks(60));
+  check('a repaint with the same mounts does not rebuild the rows',
+    el.rebuilds === built, `rebuilds ${built} -> ${el.rebuilds}`);
+  check('the row objects survived the repaint', el.children[0] === firstRow,
+    'rebuilding is what re-composites the .card blur behind them');
+  check('the numbers still moved',
+    el.children[0].children[1].firstElementChild.style.width === '60%',
+    `width=${el.children[0].children[1].firstElementChild.style.width}`);
+  check('the mount label is set as text, not markup',
+    el.children[0].children[0].children[0].textContent === '💾 /');
+
+  // 2. A mount appearing rebuilds, because the row count changed.
+  c.paintDisks(el, disks(60).concat([{ mount: '/boot', used: 1, total: 2, pct: 50 }]));
+  check('a new filesystem rebuilds the rows', el.rebuilds === built + 1);
+
+  // 3. REGRESSION: renderHostTab left a "waiting for probe" message here, so the
+  //    row count no longer matches the cache. Patching it would throw.
+  const c3 = ctx();
+  const el3 = mkHost('disks');
+  c3.paintDisks(el3, disks(50));
+  foreign(el3, [{ children: [] }]);              // the muted <div> message
+  let threw = null;
+  try { c3.paintDisks(el3, disks(50)); } catch (e) { threw = e; }
+  check('coming back from an offline remote does not throw', threw === null,
+    threw && String(threw));
+  check('and the disk rows were rebuilt from scratch', el3.children.length === 2,
+    `children=${el3.children.length}`);
+
+  // 4. REGRESSION, harder: the foreign markup has the SAME row count, so only a
+  //    shape check can catch it. This is a remote host with two disks whose rows
+  //    this painter did not build.
+  const c4 = ctx();
+  const el4 = mkHost('disks');
+  c4.paintDisks(el4, disks(50));
+  foreign(el4, [kpiCell(), kpiCell()]);          // right count, wrong shape
+  threw = null;
+  try { c4.paintDisks(el4, disks(50)); } catch (e) { threw = e; }
+  check('foreign rows of the same count do not throw', threw === null,
+    threw && String(threw));
+  check('they were replaced with real disk rows',
+    el4.children.length === 2 && el4.children[0].children.length === 2,
+    'a same-count cache hit must still verify the row shape');
+
+  // 5. The KPI row gets the same treatment.
+  const c5 = ctx();
+  const el5 = mkHost('kpis');
+  const items = v => [
+    { v, l: 'CPU utilization', s: '4 cores' }, { v: '9%', l: 'RAM used', s: '1 / 2' },
+    { v: '0.5', l: 'Load (1m)', s: 'of 4' },   { v: '1d', l: 'Uptime' },
+    { v: '40 °C', l: 'CPU/system temp' },
+  ];
+  c5.paintKpis(el5, items('10%'));
+  const kpiBuilt = el5.rebuilds, cell0 = el5.children[0];
+  c5.paintKpis(el5, items('80%'));
+  check('a KPI repaint does not rebuild the cells', el5.rebuilds === kpiBuilt);
+  check('the KPI cell objects survived', el5.children[0] === cell0);
+  check('the KPI value moved', el5.children[0].children[0].textContent === '80%');
+  check('an absent sub-label is blank, not undefined',
+    el5.children[3].children[2].textContent === '');
+
+  foreign(el5, [{ children: [] }, { children: [] }, { children: [] }, { children: [] }, { children: [] }]);
+  threw = null;
+  try { c5.paintKpis(el5, items('12%')); } catch (e) { threw = e; }
+  check('foreign KPI cells of the same count do not throw', threw === null,
+    threw && String(threw));
+  check('and they were rebuilt into real cells',
+    el5.children.length === 5 && el5.children[0].children.length === 3);
+}
+
 // ── result ───────────────────────────────────────────────────────────────────
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }
