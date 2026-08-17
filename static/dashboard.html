@@ -1747,12 +1747,15 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
   <div id="gpu-spill" class="ins warning" style="display:none;margin-bottom:14px"></div>
   <div class="card" id="gpu-pooled-card">
     <h2 id="gpu-pooled-title" data-i18n="gpu.now_title">🎮 GPU right now</h2>
-    <!-- 175px, not 150: the compute tile made this a six-tile row, and at 150 a
-         1280–1400px window fitted all six at 146px each — narrow enough that
-         "34.5 GB / 72.0 GB" wrapped onto a second line and the whole strip grew
-         a ragged edge. A wider minimum wraps the last tile onto its own row
-         instead, which costs nothing and keeps every value on one line. -->
-    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(175px,1fr))"></div>
+    <!-- 185px, not the shared .grid default: the compute tile made this a
+         six-tile row, and a 1400px window resolved six tracks of 178px — 146px
+         of usable width, where the VRAM tile's "33.5 GB / 72.0 GB" needs ~160
+         and wrapped onto a second line, leaving the whole strip ragged. 185
+         stops six tracks fitting until the row is genuinely wide enough for
+         them, so the last tile drops to its own line instead. The VRAM value is
+         the widest thing this strip renders, and it is what this number is
+         sized against. -->
+    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(185px,1fr))"></div>
     <div id="gpu-detail" class="gpu-detail"></div>
     <p class="cap" id="gpu-pooled-cap"></p>
   </div>
