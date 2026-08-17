@@ -1747,7 +1747,12 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
   <div id="gpu-spill" class="ins warning" style="display:none;margin-bottom:14px"></div>
   <div class="card" id="gpu-pooled-card">
     <h2 id="gpu-pooled-title" data-i18n="gpu.now_title">🎮 GPU right now</h2>
-    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"></div>
+    <!-- 175px, not 150: the compute tile made this a six-tile row, and at 150 a
+         1280–1400px window fitted all six at 146px each — narrow enough that
+         "34.5 GB / 72.0 GB" wrapped onto a second line and the whole strip grew
+         a ragged edge. A wider minimum wraps the last tile onto its own row
+         instead, which costs nothing and keeps every value on one line. -->
+    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(175px,1fr))"></div>
     <div id="gpu-detail" class="gpu-detail"></div>
     <p class="cap" id="gpu-pooled-cap"></p>
   </div>
@@ -3754,7 +3759,13 @@ function gpuMiniCardBody(card, d, ranges){
     if(m==='fan' && last>=95) cls = 'warn';
     const color = m==='temp' ? gpuTint(last>=d.hot_c?100:last>=d.hot_c-8?70:10)
                 : m==='util' ? gpuTint(last) : 'var(--ok)';
-    return `<div class="spark-row"><span class="sl">${def.label()}</span>
+    // TFLOPS sits directly under UTIL, and the pair invites exactly one wrong
+    // reading: a card showing 0% util and 39.7 T is not doing 39.7 TFLOPS of
+    // work. It is holding a high clock while idle, and this row is the ceiling
+    // that clock allows. The only place to say so is the row itself.
+    const rowT = m==='tflops'
+      ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"` : '';
+    return `<div class="spark-row"${rowT}><span class="sl">${def.label()}</span>
       ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='util' ? spans : []})}
       <span class="sv ${cls}">${disp}</span></div>`;
   }).join('');

@@ -823,6 +823,7 @@
   "gpu.m_membw": "显存带宽",
   "gpu.m_clock": "频率",
   "gpu.m_tflops": "TFLOPS",
+  "gpu.m_tflops_t": "该卡此刻运行频率下的 FP32 峰值 —— 这是上限，不是实际完成的工作量。显卡可能在 0% 利用率下仍保持高频。",
   "gpu.card_tf_t": "额定峰值：{f32} TFLOPS FP32{f16}，加速频率 {clk} MHz，来自 {cores} 个着色器核心。这是规格参数，不是实测值。",
   "gpu.card_tf16": " / {v} TFLOPS FP16 张量",
   "gpu.st_ok": "正常",

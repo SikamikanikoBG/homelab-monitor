@@ -77,6 +77,13 @@ jobs:
       - name: Dashboard refresh-loop behaviour
         run: node tests/js/test_refresh_loop.js
 
+      # Same lift-and-run technique, for the AI Models tab's TFLOPS arithmetic.
+      # The live fleet can't cover it: the hub has one card and one fully-
+      # resident model, so the multi-card and RAM-spill branches only ever get
+      # exercised here.
+      - name: Dashboard TFLOPS cells
+        run: node tests/js/test_tflops_cells.js
+
       - name: Build the image
         run: docker build -t homelab-monitor:ci .
 

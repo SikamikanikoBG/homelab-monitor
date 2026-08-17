@@ -759,6 +759,7 @@
   "gpu.m_membw": "Mem-BW",
   "gpu.m_clock": "Clock",
   "gpu.m_tflops": "TFLOPS",
+  "gpu.m_tflops_t": "Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.",
   "gpu.card_tf_t": "Rated peak: {f32} TFLOPS FP32{f16} at {clk} MHz boost, from {cores} shader cores. A specification, not a measurement.",
   "gpu.card_tf16": " / {v} TFLOPS FP16 tensor",
   "gpu.st_ok": "OK",
