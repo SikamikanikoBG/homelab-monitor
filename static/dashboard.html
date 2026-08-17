@@ -3518,6 +3518,24 @@ function renderGpuDetail(x, powerNow){
   }
   if(x.clk_sm>0) chips.push({v:Math.round(x.clk_sm)+' MHz', l:I18N.t('gpu.chip_coreclk','Core clock')});
   if(x.clk_mem>0) chips.push({v:Math.round(x.clk_mem)+' MHz', l:I18N.t('gpu.chip_memclk','Mem clock')});
+  // Compute ceiling. Two chips, because they answer different questions: what
+  // this box can do at boost, and what its cards' current clocks allow right
+  // now. Neither is a measurement of work done — nothing in the stack can
+  // measure that — and the tooltips say so rather than letting a number that
+  // looks like throughput be read as throughput.
+  const K = x.compute;
+  if(K){
+    const partial = K.cards_known < K.cards_total
+      ? ' ' + I18N.tf('gpu.chip_tflops_partial','({k} of {t} cards recognised)',{k:K.cards_known,t:K.cards_total}) : '';
+    chips.push({v:fmtTF(K.fp32).replace(' T',' TFLOPS'), l:I18N.t('gpu.chip_tflops','FP32 peak'),
+      t:I18N.tf('gpu.chip_tflops_t','Theoretical peak FP32 throughput at rated boost clock — 2 × {c} shader cores × clock, summed over the cards this tool recognises.{p} It is a ceiling, not a measurement: nothing in the driver reports achieved FLOP/s.',
+                {c:K.cores.toLocaleString(), p:partial})});
+    if(K.fp32_now!=null) chips.push({v:fmtTF(K.fp32_now).replace(' T',' TFLOPS'),
+      l:I18N.t('gpu.chip_tflops_now','FP32 at this clock'),
+      t:I18N.t('gpu.chip_tflops_now_t','The same peak recomputed at the clock the cards are running at this instant. An idle card parked in a low P-state sits far below its box figure — that gap is the headroom, not a fault.')});
+    if(K.fp16!=null) chips.push({v:fmtTF(K.fp16).replace(' T',' TFLOPS'), l:I18N.t('gpu.chip_tflops16','FP16 tensor'),
+      t:I18N.t('gpu.chip_tflops16_t','Dense FP16 tensor-core throughput at boost — no sparsity doubling. This is the number that governs LLM inference. Shown only when every recognised card in the box has tensor cores.')});
+  }
   if(x.power_limit>0){
     const head=Math.round((powerNow||0)/x.power_limit*100);
     chips.push({v:`${Math.round(powerNow||0)} / ${Math.round(x.power_limit)} W`, l:I18N.tf('gpu.chip_power','Power · {n}% of cap',{n:head}),
@@ -3589,11 +3607,22 @@ const GPU_METRICS = {
   power:   {key:'power',   label:()=>I18N.t('gpu.m_power','Power'), unit:'W',   max:null, fmt:v=>Math.round(v)+'W'},
   mem_util:{key:'mem_util',label:()=>I18N.t('gpu.m_membw','Mem-BW'),unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+'M'},
+  tflops:  {key:'tflops',  label:()=>I18N.t('gpu.m_tflops','TFLOPS'),unit:'TFLOPS',max:null, fmt:v=>fmtTF(v)},
 };
+// TFLOPS spans four orders of magnitude across a fleet — an idle Pascal Quadro
+// sits at 0.28 while three 3090s at boost pool to 106 — so the precision has to
+// follow the value. A fixed 1dp would print "0.3" for the idle card and waste a
+// digit on the busy one.
+function fmtTF(v){
+  v = +v || 0;
+  return (v>=100 ? Math.round(v) : v>=10 ? v.toFixed(1) : v.toFixed(2)) + ' T';
+}
 // Row order in every small-multiple panel. Fixed on purpose: the same metric
 // sits at the same height on every card, so cards can be compared by scanning
-// down a column rather than by reading each label.
-const GPU_SPARK_ROWS = ['util','vram','temp','fan','power'];
+// down a column rather than by reading each label. TFLOPS sits under util
+// because they answer the same question at two different resolutions: util says
+// the card is busy, TFLOPS says how much arithmetic that busyness is worth.
+const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power'];
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
 // Per-card line colour for the by-metric view. Stable by index so a card keeps
@@ -3745,7 +3774,16 @@ function gpuMiniCardBody(card, d, ranges){
     now.temp!=null ? Math.round(now.temp)+'°C' : null,
   ].filter(Boolean).join(' · ');
 
-  return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${gpuStatusPill(card)}</div>
+  // The card's rated ceiling, next to its name — the one number that says what
+  // this slot in the machine is actually worth. Absent for a card the spec
+  // table doesn't know, rather than a zero that would read as "does no work".
+  const K = card.compute;
+  const peak = K ? `<span class="mchip" title="${esc(
+      I18N.tf('gpu.card_tf_t','Rated peak: {f32} TFLOPS FP32{f16} at {clk} MHz boost, from {cores} shader cores. A specification, not a measurement.',
+        {f32:K.fp32, f16:(K.fp16!=null?I18N.tf('gpu.card_tf16',' / {v} TFLOPS FP16 tensor',{v:K.fp16}):''),
+         clk:K.boost_mhz, cores:K.cores.toLocaleString()}))}">${fmtTF(K.fp32)}F</span>` : '';
+
+  return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${peak}${gpuStatusPill(card)}</div>
     <div class="gpu-mini-now">${stats || (card.status==='retired' && card.last_seen
         ? I18N.tf('gpu.last_seen','last reported {t}',{t:relTime(card.last_seen)})
         : I18N.t('gpu.no_live','no live reading'))}</div>
@@ -3915,6 +3953,18 @@ function renderGpuKpis(d){
   if(p.fan_avg!=null) kpis.push({v: p.fan_max+' %', l: I18N.t('gpu.k_fan','Fan (peak)'),
     s: p.fan_rpm_max!=null ? I18N.tf('gpu.k_rpm','{n} rpm max',{n:p.fan_rpm_max}) : I18N.tf('gpu.k_fanavg','{n}% average',{n:p.fan_avg}),
     spark:C.fan_max, m:'fan'});
+  // Compute, in the same shape as the others: the live figure headlines, the
+  // ceiling is the sub-line. Only present when at least one card is in the spec
+  // table — an empty tile would be a worse answer than no tile.
+  if(p.compute) kpis.push({
+    v: (p.compute.fp32_now!=null ? fmtTF(p.compute.fp32_now) : fmtTF(p.compute.fp32)).replace(' T',
+        ' <span style="font-size:13px;color:var(--mut)">TFLOPS</span>'),
+    l: I18N.t('gpu.k_tflops','FP32 compute'),
+    s: p.compute.fp32_now!=null
+        ? I18N.tf('gpu.k_ofpeak','{n}% of the {peak} peak',
+                  {n:Math.round(p.compute.fp32_now/p.compute.fp32*100), peak:fmtTF(p.compute.fp32).replace(' T','')})
+        : I18N.tf('gpu.k_peakonly','peak across {n} card(s)',{n:p.compute.cards_known}),
+    spark:C.tflops, m:'tflops'});
   document.getElementById('gpukpis').innerHTML = kpis.map(t=>{
     const sp = (t.spark && t.spark.some(v=>v!=null))
       ? sparkSvg(t.spark, {color:'var(--mut)', max: GPU_METRICS[t.m] && GPU_METRICS[t.m].max===100 ? 100 : null,
@@ -4163,6 +4213,10 @@ function gpuPooledExtra(d){
   const tm = cards.filter(c=>c.temp_mem);
   if(tm.length) x.temp_mem = Math.max(...tm.map(c=>c.temp_mem));
   if(cards.every(c=>c.power_limit)) x.power_limit = cards.reduce((s,c)=>s+c.power_limit,0);
+  // Compute is pooled server-side (in gpuspec.pooled) rather than re-derived
+  // here: the "only sum FP16 when every recognised card has tensor cores" rule
+  // is exactly the kind of thing that drifts when it exists in two languages.
+  if(d.now_pooled && d.now_pooled.compute) x.compute = d.now_pooled.compute;
   return x;
 }
 
@@ -4655,6 +4709,64 @@ function _wireRegistry(){
 // (peak per model over range), D.summary (per-service peak/avg/%time). The expanded
 // panel draws a VRAM-over-time sparkline from D.services[service] with OOM markers
 // from D.events — the timeline the AI-engineer review asked for.
+// Which cards a model server is actually sitting on, and what those cards can
+// do. Built from the same per-card VRAM attribution the GPU cockpit uses, so
+// "ollama is on GPUs 0 and 2" means the same thing on both tabs.
+//
+// A host that can't attribute per card (a single GPU, or a driver that won't
+// answer --query-compute-apps) falls back to every card in the box. That is the
+// honest answer there: the server can use any of them, we just can't prove
+// which. Falling back to *nothing* would blank the column on exactly the
+// single-GPU rigs where the answer is least ambiguous.
+function serverCompute(svc){
+  const cards = (D.now && D.now.gpus) || [];
+  if(!cards.length) return null;
+  const p = ((D.now && D.now.procs) || []).find(x => x.service === svc);
+  const on = p && p.by_card ? Object.keys(p.by_card).filter(k => p.by_card[k] > 0) : [];
+  const mine = on.length ? cards.filter(c => on.indexOf(String(c.idx)) >= 0) : cards;
+  const blocks = mine.map(c => c.compute).filter(Boolean);
+  if(!blocks.length) return null;
+  return {
+    fp32: +blocks.reduce((s,b)=>s+b.fp32, 0).toFixed(1),
+    // Same rule as the GPU tab: a pool where any recognised card lacks tensor
+    // cores has no single FP16 figure, so it publishes none.
+    fp16: blocks.every(b=>b.fp16!=null) ? +blocks.reduce((s,b)=>s+b.fp16, 0).toFixed(1) : null,
+    cards: mine.map(c=>c.idx),
+    known: blocks.length, total: mine.length,
+    attributed: on.length > 0,
+  };
+}
+
+// The compute cell for one model row. FP16 tensor when the cards have tensor
+// cores — that is the number that governs token throughput — else FP32.
+//
+// A spilling model gets a *reduced* figure, scaled by the share of it resident
+// in VRAM. That is the insight this column exists for: the layers pushed into
+// system RAM run on the CPU and get none of this compute, which is why a model
+// that "only just" spills can lose a third of its speed. Flagged approximate in
+// the tooltip, because layers are not uniform in cost and the split is by bytes.
+function modelComputeCell(K, m){
+  if(!K || m.vram == null) return '<span class="muted">—</span>';
+  const base = K.fp16 != null ? K.fp16 : K.fp32;
+  const kind = K.fp16 != null ? I18N.t('models.tf_fp16','FP16 tensor') : I18N.t('models.tf_fp32','FP32');
+  const where = K.cards.length > 1
+    ? I18N.tf('gpu.on_cards','GPUs {list}',{list:K.cards.join(', ')})
+    : I18N.tf('gpu.on_card','GPU {n}',{n:K.cards[0]});
+  const tot = (m.vram||0) + (m.ram||0);
+  const share = tot ? (m.vram||0)/tot : 1;
+  const shared = I18N.t('models.tf_shared','Shared with any other model loaded on the same server — this is the hardware ceiling, not a per-model allocation.');
+  if(share < 0.999){
+    return `<span title="${esc(I18N.tf('models.tf_spill_t',
+      '{eff} of the {base} TFLOPS {kind} on {where}: only {pct}% of this model is resident in VRAM, and the layers spilled into system RAM run on the CPU, which contributes none of it. Approximate — scaled by bytes resident, and layers differ in cost. {shared}',
+      {eff:fmtTF(base*share).replace(' T',''), base:base, kind:kind, where:where,
+       pct:Math.round(share*100), shared:shared}))}">${fmtTF(base*share)}F`
+      + ` <span class="spillv">${I18N.tf('models.tf_of','of {v}',{v:fmtTF(base)+'F'})}</span></span>`;
+  }
+  return `<span title="${esc(I18N.tf('models.tf_t',
+    '{base} TFLOPS {kind} — the rated peak of {where}, which this model is fully resident on. A ceiling from the card specification, not a measurement of work done. {shared}',
+    {base:base, kind:kind, where:where, shared:shared}))}">${fmtTF(base)}F</span>`;
+}
+
 function renderModels(){
   if(!D) return;
   const tot=D.mem_total;
@@ -4675,6 +4787,7 @@ function renderModels(){
   const maxV=Math.max(tot||1, ...sums.map(m=>m.peak||0));
   host.innerHTML = services.map(svc=>{
     const ss=svcSum[svc]||{}, c=colorFor(svc);
+    const svcK=serverCompute(svc);
     const models=bySvc[svc].slice().sort((a,b)=>(b.peak||0)-(a.peak||0));
     const rows=models.map(m=>{
       const pW=m.peak!=null?Math.max(2,m.peak/maxV*100):0, aW=m.avg!=null?Math.max(2,m.avg/maxV*100):0;
@@ -4705,6 +4818,7 @@ function renderModels(){
       return `<tr><td><span class="dot" style="background:${c}"></span>${copyable(m.model)}${modelMetaChips(m.model,m.ctxNow)}</td>
         <td>${status}</td>
         <td>${now}${split}</td>
+        <td>${modelComputeCell(svcK, m)}</td>
         <td>${m.peak!=null?fmtMB(m.peak):'—'}</td>
         <td>${m.avg!=null?fmtMB(m.avg):'—'}</td>
         <td>${runs}</td>
@@ -4715,11 +4829,18 @@ function renderModels(){
     return `<div class="card">
       <h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
         <span class="dot" style="background:${c}"></span>${esc(svc)}
-        <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span></h2>
+        <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span>
+        ${svcK?`<span class="pill" style="text-transform:none" title="${esc(I18N.tf('models.server_tf_t',
+          'The compute this server has under it: {n} card(s){which}, rated peak {f32} TFLOPS FP32{f16}. Specifications, not measurements — no driver reports achieved FLOP/s.',
+          {n:svcK.cards.length,
+           which:svcK.attributed?I18N.tf('models.server_tf_which',' ({list})',{list:'GPU '+svcK.cards.join(', ')})
+                                :I18N.t('models.server_tf_all',' (every card in this box — the host cannot attribute VRAM per card)'),
+           f32:svcK.fp32, f16:svcK.fp16!=null?I18N.tf('models.server_tf16',' / {v} TFLOPS FP16 tensor',{v:svcK.fp16}):''}))}">${
+          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>
       ${servingFor(svc)}
       ${modelSpark(svc,tot)}
       ${callersFor(svc)}
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
+      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
     </div>`;
   }).join('');
 }

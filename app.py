@@ -583,6 +583,12 @@ def live_payload():
     LOCK (it always has), so iterating the live dict could otherwise trip over a
     key being added mid-serialization."""
     now = dict(LATEST)
+    # TFLOPS per card, derived at read time from the card name + the clock the
+    # sampler already recorded. Nothing is stored for it, so it can never go
+    # stale, and a spec table that gains a card starts answering for it on the
+    # next request rather than the next sample.
+    from backend import gpuspec
+    gpuspec.attach(now.get("gpus"))
     return {"version": VERSION, "rev": LIVE_REV, "interval": INTERVAL,
             "fast_interval": FAST_INTERVAL,
             "mem_total": now.get("mem_total") or 24576, "now": now}
