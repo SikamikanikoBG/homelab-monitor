@@ -582,16 +582,28 @@ def live_payload():
     LATEST is copied before serializing: the sampler updates it without holding
     LOCK (it always has), so iterating the live dict could otherwise trip over a
     key being added mid-serialization."""
-    now = dict(LATEST)
-    # TFLOPS per card, derived at read time from the card name + the clock the
-    # sampler already recorded. Nothing is stored for it, so it can never go
-    # stale, and a spec table that gains a card starts answering for it on the
-    # next request rather than the next sample.
-    from backend import gpuspec
-    gpuspec.attach(now.get("gpus"))
+    now = live_now()
     return {"version": VERSION, "rev": LIVE_REV, "interval": INTERVAL,
             "fast_interval": FAST_INTERVAL,
             "mem_total": now.get("mem_total") or 24576, "now": now}
+
+def live_now():
+    """LATEST as clients see it — the one place the hub's live block is prepared.
+
+    /api/data and /api/live (and the SSE `now` event behind it) both ship this
+    dict, and they used to reach for LATEST independently. Anything derived for
+    one of them was then silently missing from the other, which is exactly how
+    the AI Models tab ended up with a blank compute column while the GPU tab had
+    the numbers.
+
+    Derived here rather than at sample time so it can never go stale, and so a
+    spec table that gains a card starts answering for it on the next request
+    instead of the next poll.
+    """
+    from backend import gpuspec
+    now = dict(LATEST)
+    gpuspec.attach(now.get("gpus"))
+    return now
 
 # Where the recognised AI servers live ({name, ip, provider}) — kept OUTSIDE
 # LATEST on purpose: LATEST is served wholesale as /api/data "now", and internal

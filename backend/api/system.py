@@ -192,7 +192,7 @@ def api_data():
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "callers": callers, "events": oom_evs, "insights": insights, "pressure_free_mb": _app.PRESSURE_MB,
                     "uptime_summary": up_summary, "disk_io": disk_io,
-                    "mem_total": mem_total, "peak_mem": peak, "now": _app.LATEST})
+                    "mem_total": mem_total, "peak_mem": peak, "now": _app.live_now()})
 
 
 @bp.route("/api/network")
