@@ -127,6 +127,9 @@ COSTS_ENTITY = {
     "resources": {"gpu_vram_peak_mb": 8200},
 }
 
+UPTIME = {"checks": [{"id": "api", "label": "API", "state": "up", "uptime7": 99.5}], "now": 1700}
+MAINTENANCE = [{"id": "mw1", "label": "nightly", "kind": "uptime", "pattern": "api"}]
+
 RUNS = {
     "range": "7d", "currency": "BGN", "tariff_mode": "dual",
     "runs": [
@@ -191,6 +194,8 @@ ROUTES = {
     "/api/costs/entity": COSTS_ENTITY,
     "/api/runs": RUNS,
     "/api/models": MODELS,
+    "/api/uptime": UPTIME,
+    "/api/maintenance": MAINTENANCE,
     "/healthz": HEALTHZ,
 }
 
@@ -352,6 +357,11 @@ def run():
         check("blame" in r["events"][0], "blame preserved")
         check(len(r["insights"]) == 1, "insights surfaced")
         check(hc.get_alerts()["events"] == r["events"], "get_alerts aliases get_events")
+
+        print("get_uptime")
+        r = hc.get_uptime("7d")
+        check(r["range"] == "7d" and r["checks"][0]["uptime7"] == 99.5, "uptime checks surfaced")
+        check(r["maintenance"][0]["label"] == "nightly", "maintenance windows included")
 
         print("get_costs")
         r = hc.get_costs("7d")
