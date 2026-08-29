@@ -116,7 +116,19 @@ treating the container's own environment as if it were the host.
 This distinction is why some local results may be unknown even when the
 corresponding remote probe can determine them.
 
-Read-only by design
+
+## API and multi-host access
+
+API-protected surfaces accept an API key either as a Bearer token in the
+`Authorization` header or through `X-API-Key`. Missing, invalid, or expired
+keys are rejected with HTTP 401.
+
+Multi-host monitoring uses SSH public-key authentication rather than stored
+password authentication. Remote probes use bounded timeouts so an unavailable
+or slow host does not block the monitoring loop.
+
+
+## Read-only by design
 
 The posture checks only inspect system state. They do not enable a firewall,
 change SSH configuration, start fail2ban, install updates, or reboot a host.
