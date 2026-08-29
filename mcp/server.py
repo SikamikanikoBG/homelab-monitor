@@ -282,6 +282,15 @@ def get_events(range: str = "6h") -> dict:
 
 @mcp.tool()
 @_track
+def get_uptime(range: str = "7d") -> dict:
+    """Uptime checks and maintenance windows over `range`, including current
+    state, availability percentage, latency and whether a check is silenced.
+    """
+    return hc.get_uptime(range)
+
+
+@mcp.tool()
+@_track
 def get_alerts(range: str = "6h") -> dict:
     """Alias for `get_events` — the monitor's alerts are its edge-triggered events."""
     return hc.get_alerts(range)
