@@ -23,6 +23,13 @@ the file if you want a clean slate.
 To rebuild after a code change: `docker compose up -d --build` again. To follow
 logs: `docker compose logs -f`.
 
+For a local Python environment, install the runtime dependencies from the same
+file the Docker image and CI use:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 > **GPU panels** need an NVIDIA GPU and the
 > [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 > Without a GPU the container, service and host panels still work fine — handy
