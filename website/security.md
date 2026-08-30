@@ -44,20 +44,21 @@ The remote probe first tries:
 
 ```bash
 sshd -T
+```
 
 This exposes the effective sshd configuration, including defaults. If that
 cannot be used, HomeLab Monitor falls back to parsing /etc/ssh/sshd_config.
 
 The Security tab reports these settings when available:
 
-PermitRootLogin
-PasswordAuthentication
-SSH port
+- PermitRootLogin
+- PasswordAuthentication
+- SSH port
 
 For the local host, the monitor reads the host's mounted sshd_config rather
 than querying the container's SSH environment.
 
-SELinux and AppArmor
+## SELinux and AppArmor
 
 SELinux state is read from the kernel interface when available, with
 getenforce used as a fallback by the remote probe. The result may be
@@ -69,7 +70,7 @@ filesystem.
 These mechanisms are Linux-specific. Hosts where they do not apply may show a
 neutral or unavailable state.
 
-fail2ban
+## fail2ban
 
 HomeLab Monitor detects fail2ban from its binaries or systemd service files.
 
@@ -80,14 +81,14 @@ that state unknown instead of reporting it as inactive.
 For the local host, installation can be detected from the mounted host
 filesystem, but service activity is not assumed from inside the container.
 
-Reboot required
+## Reboot required
 
 On systems that expose /var/run/reboot-required or
 /run/reboot-required, the presence of either file marks a reboot as pending.
 
 Remote hosts can additionally use needs-restarting -r when available.
 
-Automatic and pending updates
+## Automatic and pending updates
 
 For Debian/Ubuntu-style systems, HomeLab Monitor can read the unattended-upgrade
 configuration to determine whether automatic upgrades are enabled.
@@ -101,7 +102,7 @@ manager information that the host has already cached; it does not trigger a
 network refresh just to populate the Security tab. Fields that cannot be
 determined remain unknown rather than being reported as zero.
 
-Local and remote hosts
+## Local and remote hosts
 
 Security information is collected slightly differently depending on where the
 host runs.
@@ -142,7 +143,7 @@ administrator to review, not as an automatic remediation system.
 
 !!! warning "Keep HomeLab Monitor private"
 
-HomeLab Monitor has broad visibility into its hosts. Keep the dashboard and
-MCP server behind your LAN, VPN, or firewall rather than exposing them
-directly to the public internet.
+    HomeLab Monitor has broad visibility into its hosts. Keep the dashboard and
+    MCP server behind your LAN, VPN, or firewall rather than exposing them
+    directly to the public internet.
 
