@@ -290,9 +290,9 @@ def get_uptime(range="7d"):
     The monitor keeps the current check state and maintenance windows in separate
     endpoints; combine them so an agent can tell whether a down check was silenced.
     """
-    data = _get("/api/uptime")
+    data = _get("/api/uptime?range=" + urllib.parse.quote(str(range)))
     return {
-        "range": range,
+        "range": data.get("range", range),
         "checks": data.get("checks") or [],
         "maintenance": _get("/api/maintenance") or [],
     }
