@@ -4923,7 +4923,8 @@ def _uptime_state(check_id, now, window=86400, window2=604800):
     uptime% over `window` (24h) and `window2` (7d), last_checked, last_err, and a
     coarse heartbeat strip. Caller must NOT hold LOCK (this takes it briefly)."""
     from backend.db.repos import uptime as _uptime_repo
-    since, since2 = now - window, now - window2
+    since = 0 if window is None else now - window
+    since2 = now - window2
     with LOCK:
         rows = _uptime_repo.results_since_full(check_id, since, conn=DB)
         agg2 = _uptime_repo.results_window_agg(check_id, since2, conn=DB)

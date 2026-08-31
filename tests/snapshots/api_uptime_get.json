@@ -3,5 +3,6 @@
   "max_timeout": 30,
   "min_interval": 20,
   "now": 1735689600,
+  "range": "24h",
   "window": 86400
 }
