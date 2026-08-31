@@ -468,6 +468,12 @@ class TestApi(unittest.TestCase):
         overview.reset_mock()
         r = self.c.get("/api/uptime?range=all")
         self.assertEqual(r.status_code, 200)
+        overview.assert_called_once_with(None)
+        self.assertEqual(r.get_json()["range"], "all")
+
+        overview.reset_mock()
+        r = self.c.get("/api/uptime?range=unknown")
+        self.assertEqual(r.status_code, 200)
         overview.assert_called_once_with(86400)
         self.assertEqual(r.get_json()["range"], "24h")
 

@@ -18,11 +18,9 @@ def api_uptime():
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "id": cid}), 201
     requested_range = request.args.get("range", "24h")
-    window = _app.RANGES.get(requested_range, _app.RANGES["24h"])
-    # The overview currently requires a finite window; report the fallback for
-    # unknown values and the `all` range instead of mislabeling the response.
-    if window is None:
-        requested_range, window = "24h", _app.RANGES["24h"]
+    if requested_range not in _app.RANGES:
+        requested_range = "24h"
+    window = _app.RANGES[requested_range]
     return jsonify({**_app.uptime_overview(window), "range": requested_range})
 
 
@@ -165,4 +163,3 @@ def public_status(cid=None):
     if not _app._public_status_enabled():
         abort(404)
     return send_from_directory("static", "public.html")
-

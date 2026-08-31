@@ -130,6 +130,7 @@ COSTS_ENTITY = {
 UPTIME = {"checks": [{"id": "api", "label": "API", "state": "up", "uptime7": 99.5}], "now": 1700, "range": "30d"}
 MAINTENANCE = [{"id": "mw1", "label": "nightly", "kind": "uptime", "pattern": "api"}]
 UPTIME_REQUESTS = []
+MAINTENANCE_FAIL = False
 
 RUNS = {
     "range": "7d", "currency": "BGN", "tariff_mode": "dual",
@@ -214,6 +215,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/maintenance" and MAINTENANCE_FAIL:
+            self.send_response(503)
+            self.end_headers()
+            return
         if path == "/api/uptime":
             UPTIME_REQUESTS.append(self.path)
         if path == "/api/disk_scan":
@@ -366,6 +371,12 @@ def run():
         check(r["range"] == "30d" and r["checks"][0]["uptime7"] == 99.5, "uptime checks surfaced")
         check(UPTIME_REQUESTS[-1] == "/api/uptime?range=30d", "uptime range forwarded")
         check(r["maintenance"][0]["label"] == "nightly", "maintenance windows included")
+
+        global MAINTENANCE_FAIL
+        MAINTENANCE_FAIL = True
+        r = hc.get_uptime()
+        check(r["checks"] and r["maintenance"] == [], "uptime survives maintenance failure")
+        MAINTENANCE_FAIL = False
 
         print("get_costs")
         r = hc.get_costs("7d")
