@@ -67,6 +67,9 @@ jobs:
       - name: Dashboard refresh-loop behaviour
         run: node tests/js/test_refresh_loop.js
 
+      - name: Dashboard locale re-render behaviour
+        run: node tests/js/test_locale_rerender.js
+
       - name: Build the image
         run: docker build -t homelab-monitor:release-check .
 

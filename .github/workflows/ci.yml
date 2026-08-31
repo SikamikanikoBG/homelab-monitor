@@ -78,6 +78,12 @@ jobs:
       - name: Dashboard refresh-loop behaviour
         run: node tests/js/test_refresh_loop.js
 
+      # Locale changes hydrate static markup and then re-render whichever
+      # JavaScript-built view is active. Lift that listener from the shipped
+      # dashboard and cover every tab branch without needing a browser build.
+      - name: Dashboard locale re-render behaviour
+        run: node tests/js/test_locale_rerender.js
+
       # Same lift-and-run technique, for the AI Models tab's TFLOPS arithmetic.
       # The live fleet can't cover it: the hub has one card and one fully-
       # resident model, so the multi-card and RAM-spill branches only ever get
