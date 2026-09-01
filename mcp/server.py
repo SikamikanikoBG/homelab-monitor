@@ -282,7 +282,7 @@ def get_events(range: str = "6h") -> dict:
 
 @mcp.tool()
 @_track
-def get_uptime(range: str = "7d") -> dict:
+def get_uptime(range: str = "24h") -> dict:
     """Uptime checks and maintenance windows over `range`, including current
     state, availability percentage, latency and whether a check is silenced.
     """
