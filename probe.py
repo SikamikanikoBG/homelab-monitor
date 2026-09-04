@@ -1139,7 +1139,7 @@ def _count_physical_cores(cpuinfo):
     return len(pairs)
 
 
-def read_hw(gpu_agg=None):
+def read_hw(gpu_agg=None, gpus=None):
     hw = {}
     ci = _read_text("/proc/cpuinfo") or ""
     mname = arm = vendor = None
@@ -1194,9 +1194,25 @@ def read_hw(gpu_agg=None):
                                   "/sys/firmware/devicetree/base/model") or ""
     if machine:
         hw["machine"] = machine
-    # main() passes the aggregate it already read (possibly {} on a GPU-less
-    # host) so nvidia-smi isn't shelled out to twice per probe cycle; only a
-    # standalone read_hw() call falls back to reading the GPU itself.
+    # main() passes the per-card list it already read (from read_gpu()) so
+    # nvidia-smi isn't shelled out to twice per probe cycle; only a standalone
+    # read_hw() call falls back to reading the GPU itself. A multi-card box ships
+    # its full list, so the System tab's Hardware card names every card — the
+    # legacy gpu_name/gpu_mem_total stay (first card) for any client that only
+    # reads the single fields.
+    if gpus is None:
+        gpus = (read_gpu() or {}).get("gpus")
+    if gpus:
+        hw["gpus"] = [{"idx": g.get("idx", i), "name": g.get("name"),
+                       "mem_total": g.get("mem_total")}
+                      for i, g in enumerate(gpus) if g.get("name")]
+        if hw["gpus"]:
+            hw["gpu_name"] = hw["gpus"][0]["name"]
+            if hw["gpus"][0]["mem_total"]:
+                hw["gpu_mem_total"] = hw["gpus"][0]["mem_total"]
+        return {"hw": hw}
+    # No per-card list (GPU-less host, or an aggregate-only caller): keep the
+    # original single-field behaviour off gpu_agg / a fresh read.
     g = gpu_agg if gpu_agg is not None else read_gpu().get("gpu")
     if g and g.get("name"):
         hw["gpu_name"] = g["name"]
@@ -1956,7 +1972,8 @@ def main():
             **read_docker(gpu_procs=gpu_block.get("gpu_procs")),
             **read_systemd(),
             **read_os(),
-            **read_hw(gpu_agg=gpu_block.get("gpu") or {}),
+            **read_hw(gpu_agg=gpu_block.get("gpu") or {},
+                      gpus=(gpu_block.get("gpus") or [])),
             **net_block,
             **read_sec(),
             "disks": read_disks(),

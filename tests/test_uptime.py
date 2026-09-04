@@ -458,6 +458,25 @@ class TestApi(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()["checks"], [])
 
+    @patch("app.uptime_overview", return_value={"checks": [], "now": 123})
+    def test_list_honors_range_and_reports_fallback(self, overview):
+        r = self.c.get("/api/uptime?range=30d")
+        self.assertEqual(r.status_code, 200)
+        overview.assert_called_once_with(2592000)
+        self.assertEqual(r.get_json()["range"], "30d")
+
+        overview.reset_mock()
+        r = self.c.get("/api/uptime?range=all")
+        self.assertEqual(r.status_code, 200)
+        overview.assert_called_once_with(None)
+        self.assertEqual(r.get_json()["range"], "all")
+
+        overview.reset_mock()
+        r = self.c.get("/api/uptime?range=unknown")
+        self.assertEqual(r.status_code, 200)
+        overview.assert_called_once_with(86400)
+        self.assertEqual(r.get_json()["range"], "24h")
+
     def test_create_201_then_listed(self):
         r = self.c.post("/api/uptime", json={"label": "s", "type": "http", "target": "https://x"})
         self.assertEqual(r.status_code, 201)

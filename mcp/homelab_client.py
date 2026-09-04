@@ -284,6 +284,24 @@ def get_events(range="6h"):
     }
 
 
+def get_uptime(range="24h"):
+    """Uptime checks and maintenance windows over `range`.
+
+    The monitor keeps the current check state and maintenance windows in separate
+    endpoints; combine them so an agent can tell whether a down check was silenced.
+    """
+    data = _get("/api/uptime?range=" + urllib.parse.quote(str(range)))
+    try:
+        maintenance = _get("/api/maintenance") or []
+    except MonitorError:
+        maintenance = []
+    return {
+        "range": data["range"],
+        "checks": data.get("checks") or [],
+        "maintenance": maintenance,
+    }
+
+
 # Alias kept because the issue lists both names; alerts == edge-triggered events.
 def get_alerts(range="6h"):
     """Alias for get_events — the monitor's alerts *are* its edge-triggered events."""

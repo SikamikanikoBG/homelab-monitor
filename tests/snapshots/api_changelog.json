@@ -1,6 +1,6 @@
 {
   "has_content": true,
   "has_sections": true,
-  "markdown_prefix": "## [0.30.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.30.0) \u2014 2026-08-08 \u00b7 *",
+  "markdown_prefix": "## [<VERSION>](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v<VERSION>) \u2014 <DATE> \u00b7 *",
   "status": 200
 }

@@ -1,0 +1,114 @@
+name: Release Validate + Tag
+
+# Runs once a release lands on `main` (the maintainer merges `next` into
+# `main` per CONTRIBUTING.md). This is the piece that used to be entirely
+# manual: it proves the merge was actually prepared with scripts/release.py
+# (VERSION and CHANGELOG.md agree, Unreleased was reset) and that the full
+# suite + a real image boot are green, THEN creates the vX.Y.Z tag and calls
+# release.yml directly (workflow_call) to do the actual Docker publish.
+#
+# Why workflow_call and not just `git push` the tag and let release.yml's own
+# `push: tags: ['v*']` trigger pick it up: a tag pushed using the default
+# GITHUB_TOKEN does NOT fire other workflows — GitHub's anti-recursion guard
+# — so that chain silently never runs. workflow_call sidesteps it entirely:
+# it's a direct invocation, not a token-authored event. This workflow still
+# pushes the tag (for `git describe`, the GitHub tags/releases UI, and so a
+# human `git push` of the same tag later is a no-op), it just doesn't rely on
+# that push to trigger the publish.
+#
+# Idempotent: if the tag already exists (e.g. this workflow re-runs, or was
+# manually dispatched again), it validates but skips re-tagging AND
+# re-publishing instead of failing or double-publishing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-tag:
+    # workflow_dispatch has no branch protection of its own — without this
+    # guard, dispatching against any branch that happens to have VERSION and
+    # CHANGELOG.md in sync (e.g. right after scripts/release.py runs on next,
+    # pre-PR) would pass validation and push a real tag, publishing a Docker
+    # image without ever going through the main-merge PR gate.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tagged: ${{ steps.tag.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: VERSION / CHANGELOG / Unreleased contract
+        id: release
+        run: python scripts/check_release_ready.py
+
+      - name: Full test suite (all 850, not just the CI subset)
+        run: python -m pytest tests/ -q
+
+      - name: Byte-compile the app
+        run: python -m py_compile app.py probe.py
+
+      - name: Dashboard refresh-loop behaviour
+        run: node tests/js/test_refresh_loop.js
+
+      - name: Dashboard locale re-render behaviour
+        run: node tests/js/test_locale_rerender.js
+
+      - name: Build the image
+        run: docker build -t homelab-monitor:release-check .
+
+      - name: Boot it and hit /healthz
+        run: |
+          docker run -d --name hlm -e PORT=9800 -e DB_PATH=/tmp/gpu.db -e SSH_DIR=/tmp/.ssh -p 9800:9800 homelab-monitor:release-check
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9800/healthz >/dev/null; then
+              echo "healthz OK after ${i}s"; docker rm -f hlm; exit 0
+            fi
+            sleep 1
+          done
+          echo "healthz never came up"; docker logs hlm; docker rm -f hlm; exit 1
+
+      - name: Tag the release (skip if it already exists)
+        id: tag
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "v${VERSION} already exists, nothing to tag or publish."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: validate-and-tag
+    # Only publish for a tag THIS run actually created — an idempotent re-run
+    # that found the tag already there has nothing new to publish (either a
+    # prior run of this same workflow already did, in which case re-running is
+    # a wasted duplicate build; or it existed for some unrelated reason, in
+    # which case auto-publishing over it is not this workflow's call to make).
+    if: needs.validate-and-tag.outputs.tagged == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ needs.validate-and-tag.outputs.version }}
+    secrets: inherit

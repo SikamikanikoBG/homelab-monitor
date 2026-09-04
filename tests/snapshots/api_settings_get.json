@@ -9,6 +9,7 @@
     "brief_time": "08:00",
     "country": "",
     "currency": "$",
+    "custom_ai_servers": "",
     "discord_webhook_url_set": false,
     "disk_alert_pct": "90",
     "email_from": "",
@@ -46,5 +47,5 @@
     "telegram_token_set": false,
     "webhook_url_set": false
   },
-  "version": "0.31.0"
+  "version": "<VERSION>"
 }

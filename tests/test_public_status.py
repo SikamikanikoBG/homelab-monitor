@@ -1,4 +1,5 @@
 import os, pytest
+from unittest.mock import patch
 os.environ.setdefault("DATABASE_URL", ":memory:")
 
 import app as _app
@@ -214,6 +215,28 @@ def test_public_overall_status_still_crit_when_down_outside_maintenance(client):
     _seed(cid, [(now - 60, 0, 0.0)])   # currently down, no maintenance window
     data = client.get("/api/public-status").get_json()
     assert data["status"] == "crit"
+    _wipe()
+
+def test_public_overall_status_warn_card_not_masked_by_maintenance(client):
+    """A real overview-card problem (disk nearly full) must still surface as
+    warn even while an UNRELATED monitor sits in an active maintenance
+    window — maintenance only ever overrides "info" (subsystem unavailable)
+    noise, never a genuine warn/crit card. Regression test for the bug where
+    ANY monitor in maintenance short-circuited straight to "maintenance",
+    hiding a real incident behind routine maintenance-mode noise."""
+    _wipe()
+    _app.create_maintenance_window(
+        label="unrelated reboot", kind="uptime", pattern="*",
+        start_ts=int(_time.time()) - 60, end_ts=int(_time.time()) + 3600
+    )
+    _mk_check(True)
+    bad_host = {**_app.LATEST.get("host", {}), "cpu": 10, "ram_used": 1,
+                "ram_total": 100, "disks": [{"pct": 95}]}   # 95% disk -> crit card
+    with patch.object(_app, "LATEST", {**_app.LATEST, "host": bad_host}):
+        data = client.get("/api/public-status").get_json()
+    assert data["status"] == "warn"
+    _app.DB.execute("DELETE FROM maintenance_windows")
+    _app.DB.commit()
     _wipe()
 
 def test_public_status_enabled_via_settings_toggle(client_off):

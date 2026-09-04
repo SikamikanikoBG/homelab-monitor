@@ -77,15 +77,32 @@ function Read-Gpu {
                 $p = $lines[0].Split(',') | ForEach-Object { $_.Trim() }
                 if ($p.Count -ge 5) {
                     function I($v) { try { return [int][double]$v } catch { return 0 } }
-                    return @{ gpu = [ordered]@{
-                        count     = $lines.Count
-                        name      = $p[4]
-                        mem_used  = (I $p[0])
-                        mem_total = (I $p[1])
-                        util      = (I $p[2])
-                        temp      = (I $p[3])
-                        vendor    = 'nvidia'
-                    } }
+                    # Per-card list (same shape as probe.py's read_gpu) so the
+                    # System tab's Hardware card can name every card, not just GPU 0.
+                    $gpus = @()
+                    for ($i = 0; $i -lt $lines.Count; $i++) {
+                        $q = $lines[$i].Split(',') | ForEach-Object { $_.Trim() }
+                        if ($q.Count -ge 5) {
+                            $gpus += [ordered]@{
+                                idx = $i
+                                name = $q[4]
+                                mem_total = (I $q[1])
+                                vendor = 'nvidia'
+                            }
+                        }
+                    }
+                    return @{
+                        gpu = [ordered]@{
+                            count     = $lines.Count
+                            name      = $p[4]
+                            mem_used  = (I $p[0])
+                            mem_total = (I $p[1])
+                            util      = (I $p[2])
+                            temp      = (I $p[3])
+                            vendor    = 'nvidia'
+                        }
+                        gpus = $gpus
+                    }
                 }
             }
         }

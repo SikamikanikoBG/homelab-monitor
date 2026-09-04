@@ -17,7 +17,11 @@ def api_uptime():
         if err:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "id": cid}), 201
-    return jsonify(_app.uptime_overview())
+    requested_range = request.args.get("range", "24h")
+    if requested_range not in _app.RANGES:
+        requested_range = "24h"
+    window = _app.RANGES[requested_range]
+    return jsonify({**_app.uptime_overview(window), "range": requested_range})
 
 
 @bp.route("/api/uptime/<cid>", methods=["PATCH", "DELETE"])
@@ -159,5 +163,3 @@ def public_status(cid=None):
     if not _app._public_status_enabled():
         abort(404)
     return send_from_directory("static", "public.html")
-
-

@@ -1,5 +1,6 @@
 """backend/notify — alert dispatch and notification scan (Phase 3.3)."""
 import json
+import logging
 import re
 import socket
 import time
@@ -206,6 +207,7 @@ def _gpu_card_driver(host, idx):
                 best = (svc["service"], mb)
         return best
     except Exception:
+        logging.debug("gpu fan/service lookup failed", exc_info=True)
         return None
 
 

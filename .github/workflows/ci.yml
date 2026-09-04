@@ -7,7 +7,8 @@ name: CI
 # Triggers:
 #   • Pull requests targeting `next` (the integration branch) or `main`.
 #   • Pushes to `next` — a belt-and-braces check after merges land.
-# Intentionally NOT on every main push (tags/main already gate releases).
+# Intentionally NOT on every main push — release-validate.yml owns that
+# trigger (it re-runs the full suite, not just this subset, before tagging).
 #
 # On a push to `next`, once `smoke` is green, `publish-next` ships a moving
 # `:next` Docker image (the preview channel) so a Watchtower-followed staging
@@ -40,7 +41,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install flask pytest prometheus_client
+        run: pip install -r requirements.txt pytest
 
       - name: Run snapshot tests (determinism check)
         run: python -m pytest tests/test_snapshots.py -v --tb=short
@@ -76,6 +77,19 @@ jobs:
       # against a fake clock on the runner's preinstalled Node.
       - name: Dashboard refresh-loop behaviour
         run: node tests/js/test_refresh_loop.js
+
+      # Locale changes hydrate static markup and then re-render whichever
+      # JavaScript-built view is active. Lift that listener from the shipped
+      # dashboard and cover every tab branch without needing a browser build.
+      - name: Dashboard locale re-render behaviour
+        run: node tests/js/test_locale_rerender.js
+
+      # Same lift-and-run technique, for the AI Models tab's TFLOPS arithmetic.
+      # The live fleet can't cover it: the hub has one card and one fully-
+      # resident model, so the multi-card and RAM-spill branches only ever get
+      # exercised here.
+      - name: Dashboard TFLOPS cells
+        run: node tests/js/test_tflops_cells.js
 
       - name: Build the image
         run: docker build -t homelab-monitor:ci .

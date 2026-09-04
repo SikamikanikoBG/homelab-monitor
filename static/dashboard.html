@@ -1125,7 +1125,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-microbars{ display:flex; gap:10px; align-items:center; margin-bottom:6px }
 .mc-mb{ flex:1; display:flex; align-items:center; gap:5px; font-size:10px; color:var(--mut); font-family:var(--mono) }
 .mc-mb-track{ flex:1; height:5px; border-radius:4px; background:var(--canvas); overflow:hidden; border:1px solid var(--bd) }
-.mc-mb-fill{ height:100%; border-radius:4px; width:0; transition:width 1.1s cubic-bezier(.2,.8,.2,1) }
+.mc-mb-fill{ height:100%; border-radius:4px }
 .mc-host-spark{ margin-bottom:6px }
 .mc-host-foot{ display:flex; align-items:center; gap:10px; font-size:10px; color:var(--mut); font-family:var(--mono) }
 .mc-host-foot .mc-sp{ margin-left:auto }
@@ -1149,7 +1149,7 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
   text-transform:uppercase; letter-spacing:.05em; flex:none }
 .mc-lrow-cost{ font-family:var(--mono); color:var(--accent); font-weight:700; flex:none }
 .mc-lbar-track{ height:9px; border-radius:6px; background:var(--inset); border:1px solid var(--bd); overflow:hidden }
-.mc-lbar-fill{ height:100%; border-radius:6px; width:0; transition:width 1.3s cubic-bezier(.2,.8,.2,1);
+.mc-lbar-fill{ height:100%; border-radius:6px;
   background:linear-gradient(90deg, color-mix(in srgb, var(--accent) 78%, var(--info)), var(--accent));
   box-shadow:0 0 12px -2px var(--mc-glow) }
 .mc-lrow-meta{ display:flex; justify-content:space-between; font-size:10px; color:var(--mut); font-family:var(--mono) }
@@ -1496,7 +1496,6 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 .mc-tg-ring{ position:relative; width:100%; max-width:148px; aspect-ratio:1 }
 .mc-tg-ring svg{ width:100%; height:100%; display:block; overflow:visible }
 .mc-tg-track{ stroke:var(--bd) }
-.mc-tg-arc{ transition:stroke-dashoffset 1.1s cubic-bezier(.2,.8,.2,1), stroke .35s }
 /* The number+% sit as one tight pair, centred inside the ring. */
 .mc-tg-center{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center }
 .mc-tg-num{ font-family:var(--mono); font-size:30px; font-weight:700; color:var(--tx); line-height:1; font-variant-numeric:tabular-nums }
@@ -1747,7 +1746,15 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
   <div id="gpu-spill" class="ins warning" style="display:none;margin-bottom:14px"></div>
   <div class="card" id="gpu-pooled-card">
     <h2 id="gpu-pooled-title" data-i18n="gpu.now_title">🎮 GPU right now</h2>
-    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"></div>
+    <!-- 185px, not the shared .grid default: the compute tile made this a
+         six-tile row, and a 1400px window resolved six tracks of 178px — 146px
+         of usable width, where the VRAM tile's "33.5 GB / 72.0 GB" needs ~160
+         and wrapped onto a second line, leaving the whole strip ragged. 185
+         stops six tracks fitting until the row is genuinely wide enough for
+         them, so the last tile drops to its own line instead. The VRAM value is
+         the widest thing this strip renders, and it is what this number is
+         sized against. -->
+    <div class="grid" id="gpukpis" style="grid-template-columns:repeat(auto-fit,minmax(185px,1fr))"></div>
     <div id="gpu-detail" class="gpu-detail"></div>
     <p class="cap" id="gpu-pooled-cap"></p>
   </div>
@@ -2436,6 +2443,24 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <input type="checkbox" id="al_reduced_motion">
             <span data-i18n-html="general.reduced_motion_label"><b>Reduced motion</b> — turn off gauge animations, gauges just show the current value.</span>
           </label>
+        </div>
+        <div>
+          <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.ai_servers_title" data-i18n-def="🧠 Custom AI servers">🧠 Custom AI servers</div>
+          <p class="cap" style="margin:0 0 8px" data-i18n-html="general.ai_servers_cap" data-i18n-def="Servers that aren't auto-discovered — a vLLM, llama.cpp, LM Studio or Ollama on another box, or on a non-standard port. Add one and its models appear in the <b>AI Models</b> tab under the host it runs on and in the installed-models registry. The hub probes it — <b>Runs on</b> only picks where its models show. Read-only: the monitor never pulls, loads or removes models.">Servers that aren't auto-discovered — a vLLM, llama.cpp, LM Studio or Ollama on another box, or on a non-standard port. Add one and its models appear in the <b>AI Models</b> tab under the host it runs on and in the installed-models registry. The hub probes it — <b>Runs on</b> only picks where its models show. Read-only: the monitor never pulls, loads or removes models.</p>
+          <div id="ai_servers_status" class="ins info" style="display:none;margin:6px 0"></div>
+          <ul id="ai_servers_list" style="list-style:none;margin:0 0 8px;padding:0;display:grid;gap:6px"></ul>
+          <div style="display:grid;grid-template-columns:1.2fr 1.2fr .6fr .9fr .9fr auto;gap:8px;align-items:end">
+            <div><div class="flabel" data-i18n="general.ai_name" data-i18n-def="Label">Label</div><input type="text" id="ai_name" class="field" style="width:100%" maxlength="60" placeholder="vllm-vader" data-i18n-attr="placeholder:general.ai_name_ph"></div>
+            <div><div class="flabel" data-i18n="general.ai_host" data-i18n-def="Host">Host</div><input type="text" id="ai_host" class="field" style="width:100%" placeholder="vader or 192.168.1.102" data-i18n-attr="placeholder:general.ai_host_ph"></div>
+            <div><div class="flabel" data-i18n="general.ai_port" data-i18n-def="Port">Port</div><input type="number" id="ai_port" class="field" style="width:100%" min="1" max="65535" step="1" placeholder="8010" data-i18n-attr="placeholder:general.ai_port_ph"></div>
+            <div><div class="flabel" data-i18n="general.ai_provider" data-i18n-def="Type">Type</div>
+              <select id="ai_provider" class="field" style="width:100%"></select>
+            </div>
+            <div><div class="flabel" data-i18n="general.ai_fleet_host" data-i18n-def="Runs on">Runs on</div>
+              <select id="ai_fleet_host" class="field" style="width:100%"></select>
+            </div>
+            <button class="rb" id="ai_add" type="button" data-i18n="general.ai_add" data-i18n-def="Add">Add</button>
+          </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
           <button class="rb on" id="al_save_general" data-i18n="btn.save">Save</button>
@@ -3452,6 +3477,66 @@ function renderData(){
 // see mcCountUp().
 let LIVE_TICK = false;
 
+// ── In-place painters ─────────────────────────────────────────────────────────
+// "leave the page structure alone" was the intent of the split, but the panels
+// below still rebuilt their markup with innerHTML on every frame. An innerHTML
+// write destroys and recreates the subtree even when nothing changed, and these
+// panels sit inside a backdrop-filtered .card — so the browser re-composites the
+// blur layer twice a second. That is the flicker. These helpers touch only what
+// actually moved.
+function setText(el, v){ if(el && el.textContent !== v) el.textContent = v; }
+function setHTML(el, html){ if(el && el._sig !== html){ el._sig = html; el.innerHTML = html; } }
+
+// True when `el` holds exactly `n` rows that still match the shape this painter
+// builds — the test for "safe to patch in place rather than rebuild".
+function ourRows(el, n, shaped){
+  return el.children.length === n && [...el.children].every(shaped);
+}
+
+// A KPI row is a fixed set of cells whose numbers move every frame, so rebuild
+// the cells only when the row's shape changes and patch the text otherwise.
+// Both of these panels have a second writer — renderHostTab() paints a remote
+// host into them — so the cells are only patched when they are still the ones
+// this function built. Trusting the cache against someone else's markup is how
+// a painter ends up indexing off the end of it.
+function paintKpis(el, items){
+  if(!el) return;
+  if(!ourRows(el, items.length, c=>c.children.length===3)){
+    el.innerHTML = items.map(()=>'<div class="kpi"><div class="v"></div><div class="l"></div><div class="s"></div></div>').join('');
+  }
+  items.forEach((t,i)=>{
+    const c = el.children[i];
+    setText(c.children[0], t.v);
+    setText(c.children[1], t.l);
+    setText(c.children[2], t.s || '');
+  });
+}
+
+// Disk bars are keyed by mount: the set only changes when a filesystem appears
+// or goes away, while the numbers change every frame.
+function paintDisks(el, disks){
+  if(!el) return;
+  // NUL is the one byte a mount path cannot contain, so joining on it cannot
+  // collide two different mount sets into one key — the patch loop below
+  // indexes rows one-for-one with `disks`.
+  const key = disks.map(d=>d.mount).join('\u0000');
+  if(el._key !== key || !ourRows(el, disks.length, r=>r.children.length===2 && r.children[1].classList.contains('dbar'))){
+    el._key = key;
+    el.innerHTML = disks.map(()=>
+      '<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">'
+      +'<span></span><span class="muted"></span></div>'
+      +'<div class="dbar"><div></div></div></div>').join('');
+  }
+  disks.forEach((dk,i)=>{
+    const row=el.children[i], head=row.children[0], bar=row.children[1].firstElementChild;
+    setText(head.children[0], '💾 '+dk.mount);
+    setText(head.children[1], `${dk.used} / ${dk.total} GB · ${dk.pct}%`);
+    const w=dk.pct+'%', bg=sev(dk.pct);
+    if(bar.style.width !== w) bar.style.width = w;
+    if(bar.style.background !== bg) bar.style.background = bg;
+  });
+}
+
 // The live half: repaint the values, leave the page structure alone.
 function renderLive(opts){
   if(!D || !D.now) return;
@@ -3482,17 +3567,14 @@ function paintLive(){
   // renderHostTab() owns these panels with the remote's polled data.
   if(CURRENT_HOST === 'local'){
     const ramPct = H.ram_total? Math.round(H.ram_used/H.ram_total*100):0;
-    document.getElementById('hostkpis').innerHTML=[
+    paintKpis(document.getElementById('hostkpis'), [
       {v:Math.round(H.cpu||0)+'%',l:I18N.t('kpi.cpu','CPU utilization'),s:I18N.tf('kpi.cores','{n} cores',{n:(H.cores||'?')})},
       {v:ramPct+'%',l:I18N.t('kpi.ram','RAM used'),s:fmtMB(H.ram_used||0)+' / '+fmtMB(H.ram_total||0)},
       {v:(H.load1||0).toFixed(2),l:I18N.t('kpi.load1','Load (1m)'),s:I18N.tf('kpi.of_cores','of {n} cores',{n:(H.cores||'?')})},
       {v:fmtUp(H.uptime||0),l:I18N.t('kpi.uptime','Uptime')},
       {v:(H.ctemp||0)+' °C',l:I18N.t('kpi.temp','CPU/system temp')},
-    ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-    document.getElementById('disks').innerHTML=(H.disks||[]).map(dk=>
-      `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">
-       <span>💾 ${esc(dk.mount)}</span><span class="muted">${dk.used} / ${dk.total} GB · ${dk.pct}%</span></div>
-       <div class="dbar"><div style="width:${dk.pct}%;background:${sev(dk.pct)}"></div></div></div>`).join('');
+    ]);
+    paintDisks(document.getElementById('disks'), H.disks||[]);
   }
 }
 
@@ -3518,6 +3600,24 @@ function renderGpuDetail(x, powerNow){
   }
   if(x.clk_sm>0) chips.push({v:Math.round(x.clk_sm)+' MHz', l:I18N.t('gpu.chip_coreclk','Core clock')});
   if(x.clk_mem>0) chips.push({v:Math.round(x.clk_mem)+' MHz', l:I18N.t('gpu.chip_memclk','Mem clock')});
+  // Compute ceiling. Two chips, because they answer different questions: what
+  // this box can do at boost, and what its cards' current clocks allow right
+  // now. Neither is a measurement of work done — nothing in the stack can
+  // measure that — and the tooltips say so rather than letting a number that
+  // looks like throughput be read as throughput.
+  const K = x.compute;
+  if(K){
+    const partial = K.cards_known < K.cards_total
+      ? ' ' + I18N.tf('gpu.chip_tflops_partial','({k} of {t} cards recognised)',{k:K.cards_known,t:K.cards_total}) : '';
+    chips.push({v:fmtTF(K.fp32).replace(' T',' TFLOPS'), l:I18N.t('gpu.chip_tflops','FP32 peak'),
+      t:I18N.tf('gpu.chip_tflops_t','Theoretical peak FP32 throughput at rated boost clock — 2 × {c} shader cores × clock, summed over the cards this tool recognises.{p} It is a ceiling, not a measurement: nothing in the driver reports achieved FLOP/s.',
+                {c:K.cores.toLocaleString(), p:partial})});
+    if(K.fp32_now!=null) chips.push({v:fmtTF(K.fp32_now).replace(' T',' TFLOPS'),
+      l:I18N.t('gpu.chip_tflops_now','FP32 at this clock'),
+      t:I18N.t('gpu.chip_tflops_now_t','The same peak recomputed at the clock the cards are running at this instant. An idle card parked in a low P-state sits far below its box figure — that gap is the headroom, not a fault.')});
+    if(K.fp16!=null) chips.push({v:fmtTF(K.fp16).replace(' T',' TFLOPS'), l:I18N.t('gpu.chip_tflops16','FP16 tensor'),
+      t:I18N.t('gpu.chip_tflops16_t','Dense FP16 tensor-core throughput at boost — no sparsity doubling. This is the number that governs LLM inference. Shown only when every recognised card in the box has tensor cores.')});
+  }
   if(x.power_limit>0){
     const head=Math.round((powerNow||0)/x.power_limit*100);
     chips.push({v:`${Math.round(powerNow||0)} / ${Math.round(x.power_limit)} W`, l:I18N.tf('gpu.chip_power','Power · {n}% of cap',{n:head}),
@@ -3558,8 +3658,8 @@ function renderGpuSpill(n){
     d='';
   }
   el.style.display='flex';
-  el.innerHTML=`<div class="ic" style="color:var(--warn)">${sic('ram')}</div><div><div class="t">${t}</div>`
-    +`<div class="d">${d}${d&&sum?'<br>':''}${sum}</div></div>`;
+  setHTML(el, `<div class="ic" style="color:var(--warn)">${sic('ram')}</div><div><div class="t">${t}</div>`
+    +`<div class="d">${d}${d&&sum?'<br>':''}${sum}</div></div>`);
 }
 
 // ── GPU cockpit ───────────────────────────────────────────────────────────────
@@ -3589,11 +3689,22 @@ const GPU_METRICS = {
   power:   {key:'power',   label:()=>I18N.t('gpu.m_power','Power'), unit:'W',   max:null, fmt:v=>Math.round(v)+'W'},
   mem_util:{key:'mem_util',label:()=>I18N.t('gpu.m_membw','Mem-BW'),unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+'M'},
+  tflops:  {key:'tflops',  label:()=>I18N.t('gpu.m_tflops','TFLOPS'),unit:'TFLOPS',max:null, fmt:v=>fmtTF(v)},
 };
+// TFLOPS spans four orders of magnitude across a fleet — an idle Pascal Quadro
+// sits at 0.28 while three 3090s at boost pool to 106 — so the precision has to
+// follow the value. A fixed 1dp would print "0.3" for the idle card and waste a
+// digit on the busy one.
+function fmtTF(v){
+  v = +v || 0;
+  return (v>=100 ? Math.round(v) : v>=10 ? v.toFixed(1) : v.toFixed(2)) + ' T';
+}
 // Row order in every small-multiple panel. Fixed on purpose: the same metric
 // sits at the same height on every card, so cards can be compared by scanning
-// down a column rather than by reading each label.
-const GPU_SPARK_ROWS = ['util','vram','temp','fan','power'];
+// down a column rather than by reading each label. TFLOPS sits under util
+// because they answer the same question at two different resolutions: util says
+// the card is busy, TFLOPS says how much arithmetic that busyness is worth.
+const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power'];
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
 // Per-card line colour for the by-metric view. Stable by index so a card keeps
@@ -3725,7 +3836,13 @@ function gpuMiniCardBody(card, d, ranges){
     if(m==='fan' && last>=95) cls = 'warn';
     const color = m==='temp' ? gpuTint(last>=d.hot_c?100:last>=d.hot_c-8?70:10)
                 : m==='util' ? gpuTint(last) : 'var(--ok)';
-    return `<div class="spark-row"><span class="sl">${def.label()}</span>
+    // TFLOPS sits directly under UTIL, and the pair invites exactly one wrong
+    // reading: a card showing 0% util and 39.7 T is not doing 39.7 TFLOPS of
+    // work. It is holding a high clock while idle, and this row is the ceiling
+    // that clock allows. The only place to say so is the row itself.
+    const rowT = m==='tflops'
+      ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"` : '';
+    return `<div class="spark-row"${rowT}><span class="sl">${def.label()}</span>
       ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='util' ? spans : []})}
       <span class="sv ${cls}">${disp}</span></div>`;
   }).join('');
@@ -3745,7 +3862,16 @@ function gpuMiniCardBody(card, d, ranges){
     now.temp!=null ? Math.round(now.temp)+'°C' : null,
   ].filter(Boolean).join(' · ');
 
-  return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${gpuStatusPill(card)}</div>
+  // The card's rated ceiling, next to its name — the one number that says what
+  // this slot in the machine is actually worth. Absent for a card the spec
+  // table doesn't know, rather than a zero that would read as "does no work".
+  const K = card.compute;
+  const peak = K ? `<span class="mchip" title="${esc(
+      I18N.tf('gpu.card_tf_t','Rated peak: {f32} TFLOPS FP32{f16} at {clk} MHz boost, from {cores} shader cores. A specification, not a measurement.',
+        {f32:K.fp32, f16:(K.fp16!=null?I18N.tf('gpu.card_tf16',' / {v} TFLOPS FP16 tensor',{v:K.fp16}):''),
+         clk:K.boost_mhz, cores:K.cores.toLocaleString()}))}">${fmtTF(K.fp32)}F</span>` : '';
+
+  return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${peak}${gpuStatusPill(card)}</div>
     <div class="gpu-mini-now">${stats || (card.status==='retired' && card.last_seen
         ? I18N.tf('gpu.last_seen','last reported {t}',{t:relTime(card.last_seen)})
         : I18N.t('gpu.no_live','no live reading'))}</div>
@@ -3915,6 +4041,18 @@ function renderGpuKpis(d){
   if(p.fan_avg!=null) kpis.push({v: p.fan_max+' %', l: I18N.t('gpu.k_fan','Fan (peak)'),
     s: p.fan_rpm_max!=null ? I18N.tf('gpu.k_rpm','{n} rpm max',{n:p.fan_rpm_max}) : I18N.tf('gpu.k_fanavg','{n}% average',{n:p.fan_avg}),
     spark:C.fan_max, m:'fan'});
+  // Compute, in the same shape as the others: the live figure headlines, the
+  // ceiling is the sub-line. Only present when at least one card is in the spec
+  // table — an empty tile would be a worse answer than no tile.
+  if(p.compute) kpis.push({
+    v: (p.compute.fp32_now!=null ? fmtTF(p.compute.fp32_now) : fmtTF(p.compute.fp32)).replace(' T',
+        ' <span style="font-size:13px;color:var(--mut)">TFLOPS</span>'),
+    l: I18N.t('gpu.k_tflops','FP32 compute'),
+    s: p.compute.fp32_now!=null
+        ? I18N.tf('gpu.k_ofpeak','{n}% of the {peak} peak',
+                  {n:Math.round(p.compute.fp32_now/p.compute.fp32*100), peak:fmtTF(p.compute.fp32).replace(' T','')})
+        : I18N.tf('gpu.k_peakonly','peak across {n} card(s)',{n:p.compute.cards_known}),
+    spark:C.tflops, m:'tflops'});
   document.getElementById('gpukpis').innerHTML = kpis.map(t=>{
     const sp = (t.spark && t.spark.some(v=>v!=null))
       ? sparkSvg(t.spark, {color:'var(--mut)', max: GPU_METRICS[t.m] && GPU_METRICS[t.m].max===100 ? 100 : null,
@@ -4163,6 +4301,10 @@ function gpuPooledExtra(d){
   const tm = cards.filter(c=>c.temp_mem);
   if(tm.length) x.temp_mem = Math.max(...tm.map(c=>c.temp_mem));
   if(cards.every(c=>c.power_limit)) x.power_limit = cards.reduce((s,c)=>s+c.power_limit,0);
+  // Compute is pooled server-side (in gpuspec.pooled) rather than re-derived
+  // here: the "only sum FP16 when every recognised card has tensor cores" rule
+  // is exactly the kind of thing that drifts when it exists in two languages.
+  if(d.now_pooled && d.now_pooled.compute) x.compute = d.now_pooled.compute;
   return x;
 }
 
@@ -4655,6 +4797,64 @@ function _wireRegistry(){
 // (peak per model over range), D.summary (per-service peak/avg/%time). The expanded
 // panel draws a VRAM-over-time sparkline from D.services[service] with OOM markers
 // from D.events — the timeline the AI-engineer review asked for.
+// Which cards a model server is actually sitting on, and what those cards can
+// do. Built from the same per-card VRAM attribution the GPU cockpit uses, so
+// "ollama is on GPUs 0 and 2" means the same thing on both tabs.
+//
+// A host that can't attribute per card (a single GPU, or a driver that won't
+// answer --query-compute-apps) falls back to every card in the box. That is the
+// honest answer there: the server can use any of them, we just can't prove
+// which. Falling back to *nothing* would blank the column on exactly the
+// single-GPU rigs where the answer is least ambiguous.
+function serverCompute(svc){
+  const cards = (D.now && D.now.gpus) || [];
+  if(!cards.length) return null;
+  const p = ((D.now && D.now.procs) || []).find(x => x.service === svc);
+  const on = p && p.by_card ? Object.keys(p.by_card).filter(k => p.by_card[k] > 0) : [];
+  const mine = on.length ? cards.filter(c => on.indexOf(String(c.idx)) >= 0) : cards;
+  const blocks = mine.map(c => c.compute).filter(Boolean);
+  if(!blocks.length) return null;
+  return {
+    fp32: +blocks.reduce((s,b)=>s+b.fp32, 0).toFixed(1),
+    // Same rule as the GPU tab: a pool where any recognised card lacks tensor
+    // cores has no single FP16 figure, so it publishes none.
+    fp16: blocks.every(b=>b.fp16!=null) ? +blocks.reduce((s,b)=>s+b.fp16, 0).toFixed(1) : null,
+    cards: mine.map(c=>c.idx),
+    known: blocks.length, total: mine.length,
+    attributed: on.length > 0,
+  };
+}
+
+// The compute cell for one model row. FP16 tensor when the cards have tensor
+// cores — that is the number that governs token throughput — else FP32.
+//
+// A spilling model gets a *reduced* figure, scaled by the share of it resident
+// in VRAM. That is the insight this column exists for: the layers pushed into
+// system RAM run on the CPU and get none of this compute, which is why a model
+// that "only just" spills can lose a third of its speed. Flagged approximate in
+// the tooltip, because layers are not uniform in cost and the split is by bytes.
+function modelComputeCell(K, m){
+  if(!K || m.vram == null) return '<span class="muted">—</span>';
+  const base = K.fp16 != null ? K.fp16 : K.fp32;
+  const kind = K.fp16 != null ? I18N.t('models.tf_fp16','FP16 tensor') : I18N.t('models.tf_fp32','FP32');
+  const where = K.cards.length > 1
+    ? I18N.tf('gpu.on_cards','GPUs {list}',{list:K.cards.join(', ')})
+    : I18N.tf('gpu.on_card','GPU {n}',{n:K.cards[0]});
+  const tot = (m.vram||0) + (m.ram||0);
+  const share = tot ? (m.vram||0)/tot : 1;
+  const shared = I18N.t('models.tf_shared','Shared with any other model loaded on the same server — this is the hardware ceiling, not a per-model allocation.');
+  if(share < 0.999){
+    return `<span title="${esc(I18N.tf('models.tf_spill_t',
+      '{eff} of the {base} TFLOPS {kind} on {where}: only {pct}% of this model is resident in VRAM, and the layers spilled into system RAM run on the CPU, which contributes none of it. Approximate — scaled by bytes resident, and layers differ in cost. {shared}',
+      {eff:fmtTF(base*share).replace(' T',''), base:base, kind:kind, where:where,
+       pct:Math.round(share*100), shared:shared}))}">${fmtTF(base*share)}F`
+      + ` <span class="spillv">${I18N.tf('models.tf_of','of {v}',{v:fmtTF(base)+'F'})}</span></span>`;
+  }
+  return `<span title="${esc(I18N.tf('models.tf_t',
+    '{base} TFLOPS {kind} — the rated peak of {where}, which this model is fully resident on. A ceiling from the card specification, not a measurement of work done. {shared}',
+    {base:base, kind:kind, where:where, shared:shared}))}">${fmtTF(base)}F</span>`;
+}
+
 function renderModels(){
   if(!D) return;
   const tot=D.mem_total;
@@ -4671,10 +4871,11 @@ function renderModels(){
   live.forEach(m=>{const arr=bySvc[m.service]=bySvc[m.service]||[]; if(!arr.some(x=>x.model===m.model)) arr.push({model:m.model,peak:null,avg:null,vram:m.vram,ram:m.ram,ctxNow:m.ctx_now,runs:0,spilled:0,peakRam:0,usedBy:[]});});
   const host=document.getElementById('modelsbody'); if(!host) return;
   const services=Object.keys(bySvc);
-  if(!services.length){ host.innerHTML='<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'; return; }
+  if(!services.length){ setHTML(host, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'); return; }
   const maxV=Math.max(tot||1, ...sums.map(m=>m.peak||0));
-  host.innerHTML = services.map(svc=>{
+  setHTML(host, services.map(svc=>{
     const ss=svcSum[svc]||{}, c=colorFor(svc);
+    const svcK=serverCompute(svc);
     const models=bySvc[svc].slice().sort((a,b)=>(b.peak||0)-(a.peak||0));
     const rows=models.map(m=>{
       const pW=m.peak!=null?Math.max(2,m.peak/maxV*100):0, aW=m.avg!=null?Math.max(2,m.avg/maxV*100):0;
@@ -4705,6 +4906,7 @@ function renderModels(){
       return `<tr><td><span class="dot" style="background:${c}"></span>${copyable(m.model)}${modelMetaChips(m.model,m.ctxNow)}</td>
         <td>${status}</td>
         <td>${now}${split}</td>
+        <td>${modelComputeCell(svcK, m)}</td>
         <td>${m.peak!=null?fmtMB(m.peak):'—'}</td>
         <td>${m.avg!=null?fmtMB(m.avg):'—'}</td>
         <td>${runs}</td>
@@ -4715,13 +4917,20 @@ function renderModels(){
     return `<div class="card">
       <h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
         <span class="dot" style="background:${c}"></span>${esc(svc)}
-        <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span></h2>
+        <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span>
+        ${svcK?`<span class="pill" style="text-transform:none" title="${esc(I18N.tf('models.server_tf_t',
+          'The compute this server has under it: {n} card(s){which}, rated peak {f32} TFLOPS FP32{f16}. Specifications, not measurements — no driver reports achieved FLOP/s.',
+          {n:svcK.cards.length,
+           which:svcK.attributed?I18N.tf('models.server_tf_which',' ({list})',{list:'GPU '+svcK.cards.join(', ')})
+                                :I18N.t('models.server_tf_all',' (every card in this box — the host cannot attribute VRAM per card)'),
+           f32:svcK.fp32, f16:svcK.fp16!=null?I18N.tf('models.server_tf16',' / {v} TFLOPS FP16 tensor',{v:svcK.fp16}):''}))}">${
+          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>
       ${servingFor(svc)}
       ${modelSpark(svc,tot)}
       ${callersFor(svc)}
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
+      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
     </div>`;
-  }).join('');
+  }).join(''));
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
@@ -4741,9 +4950,17 @@ function modelMetaChips(model,ctxNow){
   return out.length ? ' '+out.join('') : '';
 }
 // Live serving telemetry (vLLM / TGI /metrics): requests running/waiting, KV-cache
-// fill, tokens/sec, TTFT. From D.now.serving. Only shown for servers that expose it.
-function servingFor(svc){
-  const s=((D.now&&D.now.serving)||[]).find(x=>x.service===svc); if(!s) return '';
+// fill, tokens/sec, TTFT. From D.now.serving — the hub is the only thing that ever
+// probes /metrics (even for a custom server registered under a remote box's name),
+// so this stays sourced from D regardless of which host's card is asking; `host`
+// just narrows which entry matches. Only shown for servers that expose it.
+function servingFor(svc, host){
+  // No host given (the hub-local AI Models panel, which lists every probed
+  // service regardless of which box it's registered for): match by service
+  // name alone, same as before. A host IS given (a box's own "AI models on
+  // {host}" card): narrow to that box's entries so one server's telemetry
+  // can't bleed onto another box's card.
+  const s=((D&&D.now&&D.now.serving)||[]).find(x=>x.service===svc && (host==null || (x.host||'local')===host)); if(!s) return '';
   const chips=[];
   if(s.tok_per_s!=null)   chips.push({v:s.tok_per_s+' tok/s', l:I18N.t('models.chip_throughput','Throughput'), hot:s.tok_per_s>0});
   if(s.running!=null)     chips.push({v:s.running, l:I18N.t('models.chip_running','Running'), hot:s.running>0});
@@ -5704,6 +5921,18 @@ async function loadAlerts(){
   document.getElementById('al_retention_days').value = s.retention_days||'180';
   document.getElementById('al_reduced_motion').checked = s.reduced_motion==='1';
   applyReducedMotion(s.reduced_motion==='1');
+  // Custom AI servers — the server is authoritative; only seed the draft once
+  // (first load) so a user mid-typing isn't clobbered by a save-triggered reload.
+  loadAiProviders();
+  if(!Array.isArray(AI_SERVERS_DRAFT)) AI_SERVERS_DRAFT = [];
+  if(!AI_SERVERS_LOADED){
+    let custom=null;
+    try{ custom = s.custom_ai_servers ? JSON.parse(s.custom_ai_servers) : null; }
+    catch(e){ custom=null; }
+    AI_SERVERS_DRAFT = Array.isArray(custom) ? custom : [];
+    AI_SERVERS_LOADED = true;
+    renderAiServers();
+  }
   document.getElementById('al_kwh').value         = s.kwh_price||'';
   document.getElementById('al_currency').value    = s.currency||'$';
   document.getElementById('al_kwh_night').value   = s.kwh_price_night||'';
@@ -5861,6 +6090,10 @@ function collectSettingsBody(){
     gpu_missing_alerts:     document.getElementById('al_gpu_missing').checked ? '1' : '0',
     retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
     reduced_motion:   document.getElementById('al_reduced_motion').checked ? '1' : '0',
+    // Omitted (not sent) until the draft is seeded from the server — an
+    // autosave racing the first load would otherwise POST an empty list and
+    // wipe a server the user hasn't even seen yet.
+    ...(AI_SERVERS_LOADED ? {custom_ai_servers: collectAiServers()} : {}),
     kwh_price:        document.getElementById('al_kwh').value.trim(),
     currency:         document.getElementById('al_currency').value.trim()||'$',
     tariff_mode:      TARIFF_DUAL ? 'dual' : 'single',
@@ -5964,6 +6197,167 @@ async function testAlerts(){
   }else{
     const fails=(j.results||[]).filter(r=>!r.ok).map(r=>r.channel+': '+r.error).join(' · ');
     showAlertStatus('critical', fails || j.reason || 'Test failed — check your alert channel settings.');
+  }
+}
+
+// ── Custom AI servers ─────────────────────────────────────────────────
+// A small, self-contained editor for the custom_ai_servers setting. It keeps the
+// working set in a JS array and persists it as a single JSON field through the
+// same POST /api/settings path as every other setting, so the autosave + Save
+// button + validation all work without any special-casing. The Test button
+// probes from the hub (the browser can't be assumed to reach a private host:port).
+let AI_SERVERS_DRAFT = [];   // working set
+let AI_SERVERS_LOADED = false;   // draft seeded from the server exactly once
+let AI_PROVIDERS_LOADED = false;
+// Curated, human-friendly order for the common servers; the full PROBES key set
+// is fetched server-side and the rest is appended alphabetically under "Other".
+const AI_PROVIDERS_PREFERRED = ['vllm','ollama','lmstudio','lm-studio','llama.cpp','llama-server',
+  'sglang','localai','local-ai','xinference','koboldcpp','mistral-rs','text-generation-inference'];
+async function loadAiProviders(){
+  if(AI_PROVIDERS_LOADED) return;
+  const sel=document.getElementById('ai_provider'); if(!sel) return;
+  let all=[];
+  try{ all = await(await fetch('/api/settings/ai_servers/providers')).json(); }catch(e){ all=[]; }
+  const keys=all.providers||[];
+  const pref=AI_PROVIDERS_PREFERRED.filter(k=>keys.includes(k));
+  const rest=keys.filter(k=>!pref.includes(k)).sort();
+  // The list IS the whole recognised set (built server-side from the PROBES
+  // table) — there is no "other", because a provider outside that table has no
+  // probe to dispatch to.
+  sel.innerHTML=[...pref,...rest].map(k=>`<option value="${esc(k)}">${esc(k)}</option>`).join('');
+  AI_PROVIDERS_LOADED = true;
+  loadAiFleetHosts();   // the Runs-on picker fills from the fleet list
+}
+// "Runs on" options: the hub ("local") first, then the registered hosts — the
+// same rows the host pill bar renders, so the picker can never offer a host the
+// AI Models tab doesn't have a pill for. A saved server pointing at a host that
+// was removed later keeps its value but is flagged, like the brief channel.
+// Rebuilt on every fleet update (it reads FLEET, fetches nothing), preserving
+// the current selection.
+function loadAiFleetHosts(){
+  const sel=document.getElementById('ai_fleet_host'); if(!sel) return;
+  const cur=sel.value;
+  const rows=(FLEET && Array.isArray(FLEET.hosts)) ? FLEET.hosts : [{name:'local'}];
+  const saved=new Set(AI_SERVERS_DRAFT.map(s=>(s.fleet_host||'')).filter(h=>h&&h!=='local'));
+  const opts=[['local', I18N.t('general.ai_fleet_host_local','This hub')]];
+  rows.forEach(h=>{ if(h.name!=='local') opts.push([h.name, h.name]); });
+  saved.forEach(h=>{ if(!opts.some(o=>o[0]===h)) opts.push([h, h+' ('+I18N.t('general.ai_fleet_host_removed','removed')+')']); });
+  sel.innerHTML=opts.map(([v,l])=>`<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+}
+function aiServerProviderVal(){
+  const sel=document.getElementById('ai_provider'); if(!sel) return '';
+  return sel.value;
+}
+function aiServerFleetHostVal(){
+  const sel=document.getElementById('ai_fleet_host'); if(!sel) return 'local';
+  return sel.value||'local';
+}
+function aiServersFromDraft(){
+  return AI_SERVERS_DRAFT.map(s=>({...s}));
+}
+function renderAiServers(){
+  const ul=document.getElementById('ai_servers_list'); if(!ul) return;
+  if(!AI_SERVERS_DRAFT.length){
+    ul.innerHTML=`<li class="muted" style="padding:4px 2px">${I18N.t('general.ai_servers_empty','No custom servers yet — add one below (e.g. a vLLM on another box at a non-standard port).')}</li>`;
+    return;
+  }
+  ul.innerHTML = AI_SERVERS_DRAFT.map((s,i)=>{
+    // Where its models show: a chip only when it's not the hub (the default).
+    const fh=s.fleet_host||'';
+    const onHost=fh&&fh!=='local'
+      ? `<span class="muted" style="font-size:11px;padding:1px 6px;border:1px solid var(--bd);border-radius:10px">${I18N.t('general.ai_on_host','on')} ${esc(fh)}</span>`
+      : '';
+    return `
+    <li style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border:1px solid var(--bd);border-radius:8px">
+      <b style="font-size:12px">${esc(s.name)}</b>
+      ${onHost}
+      <span class="muted" style="font-size:12px;font-family:var(--mono)">${esc(s.host)}:${esc(s.port)} · ${esc(s.provider)}</span>
+      <span style="margin-left:auto;display:flex;gap:6px">
+        <button type="button" class="btn-mini" data-ai-test="${i}">${I18N.t('general.ai_test','Test')}</button>
+        <button type="button" class="btn-mini" data-ai-del="${i}" title="${I18N.t('btn.remove','Remove')}">${I18N.t('btn.remove','Remove')}</button>
+      </span>
+    </li>`;}).join('');
+  ul.querySelectorAll('[data-ai-del]').forEach(b=> b.onclick=()=>{
+    AI_SERVERS_DRAFT.splice(+b.dataset.aiDel,1); renderAiServers(); persistAiServers();
+  });
+  ul.querySelectorAll('[data-ai-test]').forEach(b=> b.onclick=()=> testAiServer(+b.dataset.aiTest, b));
+}
+function showAiStatus(level, text){
+  const el=document.getElementById('ai_servers_status'); if(!el) return;
+  // .ins variants are critical/warning/ok/info (see .ins CSS) — 'warn' maps to warning.
+  el.className = 'ins ' + (level==='info'?'info':level==='ok'?'ok':'warning');
+  el.style.display = text ? '' : 'none';
+  el.textContent = text||'';
+}
+function collectAiServers(){
+  return JSON.stringify(aiServersFromDraft());
+}
+// Persist ONLY custom_ai_servers — Add/Remove act immediately, so an entry can't
+// sit un-saved (a page refresh would drop it) and "Test" can't be mistaken for
+// "registered". A dedicated one-field POST rather than the whole form keeps the
+// blast radius to this setting.
+let _aiPersistBusy = false;
+async function persistAiServers(){
+  if(_aiPersistBusy) return;
+  _aiPersistBusy = true;
+  try{
+    let j; try{ j = await(await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({custom_ai_servers: collectAiServers()})})).json(); }
+    catch(e){ showAiStatus('warning','Not saved: '+e); return; }
+    if(j && j.ok===false){ showAiStatus('warning', j.error||'Not saved — check the values.'); return; }
+    AI_SERVERS_LOADED = true;   // the server now agrees with the draft
+  } finally{ _aiPersistBusy = false; }
+}
+async function testAiServer(i, btn){
+  const s=AI_SERVERS_DRAFT[i]; if(!s) return;
+  showAiStatus('info', I18N.tf('general.ai_testing','Testing {n} at {h}:{p}…',{n:s.name,h:s.host,p:s.port}));
+  if(btn){ btn.disabled=true; }
+  let j;
+  try{ j=await(await fetch('/api/settings/ai_servers/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(s)})).json(); }
+  catch(e){ showAiStatus('warn','Test failed: '+e); if(btn) btn.disabled=false; return; }
+  if(btn) btn.disabled=false;
+  if(j.ok){
+    const shown=(j.models||[]).slice(0,5).map(esc).join(', ');
+    showAiStatus('ok', I18N.tf('general.ai_test_ok','{n} reachable — {c} model(s){tr}: {list}',
+      {n:s.name,c:(j.models||[]).length,tr:j.truncated?'…':'',list:shown}));
+  }else{
+    showAiStatus('warn', j.error||'Test failed.');
+  }
+}
+function addAiServer(){
+  const g=id=>document.getElementById(id);
+  const name=(g('ai_name')?.value||'').trim();
+  const host=(g('ai_host')?.value||'').trim();
+  const port=parseInt(g('ai_port')?.value,10);
+  const provider=aiServerProviderVal();
+  const fleet_host=aiServerFleetHostVal();
+  if(!name || !host || isNaN(port) || !provider){
+    showAiStatus('warn', I18N.t('general.ai_add_needs','Add needs a label, host, port and type.')); return;
+  }
+  if(AI_SERVERS_DRAFT.some(s=>s.name===name && s.host===host && s.port===port)){
+    showAiStatus('warn', I18N.t('general.ai_dup','That server is already in the list.')); return;
+  }
+  AI_SERVERS_DRAFT.push({name,host,port,provider,fleet_host});
+  renderAiServers();
+  g('ai_name').value=''; g('ai_host').value=''; g('ai_port').value='';
+  showAiStatus('info', I18N.t('general.ai_added','Added — saving…'));
+  persistAiServers().then(()=> showAiStatus('ok',
+    fleet_host==='local'
+      ? I18N.t('general.ai_saved','Saved — it will appear in the AI Models tab within one sample (~10 s).')
+      : I18N.tf('general.ai_saved_host','Saved — it will appear under {h} in the AI Models tab within one sample (~10 s).',{h:fleet_host})));
+}
+// Deep link from a host's AI Models tab ("register a custom server for this
+// host"): open Settings → General with Runs-on already pointing at that host.
+function openAiServerForHost(host){
+  showTab('alerts');
+  setSettingsPane('general');
+  loadAiFleetHosts();
+  const sel=document.getElementById('ai_fleet_host');
+  if(sel){
+    if([...sel.options].some(o=>o.value===host)) sel.value=host;
+    sel.focus();
   }
 }
 
@@ -6574,6 +6968,7 @@ function applyFleet(j){
   if(!j || !j.hosts) return;
   FLEET = j;
   renderHostBar();
+  loadAiFleetHosts();   // the "Runs on" picker mirrors the pill bar
   if(TAB==='overview'){ renderFleet(); renderMissionControl(); }
   // The Host tab renders a remote entirely from FLEET, so a push refreshes a
   // remote box's KPIs as soon as its poll lands. renderGpuTab is deliberately
@@ -6956,7 +7351,7 @@ function applyReducedMotion(settingOn){
 const MC_AC = {ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', info:'var(--info)'};
 // D.insights use level=critical|warning|ok|info; map to our short keys.
 const MC_LVL = {critical:'crit', warning:'warn', warn:'warn', crit:'crit', ok:'ok', info:'info'};
-let MC_COST=null, MC_COST_AT=0, MC_RAF=[];
+let MC_COST=null, MC_COST_AT=0;
 let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
 // Three-gauge engine scope: 'host' (the focused box) or 'fleet' (whole homelab aggregate).
 let MC_TRIMODE=(function(){ try{ return localStorage.getItem('hl_mc_trimode')||'host'; }catch(e){ return 'host'; } })();
@@ -6966,19 +7361,15 @@ async function refreshMcCost(){
   MC_COST_AT=Date.now();
   try{ MC_COST = await (await fetch('/api/costs?range=7d&host=all')).json(); }catch(e){ MC_COST=null; }
 }
+// The cockpit repaints from several independent pollers (the SSE live stream,
+// the ~15-60s history/health poll, the throttled cost refresh) — no single
+// "was this a live tick" signal covers all of them, and every attempt to
+// gate an arrival animation on one still left the others replaying it as a
+// blink. Simplest fix that actually holds in every case: no arrival
+// animation. Every cockpit value is set directly, every time.
 function mcCountUp(el, target, dur, dec){
   if(!el) return; target = (+target)||0; dec = dec==null?2:dec;
-  // A count-up is an *arrival* animation — it reads as "here is the number" the
-  // first time a panel paints. On a live tick every couple of seconds it reads as
-  // a number that never settles, so live repaints assign straight to the value.
-  if(MC_RM || LIVE_TICK){ el.textContent = target.toFixed(dec); return; }
-  MC_RAF.push(true); const tok = MC_RAF.length; const t0 = performance.now();
-  (function step(now){
-    if(tok!==MC_RAF.length){ el.textContent = target.toFixed(dec); return; }   // canceled by a newer render
-    const p = Math.min(1,(now-t0)/dur), e = 1-Math.pow(1-p,3);
-    el.textContent = (target*e).toFixed(dec);
-    if(p<1) requestAnimationFrame(step); else el.textContent = target.toFixed(dec);
-  })(t0);
+  el.textContent = target.toFixed(dec);
 }
 function mcSparkline(data, w, h, color){
   if(!data || data.length<2) return '';
@@ -6997,7 +7388,6 @@ function renderMissionControl(){
   mcInitBoard();                            // one-time: wire drag-board + apply saved layout
   mcInitCockpitIcons();                     // one-time: swap cockpit icons to the app's SVG family
   mcInitTriToggle();                        // one-time: wire the engine This-host / Whole-fleet toggle
-  MC_RAF.push(true);                        // cancel any in-flight count-ups
   refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
   paintMissionControl();
 }
@@ -7040,12 +7430,8 @@ function mcSetTriArc(id, pct, color){
   const el=document.getElementById(id); if(!el) return;
   const p=Math.max(0,Math.min(100,Math.round(pct||0)));
   if(color) el.style.stroke=color;
-  if(typeof MC_RM!=='undefined' && MC_RM){ el.style.transition='none'; el.style.strokeDashoffset=String(100-p); return; }
-  el.style.transition='none'; el.style.strokeDashoffset='100';
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    el.style.transition='stroke-dashoffset 1.1s cubic-bezier(.2,.8,.2,1), stroke .35s';
-    el.style.strokeDashoffset=String(100-p);
-  }));
+  el.style.transition='none';
+  el.style.strokeDashoffset=String(100-p);
 }
 function mcTriColor(pct, base){ return pct>=90 ? 'var(--crit)' : pct>=78 ? 'var(--warn)' : base; }
 function mcInitTriToggle(){
@@ -7151,6 +7537,15 @@ function mcPaintTri($){
   mcSetTriArc('mc-arc-ram', rp, mcTriColor(rp,'var(--ok)'));
   $('mc-sub-ram').textContent = rt?(fmtMB(ru)+' / '+fmtMB(rt)):'—';
   if(tagEl) tagEl.textContent = (gpu&&gpu.available)?'GPU · CPU · RAM':'CPU · RAM';
+}
+// Hero gauge (arc + ring + up to 3 meter bars): no arrival animation — see
+// mcCountUp for why. Every call just snaps straight to the new value.
+function mcSweepHero(arc, ring, arcPct, ringPct, bars){
+  arc.style.transition='none';
+  arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,arcPct));
+  ring.style.transition='none';
+  ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,ringPct));
+  bars.forEach(b=>{ b.el.style.transition='none'; b.el.style.width=Math.min(100,Math.max(0,b.w||0))+'%'; });
 }
 function mcPaintEngine($, g, gx, host){
   const ticksEl=$('mc-ticks'); if(ticksEl && !ticksEl.childNodes.length) ticksEl.innerHTML=mcGaugeTicks();
@@ -7259,25 +7654,18 @@ function mcPaintEngine($, g, gx, host){
   const sb=$('mc-state-badge'); sb.textContent=badgeText; sb.className='mc-state-badge'+(badgeCls?' '+badgeCls:'');
   $('mc-gauge-pct').textContent='%';
   mcCountUp($('mc-gauge-big'), big, 1000, 0);
-  [['mc-m1l','mc-m1v','mc-m1bar'],['mc-m2l','mc-m2v','mc-m2bar'],['mc-m3l','mc-m3v','mc-m3bar']].forEach((ids,i)=>{
+  const barIds=[['mc-m1l','mc-m1v','mc-m1bar'],['mc-m2l','mc-m2v','mc-m2bar'],['mc-m3l','mc-m3v','mc-m3bar']];
+  barIds.forEach((ids,i)=>{
     $(ids[0]).innerHTML=m[i].l; $(ids[1]).innerHTML=m[i].v;
-    const bar=$(ids[2]); bar.style.transition='none'; bar.style.width='0'; bar.style.background=m[i].c;
+    $(ids[2]).style.background=m[i].c;
   });
   const hr=$('mc-headroom'); hr.innerHTML=headroom; hr.className='mc-headroom'+(headroomBad?' mc-warnedge':'');
   const arc=$('mc-util-arc'), ring=$('mc-ring');
-  arc.style.transition='none'; arc.style.strokeDashoffset='100';
-  ring.style.transition='none'; ring.style.strokeDashoffset='100';
   // gauge goes red when throttled / hot
   // only THERMAL throttle (or a hot card) reddens the gauge — 'Power cap' is normal
   const red = (g.available && ((g.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))));
   arc.setAttribute('stroke', red ? 'var(--crit)' : 'url(#mc-util-grad)');
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    arc.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)';
-    arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,arcPct));
-    ring.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)';
-    ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,ringPct));
-    m.forEach((mm,i)=>{ const bar=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); bar.style.transition=MC_RM?'none':'width 1.2s cubic-bezier(.2,.8,.2,1)'; bar.style.width=Math.min(100,Math.max(0,mm.w))+'%'; });
-  }));
+  mcSweepHero(arc, ring, arcPct, ringPct, barIds.map((ids,i)=>({el:$(ids[2]), w:m[i].w})));
   // per-GPU breakdown when the focused host is a multi-GPU box
   const exH=$('mc-vitals-extra');
   if(exH){
@@ -7329,19 +7717,15 @@ function mcApplyEngine($, V){
   $('mc-gauge-pct').textContent=V.bigText?'':'%';
   if(V.bigText){ $('mc-gauge-big').textContent=V.bigText; } else { mcCountUp($('mc-gauge-big'), V.big, 1000, 0); }
   const M=V.meters||[];
-  [['mc-m1l','mc-m1v','mc-m1bar'],['mc-m2l','mc-m2v','mc-m2bar'],['mc-m3l','mc-m3v','mc-m3bar']].forEach((ids,i)=>{
+  const barIds=[['mc-m1l','mc-m1v','mc-m1bar'],['mc-m2l','mc-m2v','mc-m2bar'],['mc-m3l','mc-m3v','mc-m3bar']];
+  barIds.forEach((ids,i)=>{
     const mm=M[i]||{l:'',v:'',w:0,c:'var(--mut)'};
-    $(ids[0]).innerHTML=mm.l; $(ids[1]).innerHTML=mm.v; const b=$(ids[2]); b.style.transition='none'; b.style.width='0'; b.style.background=mm.c;
+    $(ids[0]).innerHTML=mm.l; $(ids[1]).innerHTML=mm.v; $(ids[2]).style.background=mm.c;
   });
   const hr=$('mc-headroom'); hr.innerHTML=V.headroom||''; hr.className='mc-headroom'+(V.headroomBad?' mc-warnedge':'');
   const arc=$('mc-util-arc'), ring=$('mc-ring');
-  arc.style.transition='none'; arc.style.strokeDashoffset='100'; ring.style.transition='none'; ring.style.strokeDashoffset='100';
   arc.setAttribute('stroke', V.red?'var(--crit)':'url(#mc-util-grad)');
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    arc.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; arc.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.arcPct||0));
-    ring.style.transition=MC_RM?'none':'stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)'; ring.style.strokeDashoffset=Math.max(0,100-Math.min(100,V.ringPct||0));
-    M.forEach((mm,i)=>{ const b=$(['mc-m1bar','mc-m2bar','mc-m3bar'][i]); b.style.transition=MC_RM?'none':'width 1.2s cubic-bezier(.2,.8,.2,1)'; b.style.width=Math.min(100,Math.max(0,mm.w||0))+'%'; });
-  }));
+  mcSweepHero(arc, ring, V.arcPct||0, V.ringPct||0, barIds.map((ids,i)=>({el:$(ids[2]), w:(M[i]||{}).w||0})));
   const ex=$('mc-vitals-extra'); if(ex) ex.innerHTML=mcBreakdownHTML(V.breakdown||[]);
 }
 function mcBuildFleetGPU(){
@@ -7540,11 +7924,8 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   if(!rows.length){ lead.innerHTML='<div style="font-size:11px;color:var(--mut);padding:6px 0">'+I18N.t('mc.no_consumers','Nothing to rank yet.')+'</div>'; return; }
   lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
     <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
-    <div class="mc-lbar-track"><div class="mc-lbar-fill" data-w="${r.share}"></div></div>
+    <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
     <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    lead.querySelectorAll('.mc-lbar-fill').forEach(b=>{ b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%'; });
-  }));
 }
 function mcAttentionCount(){
   // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
@@ -7714,9 +8095,9 @@ function mcPaintFleet($){
     return `<div class="mc-host" data-h="${esc(h.name)}">
       <div class="mc-host-top"><span class="mc-sdot ${sd}"></span><span class="mc-host-label">${label}</span>${badges.join('')}<span class="mc-host-os">${esc(osname)}</span><button class="mc-host-open" title="${I18N.t('mc.open_host','Open host detail')}">↗</button></div>
       <div class="mc-microbars">
-        <div class="mc-mb">CPU<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${cpuC}" data-w="${cpu}"></div></div>${cpu}%</div>
-        <div class="mc-mb">RAM<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${ramC}" data-w="${ramPct}"></div></div>${ramPct}%</div>
-        ${diskPct?`<div class="mc-mb">DISK<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${diskC}" data-w="${diskPct}"></div></div>${diskPct}%</div>`:''}
+        <div class="mc-mb">CPU<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${cpuC};width:${Math.min(100,Math.max(0,cpu))}%"></div></div>${cpu}%</div>
+        <div class="mc-mb">RAM<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${ramC};width:${Math.min(100,Math.max(0,ramPct))}%"></div></div>${ramPct}%</div>
+        ${diskPct?`<div class="mc-mb">DISK<div class="mc-mb-track"><div class="mc-mb-fill" style="background:${diskC};width:${Math.min(100,Math.max(0,diskPct))}%"></div></div>${diskPct}%</div>`:''}
       </div>
       <div class="mc-host-foot">${cores?`<span>${cores} cores</span>`:''}${temp!=null?`<span>${temp}°C</span>`:''}<span class="mc-sp">↑ ${up}</span></div>
     </div>`;
@@ -7729,9 +8110,6 @@ function mcPaintFleet($){
     const ob=el.querySelector('.mc-host-open');
     if(ob) ob.onclick=(e)=>{ e.stopPropagation(); setHost(el.dataset.h); showTab('host'); };
   });
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    wrap.querySelectorAll('.mc-mb-fill').forEach(b=>{ b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%'; });
-  }));
 }
 // systemd units whose failure is benign (KDE crash relays / coredump processors).
 function mcIsBenignUnit(name){ return /^(drkonqi|systemd-coredump)/i.test(name||''); }
@@ -8064,23 +8442,22 @@ async function renderHostTab(){
   const dk = document.getElementById('disks');
   if(!HOST_DATA || !HOST_DATA.online){
     renderHostChart();   // still draw whatever history the host left behind
-    hk.innerHTML = '';
+    paintKpis(hk, []);
     const err = HOST_DATA && HOST_DATA.error ? esc(HOST_DATA.error) : I18N.t('host.no_data','no data yet');
     dk.innerHTML = I18N.tf('host.probe_wait','<div class="muted" style="padding:12px 2px">⏳ <b>{host}</b> — {err}. Probes run every {i}s; new hosts take one cycle to populate.</div>',{host:esc(CURRENT_HOST),err,i:(FLEET ? (FLEET.interval||10) : 10)});
     return;
   }
   const ramPct = h.ram_total ? Math.round((h.ram_used||0)*100/h.ram_total) : 0;
-  hk.innerHTML=[
+  // Same painters the live lane uses, so a remote host repaints in place too and
+  // the two writers can never disagree about this markup.
+  paintKpis(hk, [
     {v:Math.round(h.cpu||0)+'%',         l:I18N.t('kpi.cpu','CPU utilization'), s:I18N.tf('kpi.cores','{n} cores',{n:(h.cores||'?')})},
     {v:ramPct+'%',                       l:I18N.t('kpi.ram','RAM used'),        s:fmtMBshort(h.ram_used)+' / '+fmtMBshort(h.ram_total)},
     {v:(h.load1!=null?h.load1.toFixed(2):'—'), l:I18N.t('kpi.load1','Load (1m)'),  s:I18N.tf('kpi.of_cores','of {n} cores',{n:(h.cores||'?')})},
     {v:fmtUpShort(h.uptime),             l:I18N.t('kpi.uptime','Uptime')},
     {v:(h.ctemp!=null?h.ctemp+' °C':'—'),l:I18N.t('kpi.temp','CPU/system temp')},
-  ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-  dk.innerHTML = (h.disks||[]).map(dkk =>
-    `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px">
-     <span>💾 ${esc(dkk.mount)}</span><span class="muted">${dkk.used} / ${dkk.total} GB · ${dkk.pct}%</span></div>
-     <div class="dbar"><div style="width:${dkk.pct}%;background:${sev(dkk.pct)}"></div></div></div>`).join('');
+  ]);
+  paintDisks(dk, h.disks||[]);
   renderSysInfo();
   renderRamTree();
   renderTopProcs();      // now that HOST_DATA is this host's
@@ -8258,13 +8635,26 @@ function renderSysInfo(){
                 hw.threads&&hw.threads+' threads', hw.cpu_mhz_max&&'max '+(hw.cpu_mhz_max/1000).toFixed(2)+' GHz']
                .filter(Boolean).join(' · ');
   const mem = hw.ram_total ? fmtMB(hw.ram_total)+(hw.swap_total?'  (swap '+fmtMB(hw.swap_total)+')':'') : null;
-  const gpu = hw.gpu_name ? esc(hw.gpu_name)+(hw.gpu_mem_total?'  ('+fmtMB(hw.gpu_mem_total)+')':'') : null;
+  // One row per card when the host ships a per-card list (a multi-GPU box used
+  // to report only GPU 0). The list lives in hw.gpus on the hub and Linux
+  // remotes and in the top-level h.gpus on Windows remotes; try both. Fall back
+  // to the legacy single gpu_name / gpu.name field when neither is present.
+  const rawGpus = (Array.isArray(hw.gpus) && hw.gpus.length) ? hw.gpus
+               : (Array.isArray(h.gpus) && h.gpus.length) ? h.gpus : [];
+  const gpus = rawGpus.filter(g=>g && g.name);
+  const singleName = hw.gpu_name || (h.gpu && h.gpu.name);
+  const singleMem  = hw.gpu_mem_total || (h.gpu && h.gpu.mem_total);
+  const gpuRows = gpus.length ? gpus.map((g,i)=>
+    infoRow(gpus.length>1 ? I18N.tf('sys.gpu_n','GPU {n}',{n:g.idx!=null?g.idx:i}) : I18N.t('sys.gpu','GPU'),
+      esc(g.name)+(g.mem_total?'  ('+fmtMB(g.mem_total)+')':''))
+  ) : [infoRow(I18N.t('sys.gpu','GPU'),
+      singleName ? esc(singleName)+(singleMem?'  ('+fmtMB(singleMem)+')':'') : null)];
   const hwh = [
     infoRow(I18N.t('sys.cpu','CPU'),      hw.cpu_model ? esc(hw.cpu_model)+(hw.cpu_vendor?'  ('+esc(hw.cpu_vendor)+')':'') : null),
     infoRow(I18N.t('sys.topology','CPU topology'), topo || null),
     infoRow(I18N.t('sys.memory','Memory'),   mem),
     infoRow(I18N.t('sys.machine','Machine / product'),  hw.machine ? esc(hw.machine) : null),
-    infoRow(I18N.t('sys.gpu','GPU'),      gpu),
+    ...gpuRows,
   ].join('');
   el.innerHTML = `<div class="infogrid">
     ${infoCard(I18N.t('sys.card_system','System'), sys, I18N.t('sys.no_system','No system info reported.'))}
@@ -8508,7 +8898,9 @@ function describeMissingCapability(tabId){
       if(tabId === 'models'){
         return {ic:'🤖',
           title:`No AI models reported on ${CURRENT_HOST} yet`,
-          detail:`The probe reads the host's own AI servers each poll — ollama on 127.0.0.1:11434, plus vLLM, llama.cpp, LM Studio and friends on their standard ports. Start one there and its models appear within seconds.`};
+          detail:`The probe reads the host's own AI servers each poll — ollama on 127.0.0.1:11434, plus vLLM, llama.cpp, LM Studio and friends on their standard ports. Start one there and its models appear within seconds.`,
+          link:{text:I18N.t('models.add_custom_link','Register a custom AI server for this host →'),
+                action:()=>openAiServerForHost(CURRENT_HOST)}};
       }
       return {ic:'🛠️',
         title:`Waiting for ${CURRENT_HOST}'s per-GPU data`,
@@ -8775,6 +9167,15 @@ function paintRemoteModels(sec, host, mine){
     {v:fmtMB(committed), l:I18N.t('rmod.vram_committed','VRAM committed'),
      s:cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(committed/cap*100)})+' · '+fmtMB(cap):''},
   ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
+  // Live serving telemetry (tokens/sec, running/queued, KV-cache, TTFT) for
+  // whichever of this box's servers expose a Prometheus /metrics endpoint —
+  // e.g. a custom vLLM server registered for this host. One row per service,
+  // deduped, so a box with several inference servers doesn't repeat itself.
+  const svcSeen = new Set();
+  const serving = mine.map(m=>m.service).filter(svc=>{
+    if(!svc || svcSeen.has(svc)) return false;
+    svcSeen.add(svc); return true;
+  }).map(svc=>servingFor(svc, host)).filter(Boolean).join('');
   const tint=v=>v>85?'#f85149':v>60?'#d29922':'#3fb950';
   const rows = loadedM.map(m=>{
     const pct=cap?Math.round((m.vram_mb||0)/cap*100):0;
@@ -8784,11 +9185,17 @@ function paintRemoteModels(sec, host, mine){
       <td style="width:42%"><span class="mini" style="width:${Math.max(2,pct)}%;background:${tint(pct)}"></span></td></tr>`;
   }).join('') || `<tr><td class="muted" colspan="3">${I18N.t('rmod.none','Nothing loaded right now — the installed models below are idle.')}</td></tr>`;
   box.innerHTML =
-    `<div class="card"><h2>🧠 ${I18N.tf('rmod.title','AI models on {host}',{host:esc(host)})}</h2>
-      <div class="grid" style="grid-template-columns:1fr 1fr">${kpis}</div>
+    `<div class="card"><div style="display:flex;align-items:center;gap:10px">
+        <h2 style="margin:0">🧠 ${I18N.tf('rmod.title','AI models on {host}',{host:esc(host)})}</h2>
+        <button type="button" class="btn-mini rmod-add" style="margin-left:auto"
+          title="${I18N.t('rmod.add_server_title','Register a server this probe doesn\'t see — e.g. a vLLM on a non-standard port. The hub probes it; its models show here.')}">+ ${I18N.t('rmod.add_server','Add custom server')}</button>
+      </div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:12px">${kpis}</div>
+      ${serving}
       <table style="margin-top:12px"><tbody>${rows}</tbody></table>
-      <p class="cap">${I18N.t('rmod.cap','Read on the host itself: ollama\'s resident set with live VRAM, plus any other recognised AI server answering on its standard port. The per-model VRAM timeline stays hub-only for now.')}</p>
+      <p class="cap">${I18N.t('rmod.cap','Read on the host itself: ollama\'s resident set with live VRAM, plus any other recognised AI server answering on its standard port and any custom server registered for this host. The per-model VRAM timeline stays hub-only for now.')}</p>
     </div>`;
+  box.querySelector('.rmod-add').onclick=()=>openAiServerForHost(host);
   applyIcons(box);
 }
 
@@ -8803,8 +9210,13 @@ function showScopeNotice(sec, tabId){
     sec.insertBefore(notice, sec.firstChild);
   }
   const m = describeMissingCapability(tabId);
+  // m.link is an optional {text, action} CTA — the models empty state offers
+  // "register a custom AI server for this host" so it isn't a dead end.
+  const link = m.link ? `<br><a href="#" data-scope-link="1">${esc(m.link.text)}</a>` : '';
   notice.innerHTML = `<div class="ic">${m.ic}</div>
-    <div><b>${esc(m.title)}</b><br><span class="muted">${m.detail}</span></div>`;
+    <div><b>${esc(m.title)}</b><br><span class="muted">${m.detail}</span>${link}</div>`;
+  const a = notice.querySelector('[data-scope-link]');
+  if(a && m.link) a.onclick = (e)=>{ e.preventDefault(); m.link.action(); };
 }
 function clearLocalOnlyNotice(tabId){
   const sec = document.querySelector(`section[data-tab="${tabId}"]`);
@@ -9197,6 +9609,8 @@ const al_save_costs = document.getElementById('al_save_costs');
 if(al_save_costs) al_save_costs.onclick = saveAlerts;   // both panes persist all settings
 const al_save_general = document.getElementById('al_save_general');
 if(al_save_general) al_save_general.onclick = saveAlerts;
+const ai_add = document.getElementById('ai_add');
+if(ai_add) ai_add.onclick = addAiServer;
 wireAutoSave();   // settings also persist on field focus-out (no Save-button hunt)
 document.getElementById('al_mode_single').onclick = () => setTariffMode(false);
 document.getElementById('al_mode_dual').onclick   = () => setTariffMode(true);

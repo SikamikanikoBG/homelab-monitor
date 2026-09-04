@@ -15,6 +15,7 @@ Endpoints:
   DELETE /api/bench/<id>    delete a stored run + its points
 """
 import json
+import logging
 import threading
 import time
 import urllib.request
@@ -167,6 +168,7 @@ def _docker_rm_bench_container():
             if code == 404:
                 return
         except Exception:
+            logging.debug("poll for scratch container removal failed", exc_info=True)
             return
         time.sleep(0.5)
 

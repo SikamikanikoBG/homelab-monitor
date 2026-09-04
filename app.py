@@ -54,7 +54,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.31.0"
+VERSION      = "0.34.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -582,10 +582,28 @@ def live_payload():
     LATEST is copied before serializing: the sampler updates it without holding
     LOCK (it always has), so iterating the live dict could otherwise trip over a
     key being added mid-serialization."""
-    now = dict(LATEST)
+    now = live_now()
     return {"version": VERSION, "rev": LIVE_REV, "interval": INTERVAL,
             "fast_interval": FAST_INTERVAL,
             "mem_total": now.get("mem_total") or 24576, "now": now}
+
+def live_now():
+    """LATEST as clients see it — the one place the hub's live block is prepared.
+
+    /api/data and /api/live (and the SSE `now` event behind it) both ship this
+    dict, and they used to reach for LATEST independently. Anything derived for
+    one of them was then silently missing from the other, which is exactly how
+    the AI Models tab ended up with a blank compute column while the GPU tab had
+    the numbers.
+
+    Derived here rather than at sample time so it can never go stale, and so a
+    spec table that gains a card starts answering for it on the next request
+    instead of the next poll.
+    """
+    from backend import gpuspec
+    now = dict(LATEST)
+    gpuspec.attach(now.get("gpus"))
+    return now
 
 # Where the recognised AI servers live ({name, ip, provider}) — kept OUTSIDE
 # LATEST on purpose: LATEST is served wholesale as /api/data "now", and internal
@@ -669,6 +687,7 @@ from backend.probes import (
     probe_ollama, probe_tgi, probe_koboldcpp, probe_invokeai, probe_a1111,
     probe_whisper_asr, probe_triton, probe_wyoming, probe_comfy,
     PROBES, _match_probe, _match_probe_key, CATALOG_MAX, probe_models,
+    validate_custom_servers,
 )
 
 # ── Model intelligence: per-model metadata + live serving telemetry ───────────
@@ -858,6 +877,12 @@ def collect_serving(ai):
             _SERVE_PREV[name] = (gen, nowt)
         if st:
             st["service"] = name
+            # Same fleet-name stamp probe_models/probe_custom_server apply to models
+            # (see collectors.sample_once's host_label): a custom server registered
+            # for a remote box must carry that box's name here too, or its live
+            # tok/s telemetry is unattributable and only the hub-local AI Models
+            # panel (which doesn't filter by host) ever shows it.
+            st["host"] = ct.get("fleet_host") if "fleet_host" in ct else "local"
             out.append(st)
     return out
 
@@ -885,7 +910,9 @@ def ai_models_now():
         if srv.get("provider") != "ollama":
             continue
         try:
-            rows = probe_ollama(srv.get("ip") or "127.0.0.1")
+            # srv's port is None for container-discovered ollama (probe_ollama
+            # defaults to 11434); custom ollama servers carry their user port.
+            rows = probe_ollama(srv.get("ip") or "127.0.0.1", srv.get("port") or 11434)
         except Exception:
             continue                                # keep the sampler's view for this svc
         if not rows:                                # unreachable/empty → don't blank the tab
@@ -1538,17 +1565,31 @@ def _local_hw():
         hw["machine"] = machine
     # GPU name isn't kept on LATEST (only util/mem), so ask nvidia-smi once (cached).
     try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total",
+        # Per-card list (index,name,memory.total) so the System tab's Hardware
+        # card can name EVERY card, not just the first — a 2- or 3-card box used
+        # to report only its GPU 0. The legacy single-card gpu_name/gpu_mem_total
+        # are kept (first card) so any older client still renders a GPU line.
+        r = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total",
                             "--format=csv,noheader,nounits"], capture_output=True, timeout=3)
         if r.returncode == 0:
-            line = r.stdout.decode("utf-8", "replace").splitlines()[0]
-            nm, _, mt = line.partition(",")
-            if nm.strip():
-                hw["gpu_name"] = nm.strip()
-            try:
-                hw["gpu_mem_total"] = int(mt.strip())
-            except ValueError:
-                pass
+            cards = []
+            for line in r.stdout.decode("utf-8", "replace").splitlines():
+                if not line.strip():
+                    continue
+                idx, _, rest = line.partition(",")
+                nm, _, mt = rest.partition(",")
+                try:
+                    mem = int(mt.strip())
+                except ValueError:
+                    mem = None
+                if nm.strip():
+                    cards.append({"idx": int(idx) if idx.strip().isdigit() else len(cards),
+                                  "name": nm.strip(), "mem_total": mem})
+            if cards:
+                hw["gpus"] = cards
+                hw["gpu_name"] = cards[0]["name"]
+                if cards[0]["mem_total"] is not None:
+                    hw["gpu_mem_total"] = cards[0]["mem_total"]
     except Exception:
         pass
     return hw
@@ -4395,6 +4436,12 @@ SETTING_DEFAULTS = {
     # ── Public status page (#217 follow-up) — Settings-driven toggle so it
     # doesn't require an env-var restart to turn on/off ─────────────────────
     "public_status_enabled": "0",     # "0" / "1"
+    # ── Custom AI servers ──────────────────────────────────────────────────
+    # User-registered model servers at an arbitrary host:port (JSON array of
+    # {"name","host","port","provider"}). Auto-discovery only covers the hub's
+    # containers on standard ports and remotes' localhost ollama, so a vLLM
+    # living on another box at a non-standard port needs this to show up.
+    "custom_ai_servers":   "",
     # ── Display preferences ────────────────────────────────────────────────
     "reduced_motion":       "0",      # "0" (default, matches prior behaviour) / "1" — disables gauge animations
 }
@@ -4560,6 +4607,18 @@ def _validate_gpu_alert_settings(updates):
         if not (lo <= n <= hi):
             return f"{what} must be between {lo} and {hi}."
     return None
+
+def _validate_custom_ai_servers(updates):
+    """Return an error string if custom_ai_servers is malformed, else None.
+
+    Same door-vs-read discipline as the GPU temperature overrides: a silently
+    dropped entry would read as "the server is just down" for the rest of the
+    user's life with this dashboard. Empty value is allowed (it clears the
+    list). The heavy lifting is pure (validate_custom_servers in
+    backend/probes) so it is unit-testable without importing this module."""
+    if "custom_ai_servers" not in updates:
+        return None
+    return validate_custom_servers(updates["custom_ai_servers"])
 
 # ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
 # User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
@@ -4870,7 +4929,8 @@ def _uptime_state(check_id, now, window=86400, window2=604800):
     uptime% over `window` (24h) and `window2` (7d), last_checked, last_err, and a
     coarse heartbeat strip. Caller must NOT hold LOCK (this takes it briefly)."""
     from backend.db.repos import uptime as _uptime_repo
-    since, since2 = now - window, now - window2
+    since = 0 if window is None else now - window
+    since2 = now - window2
     with LOCK:
         rows = _uptime_repo.results_since_full(check_id, since, conn=DB)
         agg2 = _uptime_repo.results_window_agg(check_id, since2, conn=DB)
@@ -6509,6 +6569,10 @@ def _merge_registry(ollama_models, catalog):
             "family": c.get("family"), "param_size": c.get("param_size"),
             "quant": c.get("quant"), "modified": c.get("modified"),
             "loaded": bool(c.get("loaded")), "vram_mb": c.get("vram_mb"),
+            # Links this row back to its serving telemetry (D.now.serving is
+            # keyed by service, not model name) — dropped here previously, which
+            # is why a box's own AI-models card could never look up its tok/s.
+            "service": c.get("service"),
         })
     return out
 
@@ -7372,7 +7436,8 @@ def _public_monitors(now):
 def _public_monitors_summary(monitors):
     return {"total": len(monitors),
             "up": sum(1 for m in monitors if m["state"] == "up"),
-            "down": sum(1 for m in monitors if m["state"] == "down")}
+            "down": sum(1 for m in monitors if m["state"] == "down"),
+            "maintenance": sum(1 for m in monitors if m.get("in_maintenance"))}
 
 def _public_incident_feed(monitors, now, days=14, cap=25):
     """Recent incidents across all public components, tagged with the service
@@ -7457,9 +7522,11 @@ def _public_status_detail(cid, now):
     with LOCK:
         rows90 = _uptime_repo.results_since_full(check["id"], now - 7776000, conn=DB)  # 90 days
     rows24 = [r for r in rows90 if r[0] >= now - 86400]
+    in_maint = _in_maintenance("uptime", check["id"]) or _in_maintenance("uptime", check.get("label", ""))
     return {
         "id": check["id"], "label": check["label"], "type": check["type"],
         "host": _public_monitor_host(check),
+        "in_maintenance": in_maint,
         "state": s["state"], "last_latency_ms": s["last_latency_ms"],
         "last_checked": s["last_checked"], "interval_sec": check["interval_sec"],
         "up_since": _uptime_up_since(rows90),
@@ -7477,16 +7544,19 @@ def _public_status_detail(cid, now):
     }
 
 def _public_overall_status(cards, monitors):
-    """ok only when every overview card is ok and no public monitor is down;
-    crit if a monitor is down; maintenance if nothing is down but something
-    is covered by an active maintenance window; warn otherwise."""
-    if any(m["state"] == "down" for m in monitors):
+    """ok when no public monitor is down and no overview card reports a real
+    problem; crit if a monitor is down and not covered by maintenance; warn if
+    a card reports warn/crit — "info" (subsystem unavailable) doesn't count as
+    a problem, and a real card-level problem is never masked by an unrelated
+    maintenance window; maintenance if nothing above applies but something is
+    in an active maintenance window."""
+    if any(m["state"] == "down" and not m.get("in_maintenance") for m in monitors):
         return "crit"
-    if all(c.get("status") == "ok" for c in cards):
-        if any(m.get("in_maintenance") for m in monitors):
-            return "maintenance"
-        return "ok"
-    return "warn"
+    if any(c.get("status") in ("warn", "crit") for c in cards):
+        return "warn"
+    if any(m.get("in_maintenance") for m in monitors):
+        return "maintenance"
+    return "ok"
 
 def _public_status_enabled():
     """On if either the PUBLIC_STATUS env var or the Settings toggle is set --

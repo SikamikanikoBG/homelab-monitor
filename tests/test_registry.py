@@ -349,5 +349,34 @@ class TestCache(unittest.TestCase):
         self.assertEqual(calls["n"], 2)          # stale → re-fetched
 
 
+class TestResolveFleetHost(unittest.TestCase):
+    """A custom server's fleet_host → the fleet name its models are stamped with.
+    The per-host AI Models tab groups by fleet name, so this is what makes a
+    hub-probed vLLM show up under 'vader' instead of the hub's hostname."""
+    @classmethod
+    def setUpClass(cls):
+        from backend import collectors
+        # A plain module function — call it unbound, `self.resolve(...)` would
+        # hand `self` in as `stored`.
+        cls.resolve = staticmethod(collectors._resolve_fleet_host)
+
+    def test_blank_and_local_are_the_hub(self):
+        for stored in (None, "", "local"):
+            self.assertEqual(self.resolve(stored, {"local", "vader"}), "local")
+
+    def test_known_host_is_itself(self):
+        self.assertEqual(self.resolve("vader", {"local", "vader", "cloudy"}), "vader")
+
+    def test_removed_host_degrades_to_hub(self):
+        # 'vader' was deleted after the server was registered — degrade to the
+        # hub (always visible) rather than vanish into a name no tab has.
+        self.assertEqual(self.resolve("vader", {"local", "cloudy"}), "local")
+
+    def test_case_and_whitespace_are_not_clever(self):
+        # A fleet name is exact-match; we don't normalise, so a typo stays a
+        # "removed" host and degrades to the hub.
+        self.assertEqual(self.resolve("Vader", {"local", "vader"}), "local")
+
+
 if __name__ == "__main__":
     unittest.main()

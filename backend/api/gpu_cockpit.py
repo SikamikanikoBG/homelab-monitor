@@ -20,8 +20,10 @@ Honesty rules applied throughout:
   than letting a chart imply a measurement.
 """
 from flask import Blueprint, request, jsonify
+import logging
 import time
 
+from backend import gpuspec
 from backend.db.repos import gpu_samples as gpu_repo
 
 bp = Blueprint('gpu_cockpit', __name__)
@@ -43,6 +45,7 @@ def _hot_c(host):
         from backend.notify import _gpu_temp_threshold
         return _gpu_temp_threshold(_app.get_settings(), host)
     except Exception:
+        logging.debug("gpu temp threshold lookup failed for host=%s", host, exc_info=True)
         return HOT_C
 
 
@@ -92,10 +95,14 @@ def _live_cards(host):
     The live snapshot, not history: it carries fields the time-series doesn't
     (card name, vendor, per-process by_card VRAM) and it is what makes the tab
     paint instantly on a host whose history is still filling.
+
+    Compute (TFLOPS) is attached HERE rather than at the probe, so a remote host
+    running an older probe still gets its FLOPS figures — everything the lookup
+    needs is the card name and clock, both of which every host already reports.
     """
     import app as _app
     if host == "local":
-        return (list(_app.LATEST.get("gpus") or []),
+        return (gpuspec.attach(list(_app.LATEST.get("gpus") or [])),
                 _app.LATEST.get("gpu_extra") or {},
                 list(_app.LATEST.get("procs") or []),
                 _app.LATEST.get("ts"), True)
@@ -104,7 +111,7 @@ def _live_cards(host):
     if not entry or "data" not in entry:
         return [], {}, [], (entry or {}).get("at"), False
     h = (entry["data"].get("host") or {})
-    return (list(h.get("gpus") or []), h.get("gpu") or {},
+    return (gpuspec.attach(list(h.get("gpus") or [])), h.get("gpu") or {},
             list(h.get("gpu_procs") or []), entry.get("at"),
             _app._host_is_online(entry))
 
@@ -280,10 +287,24 @@ def api_gpu_history():
             for k, m in (("fan", "fan"), ("mem_util", "mem_util"), ("clk_sm", "clk_sm"), ("temp", "temp")):
                 if live.get(m) is not None:
                     supports[k] = True
+        # Peak FLOP/s for this card, and the clock-scaled series derived from the
+        # core clock we were already storing. Two conditions, not one: the card
+        # has to be in the spec table AND the driver has to report a clock. An
+        # unrecognised card advertises `tflops` unsupported rather than drawing a
+        # flat zero line — the same rule every other optional metric follows.
+        compute = gpuspec.compute_for((live or {}).get("name"), (live or {}).get("clk_sm"))
+        supports["tflops"] = bool(compute) and supports["clk_sm"]
+        if compute:
+            boost = compute["boost_mhz"]
+            s["tflops"] = [None if v is None else round(compute["fp32"] * v / boost, 2)
+                           for v in s["clk_sm"]]
+        else:
+            s["tflops"] = [None] * n
         cards.append({
             "idx": idx,
             "name": (live or {}).get("name") or f"GPU {idx}",
             "vendor": (live or {}).get("vendor"),
+            "compute": compute,
             "mem_total": (live or {}).get("mem_total") or _last(s["vram_total"]) or 0,
             "power_limit": (live or {}).get("power_limit") or 0,
             "present": live is not None,
@@ -301,7 +322,8 @@ def api_gpu_history():
     # Combined: VRAM and power are sums across cards, util is the mean, and
     # temperature is the MAX. Averaging temperature across cards would hide the
     # one card that is cooking — which is the entire question this panel answers.
-    combined = {"util": [], "vram": [], "vram_total": [], "power": [], "temp_max": [], "fan_max": []}
+    combined = {"util": [], "vram": [], "vram_total": [], "power": [], "temp_max": [],
+                "fan_max": [], "tflops": []}
     for i in range(n):
         vals = [series[idx] for idx in idxs]
         combined["util"].append(_mean([v["util"][i] for v in vals]))
@@ -310,6 +332,12 @@ def api_gpu_history():
         combined["power"].append(_sum([v["power"][i] for v in vals]))
         combined["temp_max"].append(_max([v["temp_max"][i] for v in vals]))
         combined["fan_max"].append(_max([v["fan_max"][i] for v in vals]))
+        # Summed like power, not averaged like util: the box's FLOP/s ceiling is
+        # what all its cards can do at once. _sum ignores the cards that
+        # contributed nothing, so an unrecognised card in the box lowers the
+        # figure rather than voiding it — which is why the pooled block below
+        # also ships the recognised-card count.
+        combined["tflops"].append(_sum_f([v["tflops"][i] for v in vals]))
 
     capacity = sum(c["mem_total"] for c in cards) or 0
     pooled_limit = (sum(c["power_limit"] for c in cards)
@@ -365,6 +393,12 @@ def _pooled_now(cards, agg):
     # numerator includes.
     if all(caps):
         out["power_limit"] = round(sum(caps))
+    # The box's arithmetic ceiling. Absent — not zero — when none of the cards
+    # are in the spec table, because "we don't know this card" and "this card
+    # can do no work" are not the same statement.
+    compute = gpuspec.pooled(cards)
+    if compute:
+        out["compute"] = compute
     names = sorted({c.get("name") or "GPU" for c in cards})
     out["model"] = (f"{len(cards)}× {names[0]}" if len(names) == 1 and len(cards) > 1
                     else " + ".join(names))
@@ -377,7 +411,8 @@ def _now_block(live):
         return None
     out = {}
     for k in ("util", "mem_used", "mem_total", "power", "power_limit", "temp",
-              "fan", "fan_rpm", "mem_util", "clk_sm", "clk_mem", "temp_mem", "pstate"):
+              "fan", "fan_rpm", "mem_util", "clk_sm", "clk_mem", "temp_mem", "pstate",
+              "compute"):
         v = live.get(k)
         if v is not None:
             out[k] = v
@@ -401,6 +436,13 @@ def _mean(vals):
 def _sum(vals):
     xs = [v for v in vals if v is not None]
     return round(sum(xs)) if xs else None
+
+
+def _sum_f(vals):
+    """_sum for a quantity where whole numbers are too coarse — a P2000 idling
+    at 139 MHz is 0.28 TFLOPS, and rounding that to 0 draws a flat line."""
+    xs = [v for v in vals if v is not None]
+    return round(sum(xs), 2) if xs else None
 
 
 def _max(vals):

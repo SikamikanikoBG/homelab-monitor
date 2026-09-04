@@ -5,6 +5,7 @@
   "monitors": [],
   "monitors_summary": {
     "down": 0,
+    "maintenance": 0,
     "total": 0,
     "up": 0
   },

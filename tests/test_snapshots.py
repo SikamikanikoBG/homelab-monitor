@@ -10,6 +10,7 @@ Run UPDATE_SNAPSHOTS=1 pytest tests/test_snapshots.py to regenerate baselines.
 """
 
 import os
+import re
 import sys
 import json
 import unittest
@@ -21,6 +22,12 @@ import app
 from snapshot_helper import assert_snapshot, frozen_time, FROZEN_TS, SNAP_DIR
 
 WDIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# app.VERSION changes every release. Snapshots that would otherwise embed the
+# literal replace it with this sentinel before comparing, so a version bump
+# alone never breaks a snapshot — the real value is still asserted separately
+# against app.VERSION at the call site.
+VERSION_SENTINEL = "<VERSION>"
 
 
 def _clean_db():
@@ -126,6 +133,8 @@ class TestSnapshots(unittest.TestCase):
              patch("app.uptime_insights", return_value=[]):
             r = self.client.get("/api/data?range=1h")
             data = r.get_json()
+        self.assertEqual(data["version"], app.VERSION)
+        data["version"] = VERSION_SENTINEL
         assert_snapshot(self, "api_data", data)
 
     # ─── /api/cost ───────────────────────────────────────────────────────────
@@ -399,6 +408,8 @@ class TestSnapshots(unittest.TestCase):
     def test_healthz(self):
         r = self.client.get("/healthz")
         data = r.get_json()
+        self.assertEqual(data["version"], app.VERSION)
+        data["version"] = VERSION_SENTINEL
         assert_snapshot(self, "healthz", data)
 
     # ─── GET /api/changelog ──────────────────────────────────────────────────
@@ -413,6 +424,28 @@ class TestSnapshots(unittest.TestCase):
             "has_sections": bool(raw and raw.get("sections")),
             "markdown_prefix": (raw.get("markdown") or "")[:100],
         }
+
+        # Real contract: the newest release heading the endpoint serves must
+        # match the newest release heading in CHANGELOG.md, both parsed fresh
+        # (not hardcoded on either side) so this survives every release.
+        heading_re = re.compile(r"##\s*\[([\d.]+)\]")
+        api_heading = heading_re.match((raw.get("markdown") or "").splitlines()[0])
+        self.assertIsNotNone(api_heading, "changelog endpoint did not return a version heading")
+        changelog_path = os.path.join(WDIR, "CHANGELOG.md")
+        with open(changelog_path, encoding="utf-8") as f:
+            changelog_text = f.read()
+        first_release_line = next(
+            line for line in changelog_text.splitlines() if heading_re.match(line)
+        )
+        changelog_heading = heading_re.match(first_release_line)
+        self.assertEqual(api_heading.group(1), changelog_heading.group(1))
+
+        # Sentinel out the version literal (appears in both the heading and its
+        # release-tag URL) and the release date, so the snapshot no longer
+        # breaks on a version bump or a same-day-next-year re-release.
+        prefix = re.sub(r"\d+\.\d+\.\d+", VERSION_SENTINEL, data["markdown_prefix"])
+        prefix = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", prefix)
+        data["markdown_prefix"] = prefix
         assert_snapshot(self, "api_changelog", data)
 
     # ─── GET /favicon.ico ────────────────────────────────────────────────────
@@ -451,6 +484,10 @@ class TestSnapshots(unittest.TestCase):
              patch("app.enrich_os_upgrade", side_effect=lambda x: x):
             r = self.client.get("/api/health")
             data = r.get_json()
+        self.assertEqual(data["version"], app.VERSION)
+        self.assertEqual(data["update"]["current"], app.VERSION)
+        data["version"] = VERSION_SENTINEL
+        data["update"]["current"] = VERSION_SENTINEL
         assert_snapshot(self, "api_health", data)
 
     # ─── GET /metrics ─────────────────────────────────────────────────────────
@@ -647,6 +684,8 @@ class TestSnapshots(unittest.TestCase):
     def test_api_settings_get(self):
         r = self.client.get("/api/settings")
         data = r.get_json()
+        self.assertEqual(data["version"], app.VERSION)
+        data["version"] = VERSION_SENTINEL
         assert_snapshot(self, "api_settings_get", data)
 
     # ─── POST /api/settings ──────────────────────────────────────────────────
@@ -659,6 +698,8 @@ class TestSnapshots(unittest.TestCase):
         # Reset so other tests aren't affected
         self.client.post("/api/settings", json={"currency": "$"},
                          content_type="application/json")
+        self.assertEqual(data["version"], app.VERSION)
+        data["version"] = VERSION_SENTINEL
         assert_snapshot(self, "api_settings_post", data)
 
     # ─── POST /api/notify/test ────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import logging
 import socket
 """
 backend/collectors — background worker functions extracted from app.py (Phase 3.2).
@@ -25,7 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.db.repos.samples import rollup_now as _rollup_now
 from backend.db.repos.samples import rollup_net_now as _rollup_net_now
 from backend._heartbeat import heartbeat as _heartbeat, get_heartbeats as _get_heartbeats
-from backend.probes import _match_probe, _match_probe_key, probe_models
+from backend.probes import (_match_probe, _match_probe_key, probe_models,
+                            probe_custom_server, parse_custom_servers)
 
 # Re-export so callers can do `from backend.collectors import _HEARTBEATS, _HEARTBEAT_LOCK`
 # (used by tests that import the heartbeat module directly for isolation assertions).
@@ -98,6 +100,17 @@ def uptime_worker():
 # (container becomes healthy again, disk drops below threshold, etc.), so the
 # next failure re-fires exactly once.
 
+
+def _resolve_fleet_host(stored, known_hosts):
+    """A custom server's fleet_host setting → the fleet name its models are
+    stamped with. ""/None/"local" → "local" (the hub). A name that is currently
+    a registered fleet host → itself (so the per-host AI Models tab picks it up).
+    Anything else — a host that was removed after the server was registered —
+    degrades to the hub, where it was always visible, rather than vanishing into
+    a name no tab has. Pure → unit-testable."""
+    if not stored or stored == "local":
+        return "local"
+    return stored if stored in known_hosts else "local"
 
 def sample_once():
     import app as _app
@@ -227,6 +240,7 @@ def sample_once():
                     except ValueError:
                         pass
             except Exception:
+                logging.debug("per-PID GPU memory aggregation failed", exc_info=True)
                 pass
         # Aggregate the 'GPU right now' chips from EVERY card, whatever the vendor:
         # NVIDIA cards were enriched just above, AMD ones arrive already enriched
@@ -260,18 +274,65 @@ def sample_once():
     # expired) or sits between requests still shows up as Idle instead of vanishing.
     # Probes are independent 2 s-timeout HTTP calls, so run them in parallel.
     ai = [c for c in conts if _match_probe(c)]
+    # Plus the user-registered custom servers: auto-discovery only reaches
+    # the hub's containers on standard ports and remotes' localhost ollama, so a
+    # vLLM on another box at a non-standard port needs an explicit entry. A
+    # malformed setting degrades to "no custom servers", never to a broken sample.
+    custom_raw = _app.get_settings().get("custom_ai_servers") or ""
+    custom, _c_err = parse_custom_servers(custom_raw)
+    if _c_err or custom is None:
+        print(f"custom_ai_servers ignored ({_c_err or 'unparseable'}): {str(custom_raw)[:120]!r}", flush=True)
+        custom = []
+    # Fleet names the per-host AI Models tab filters on: "local" (the hub) plus
+    # the registered hosts. Read once per sample, not per row.
+    try:
+        _known_hosts = {"local"} | {h["name"] for h in _app.list_hosts()}
+    except Exception:
+        _known_hosts = {"local"}
+    for s in custom:
+        if any(c["name"] == s["name"] for c in ai):
+            continue                                    # container discovery already covers it
+        fleet = _resolve_fleet_host(s.get("fleet_host"), _known_hosts)
+        if fleet != (s.get("fleet_host") or "local"):
+            print(f"custom_ai_servers '{s['name']}': host '{s.get('fleet_host')}' "
+                  f"not registered — shown under the hub instead", flush=True)
+        ai.append({"name": s["name"], "ip": s["host"], "port": s["port"],
+                   "provider": s["provider"], "image": s["provider"],
+                   "ports": [s["port"]], "fleet_host": fleet})
     models = []
     model_catalog = []   # {host, service, provider, model, loaded, vram_mb} — the Installed-models registry (#219)
-    ai_servers = []      # {name, ip, provider} — for the /api/ai/now throttled live re-probe
+    ai_servers = []      # {name, ip, port, provider} — for the /api/ai/now throttled live re-probe
+    # Needed below, ahead of its usual place further down: every non-Ollama probe
+    # (vLLM, llama.cpp, TGI, …) always reports vram=None — it has no on-disk/loaded
+    # split the way Ollama does, so the *only* other way to attribute VRAM is the
+    # hub's own nvidia-smi process list, which can never see a process on a remote
+    # box. A custom server registered against a remote fleet_host would then show
+    # "not loaded" forever despite visibly serving traffic — its live /metrics
+    # telemetry (below) is the one host-independent signal that it's genuinely
+    # resident, so it has to be known before "loaded" is decided per model.
+    try:
+        serving = _app.collect_serving(ai)
+    except Exception as e:
+        print(f"collectors/sample_once collect_serving error: {e}", flush=True)
+        serving = []
+    serving_services = {s["service"] for s in serving if s.get("service")}
     if ai:
+        def _probe_one(ct):
+            # Containers ride the port-guessing PROBES table; custom descriptors
+            # carry the user's explicit port, so probe_custom_server owns them.
+            return probe_custom_server(ct) if "port" in ct else probe_models(ct)
         with ThreadPoolExecutor(max_workers=min(8, len(ai))) as ex:
-            found_lists = list(ex.map(probe_models, ai))
-        provider_of = {c["name"]: _match_probe_key(c) for c in ai}
+            found_lists = list(ex.map(_probe_one, ai))
+        provider_of = {c["name"]: (c.get("provider") or _match_probe_key(c)) for c in ai}
         ai_servers = [{"name": c["name"], "ip": c.get("ip") or "127.0.0.1",
-                       "provider": provider_of.get(c["name"])} for c in ai]
+                       "port": c.get("port"), "provider": provider_of.get(c["name"])} for c in ai]
         for ct, found in zip(ai, found_lists):
             svc = ct["name"]
             provider = provider_of.get(svc)
+            # The per-host AI Models tab groups /api/models by fleet name; the
+            # hub's rows must say "local" (its raw hostname matches no pill), and
+            # a custom server rides the fleet name it was registered for.
+            host_label = ct.get("fleet_host") if "fleet_host" in ct else "local"
             smem = procs.get(svc)                         # MB this server holds on the GPU now
             api_vram = any(v is not None for _, v, _, _ in found)
             for mdl, vram, ram, ctx in found:
@@ -287,11 +348,13 @@ def sample_once():
                 models.append((svc, mdl, vram_val, ram_val,
                                ctx if vram_val is not None else None))
                 model_catalog.append({
-                    "host": socket.gethostname(),
+                    "host": host_label,
                     "service": svc,
                     "provider": provider,
                     "model": mdl,
-                    "loaded": vram_val is not None,
+                    # A model this server's own /metrics confirms is actively serving
+                    # is unambiguously loaded, VRAM or no VRAM figure to show for it.
+                    "loaded": vram_val is not None or svc in serving_services,
                     "vram_mb": vram_val,
                     "ram_mb": ram_val,
                 })
@@ -299,19 +362,16 @@ def sample_once():
     # Attribute model-server traffic to its callers (who is driving Ollama, etc.).
     edges = _app.sample_callers(conts, {c["name"] for c in ai})
 
-    # Model intelligence: per-model metadata (Ollama /api/show, cached) + live serving
-    # telemetry (vLLM/TGI /metrics). Both best-effort — a slow/absent endpoint must
-    # never wedge the sample, so each is isolated.
+    # Model intelligence: per-model metadata (Ollama /api/show, cached). Live serving
+    # telemetry (vLLM/TGI /metrics) was already collected above — collect_serving()
+    # tracks each service's token counter between calls to derive tok/s, so calling
+    # it a second time here would sample that delta over mere milliseconds instead
+    # of a full sample interval and report a garbage rate.
     try:
         model_meta = _app.collect_model_meta(ai, models)
     except Exception as e:
         print(f"collectors/sample_once collect_model_meta error: {e}", flush=True)
         model_meta = {}
-    try:
-        serving = _app.collect_serving(ai)
-    except Exception as e:
-        print(f"collectors/sample_once collect_serving error: {e}", flush=True)
-        serving = []
     try:
         training = _app.collect_training(gpu_pids)
     except Exception as e:

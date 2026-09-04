@@ -35,7 +35,7 @@ class TestAiModelsNow(unittest.TestCase):
         with patch("app.probe_ollama",
                    return_value=[("fresh:30b", 15000.0, 5000.0, 65536)]) as po:
             models, _at = app.ai_models_now()
-        po.assert_called_once_with("1.2.3.4")               # non-ollama servers not probed
+        po.assert_called_once_with("1.2.3.4", 11434)        # non-ollama servers not probed
         by = {m["model"]: m for m in models}
         self.assertNotIn("stale:8b", by)                    # replaced by the live view
         self.assertEqual(by["fresh:30b"],

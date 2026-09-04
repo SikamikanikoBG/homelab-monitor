@@ -18,7 +18,7 @@ def _http_json(ip, port, path, timeout=2):
         c.close()
     return json.loads(body) if status < 400 else None
 
-def probe_ollama(ip):
+def probe_ollama(ip, port=11434):
     """Ollama: models loaded *now* from /api/ps — live VRAM plus any spill into
     system RAM (`size` is the whole resident model, `size_vram` the GPU part; the
     difference is CPU-offloaded — same split the Benchmark Lab calls ram_offload).
@@ -26,8 +26,9 @@ def probe_ollama(ip):
     Newer ollama also reports `context_length` — the num_ctx this load is running
     with, i.e. what sizes the KV cache — carried as a 4th element (None on older
     servers). If nothing is loaded, fall back to the pulled catalogue (/api/tags)
-    so the server still shows as Idle."""
-    ps = _http_json(ip, 11434, "/api/ps")
+    so the server still shows as Idle. `port` defaults to the standard one; the
+    custom-servers registry passes a user-chosen port instead."""
+    ps = _http_json(ip, port, "/api/ps")
     loaded = []
     for m in (ps or {}).get("models", []):
         size, vram = m.get("size") or 0, m.get("size_vram") or 0
@@ -38,14 +39,17 @@ def probe_ollama(ip):
                        int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else None))
     if loaded:
         return loaded
-    tags = _http_json(ip, 11434, "/api/tags")
+    tags = _http_json(ip, port, "/api/tags")
     return [(m["name"], None) for m in (tags or {}).get("models", []) if m.get("name")]
 
 def _openai_models(*ports):
     """Factory for the OpenAI-compatible `GET /v1/models` shape (`data[].id`), shared by
     vLLM, llama.cpp/llama-server, LocalAI, faster-whisper-server/Speaches, koboldcpp,
     tabbyAPI, text-generation-webui, LM Studio, xinference, … — they differ only by port.
-    Tries each candidate port until one answers with a non-empty model list."""
+    Tries each candidate port until one answers with a non-empty model list. The
+    `_openai` marker is what makes _OPENAI_KEYS (below) stay in sync with this
+    factory automatically — a new provider added here is port-addressable for
+    custom servers without a second edit."""
     def fn(ip):
         for p in ports:
             d = _http_json(ip, p, "/v1/models")
@@ -53,6 +57,7 @@ def _openai_models(*ports):
             if data:
                 return [(m.get("id"), None) for m in data if m.get("id")]
         return []
+    fn._openai = True
     return fn
 
 def probe_tgi(ip):
@@ -204,6 +209,13 @@ PROBES = [
     ("comfyui",                    probe_comfy),
 ]
 
+# Providers whose probe is the _openai_models factory — i.e. the ones that only
+# differ by port. Derived from the marker the factory sets, so adding a provider
+# to PROBES keeps custom-server port targeting working without a second edit.
+# (probe_whisper_asr borrows the OpenAI shape as a fallback but owns its own
+# port ladder, so it is correctly absent from this set.)
+_OPENAI_KEYS = {key for key, fn in PROBES if getattr(fn, "_openai", False)}
+
 def _match_probe(ct):
     """Return the probe fn for a container whose image/name matches a known server, else None."""
     img, name = ct.get("image", "").lower(), ct.get("name", "").lower()
@@ -225,6 +237,23 @@ def _match_probe_key(ct):
 
 CATALOG_MAX = 15   # max idle "available" models listed per server before collapsing to a count
 
+def _normalize_model_rows(raw, label):
+    """Normalize a probe's raw rows to (model, vram_mb, ram_spill_mb, ctx_now).
+    Only Ollama reports the spill split + runtime context today, so narrower
+    rows get None (= unknown) for the missing fields. Shared by probe_models and
+    probe_custom_server so the two discovery paths can't drift. Also applies the
+    oversized-idle-catalogue collapse: loaded models and small catalogues (e.g.
+    your pulled Ollama models) are kept verbatim, an oversized one (faster-whisper
+    exposes its full upstream registry of 400+ models) becomes a single summary
+    row so it can't flood the panel."""
+    found = [(it[0], it[1], it[2] if len(it) > 2 else None, it[3] if len(it) > 3 else None)
+             for it in raw if it[0]]
+    loaded = [x for x in found if x[1] is not None]
+    idle   = [x for x in found if x[1] is None]
+    if len(idle) > CATALOG_MAX:
+        idle = [(f"{len(idle)} models available", None, None, None)]
+    return loaded + idle
+
 def probe_models(ct):
     fn = _match_probe(ct)
     if not fn:
@@ -232,24 +261,147 @@ def probe_models(ct):
     # Host-networked servers have no per-container IP; the hub shares the host net
     # namespace, so localhost reaches them on their published/default port.
     ip = ct.get("ip") or "127.0.0.1"
-    # Normalize every probe's rows to (model, vram_mb, ram_spill_mb, ctx_now).
-    # Only Ollama reports the spill split + runtime context today, so narrower
-    # rows get None (= unknown) for the missing fields.
     try:
-        found = [(it[0], it[1], it[2] if len(it) > 2 else None, it[3] if len(it) > 3 else None)
-                 for it in fn(ip) if it[0]]
+        return _normalize_model_rows(fn(ip), ct.get("name", ""))
     except Exception as e:
         print(f"probes/probe_models error: {e}", flush=True)
         return []
-    loaded = [x for x in found if x[1] is not None]
-    idle   = [x for x in found if x[1] is None]
-    # Collapse an oversized idle catalogue (faster-whisper, for one, exposes its full
-    # upstream registry of 400+ models) into a single summary row so it can't flood
-    # the panel. Loaded models and small catalogues (e.g. your pulled Ollama models)
-    # are kept verbatim.
-    if len(idle) > CATALOG_MAX:
-        idle = [(f"{len(idle)} models available", None, None, None)]
-    return loaded + idle
+
+def _openai_models_at(ip, port):
+    """OpenAI-compatible GET /v1/models on ONE explicit port (vLLM, llama.cpp,
+    LocalAI, LM Studio, …). Used by the custom-servers registry, where the user
+    has already said which port to talk to — no candidate-port guessing."""
+    data = (_http_json(ip, port, "/v1/models") or {}).get("data")
+    return [(m.get("id"), None) for m in (data or []) if isinstance(m, dict) and m.get("id")]
+
+def _probe_for_provider(provider, ip, port):
+    """Resolve a PROBES provider key to its probe fn at a user-chosen port.
+    Every standard probe takes (ip, ...) and ignores an explicit port, so the
+    port-aware ones (ollama, the OpenAI family) are special-cased and the rest
+    run on their built-in default ports."""
+    fn = dict(PROBES).get(provider)
+    if not fn:
+        return []
+    if provider == "ollama":
+        return probe_ollama(ip, port)
+    if provider in _OPENAI_KEYS:
+        return _openai_models_at(ip, port)
+    # Remaining providers carry their own port logic; a custom port doesn't
+    # apply to them (there is nothing to override), so run them on defaults.
+    return fn(ip)
+
+def probe_custom_server(desc):
+    """A user-registered AI server from the custom_ai_servers setting:
+    {"name","host","port","provider"} — the auto-discovery only covers the hub's
+    containers on standard ports and remotes' localhost ollama, so a vLLM living
+    on another box at a non-standard port needs this to show up. Provider is a
+    PROBES key; the port is always the user's explicit one. Normalizes rows the
+    same way probe_models does, so the sampler's catalog merge is shape-agnostic."""
+    # Two descriptor shapes reach here: the settings door / Test endpoint send
+    # "host", the sampler reuses the container-descriptor shape and sends "ip".
+    # Accept both, or the sampler silently probes an empty host and the user's
+    # registered server never shows up while its Test button still passes.
+    ip = (desc.get("host") or desc.get("ip") or "").strip()
+    provider = (desc.get("provider") or "").strip()
+    try:
+        port = int(desc.get("port"))
+    except (TypeError, ValueError):
+        port = 0
+    if not ip or not (1 <= port <= 65535) or not provider:
+        return []
+    try:
+        return _normalize_model_rows(_probe_for_provider(provider, ip, port),
+                                     desc.get("name", provider))
+    except Exception as e:
+        print(f"probes/probe_custom_server error ({desc.get('name')}): {e}", flush=True)
+        return []
+
+def parse_custom_servers(raw):
+    """Parse + clean the custom_ai_servers setting value (a JSON array string) into
+    [{"name","host","port","provider","fleet_host"}]. Pure — unit-testable.
+    Returns (entries, error): a non-None error means the value is malformed and
+    must be rejected, not silently dropped. Blank input is the empty list, not an
+    error — that is how the user clears the setting. Pre-fleet_host stored values
+    parse fine: a missing key becomes "" (= the hub)."""
+    if raw is None:
+        return [], None
+    if not isinstance(raw, str):
+        try:
+            raw = json.dumps(raw)
+        except (TypeError, ValueError):
+            return None, "must be a JSON array"
+    raw = raw.strip()
+    if not raw:
+        return [], None
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        return None, "not a JSON array"
+    return _clean_custom_server_list(entries)
+
+def _clean_custom_server_list(entries):
+    """The shared validation body: a JSON-decoded value → (clean list, error).
+    A non-list, an oversized list, or a bad entry each produces an error, so a
+    malformed value is rejected rather than silently truncated. Entries are
+    {name, host, port, provider, fleet_host}: fleet_host is the fleet name the
+    server runs on ("" or "local" = the hub) — where its models show up on the
+    AI Models tab. The hub still probes it; only the stamping follows the name."""
+    if not isinstance(entries, list):
+        return None, "must be a JSON array"
+    if len(entries) > 20:
+        return None, "at most 20 entries"
+    out = []
+    seen = set()
+    for e in entries:
+        if not isinstance(e, dict):
+            return None, "each entry must be an object"
+        name = str(e.get("name") or "").strip()
+        host = str(e.get("host") or "").strip()
+        provider = str(e.get("provider") or "").strip()
+        try:
+            port = int(e.get("port"))
+        except (TypeError, ValueError):
+            return None, f"'{name or '?'}' has a bad port"
+        if not name or not host or not (1 <= port <= 65535) or provider not in dict(PROBES):
+            return None, f"'{name or '?'}' needs name, host, a port and a known provider"
+        fleet_host = e.get("fleet_host")
+        if fleet_host is None:
+            fleet_host = ""
+        elif not isinstance(fleet_host, str):
+            return None, f"'{name or '?'}' fleet_host must be a host name"
+        fleet_host = fleet_host.strip()
+        if len(fleet_host) > 40:
+            return None, f"'{name or '?'}' fleet_host is longer than 40 characters"
+        if (name, host, port) in seen:
+            return None, f"'{name}' at {host}:{port} is listed twice"
+        seen.add((name, host, port))
+        out.append({"name": name, "host": host, "port": port, "provider": provider,
+                    "fleet_host": fleet_host})
+    return out, None
+
+def validate_custom_servers(raw):
+    """Door validation for the settings POST: returns a user-facing error string
+    if the value is malformed, else None. Pure (no DB / no PROBES mutation) so it
+    is unit-testable. A non-string value (a direct API client posting the list
+    itself) is coerced the same way the route stores it, then validated — never
+    crash on .strip()."""
+    entries_err = None
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        try:
+            raw = json.dumps(raw)
+        except (TypeError, ValueError):
+            return "Custom AI servers must be a JSON array."
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        return "Custom AI servers must be a JSON array, e.g. [{\"name\":\"vllm\",\"host\":\"vader\",\"port\":8010,\"provider\":\"vllm\"}]."
+    _clean, err = _clean_custom_server_list(entries)
+    return f"Custom AI servers: {err}." if err else None
 
 # ── Group 2: Host metrics probe ───────────────────────────────────────────────
 

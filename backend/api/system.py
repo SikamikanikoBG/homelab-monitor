@@ -192,7 +192,7 @@ def api_data():
                     "services": services, "other": other, "summary": summary, "model_summary": model_summary,
                     "callers": callers, "events": oom_evs, "insights": insights, "pressure_free_mb": _app.PRESSURE_MB,
                     "uptime_summary": up_summary, "disk_io": disk_io,
-                    "mem_total": mem_total, "peak_mem": peak, "now": _app.LATEST})
+                    "mem_total": mem_total, "peak_mem": peak, "now": _app.live_now()})
 
 
 @bp.route("/api/network")
@@ -623,13 +623,62 @@ def api_settings():
         # Secrets pass through the "_set: false" sentinel from the UI as a way
         # to clear without revealing the current value.
         updates = {k: body[k] for k in body if k in _app.SETTING_DEFAULTS}
+        # custom_ai_servers is stored as a JSON string. The UI sends the string;
+        # a direct API client may POST the list itself — normalize here, or
+        # save_settings would persist str(list) (a Python repr, not JSON) and
+        # the value would be unreadable on every later parse.
+        if "custom_ai_servers" in updates and not isinstance(updates["custom_ai_servers"], str):
+            updates["custom_ai_servers"] = json.dumps(updates["custom_ai_servers"])
         err = (_app._validate_url_settings(updates) or _app._validate_email_settings(updates)
                or _app._validate_brief_settings(updates) or _app._validate_retention_settings(updates)
-               or _app._validate_gpu_alert_settings(updates))
+               or _app._validate_gpu_alert_settings(updates) or _app._validate_custom_ai_servers(updates))
         if err:
             return jsonify({"ok": False, "error": err}), 400
         _app.save_settings(updates)
     return jsonify({"version": _app.VERSION, "settings": _app._public_settings()})
+
+
+@bp.route("/api/settings/ai_servers/providers")
+def api_settings_ai_servers_providers():
+    import app as _app
+    """The PROBES provider keys, for the custom-AI-servers type dropdown. A
+    stable, ordered list: the curated common ones first, the rest alphabetical."""
+    keys = [key for key, _fn in _app.PROBES]
+    preferred = ["vllm", "ollama", "lmstudio", "lm-studio", "llama.cpp", "llama-server",
+                 "sglang", "localai", "local-ai", "xinference", "koboldcpp", "mistral-rs",
+                 "text-generation-inference"]
+    out = [k for k in preferred if k in keys]
+    out += sorted(k for k in keys if k not in out)
+    return jsonify({"providers": out})
+
+
+@bp.route("/api/settings/ai_servers/test", methods=["POST"])
+def api_settings_ai_servers_test():
+    import app as _app
+    """One-shot reachability test for a (not-yet-saved) custom AI server. The
+    browser can't be assumed to reach a private host:port — a server on the LAN
+    or tailnet the user is browsing from may be invisible to it — so the probe
+    runs from the hub. Always 200; `ok` is the signal, the model list is the
+    proof, and nothing but that leaks back out."""
+    from backend.probes import probe_custom_server
+    body = request.get_json(silent=True) or {}
+    desc = {"name": str(body.get("name") or "test")[:60],
+            "host": str(body.get("host") or "").strip(),
+            "port": body.get("port"),
+            "provider": str(body.get("provider") or "").strip()}
+    try:
+        desc["port"] = int(desc["port"])
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "models": [], "error": "Port must be a number."})
+    rows = probe_custom_server(desc)
+    if not rows:
+        return jsonify({"ok": False, "models": [],
+                        "error": f"No models answered from {desc['host']}:{desc['port']} "
+                                 f"({desc['provider']}). Check the host, port and provider."})
+    names = [r[0] for r in rows][:50]
+    loaded = sum(1 for r in rows if r[1] is not None)
+    return jsonify({"ok": True, "models": names, "loaded": loaded,
+                    "truncated": len(names) == 50 and len(rows) > 50})
 
 
 @bp.route("/api/update/app", methods=["POST"])

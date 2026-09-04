@@ -6,7 +6,8 @@ WORKDIR /app
 # openssh-client provides ssh + ssh-keygen for the multi-host registry probes.
 # mcp = the Model Context Protocol SDK powering the built-in MCP server (served on
 # $MCP_PORT alongside the dashboard); it pulls in starlette/uvicorn for HTTP.
-RUN pip install --no-cache-dir flask==3.0.3 jeepney==0.8.0 prometheus_client==0.20.0 "mcp>=1.9.0,<2" \
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
  && apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/*

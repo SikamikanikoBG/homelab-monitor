@@ -127,6 +127,11 @@ COSTS_ENTITY = {
     "resources": {"gpu_vram_peak_mb": 8200},
 }
 
+UPTIME = {"checks": [{"id": "api", "label": "API", "state": "up", "uptime7": 99.5}], "now": 1700, "range": "30d"}
+MAINTENANCE = [{"id": "mw1", "label": "nightly", "kind": "uptime", "pattern": "api"}]
+UPTIME_REQUESTS = []
+MAINTENANCE_FAIL = False
+
 RUNS = {
     "range": "7d", "currency": "BGN", "tariff_mode": "dual",
     "runs": [
@@ -191,6 +196,8 @@ ROUTES = {
     "/api/costs/entity": COSTS_ENTITY,
     "/api/runs": RUNS,
     "/api/models": MODELS,
+    "/api/uptime": UPTIME,
+    "/api/maintenance": MAINTENANCE,
     "/healthz": HEALTHZ,
 }
 
@@ -208,6 +215,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/maintenance" and MAINTENANCE_FAIL:
+            self.send_response(503)
+            self.end_headers()
+            return
+        if path == "/api/uptime":
+            UPTIME_REQUESTS.append(self.path)
         if path == "/api/disk_scan":
             # crude query parse: /slow always scanning, everything else done.
             scanning = "%2Fslow" in self.path or "/slow" in self.path
@@ -352,6 +365,18 @@ def run():
         check("blame" in r["events"][0], "blame preserved")
         check(len(r["insights"]) == 1, "insights surfaced")
         check(hc.get_alerts()["events"] == r["events"], "get_alerts aliases get_events")
+
+        print("get_uptime")
+        r = hc.get_uptime("30d")
+        check(r["range"] == "30d" and r["checks"][0]["uptime7"] == 99.5, "uptime checks surfaced")
+        check(UPTIME_REQUESTS[-1] == "/api/uptime?range=30d", "uptime range forwarded")
+        check(r["maintenance"][0]["label"] == "nightly", "maintenance windows included")
+
+        global MAINTENANCE_FAIL
+        MAINTENANCE_FAIL = True
+        r = hc.get_uptime()
+        check(r["checks"] and r["maintenance"] == [], "uptime survives maintenance failure")
+        MAINTENANCE_FAIL = False
 
         print("get_costs")
         r = hc.get_costs("7d")
