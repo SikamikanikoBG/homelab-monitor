@@ -7001,6 +7001,7 @@ function setHost(name){
   if(name === CURRENT_HOST) return;
   CURRENT_HOST = name;
   localStorage.setItem('hl_host', name);
+  mcResetCockpitAnimations();   // the cockpit's "This host" engine now shows a different box — animate its arrival, not a snap
   renderHostBar();
   refreshLocalOnlyNotices();   // hide/show cards across all local-only tabs
   // The Installed-models inventory is host-scoped too — re-filter the cached
@@ -7362,12 +7363,32 @@ async function refreshMcCost(){
   MC_COST_AT=Date.now();
   try{ MC_COST = await (await fetch('/api/costs?range=7d&host=all')).json(); }catch(e){ MC_COST=null; }
 }
+// Cockpit widgets (mcCountUp, mcSetTriArc, mcSweepHero, mcPaintFleet,
+// mcPaintLeaderboard) each mark themselves "already painted" via a
+// data-mc-inited flag the first time they draw, so every later repaint —
+// no matter which of the cockpit's several independent pollers triggered it —
+// snaps straight to the new value instead of replaying the arrival
+// animation. Call this when the subject actually changes (a different host
+// or hero mode is now on screen) so the nice sweep-in/count-up plays again
+// for what is, from the viewer's point of view, new content.
+function mcResetCockpitAnimations(){
+  const ck=document.getElementById('mc-cockpit'); if(!ck) return;
+  ck.querySelectorAll('[data-mc-inited]').forEach(el=>{ delete el.dataset.mcInited; });
+}
 function mcCountUp(el, target, dur, dec){
   if(!el) return; target = (+target)||0; dec = dec==null?2:dec;
   // A count-up is an *arrival* animation — it reads as "here is the number" the
-  // first time a panel paints. On a live tick every couple of seconds it reads as
-  // a number that never settles, so live repaints assign straight to the value.
-  if(MC_RM || LIVE_TICK){ el.textContent = target.toFixed(dec); return; }
+  // first time a panel paints. The cockpit repaints from several independent
+  // pollers (the SSE live tick, the ~15-60s history/health poll, the throttled
+  // cost refresh), and only one of those ever flagged itself as "this is a
+  // live tick" — the other two replayed the count-up-from-zero on every
+  // background refresh, which read as the number blinking. Track "already
+  // painted" on the element itself instead: it survives regardless of which
+  // poller triggered this call, and mcResetCockpitAnimations() clears it back
+  // to "fresh" on a genuine subject change (host/mode switch) so the nice
+  // arrival animation still plays there.
+  if(MC_RM || el.dataset.mcInited){ el.textContent = target.toFixed(dec); return; }
+  el.dataset.mcInited='1';
   MC_RAF.push(true); const tok = MC_RAF.length; const t0 = performance.now();
   (function step(now){
     if(tok!==MC_RAF.length){ el.textContent = target.toFixed(dec); return; }   // canceled by a newer render
@@ -7394,20 +7415,12 @@ function renderMissionControl(){
   mcInitCockpitIcons();                     // one-time: swap cockpit icons to the app's SVG family
   mcInitTriToggle();                        // one-time: wire the engine This-host / Whole-fleet toggle
   MC_RAF.push(true);                        // cancel any in-flight count-ups
-  // Capture the tick's LIVE_TICK now: renderLive() resets the global back to false
-  // (in its `finally`) as soon as this synchronous call returns, which is always
-  // before refreshMcCost()'s promise settles — even on the throttled early-return
-  // path, since that resolution is a microtask queued behind the reset. Without
-  // capturing it, this second, cost-driven repaint always looked like a fresh
-  // first paint to mcPaintFleet/mcPaintLeaderboard and re-ran their width-from-0
-  // arrival animation on every single live poll — the actual source of the
-  // fleet-rail/leaderboard bars blinking on refresh.
-  const wasLiveTick = LIVE_TICK;
-  refreshMcCost().then(()=>{
-    if(TAB!=='overview') return;
-    const prev = LIVE_TICK; LIVE_TICK = wasLiveTick;
-    try{ paintMissionControl(); } finally { LIVE_TICK = prev; }
-  });
+  // The cost-driven repaint below and the synchronous one right after it both
+  // land on widgets that now track their own "already painted" state (see
+  // mcResetCockpitAnimations) rather than trusting a global "is this a live
+  // tick" flag — so however many times this fires per poll, only a genuine
+  // first paint (or an explicit reset on host/mode switch) animates.
+  refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
   paintMissionControl();
 }
 function paintMissionControl(){
@@ -7475,6 +7488,7 @@ function mcInitTriToggle(){
   seg.querySelectorAll('button').forEach(b=>b.onclick=(e)=>{
     e.stopPropagation(); MC_TRIMODE=b.dataset.m;
     try{ localStorage.setItem('hl_mc_trimode',MC_TRIMODE); }catch(_){}
+    mcResetCockpitAnimations();
     if(typeof paintMissionControl==='function') paintMissionControl();
   });
 }
@@ -7750,7 +7764,7 @@ function mcRenderModeSeg($, mode, fleetHasGpu){
   if(fleetHasGpu) items.push(['fgpu',I18N.t('mc.mode_fgpu','Fleet GPU')]);
   items.push(['fcpu',I18N.t('mc.mode_fcpu','Fleet CPU')]);
   seg.innerHTML=items.map(([k,l])=>`<button data-mode="${k}" class="${k===mode?'on':''}">${esc(l)}</button>`).join('');
-  seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ MC_HEROMODE=b.dataset.mode; try{localStorage.setItem('hl_mc_hero',MC_HEROMODE);}catch(e){} if(typeof paintMissionControl==='function') paintMissionControl(); });
+  seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ MC_HEROMODE=b.dataset.mode; try{localStorage.setItem('hl_mc_hero',MC_HEROMODE);}catch(e){} mcResetCockpitAnimations(); if(typeof paintMissionControl==='function') paintMissionControl(); });
 }
 function mcBreakdownHTML(rows){
   if(!rows.length) return '';
@@ -7981,12 +7995,18 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
     <div class="mc-lbar-track"><div class="mc-lbar-fill" data-w="${r.share}"></div></div>
     <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
   // Same fix as mcPaintFleet's microbars: this panel is rebuilt from innerHTML
-  // on every live poll, so the width-from-0 arrival animation would otherwise
-  // replay every ~10s and read as the bars blinking. Snap instantly on a live
-  // tick; keep the nice grow-in for a genuine first paint / tab switch.
+  // on every poll — and the cockpit is repainted by several independent
+  // pollers (SSE live tick, the ~15-60s history/health refresh, the throttled
+  // cost refresh), not just the one that used to gate this. Track "already
+  // painted" on the persistent container (lead) rather than the throwaway
+  // bar elements themselves, so it survives the rebuild and works no matter
+  // which poller triggered this call. mcResetCockpitAnimations() clears it on
+  // a genuine subject change so the grow-in still plays there.
+  const leadFirst = !lead.dataset.mcInited;
+  lead.dataset.mcInited='1';
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     lead.querySelectorAll('.mc-lbar-fill').forEach(b=>{
-      if(LIVE_TICK) b.style.transition='none';
+      if(!leadFirst) b.style.transition='none';
       b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%';
     });
   }));
@@ -8176,12 +8196,19 @@ function mcPaintFleet($){
   });
   // The fill starts at width:0 (CSS) and animates in — a nice arrival effect the
   // first time this card paints. But the whole rail is rebuilt from innerHTML on
-  // every live poll too, so every element is "new" again each tick; animating
-  // in every ~10s read as the bars blinking/collapsing on a refresh that changed
-  // nothing. On a live tick, skip the transition and snap straight to the value.
+  // every poll, from several independent pollers (SSE live tick, the ~15-60s
+  // history/health refresh, the throttled cost refresh) — every element is
+  // "new" again each time any of them fires, so gating on just one of those
+  // pollers left the others replaying the grow-in and reading as a blink.
+  // Track "already painted" on the persistent wrap container instead, so it
+  // survives the rebuild regardless of which poller triggered this call.
+  // mcResetCockpitAnimations() clears it on a genuine subject change (host
+  // switch) so the grow-in still plays there.
+  const wrapFirst = !wrap.dataset.mcInited;
+  wrap.dataset.mcInited='1';
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     wrap.querySelectorAll('.mc-mb-fill').forEach(b=>{
-      if(LIVE_TICK) b.style.transition='none';
+      if(!wrapFirst) b.style.transition='none';
       b.style.width=Math.min(100,Math.max(0,+b.dataset.w))+'%';
     });
   }));
