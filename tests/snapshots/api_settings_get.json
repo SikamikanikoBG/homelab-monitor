@@ -19,6 +19,7 @@
     "email_to": "",
     "email_use_tls": "1",
     "email_username": "",
+    "fast_interval_s": "2",
     "gpu_fanstall_alerts": "1",
     "gpu_idle_sustain_s": "1800",
     "gpu_idle_watts": "",

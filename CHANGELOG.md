@@ -7,6 +7,9 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Added**
+- **A configurable live-refresh interval, down to 1 second.** Settings → General → **Live refresh interval** picks how often the GPU tab and the Overview cockpit's live numbers update (1/2/3/5/10 s, default 2 s, matching the previous fixed cadence). Takes effect immediately, no restart — the background fast-lane loop re-reads it on its own next cycle. Never faster than the sample interval allows (a fast lane no faster than the sampler buys nothing and doubles the reads), and pinned off on a box that disabled the fast lane entirely via `FAST_INTERVAL=0`.
+
 ## [0.34.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.34.0) — 2026-09-04 · **Custom servers stop lying about what's loaded, and the cockpit stops blinking**
 *A custom AI server registered against a remote fleet host had two separate ways of looking idle when it wasn't — its own live telemetry never carried the host tag to reach that box's card, and "loaded" was inferred purely from a VRAM figure every non-Ollama provider reports as absent. Both close out here. Separately, the Overview cockpit's arrival animation — patched twice already for one more repaint path each time — is gone outright: three independent, uncoordinated pollers repainting the same widgets made "gate it correctly" a fix that could never quite finish losing.*
 

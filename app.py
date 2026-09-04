@@ -583,8 +583,12 @@ def live_payload():
     LOCK (it always has), so iterating the live dict could otherwise trip over a
     key being added mid-serialization."""
     now = live_now()
+    # Read the cached value fast_sampler() resolved on its last cycle, not a
+    # fresh get_fast_interval() — this route is deliberately DB-free and can be
+    # hit every second or faster by several open tabs; the interval itself only
+    # ever changes at that same cadence, so a cycle-old value costs nothing.
     return {"version": VERSION, "rev": LIVE_REV, "interval": INTERVAL,
-            "fast_interval": FAST_INTERVAL,
+            "fast_interval": LATEST.get("fast_interval") or FAST_INTERVAL,
             "mem_total": now.get("mem_total") or 24576, "now": now}
 
 def live_now():
@@ -4444,6 +4448,12 @@ SETTING_DEFAULTS = {
     "custom_ai_servers":   "",
     # ── Display preferences ────────────────────────────────────────────────
     "reduced_motion":       "0",      # "0" (default, matches prior behaviour) / "1" — disables gauge animations
+    # Screen-refresh cadence (seconds) for the GPU tab + Overview cockpit "now"
+    # numbers — see FAST_INTERVAL/get_fast_interval(). Defaults to whatever the
+    # FAST_INTERVAL env var resolved to at startup; live-adjustable from here
+    # with no restart, but never faster than that startup value ever allowed
+    # (fast_sampler() only runs at all when FAST_INTERVAL started non-zero).
+    "fast_interval_s":     str(FAST_INTERVAL),
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 
@@ -4547,6 +4557,38 @@ def get_retention_secs():
     except (ValueError, TypeError):
         days = _RETENTION_DAYS_DEFAULT
     return days * 86400
+
+def get_fast_interval():
+    """Effective fast-lane cadence in seconds — the screen-refresh rate behind
+    the GPU tab and the Overview cockpit's "now" numbers. Read live from
+    settings, same pattern as get_retention_secs(), so a change in
+    Settings -> General takes effect on fast_sampler()'s next cycle with no
+    restart. Pinned to 0 when the fast lane was disabled at startup
+    (FAST_INTERVAL env var) since that loop never runs regardless of the
+    setting."""
+    if not FAST_INTERVAL:
+        return 0
+    try:
+        secs = int(get_settings().get("fast_interval_s") or FAST_INTERVAL)
+    except (ValueError, TypeError):
+        secs = FAST_INTERVAL
+    secs = max(1, min(secs, 30))
+    return secs if secs < INTERVAL else FAST_INTERVAL
+
+def _validate_fast_interval_settings(updates):
+    """Return an error string if fast_interval_s is invalid, else None."""
+    if "fast_interval_s" not in updates:
+        return None
+    val = (updates["fast_interval_s"] or "").strip()
+    if not val:
+        return None
+    try:
+        secs = int(val)
+    except ValueError:
+        return "Live refresh interval must be a whole number of seconds."
+    if not (1 <= secs <= 30):
+        return "Live refresh interval must be between 1 and 30 seconds."
+    return None
 
 def _validate_retention_settings(updates):
     """Return an error string if retention_days is invalid, else None."""

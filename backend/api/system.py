@@ -631,7 +631,8 @@ def api_settings():
             updates["custom_ai_servers"] = json.dumps(updates["custom_ai_servers"])
         err = (_app._validate_url_settings(updates) or _app._validate_email_settings(updates)
                or _app._validate_brief_settings(updates) or _app._validate_retention_settings(updates)
-               or _app._validate_gpu_alert_settings(updates) or _app._validate_custom_ai_servers(updates))
+               or _app._validate_gpu_alert_settings(updates) or _app._validate_custom_ai_servers(updates)
+               or _app._validate_fast_interval_settings(updates))
         if err:
             return jsonify({"ok": False, "error": err}), 400
         _app.save_settings(updates)

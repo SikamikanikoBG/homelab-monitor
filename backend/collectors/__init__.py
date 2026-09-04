@@ -563,7 +563,11 @@ def fast_sample_once():
 
 def fast_sampler():
     import app as _app
-    """Loop the cheap re-read at FAST_INTERVAL. Inert when FAST_INTERVAL is 0."""
+    """Loop the cheap re-read at the fast-interval setting (Settings -> General
+    -> Live refresh interval; get_fast_interval() re-reads it from the DB each
+    cycle, so a change takes effect on the next sleep with no restart needed).
+    Inert when the fast lane starts disabled (FAST_INTERVAL env var = 0) — the
+    whole thread returns immediately rather than looping idle."""
     if not _app.FAST_INTERVAL:
         return
     # Prime the CPU delta before the first published reading, otherwise that
@@ -572,14 +576,18 @@ def fast_sampler():
         _app.read_host_fast()
     except Exception as e:
         print("fast_sampler prime error:", e, flush=True)
-    time.sleep(_app.FAST_INTERVAL)
+    time.sleep(_app.get_fast_interval())
     while True:
-        _heartbeat("fast_sampler", _app.FAST_INTERVAL)
+        secs = _app.get_fast_interval()
+        # Cached for live_payload() (SSE "now" + /api/data), which is hit far
+        # more often than this loop turns over and must stay DB-free.
+        _app.LATEST["fast_interval"] = secs
+        _heartbeat("fast_sampler", secs)
         try:
             fast_sample_once()
         except Exception as e:
             print("fast_sampler error:", e, flush=True)
-        time.sleep(_app.FAST_INTERVAL)
+        time.sleep(secs)
 
 
 def collector():

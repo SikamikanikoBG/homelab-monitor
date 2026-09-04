@@ -2445,6 +2445,17 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
           </label>
         </div>
         <div>
+          <div class="flabel" data-i18n="general.fast_interval_label" data-i18n-def="Live refresh interval">Live refresh interval</div>
+          <select id="al_fast_interval_s" class="field" style="max-width:160px">
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+            <option value="3">3 s</option>
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+          </select>
+          <p class="cap" style="margin-top:4px" data-i18n-html="general.fast_interval_cap" data-i18n-def="How often the GPU tab and the Overview cockpit's live numbers refresh. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows.">How often the GPU tab and the Overview cockpit's live numbers refresh. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows.</p>
+        </div>
+        <div>
           <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.ai_servers_title" data-i18n-def="🧠 Custom AI servers">🧠 Custom AI servers</div>
           <p class="cap" style="margin:0 0 8px" data-i18n-html="general.ai_servers_cap" data-i18n-def="Servers that aren't auto-discovered — a vLLM, llama.cpp, LM Studio or Ollama on another box, or on a non-standard port. Add one and its models appear in the <b>AI Models</b> tab under the host it runs on and in the installed-models registry. The hub probes it — <b>Runs on</b> only picks where its models show. Read-only: the monitor never pulls, loads or removes models.">Servers that aren't auto-discovered — a vLLM, llama.cpp, LM Studio or Ollama on another box, or on a non-standard port. Add one and its models appear in the <b>AI Models</b> tab under the host it runs on and in the installed-models registry. The hub probes it — <b>Runs on</b> only picks where its models show. Read-only: the monitor never pulls, loads or removes models.</p>
           <div id="ai_servers_status" class="ins info" style="display:none;margin:6px 0"></div>
@@ -5921,6 +5932,16 @@ async function loadAlerts(){
   document.getElementById('al_retention_days').value = s.retention_days||'180';
   document.getElementById('al_reduced_motion').checked = s.reduced_motion==='1';
   applyReducedMotion(s.reduced_motion==='1');
+  // The dropdown only lists common choices; a box whose FAST_INTERVAL env var
+  // picked something else needs that value present as an option too, or
+  // .value silently falls back to "" and the next autosave (any field, not
+  // just this one) would overwrite the deployment's real setting with '2'.
+  { const fi=document.getElementById('al_fast_interval_s'), fiVal=String(s.fast_interval_s||'2');
+    if(fi && !Array.from(fi.options).some(o=>o.value===fiVal)){
+      const opt=document.createElement('option'); opt.value=fiVal; opt.textContent=fiVal+' s'; fi.appendChild(opt);
+    }
+    if(fi) fi.value=fiVal;
+  }
   // Custom AI servers — the server is authoritative; only seed the draft once
   // (first load) so a user mid-typing isn't clobbered by a save-triggered reload.
   loadAiProviders();
@@ -6090,6 +6111,7 @@ function collectSettingsBody(){
     gpu_missing_alerts:     document.getElementById('al_gpu_missing').checked ? '1' : '0',
     retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
     reduced_motion:   document.getElementById('al_reduced_motion').checked ? '1' : '0',
+    fast_interval_s:  (v=>{const n=parseInt(v,10);return String(isNaN(n)?2:Math.max(1,Math.min(30,n)));})(document.getElementById('al_fast_interval_s').value),
     // Omitted (not sent) until the draft is seeded from the server — an
     // autosave racing the first load would otherwise POST an empty list and
     // wipe a server the user hasn't even seen yet.
@@ -6180,7 +6202,7 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
   'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme',
-  'al_public_status_enabled','al_retention_days','al_reduced_motion'];
+  'al_public_status_enabled','al_retention_days','al_reduced_motion','al_fast_interval_s'];
 function wireAutoSave(){
   const rmChk=document.getElementById('al_reduced_motion');
   if(rmChk) rmChk.addEventListener('change', () => applyReducedMotion(rmChk.checked));
