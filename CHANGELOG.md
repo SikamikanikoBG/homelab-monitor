@@ -7,6 +7,10 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Fixed**
+- **A custom AI server's live serving telemetry never showed up on the fleet host it was registered for.** Register one under Settings → Custom AI servers against a remote box (say a vLLM on another machine) and its tokens/sec, KV-cache and running/queued numbers stayed stuck on the hub's own AI Models panel instead of appearing on that box's own "AI models on {host}" card — `collect_serving()` scraped the telemetry correctly but never carried the same `fleet_host` tag the model list already used, and the registry had separately dropped the field needed to look a model row's telemetry back up. Both are threaded through now.
+- **The Overview cockpit's gauges and bars replayed their arrival animation on every refresh, not just the first paint.** The cockpit is repainted by three independent pollers — the live stream, the ~15-60s history/health poll, and the throttled cost refresh — and gating the sweep-in/count-up on "is this the first paint" kept missing at least one of them, so the hero gauge, the fleet rail's mini-bars and the leaderboard visibly reset and refilled on every refresh instead of just once. The arrival animation is gone entirely now; every cockpit value is set directly.
+
 ## [0.33.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.33.0) — 2026-08-27 · **Every model server, not just the ones we happen to know**
 *The AI Models tab only ever saw servers it could guess at: the hub's own containers on their standard ports, and each remote's localhost ollama. The moment a vLLM lives on another box at a non-standard port — the normal way people actually run one — it was simply invisible, and there was no way to tell the monitor where to look. Now you can. Register a server by host, port and type in Settings and its models land in the AI Models tab, the installed-models registry and the MCP — with live serving telemetry where the server exposes it — while a small hardware fix means a multi-GPU box finally names every card in the System tab instead of quietly reporting only its first.*
 
