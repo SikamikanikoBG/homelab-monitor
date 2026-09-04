@@ -1281,9 +1281,17 @@ def gpu_cards_fast():
     Returns {idx: {field: value}} for the caller to merge. {} on any failure — a
     wedged driver degrades the refresh rate of the GPU chips, nothing else."""
     out = {}
+    base_fields = "index,utilization.gpu,memory.used,power.draw,temperature.gpu"
     try:
-        rows = smi(["--query-gpu=index,utilization.gpu,memory.used,power.draw,temperature.gpu",
+        # fan.speed is asked for in the same pass, but nvidia-smi rejects the WHOLE
+        # query on an unrecognised field name — so a driver too old to know it
+        # falls back to the exact base query rather than reporting no cards at all
+        # (same fallback the full sampler uses for this same field).
+        rows = smi([f"--query-gpu={base_fields},fan.speed",
                     "--format=csv,noheader,nounits"]).splitlines()
+        if not any(line.strip() for line in rows):
+            rows = smi([f"--query-gpu={base_fields}",
+                        "--format=csv,noheader,nounits"]).splitlines()
     except Exception:
         return {}
     for line in rows:
@@ -1296,8 +1304,14 @@ def gpu_cards_fast():
             idx = int(_gpu_num(p[0]))
         except (TypeError, ValueError):
             continue
-        out[idx] = {"util": _gpu_num(p[1]), "mem_used": _gpu_num(p[2]),
-                    "power": _gpu_num(p[3]), "temp": _gpu_num(p[4])}
+        card = {"util": _gpu_num(p[1]), "mem_used": _gpu_num(p[2]),
+                "power": _gpu_num(p[3]), "temp": _gpu_num(p[4])}
+        # Absent, not 0: a passively-cooled card has no fan to report, and a 0
+        # here would trip the fan-stall alert on hardware that has none to stall.
+        fan = _gpu_opt(p[5]) if len(p) > 5 else None
+        if fan is not None:
+            card["fan"] = round(fan)
+        out[idx] = card
     return out
 
 # ── System / Hardware / Network / Security inventory (local hub) ──────────────

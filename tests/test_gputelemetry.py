@@ -80,6 +80,51 @@ class TestEnrichGpus(unittest.TestCase):
         self.assertNotIn("mem_util", gpus[0])       # nothing attached, but no crash
 
 
+class TestGpuCardsFast(unittest.TestCase):
+    """gpu_cards_fast() — the fast-lane re-read behind the configurable live
+    refresh interval. Its own docstring has always promised fan alongside
+    util/VRAM/power/temp, but the query never actually asked nvidia-smi for it —
+    fan only ever updated on the full 10s sample regardless of how fast the
+    fast lane was told to run."""
+
+    def test_includes_fan_when_the_driver_reports_it(self):
+        def fake_smi(args):
+            a = args[0]
+            if "fan.speed" in a:
+                return "0, 12, 8000, 250, 65, 70\n1, 0, 500, 30, 40, 55"
+            return ""
+        with patch("app.smi", side_effect=fake_smi):
+            out = app.gpu_cards_fast()
+        self.assertEqual(out[0], {"util": 12.0, "mem_used": 8000.0, "power": 250.0,
+                                   "temp": 65.0, "fan": 70})
+        self.assertEqual(out[1]["fan"], 55)
+
+    def test_falls_back_when_the_driver_rejects_fan_speed(self):
+        # nvidia-smi rejects the WHOLE query on an unrecognised field name, so an
+        # older driver's fan.speed attempt comes back empty rather than erroring —
+        # this must retry without it instead of reporting no cards at all.
+        def fake_smi(args):
+            a = args[0]
+            if "fan.speed" in a:
+                return ""
+            return "0, 12, 8000, 250, 65"
+        with patch("app.smi", side_effect=fake_smi):
+            out = app.gpu_cards_fast()
+        self.assertEqual(out[0], {"util": 12.0, "mem_used": 8000.0, "power": 250.0, "temp": 65.0})
+        self.assertNotIn("fan", out[0])
+
+    def test_fan_absent_not_zero_on_a_passively_cooled_card(self):
+        # [N/A] must leave "fan" unset, not coerce to 0 (0 would read as a
+        # stalled fan and could trip the fan-stall alert on hardware with none).
+        with patch("app.smi", return_value="0, 12, 8000, 250, 65, [N/A]"):
+            out = app.gpu_cards_fast()
+        self.assertNotIn("fan", out[0])
+
+    def test_smi_failure_degrades_to_empty(self):
+        with patch("app.smi", side_effect=RuntimeError("nvidia-smi blew up")):
+            self.assertEqual(app.gpu_cards_fast(), {})
+
+
 class TestGpuExtra(unittest.TestCase):
     def test_aggregate(self):
         gpus = [
