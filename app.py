@@ -877,6 +877,12 @@ def collect_serving(ai):
             _SERVE_PREV[name] = (gen, nowt)
         if st:
             st["service"] = name
+            # Same fleet-name stamp probe_models/probe_custom_server apply to models
+            # (see collectors.sample_once's host_label): a custom server registered
+            # for a remote box must carry that box's name here too, or its live
+            # tok/s telemetry is unattributable and only the hub-local AI Models
+            # panel (which doesn't filter by host) ever shows it.
+            st["host"] = ct.get("fleet_host") if "fleet_host" in ct else "local"
             out.append(st)
     return out
 
@@ -6563,6 +6569,10 @@ def _merge_registry(ollama_models, catalog):
             "family": c.get("family"), "param_size": c.get("param_size"),
             "quant": c.get("quant"), "modified": c.get("modified"),
             "loaded": bool(c.get("loaded")), "vram_mb": c.get("vram_mb"),
+            # Links this row back to its serving telemetry (D.now.serving is
+            # keyed by service, not model name) — dropped here previously, which
+            # is why a box's own AI-models card could never look up its tok/s.
+            "service": c.get("service"),
         })
     return out
 
