@@ -6,6 +6,10 @@ static/chart.min.js
 __pycache__/
 *.pyc
 
+# Claude Code local harness/session state; virtualenv
+.claude/
+.venv/
+
 # Local dev journals (documentation mode) — never checked in
 .i18n-journal.md
 
