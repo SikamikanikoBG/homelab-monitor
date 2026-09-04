@@ -302,6 +302,20 @@ def sample_once():
     models = []
     model_catalog = []   # {host, service, provider, model, loaded, vram_mb} — the Installed-models registry (#219)
     ai_servers = []      # {name, ip, port, provider} — for the /api/ai/now throttled live re-probe
+    # Needed below, ahead of its usual place further down: every non-Ollama probe
+    # (vLLM, llama.cpp, TGI, …) always reports vram=None — it has no on-disk/loaded
+    # split the way Ollama does, so the *only* other way to attribute VRAM is the
+    # hub's own nvidia-smi process list, which can never see a process on a remote
+    # box. A custom server registered against a remote fleet_host would then show
+    # "not loaded" forever despite visibly serving traffic — its live /metrics
+    # telemetry (below) is the one host-independent signal that it's genuinely
+    # resident, so it has to be known before "loaded" is decided per model.
+    try:
+        serving = _app.collect_serving(ai)
+    except Exception as e:
+        print(f"collectors/sample_once collect_serving error: {e}", flush=True)
+        serving = []
+    serving_services = {s["service"] for s in serving if s.get("service")}
     if ai:
         def _probe_one(ct):
             # Containers ride the port-guessing PROBES table; custom descriptors
@@ -338,7 +352,9 @@ def sample_once():
                     "service": svc,
                     "provider": provider,
                     "model": mdl,
-                    "loaded": vram_val is not None,
+                    # A model this server's own /metrics confirms is actively serving
+                    # is unambiguously loaded, VRAM or no VRAM figure to show for it.
+                    "loaded": vram_val is not None or svc in serving_services,
                     "vram_mb": vram_val,
                     "ram_mb": ram_val,
                 })
@@ -346,19 +362,16 @@ def sample_once():
     # Attribute model-server traffic to its callers (who is driving Ollama, etc.).
     edges = _app.sample_callers(conts, {c["name"] for c in ai})
 
-    # Model intelligence: per-model metadata (Ollama /api/show, cached) + live serving
-    # telemetry (vLLM/TGI /metrics). Both best-effort — a slow/absent endpoint must
-    # never wedge the sample, so each is isolated.
+    # Model intelligence: per-model metadata (Ollama /api/show, cached). Live serving
+    # telemetry (vLLM/TGI /metrics) was already collected above — collect_serving()
+    # tracks each service's token counter between calls to derive tok/s, so calling
+    # it a second time here would sample that delta over mere milliseconds instead
+    # of a full sample interval and report a garbage rate.
     try:
         model_meta = _app.collect_model_meta(ai, models)
     except Exception as e:
         print(f"collectors/sample_once collect_model_meta error: {e}", flush=True)
         model_meta = {}
-    try:
-        serving = _app.collect_serving(ai)
-    except Exception as e:
-        print(f"collectors/sample_once collect_serving error: {e}", flush=True)
-        serving = []
     try:
         training = _app.collect_training(gpu_pids)
     except Exception as e:
