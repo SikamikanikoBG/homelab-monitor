@@ -7,6 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.34.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.34.0) — 2026-09-04 · **Custom servers stop lying about what's loaded, and the cockpit stops blinking**
 *A custom AI server registered against a remote fleet host had two separate ways of looking idle when it wasn't — its own live telemetry never carried the host tag to reach that box's card, and "loaded" was inferred purely from a VRAM figure every non-Ollama provider reports as absent. Both close out here. Separately, the Overview cockpit's arrival animation — patched twice already for one more repaint path each time — is gone outright: three independent, uncoordinated pollers repainting the same widgets made "gate it correctly" a fix that could never quite finish losing.*
 
 **Fixed**
