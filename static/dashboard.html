@@ -77,8 +77,14 @@ h1{font-size:22px;margin:0}.ver{color:var(--mut);font-size:12px;border:1px solid
 .mcp-pill.active{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
 .mcp-pill.idle{color:var(--mut)}
 .mcp-pill.down{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
-.pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);animation:p 2s infinite}
-@keyframes p{0%{box-shadow:0 0 0 0 #3fb95066}70%{box-shadow:0 0 0 8px #3fb95000}100%{box-shadow:0 0 0 0 #3fb95000}}
+/* Live-refresh indicator next to the MCP pill: a resting dot that rings once
+   per REAL refresh (pulseLive(), called from wherever each tab's own data
+   actually lands) rather than looping on a fixed timer disconnected from
+   whether anything happened — so its rate always matches however often the
+   tab you're looking at truly updates. */
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);display:inline-block;vertical-align:middle;opacity:.5}
+.pulse.go{animation:p .9s ease-out}
+@keyframes p{0%{box-shadow:0 0 0 0 #3fb95066;opacity:1}70%{box-shadow:0 0 0 8px #3fb95000;opacity:1}100%{box-shadow:0 0 0 0 #3fb95000;opacity:.5}}
 .sub{color:var(--mut);margin:4px 0 14px;font-size:14px}
 h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--mut)}
 /* tab nav — add a monitor by adding one TABS entry + one <section>; nothing else changes */
@@ -689,7 +695,6 @@ body{background:var(--canvas)}
 .rb.on{background:var(--sel);border-color:var(--bd);color:var(--tx)}
 #controls .spacer{display:none}#controls .tg{margin-left:8px;font-size:12px}
 .live{margin-left:auto;font-family:var(--mono);font-size:12px}
-.pulse{width:8px;height:8px;border-radius:2px;animation:none}
 .upd{border-radius:9px;background:var(--inset);border-color:var(--bd);color:var(--accent)}
 /* app-update badge: same amber CTA look as the Star button, so the chrome is cohesive */
 #updbadge.upd{background:linear-gradient(180deg,#e6b948,#d29922);border:1px solid var(--accent);color:#1a1100;font-weight:600;box-shadow:0 1px 1px #0000001f}
@@ -1536,7 +1541,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
 <button type="button" class="upd osupd" id="osupdbadge" title="One or more machines have OS/kernel updates pending — click for details">⬆ <span id="osupdtext">updates</span></button>
-<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
+<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse" data-i18n-attr="title:header.pulse_title" title="Live — rings once on every real refresh of the tab you're viewing"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
 
 <div class="topnav">
@@ -3410,6 +3415,21 @@ function fmtMcpAge(sec){
   if(sec < 3600) return I18N.tf('time.ago_m','{n}m ago',{n:Math.floor(sec / 60)});
   return I18N.tf('time.ago_h','{n}h ago',{n:Math.floor(sec / 3600)});
 }
+// Rings the header's live dot once — called from wherever the tab currently on
+// screen actually finished refreshing (see the call sites: paintMissionControl,
+// renderGpuTab/paintLiveCharts' gpu branch, renderNetwork/renderSecurity/
+// renderDiskIo, renderHostTab/buildCharts, renderModels/paintRemoteModels,
+// renderExperiments/renderCosts/renderBenchmarks). Never on a fixed timer of
+// its own, so its rate is always however often the visible tab truly updates —
+// a remote host's GPU tab pinging every ~15-60s and the Overview cockpit
+// pinging every couple of seconds are both telling the truth.
+function pulseLive(){
+  const el = document.querySelector('.live .pulse');
+  if(!el) return;
+  el.classList.remove('go');
+  void el.offsetWidth;   // force reflow so re-adding the class restarts the animation
+  el.classList.add('go');
+}
 function renderMcpPill(s){
   const el = document.getElementById('mcppill');
   if(!el) return;
@@ -3971,6 +3991,7 @@ async function renderGpuTab(force){
   GPUC = hist; GPUC_ATTR = attr; GPUC_HOST = host; GPUC_RANGE = range;
   GPU_TAIL={b:null,n:0};   // fresh authoritative series: start folding again from it
   paintGpuTab(false);
+  pulseLive();
 }
 
 function paintGpuTab(loading){
@@ -4666,6 +4687,7 @@ async function renderCosts(force){
       y:{stacked:true,min:0,grid:{color:cv('--free')},ticks:{color:cv('--mut'),callback:v=>v+' W'}}},
     plugins:{legend:{labels:{color:cv('--tx'),boxWidth:12}}}},plugins:[areaBg]});
   renderCostsTable();
+  if(TAB==='costs') pulseLive();
 }
 function renderCostsTable(){
   const j=COSTS_DATA; if(!j) return;
@@ -4880,6 +4902,7 @@ function modelComputeCell(K, m){
 
 function renderModels(){
   if(!D) return;
+  if(TAB==='models') pulseLive();
   const tot=D.mem_total;
   const live=D.now.models||[], sums=D.model_summary||[];
   const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
@@ -5105,6 +5128,7 @@ function renderDiskIo(){
   }).join('');
   body.innerHTML = attrHtml + `<div class="dio-grid">${cards}</div>`
     + `<p class="cap" style="margin-top:12px">${I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and appear in the Insight Feed.')}</p>`;
+  if(TAB==='diskio') pulseLive();
 }
 
 function renderHealth(){
@@ -5298,9 +5322,13 @@ function renderHealth(){
     }
     setContainerRestartPolicy(tr.dataset.ct, sel.value);
   };
+  if(TAB==='containers') pulseLive();
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
-  if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
+  if(CURRENT_HOST === 'local'){
+    renderServicesBlock(HH.systemd);
+    if(TAB==='services') pulseLive();
+  }
 }
 
 // Renders a systemd block into #svcbody. Same shape for local and remote so
@@ -7279,6 +7307,7 @@ async function renderExperiments(force){
       <td>${fmtMB(s.peak_vram)}</td><td>${s.avg_power} W</td><td>${s.energy_kwh.toFixed(3)} kWh</td>
       <td>${j.price>0?cur+s.cost.toFixed(2):'—'}</td></tr>`).join('')
     : I18N.tf('exp.sess_empty','<tr><td class="muted" colspan="7">No GPU activity above {n}% util in this range yet.</td></tr>',{n:(j.active_pct||20)});
+  if(TAB==='experiments') pulseLive();
 }
 
 function renderFleet(){
@@ -7429,6 +7458,7 @@ function paintMissionControl(){
   if(typeof TAB!=='undefined' && TAB!=='overview') return;
   const $ = id => document.getElementById(id);
   if(!$('mc-cockpit')) return;
+  pulseLive();
   const g  = (HH&&HH.now&&HH.now.gpu) || {};
   const gx = g.extra || {};
   const host = (D&&D.now&&D.now.host) || (HH&&HH.now&&HH.now.host) || {};
@@ -8461,6 +8491,7 @@ async function renderHostTab(){
     if(D) renderData();
     renderRamTree();
     renderHostChart();   // clears any remote's "no history yet" note
+    pulseLive();
     return;
   }
   // Blank the per-host cards for the duration of the fetch. HOST_DATA still
@@ -8496,6 +8527,7 @@ async function renderHostTab(){
   renderRamTree();
   renderTopProcs();      // now that HOST_DATA is this host's
   renderHostChart();
+  pulseLive();
 }
 
 // ── System-tab history chart, for whichever host is selected ─────────────────
@@ -8792,6 +8824,7 @@ async function renderNetwork(){
      <div tabindex="0" role="region" aria-label="${I18N.t('net.sub_listen','Listening sockets')}" style="max-height:340px;overflow:auto;border:1px solid var(--bd);border-radius:9px;margin-top:6px">
        <table class="ntbl" style="margin-top:0"><thead><tr><th>${I18N.t('col.proto','Proto')}</th><th>${I18N.t('col.bind','Bind')}</th><th>${I18N.t('col.port','Port')}</th><th>${I18N.t('col.process','Process')}</th><th>${I18N.t('col.exposure','Exposure')}</th></tr></thead><tbody>${lrows}</tbody></table>
      </div>`;
+  pulseLive();
 }
 
 // Security verdict word shown in the status badge (reusing the app's .badge).
@@ -8897,6 +8930,7 @@ async function renderSecurity(){
        <td class="muted">${i.detail}</td></tr>`).join('');
   el.innerHTML = summary +
     `<table class="sectbl" style="margin-top:14px"><thead><tr><th>${I18N.t('col.check','Check')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.detail','Detail')}</th></tr></thead><tbody>${body}</tbody></table>`;
+  pulseLive();
 }
 
 function hostCapability(hostName, capId){
@@ -9083,6 +9117,7 @@ function renderRemoteContainers(sec, rc){
       <p class="cap">${I18N.tf('rct.cap','Read-only inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${I18N.t('rct.cap2','Logs and start/stop controls are hub-only for now.')}</p>
     </div>`;
   applyIcons(box);
+  if(TAB==='containers') pulseLive();
 }
 
 // ── Per-host AI Models (remote hosts) ────────────────────────────────────────
@@ -9169,6 +9204,7 @@ function paintRemoteModels(sec, host, mine){
   // Guard against a late paint: the fetch may resolve after the user has moved
   // on, and the panel must never show one host's models under another's name.
   if(host !== CURRENT_HOST) return;
+  pulseLive();
 
   const old=sec.querySelector('.remote-models');
   if(!mine.length){
@@ -9938,12 +9974,16 @@ function paintLiveCharts(){
     // two seconds instead of sitting still. mergeGpuTail() scopes itself the same
     // way. Keeping the check in this function means the branch is correct on its
     // own, whatever buildCharts() does or doesn't guard.
-    if(TAB==='host'){ if(CURRENT_HOST==='local') buildCharts(); return; }   // overview repaints via renderMissionControl()
+    if(TAB==='host'){ if(CURRENT_HOST==='local'){ buildCharts(); pulseLive(); } return; }   // overview repaints via renderMissionControl()
     if(TAB==='gpu' && GPUC && GPUC.has_gpu){
       if(GPU_VIEW!=='card') renderGpuMetricChart(GPUC);
       else                  updateGpuCardsLive(GPUC);   // in place: never rebuild the grid under the pointer
       renderGpuCombined(GPUC);
       renderGpuKpis(GPUC);
+      // mergeGpuTail() above only actually merges anything for the local host
+      // (a remote's cards never move between its own ~15-60s history fetches),
+      // so only pulse when this repaint reflects a genuinely fresher number.
+      if(CURRENT_HOST==='local' && GPUC.host==='local') pulseLive();
     }
   }catch(e){ console.error('live chart repaint failed', e); }
 }
@@ -10311,6 +10351,7 @@ async function renderBenchmarks(force){
   BENCH_AT=Date.now();
   await loadBenchTargets();
   await loadBenchList();
+  if(TAB==='benchmarks') pulseLive();
 }
 
 async function loadBenchTargets(){
