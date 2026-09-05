@@ -3430,6 +3430,21 @@ function pulseLive(){
   void el.offsetWidth;   // force reflow so re-adding the class restarts the animation
   el.classList.add('go');
 }
+// Most call sites now poll faster than their data actually changes (network/
+// security/host(remote)/containers/services/diskio/costs/experiments all ride
+// a shared 5s timer whose real-world cadence is the ~10s SSH/sampler poll
+// behind them — see the GPU tab's own version of this same gap). Pulsing on
+// every poll would have rung the dot every 5s regardless of whether anything
+// moved, exactly the "poll, not refresh" mistake already fixed once for the
+// GPU tab. `key` scopes the last-seen signature per tab so they never compare
+// against each other's data.
+const _PULSE_SIG = {};
+function pulseIfChanged(key, sig){
+  let s; try{ s = JSON.stringify(sig); }catch(e){ s = String(sig); }
+  if(_PULSE_SIG[key] === s) return;
+  _PULSE_SIG[key] = s;
+  pulseLive();
+}
 function renderMcpPill(s){
   const el = document.getElementById('mcppill');
   if(!el) return;
@@ -4909,7 +4924,9 @@ function modelComputeCell(K, m){
 
 function renderModels(){
   if(!D) return;
-  if(TAB==='models') pulseLive();
+  // The AI-tab fast poll (below) calls this every 5s regardless of whether the
+  // throttled server-side re-probe actually returned anything new.
+  if(TAB==='models') pulseIfChanged('models', [D.now.models, D.now.serving]);
   const tot=D.mem_total;
   const live=D.now.models||[], sums=D.model_summary||[];
   const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
@@ -5135,7 +5152,7 @@ function renderDiskIo(){
   }).join('');
   body.innerHTML = attrHtml + `<div class="dio-grid">${cards}</div>`
     + `<p class="cap" style="margin-top:12px">${I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and appear in the Insight Feed.')}</p>`;
-  if(TAB==='diskio') pulseLive();
+  if(TAB==='diskio') pulseIfChanged('diskio', dio);
 }
 
 function renderHealth(){
@@ -5329,12 +5346,12 @@ function renderHealth(){
     }
     setContainerRestartPolicy(tr.dataset.ct, sel.value);
   };
-  if(TAB==='containers') pulseLive();
+  if(TAB==='containers') pulseIfChanged('containers', dk);
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
   if(CURRENT_HOST === 'local'){
     renderServicesBlock(HH.systemd);
-    if(TAB==='services') pulseLive();
+    if(TAB==='services') pulseIfChanged('services', HH.systemd);
   }
 }
 
@@ -8534,7 +8551,7 @@ async function renderHostTab(){
   renderRamTree();
   renderTopProcs();      // now that HOST_DATA is this host's
   renderHostChart();
-  pulseLive();
+  pulseIfChanged('host-'+CURRENT_HOST, h);
 }
 
 // ── System-tab history chart, for whichever host is selected ─────────────────
@@ -8831,7 +8848,7 @@ async function renderNetwork(){
      <div tabindex="0" role="region" aria-label="${I18N.t('net.sub_listen','Listening sockets')}" style="max-height:340px;overflow:auto;border:1px solid var(--bd);border-radius:9px;margin-top:6px">
        <table class="ntbl" style="margin-top:0"><thead><tr><th>${I18N.t('col.proto','Proto')}</th><th>${I18N.t('col.bind','Bind')}</th><th>${I18N.t('col.port','Port')}</th><th>${I18N.t('col.process','Process')}</th><th>${I18N.t('col.exposure','Exposure')}</th></tr></thead><tbody>${lrows}</tbody></table>
      </div>`;
-  pulseLive();
+  pulseIfChanged('network-'+CURRENT_HOST, net);
 }
 
 // Security verdict word shown in the status badge (reusing the app's .badge).
@@ -8937,7 +8954,7 @@ async function renderSecurity(){
        <td class="muted">${i.detail}</td></tr>`).join('');
   el.innerHTML = summary +
     `<table class="sectbl" style="margin-top:14px"><thead><tr><th>${I18N.t('col.check','Check')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.detail','Detail')}</th></tr></thead><tbody>${body}</tbody></table>`;
-  pulseLive();
+  pulseIfChanged('security-'+CURRENT_HOST, sec);
 }
 
 function hostCapability(hostName, capId){
@@ -9124,7 +9141,9 @@ function renderRemoteContainers(sec, rc){
       <p class="cap">${I18N.tf('rct.cap','Read-only inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${I18N.t('rct.cap2','Logs and start/stop controls are hub-only for now.')}</p>
     </div>`;
   applyIcons(box);
-  if(TAB==='containers') pulseLive();
+  // Not the whole rc — rc.at is this poll's own timestamp, always different,
+  // which would defeat the point of checking for a real change at all.
+  if(TAB==='containers') pulseIfChanged('containers-'+CURRENT_HOST, [rc.containers, rc.summary]);
 }
 
 // ── Per-host AI Models (remote hosts) ────────────────────────────────────────
@@ -9211,7 +9230,7 @@ function paintRemoteModels(sec, host, mine){
   // Guard against a late paint: the fetch may resolve after the user has moved
   // on, and the panel must never show one host's models under another's name.
   if(host !== CURRENT_HOST) return;
-  pulseLive();
+  pulseIfChanged('models-'+host, mine);
 
   const old=sec.querySelector('.remote-models');
   if(!mine.length){
@@ -10153,6 +10172,22 @@ setInterval(async()=>{
 setInterval(()=>{
   if(TAB!=='gpu' || document.hidden || !document.getElementById('auto').checked) return;
   renderGpuTab(false);
+},5000);
+// Same gap, same fix, for every other tab riding refreshHistory()'s cadence for
+// something that isn't actually a chart. /api/health reflects the hub's own
+// sampler state (~INTERVAL, 10s) and a remote host's network/security/host data
+// comes from the same SSH-polled cache the GPU tab does — neither has anything
+// to do with the currently-viewed chart's bucket size, so neither should wait
+// on it. loadHealth() already gates its own per-tab work internally (services,
+// diskio, experiments, costs, benchmarks); network/security/host(remote) render
+// themselves directly. The local Host tab is skipped — it already rides the
+// fast lane's live-tail merge, same as local GPU.
+setInterval(()=>{
+  if(document.hidden || !document.getElementById('auto').checked) return;
+  if(TAB==='network'){ renderNetwork(); return; }
+  if(TAB==='security'){ renderSecurity(); return; }
+  if(TAB==='host' && CURRENT_HOST!=='local'){ renderHostTab(); return; }
+  if(['containers','services','diskio','experiments','costs','benchmarks'].includes(TAB)) loadHealth();
 },5000);
 // Treemaps lay out in pixels, so re-render them on resize (debounced).
 let _tmRz; window.addEventListener('resize',()=>{ clearTimeout(_tmRz); _tmRz=setTimeout(()=>{
