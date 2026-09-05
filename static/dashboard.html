@@ -3702,7 +3702,7 @@ function renderGpuSpill(n){
 // what makes a monitoring tool untrustworthy.
 let GPUC = null;               // last /api/gpu/history payload
 let GPUC_ATTR = null;          // last /api/gpu/attribution payload
-let GPUC_HOST = null, GPUC_RANGE = null, GPUC_INFLIGHT = null;
+let GPUC_HOST = null, GPUC_RANGE = null, GPUC_INFLIGHT = null, GPUC_SIG = null;
 // Live-tail bookkeeping (bucket start + how many samples are folded into it).
 // Declared up here, not next to the merge code far below, so the loaders that
 // reset it can never run against a name that isn't initialised yet.
@@ -3991,7 +3991,14 @@ async function renderGpuTab(force){
   GPUC = hist; GPUC_ATTR = attr; GPUC_HOST = host; GPUC_RANGE = range;
   GPU_TAIL={b:null,n:0};   // fresh authoritative series: start folding again from it
   paintGpuTab(false);
-  pulseLive();
+  // Only pulse when the "now" numbers actually moved — not the bucket label
+  // alone, which can sit unchanged for a whole bucket while its average
+  // quietly updates underneath (the exact reason renderMcChart's own repaint
+  // signature includes values, not just labels). A poll that lands between two
+  // real server-side samples is real work, but not a real refresh, and this
+  // dot promised to ring only for the latter.
+  const sig = JSON.stringify(hist.now_pooled||null)+'|'+((hist.labels||[]).length);
+  if(sig !== GPUC_SIG){ GPUC_SIG = sig; pulseLive(); }
 }
 
 function paintGpuTab(loading){
@@ -10131,6 +10138,21 @@ setInterval(async()=>{
     }
   }catch(e){}
   AI_NOW_BUSY=false;
+},5000);
+// GPU-tab dedicated poll. The generic history timer (scheduleHistory) throttles
+// to the visible chart's bucket size, clamped to [15s,60s] — sensible for a
+// long-range chart, but a remote host's GPU numbers are already refreshed
+// server-side every INTERVAL (10s default) by host_poller() over SSH, the same
+// round-trip every other per-host panel rides. Waiting up to 60s to ask again
+// was pure added lag on top of data that had been sitting there fresher for
+// most of that wait. The local host doesn't need this (its numbers already
+// move every fast-lane tick via mergeGpuTail), but polling it too is harmless —
+// renderGpuTab() already no-ops a redundant fetch via GPUC_INFLIGHT. This does
+// NOT make a remote host's own data arrive faster than its SSH poll cadence;
+// it only closes the gap between that cadence and how often the browser asked.
+setInterval(()=>{
+  if(TAB!=='gpu' || document.hidden || !document.getElementById('auto').checked) return;
+  renderGpuTab(false);
 },5000);
 // Treemaps lay out in pixels, so re-render them on resize (debounced).
 let _tmRz; window.addEventListener('resize',()=>{ clearTimeout(_tmRz); _tmRz=setTimeout(()=>{
