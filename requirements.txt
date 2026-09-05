@@ -1,4 +1,4 @@
 flask==3.0.3
 jeepney==0.8.0
-prometheus_client==0.20.0
+prometheus_client==0.26.0
 mcp>=1.9.0,<2
