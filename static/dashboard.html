@@ -3719,7 +3719,7 @@ const GPU_METRICS = {
   fan:     {key:'fan',     label:()=>I18N.t('gpu.m_fan','Fan'),     unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   power:   {key:'power',   label:()=>I18N.t('gpu.m_power','Power'), unit:'W',   max:null, fmt:v=>Math.round(v)+'W'},
   mem_util:{key:'mem_util',label:()=>I18N.t('gpu.m_membw','Mem-BW'),unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
-  clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+'M'},
+  clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+' MHz'},
   tflops:  {key:'tflops',  label:()=>I18N.t('gpu.m_tflops','TFLOPS'),unit:'TFLOPS',max:null, fmt:v=>fmtTF(v)},
 };
 // TFLOPS spans four orders of magnitude across a fleet — an idle Pascal Quadro
@@ -3735,7 +3735,7 @@ function fmtTF(v){
 // down a column rather than by reading each label. TFLOPS sits under util
 // because they answer the same question at two different resolutions: util says
 // the card is busy, TFLOPS says how much arithmetic that busyness is worth.
-const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power'];
+const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power','clk_sm'];
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
 // Per-card line colour for the by-metric view. Stable by index so a card keeps
