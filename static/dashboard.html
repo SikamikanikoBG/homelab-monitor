@@ -3930,6 +3930,18 @@ function updateGpuCardsLive(d){
   return painted > 0;
 }
 
+// A fetch with no response can hang indefinitely — a background tab the
+// browser suspended and later woke up, a dropped connection it never resets —
+// and with nothing to time it out, whatever "fetch in flight" guard is
+// waiting on it never clears. renderGpuTab() below is exactly that: a remote
+// host's tab that looked frozen until a hard reload wiped GPUC_INFLIGHT back
+// to null was this fetch never settling, not the data going stale. 15s is
+// generous for a same-LAN request; it exists only to bound the worst case.
+function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), ms||15000);
+  return fetch(url, {signal: ctrl.signal}).finally(()=>clearTimeout(timer));
+}
 // Fetch + paint the whole GPU tab for whichever host is selected.
 // Guarded against the late-paint bug the AI Models tab had: a fetch may resolve
 // after the user has moved on, and this tab must never show one host's cards
@@ -3950,8 +3962,8 @@ async function renderGpuTab(force){
   try{
     const q = `?host=${encodeURIComponent(host)}&range=${encodeURIComponent(range)}`;
     [hist, attr] = await Promise.all([
-      fetch('/api/gpu/history'+q).then(r=>r.json()),
-      fetch('/api/gpu/attribution'+q).then(r=>r.json()),
+      fetchWithTimeout('/api/gpu/history'+q).then(r=>r.json()),
+      fetchWithTimeout('/api/gpu/attribution'+q).then(r=>r.json()),
     ]);
   }catch(e){ return; }                       // keep the last good paint
   finally{ if(GPUC_INFLIGHT === host+'|'+range) GPUC_INFLIGHT = null; }
