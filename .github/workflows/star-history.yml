@@ -42,11 +42,13 @@ jobs:
 
       - name: Render the chart
         env:
-          # STATS_PAT first for the same reason stats.yml prefers it — it is
-          # already configured with repo-scoped read. GITHUB_TOKEN acts as the
-          # repository itself and should also satisfy the new restriction; the
-          # fallback means a fork or a revoked PAT degrades rather than breaks.
-          GH_TOKEN: ${{ secrets.STATS_PAT || secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN: since 2026-06-30 the stargazers endpoint only accepts a
+          # token belonging to an admin or collaborator on the repo, and
+          # GITHUB_TOKEN acts as the repository itself, so it always qualifies.
+          # (The previous STATS_PAT was a fine-grained PAT that GitHub rejected
+          # with a 403 "not accessible by personal access token" — that is why
+          # the chart went stale on 2026-08-09.)
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/star_history.py --out-dir docs
 
       - name: Commit if the chart moved
