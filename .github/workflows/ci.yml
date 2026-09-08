@@ -135,7 +135,7 @@ jobs:
             type=raw,value=next
             type=sha,prefix=next-,format=short
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           # amd64-only keeps the per-merge build fast; the deploy target (ardi) is
