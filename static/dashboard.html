@@ -1794,7 +1794,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <p class="cap" id="gpu_attrib_cap"></p>
     </div>
     <div class="card"><h2 data-i18n="gpu.health_title">🩺 Card health (selected range)</h2>
-      <table><thead><tr><th data-i18n="col.card">Card</th><th data-i18n="col.throttled">Throttled</th><th data-i18n="col.hot">Hot</th><th data-i18n="col.peak_temp">Peak temp</th><th data-i18n="col.peak_fan">Peak fan</th><th data-i18n="col.capped">Capped</th></tr></thead><tbody id="gpu-health"></tbody></table>
+      <table><thead><tr><th data-i18n="col.card">Card</th><th data-i18n="col.throttled">Throttled</th><th data-i18n="col.hot">Hot</th><th data-i18n="col.peak_temp">Peak temp</th><th data-i18n="col.peak_memtemp">Peak mem</th><th data-i18n="col.peak_fan">Peak fan</th><th data-i18n="col.capped">Capped</th></tr></thead><tbody id="gpu-health"></tbody></table>
       <p class="cap" id="gpu_health_cap"></p>
     </div>
   </div>
@@ -3678,7 +3678,9 @@ function renderGpuDetail(x, powerNow){
                 t:amdLevel?I18N.t('gpu.chip_perflevel_t','The amdgpu performance policy: auto lets the driver pick clocks, low/high pin them, manual means user-forced levels.')
                           :I18N.t('gpu.chip_pstate_t','P0 = max performance; higher P-numbers = lower clocks.')});
   }
-  if(x.temp_mem>0) chips.push({v:Math.round(x.temp_mem)+'°C', l:I18N.t('gpu.chip_memtemp','Mem temp'), c:x.temp_mem>=95?'bad':x.temp_mem>=85?'warn':''});
+  if(x.temp_mem>0) chips.push({v:Math.round(x.temp_mem)+'°C', l:I18N.t('gpu.chip_memtemp','Mem temp'),
+    c:gpuMemCls(x.temp_mem),
+    t:I18N.t('gpu.chip_memtemp_t','Memory-junction temperature — the VRAM dies, not the GPU core, and on GDDR6X cards routinely 20-30 °C hotter. Per-card history is on the Mem temp metric below.')});
   box.innerHTML = chips.map(c=>`<div class="gpu-chip ${c.c||''}"${c.t?` title="${esc(c.t)}"`:''}><div class="v">${esc(c.v)}</div><div class="l">${esc(c.l)}</div></div>`).join('');
 }
 
@@ -3731,6 +3733,12 @@ const GPU_METRICS = {
   util:    {key:'util',    label:()=>I18N.t('gpu.m_util','Util'),   unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   vram:    {key:'vram',    label:()=>I18N.t('col.vram','VRAM'),     unit:'MB',  max:null, fmt:v=>fmtMB(v)},
   temp:    {key:'temp',    label:()=>I18N.t('gpu.m_temp','Temp'),   unit:'°C',  max:null, fmt:v=>Math.round(v)+'°'},
+  // Memory-junction temperature — a different sensor from the core, and on
+  // GDDR6X cards routinely 20-30 °C hotter than it. Kept as its own metric
+  // rather than folded into Temp because they fail differently: the core throttles
+  // and recovers, while memory heat is what trips the sticky slowdown a card
+  // doesn't come back from until it is properly cooled.
+  temp_mem:{key:'temp_mem',label:()=>I18N.t('gpu.m_memtemp','Mem temp'),unit:'°C',max:null, fmt:v=>Math.round(v)+'°'},
   fan:     {key:'fan',     label:()=>I18N.t('gpu.m_fan','Fan'),     unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   power:   {key:'power',   label:()=>I18N.t('gpu.m_power','Power'), unit:'W',   max:null, fmt:v=>Math.round(v)+'W'},
   mem_util:{key:'mem_util',label:()=>I18N.t('gpu.m_membw','Mem-BW'),unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
@@ -3750,9 +3758,18 @@ function fmtTF(v){
 // down a column rather than by reading each label. TFLOPS sits under util
 // because they answer the same question at two different resolutions: util says
 // the card is busy, TFLOPS says how much arithmetic that busyness is worth.
-const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power','clk_sm'];
+// Mem temp sits directly under Temp so the two sensors on the same card can be
+// read as a pair — the gap between them is the interesting part.
+const GPU_SPARK_ROWS = ['util','tflops','vram','temp','temp_mem','fan','power','clk_sm'];
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
+// Memory-junction thresholds. Fixed, not the per-host `hot_c` the core temp uses:
+// hot_c is a knob about core temperature, while these come from the memory itself
+// — GDDR6X is specified to ~105 °C junction and the driver starts slowing the
+// card down in the high 90s, so 95 is "act now" and 85 is "watch it". One place
+// for them so the per-card row and the pooled chip can never disagree.
+const GPU_MEM_HOT_C = 95, GPU_MEM_WARN_C = 85;
+const gpuMemCls = v => v>=GPU_MEM_HOT_C ? 'bad' : v>=GPU_MEM_WARN_C ? 'warn' : '';
 // Per-card line colour for the by-metric view. Stable by index so a card keeps
 // its colour across range changes and reloads.
 const GPU_CARD_COLORS = ['#58a6ff','#f0883e','#3fb950','#a371f7','#e3b341','#db61a2','#39c5cf','#f85149'];
@@ -3879,17 +3896,21 @@ function gpuMiniCardBody(card, d, ranges){
       r = {min:0, max:100};
     }
     if(m==='temp'){ cls = last>=d.hot_c ? 'bad' : last>=d.hot_c-8 ? 'warn' : ''; }
+    if(m==='temp_mem'){ cls = gpuMemCls(last); }
     if(m==='fan' && last>=95) cls = 'warn';
     const color = m==='temp' ? gpuTint(last>=d.hot_c?100:last>=d.hot_c-8?70:10)
+                : m==='temp_mem' ? gpuTint(cls==='bad'?100:cls==='warn'?70:10)
                 : m==='util' ? gpuTint(last) : 'var(--ok)';
     // TFLOPS sits directly under UTIL, and the pair invites exactly one wrong
     // reading: a card showing 0% util and 39.7 T is not doing 39.7 TFLOPS of
     // work. It is holding a high clock while idle, and this row is the ceiling
     // that clock allows. The only place to say so is the row itself.
     const rowT = m==='tflops'
-      ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"` : '';
+      ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"`
+      : m==='temp_mem'
+      ? ` title="${esc(I18N.tf('gpu.m_memtemp_t','Memory-junction temperature: the VRAM dies, a different sensor from the core temp above. On GDDR6X it normally runs 20-30 °C hotter than the core, so read it against its own limits — amber from {w} °C, red from {h} °C. Cards whose driver does not expose it say so instead of showing a zero.',{w:GPU_MEM_WARN_C,h:GPU_MEM_HOT_C}))}"` : '';
     return `<div class="spark-row"${rowT}><span class="sl">${def.label()}</span>
-      ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='util' ? spans : []})}
+      ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='temp_mem'||m==='util' ? spans : []})}
       <span class="sv ${cls}">${disp}</span></div>`;
   }).join('');
 
@@ -4192,18 +4213,22 @@ function renderGpuMetricChart(d){
       order: on ? 0 : 1,
     };
   }).filter(x=>x.data.some(v=>v!=null));
-  // Threshold line, only where a threshold means something.
-  const ann = (GPU_METRIC==='temp') ? {
+  // Threshold line, only where a threshold means something. Two metrics have
+  // one, and they are different numbers from different places: the core temp is
+  // measured against this host's configured `hot_c`, memory against the fixed
+  // junction limit the memory itself is specified to.
+  const thrC = GPU_METRIC==='temp' ? d.hot_c : GPU_METRIC==='temp_mem' ? GPU_MEM_HOT_C : null;
+  const ann = (thrC!=null) ? {
     id:'gpuThreshold',
     afterDatasetsDraw(ch){
       const y = ch.scales.y; if(!y) return;
-      const py = y.getPixelForValue(d.hot_c);
+      const py = y.getPixelForValue(thrC);
       if(py < ch.chartArea.top || py > ch.chartArea.bottom) return;
       const g = ch.ctx; g.save();
       g.strokeStyle = cv('--crit'); g.setLineDash([5,4]); g.lineWidth = 1;
       g.beginPath(); g.moveTo(ch.chartArea.left, py); g.lineTo(ch.chartArea.right, py); g.stroke();
       g.setLineDash([]); g.fillStyle = cv('--crit'); g.font = '11px sans-serif';
-      g.fillText(I18N.tf('gpu.thr_line','{h}°C threshold',{h:d.hot_c}), ch.chartArea.left+6, py-4);
+      g.fillText(I18N.tf('gpu.thr_line','{h}°C threshold',{h:thrC}), ch.chartArea.left+6, py-4);
       g.restore();
     }
   } : null;
@@ -4233,7 +4258,9 @@ function renderGpuMetricChart(d){
     plugins: ann ? [bands, ann] : [bands]});
   const lg = document.getElementById('gpu-metric-legend');
   if(lg) lg.innerHTML = `<span><span class="band" style="background:var(--crit)"></span> ${I18N.t('gpu.lg_throttle','thermal throttling')}</span>`
-    + (GPU_METRIC==='temp' ? `<span><i style="background:var(--crit)"></i> ${I18N.tf('gpu.lg_thr','{h}°C alert threshold',{h:d.hot_c})}</span>` : '')
+    + (thrC!=null ? `<span><i style="background:var(--crit)"></i> ${
+         GPU_METRIC==='temp_mem' ? I18N.tf('gpu.lg_thr_mem','{h}°C memory-junction limit',{h:thrC})
+                                 : I18N.tf('gpu.lg_thr','{h}°C alert threshold',{h:thrC})}</span>` : '')
     + (hasSel ? `<span><a href="#" id="gpu-clear-sel">${I18N.tf('gpu.lg_focus','focused on GPU {n} — show all',{n:sel})}</a></span>` : '');
   const clr = document.getElementById('gpu-clear-sel');
   if(clr) clr.onclick = e => { e.preventDefault(); GPU_SEL_CARD = null; renderGpuCards(GPUC); };
@@ -4451,6 +4478,10 @@ function renderGpuAlertStrip(d){
 function renderGpuHealth(d){
   const tb = document.getElementById('gpu-health'); if(!tb) return;
   const dur = s => s>=3600 ? (s/3600).toFixed(1)+' h' : s>=60 ? Math.round(s/60)+' min' : (s||0)+' s';
+  // Same two memory thresholds the per-card row uses, so the table and the
+  // sparkline agree about when VRAM heat became a problem.
+  const memPk = h => { const cls = h.peak_temp_mem!=null ? gpuMemCls(h.peak_temp_mem) : '';
+    return cls==='bad' ? 'color:var(--crit)' : cls==='warn' ? 'color:var(--warn)' : ''; };
   const rows = (d.cards||[]).filter(c=>c.health).map(c=>{
     const h = c.health;
     const pct = h.window_sec ? (v)=>` <span class="muted">${(v*100/h.window_sec).toFixed(1)}%</span>` : ()=>'';
@@ -4459,10 +4490,12 @@ function renderGpuHealth(d){
       <td>${h.throttled_sec ? dur(h.throttled_sec)+pct(h.throttled_sec) : '<span class="muted">—</span>'}</td>
       <td>${h.hot_sec ? dur(h.hot_sec)+pct(h.hot_sec) : '<span class="muted">—</span>'}</td>
       <td class="${h.peak_temp>=d.hot_c?'':''}" style="${h.peak_temp>=d.hot_c?'color:var(--crit)':''}">${h.peak_temp!=null?Math.round(h.peak_temp)+' °C':'—'}</td>
+      <td style="${memPk(h)}">${h.peak_temp_mem!=null ? Math.round(h.peak_temp_mem)+' °C'
+          : '<span class="muted">'+I18N.t('gpu.na','not reported')+'</span>'}</td>
       <td>${c.supports.fan && h.peak_fan!=null ? Math.round(h.peak_fan)+' %' : '<span class="muted">'+I18N.t('gpu.na','not reported')+'</span>'}</td>
       <td>${h.capped_pct ? h.capped_pct+' %' : '<span class="muted">—</span>'}</td></tr>`;
   }).join('');
-  tb.innerHTML = rows || `<tr><td colspan="6" class="muted">${I18N.t('gpu.no_history','No history for this host yet.')}</td></tr>`;
+  tb.innerHTML = rows || `<tr><td colspan="7" class="muted">${I18N.t('gpu.no_history','No history for this host yet.')}</td></tr>`;
   const cap = document.getElementById('gpu_health_cap');
   if(cap){
     let t = I18N.t('gpu.health_cap',
@@ -9974,8 +10007,10 @@ function mergeGpuTail(n){
     put(s.util,g.util); put(s.power,g.power); put(s.temp,g.temp); put(s.temp_max,g.temp,'max');
     put(s.vram,g.mem_used,'last'); put(s.vram_total,g.mem_total,'last');
     put(s.fan,g.fan); put(s.fan_max,g.fan,'max'); put(s.mem_util,g.mem_util); put(s.clk_sm,g.clk_sm);
+    put(s.temp_mem,g.temp_mem); put(s.temp_mem_max,g.temp_mem,'max');
     if(cd.now) Object.assign(cd.now,{util:g.util,mem_used:g.mem_used,mem_total:g.mem_total,
-      power:g.power,temp:g.temp,fan:g.fan,mem_util:g.mem_util,clk_sm:g.clk_sm,pstate:g.pstate});
+      power:g.power,temp:g.temp,fan:g.fan,mem_util:g.mem_util,clk_sm:g.clk_sm,pstate:g.pstate,
+      temp_mem:g.temp_mem});
   });
   // The pooled KPI tiles read now_pooled, which otherwise only moved on the 60s
   // history fetch even though the stream had the numbers all along.

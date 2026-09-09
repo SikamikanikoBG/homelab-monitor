@@ -235,10 +235,10 @@ def api_gpu_history():
     # series[idx][metric] = [...]; None (not 0) for buckets with no sample, so a
     # gap in the history renders as a gap rather than a dive to zero.
     METRICS = ("util", "vram", "vram_total", "power", "temp", "temp_max",
-               "fan", "fan_max", "mem_util", "clk_sm")
+               "fan", "fan_max", "mem_util", "clk_sm", "temp_mem", "temp_mem_max")
     series = {i: {m: [None] * n for m in METRICS} for i in idxs}
     for (b, idx, util, mem_used, mem_total, power, temp, temp_max,
-         fan, fan_max, mem_util, clk_sm, _thr) in rows:
+         fan, fan_max, mem_util, clk_sm, temp_mem, temp_mem_max, _thr) in rows:
         i = pos.get(int(b))
         if i is None or idx not in series:
             continue
@@ -253,6 +253,8 @@ def api_gpu_history():
         s["fan_max"][i] = _r(fan_max)
         s["mem_util"][i] = _r(mem_util)
         s["clk_sm"][i] = _r(clk_sm)
+        s["temp_mem"][i] = _r(temp_mem)
+        s["temp_mem_max"][i] = _r(temp_mem_max)
 
     spans_by_idx = {}
     for s in _stitch_spans(thr_rows, interval):
@@ -263,10 +265,13 @@ def api_gpu_history():
     # it were minute-accurate.
     downsampled = bool(rows) and bk >= 3600
     health_by_idx = {}
-    for (idx, window_sec, avg_t, peak_t, peak_fan, thr_sec, hot_sec, capped_pct) in health_rows:
+    for (idx, window_sec, avg_t, peak_t, peak_fan, thr_sec, hot_sec, capped_pct,
+         peak_tmem) in health_rows:
         health_by_idx[idx] = {
             "idx": idx,
             "avg_temp": _r(avg_t), "peak_temp": _r(peak_t), "peak_fan": _r(peak_fan),
+            # Absent, not zero, for a card that never reported a memory sensor.
+            "peak_temp_mem": _r(peak_tmem),
             "throttled_sec": thr_sec,
             "hot_sec": hot_sec,
             "capped_pct": capped_pct,
@@ -282,9 +287,11 @@ def api_gpu_history():
         # in the window (or is reporting it live). Anything else is advertised as
         # unsupported so the UI can say "not reported by this driver" instead of
         # drawing a confident flat zero.
-        supports = {m: any(v is not None for v in s[m]) for m in ("fan", "mem_util", "clk_sm", "temp")}
+        supports = {m: any(v is not None for v in s[m])
+                    for m in ("fan", "mem_util", "clk_sm", "temp", "temp_mem")}
         if live:
-            for k, m in (("fan", "fan"), ("mem_util", "mem_util"), ("clk_sm", "clk_sm"), ("temp", "temp")):
+            for k, m in (("fan", "fan"), ("mem_util", "mem_util"), ("clk_sm", "clk_sm"),
+                         ("temp", "temp"), ("temp_mem", "temp_mem")):
                 if live.get(m) is not None:
                     supports[k] = True
         # Peak FLOP/s for this card, and the clock-scaled series derived from the

@@ -58,6 +58,13 @@ class TestRecord(unittest.TestCase):
         got = self.conn.execute("SELECT fan FROM gpu_samples").fetchone()[0]
         self.assertIsNone(got)
 
+    def test_unreported_memory_temp_stays_null_not_zero(self):
+        # Only some cards have a memory-junction sensor. Storing 0 for the rest
+        # would put a 0 °C VRAM reading next to an 80 °C core.
+        self.repo.record(self.conn, 1000, "vader", [_card(0)])         # no temp_mem key
+        got = self.conn.execute("SELECT temp_mem FROM gpu_samples").fetchone()[0]
+        self.assertIsNone(got)
+
     def test_zero_fan_is_stored_as_zero(self):
         # The other side of the same coin: a card that reports 0% must store 0,
         # so a genuinely stalled fan is distinguishable from an absent sensor.
@@ -95,6 +102,36 @@ class TestRollup(unittest.TestCase):
             "SELECT fan, fan_max FROM gpu_samples_1h WHERE host='vader'").fetchone()
         self.assertAlmostEqual(avg, 66.67, places=1)
         self.assertEqual(mx, 100)
+
+    def test_memory_temp_keeps_both_average_and_peak(self):
+        # The peak is the whole point for VRAM: memory-junction heat is what
+        # trips the sticky slowdown, and an hourly average smooths it away.
+        for ts, tm in ((0, 82), (10, 88), (20, 104)):
+            self.repo.record(self.conn, ts, "vader", [_card(0, temp_mem=tm)])
+        avg, mx = self.conn.execute(
+            "SELECT temp_mem, temp_mem_max FROM gpu_samples_1h WHERE host='vader'").fetchone()
+        self.assertAlmostEqual(avg, 91.33, places=1)
+        self.assertEqual(mx, 104)
+
+    def test_memory_temp_average_ignores_polls_without_the_sensor(self):
+        # Same rule as the fan: divide by the polls that actually reported, or a
+        # card whose sensor answers intermittently reads far cooler than it is.
+        for ts in (0, 10, 20):
+            self.repo.record(self.conn, ts, "vader", [_card(0)])                # no sensor
+        for ts in (30, 40):
+            self.repo.record(self.conn, ts, "vader", [_card(0, temp_mem=90)])
+        tm, tm_cnt, cnt = self.conn.execute(
+            "SELECT temp_mem, temp_mem_cnt, cnt FROM gpu_samples_1h WHERE host='vader'").fetchone()
+        self.assertEqual((cnt, tm_cnt), (5, 2))
+        self.assertAlmostEqual(tm, 90.0, places=6)
+
+    def test_memory_temp_max_stays_null_while_nothing_reports_it(self):
+        self.repo.record(self.conn, 0,  "vader", [_card(0)])
+        self.repo.record(self.conn, 10, "vader", [_card(0)])
+        tm, tm_max = self.conn.execute(
+            "SELECT temp_mem, temp_mem_max FROM gpu_samples_1h WHERE host='vader'").fetchone()
+        self.assertIsNone(tm)
+        self.assertIsNone(tm_max)
 
     def test_throttled_seconds_count_only_the_actionable_kind(self):
         # Three things that are NOT a thermal problem must not accumulate:
@@ -171,14 +208,18 @@ class TestRollupIsActuallyRead(unittest.TestCase):
         from backend.db.repos import gpu_samples
         self.repo = gpu_samples
 
-    def _rollup_only(self, host, hours, temp=70, temp_max=None, throttle_secs=0):
+    def _rollup_only(self, host, hours, temp=70, temp_max=None, throttle_secs=0,
+                     temp_mem=None, temp_mem_max=None):
         """Write rollup rows with NO raw rows — the state after a purge."""
         for h in range(hours):
             self.conn.execute(
                 "INSERT INTO gpu_samples_1h(ts,host,idx,util,mem_used,mem_total,power,"
-                "temp,temp_max,fan,fan_max,throttle_secs,cnt) "
-                "VALUES(?,?,0,50,12000,24576,200,?,?,40,60,?,360)",
-                (h * 3600, host, temp, temp_max if temp_max is not None else temp, throttle_secs))
+                "temp,temp_max,fan,fan_max,temp_mem,temp_mem_max,temp_mem_cnt,"
+                "throttle_secs,cnt) "
+                "VALUES(?,?,0,50,12000,24576,200,?,?,40,60,?,?,?,?,360)",
+                (h * 3600, host, temp, temp_max if temp_max is not None else temp,
+                 temp_mem, temp_mem_max if temp_mem_max is not None else temp_mem,
+                 360 if temp_mem is not None else 0, throttle_secs))
         self.conn.commit()
 
     def test_a_long_range_reads_the_rollup_when_raw_is_gone(self):
@@ -197,6 +238,22 @@ class TestRollupIsActuallyRead(unittest.TestCase):
         self._rollup_only("vader", 4, temp=70, temp_max=91)
         rows = self.repo.series("vader", 0, 3600, conn=self.conn)
         self.assertEqual(max(r[7] for r in rows), 91)
+
+    def test_memory_temp_survives_the_downsample_as_an_hourly_peak(self):
+        # Past the raw retention window the memory row must still answer, and it
+        # must answer with the hour's PEAK — the reason the rollup keeps a MAX.
+        self._rollup_only("vader", 4, temp_mem=84, temp_mem_max=103)
+        rows = self.repo.series("vader", 0, 3600, conn=self.conn)
+        self.assertEqual(max(r[13] for r in rows), 103)
+        self.assertEqual(max(r[12] for r in rows), 84)
+        h = self.repo.health("vader", 0, conn=self.conn)
+        self.assertEqual(h[0][8], 103)
+
+    def test_memory_temp_is_absent_in_the_rollup_when_no_card_reported_it(self):
+        self._rollup_only("vader", 4)                     # no memory sensor
+        rows = self.repo.series("vader", 0, 3600, conn=self.conn)
+        self.assertTrue(all(r[12] is None and r[13] is None for r in rows))
+        self.assertIsNone(self.repo.health("vader", 0, conn=self.conn)[0][8])
 
     def test_cards_survive_in_the_rollup_after_raw_is_purged(self):
         self._rollup_only("vader", 3)

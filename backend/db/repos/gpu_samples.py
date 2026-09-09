@@ -62,10 +62,12 @@ def record(conn, ts: int, host: str, cards, interval: int = 10):
         # perfectly healthy idle card as throttling all night.
         secs = interval if (thr & _THERMAL_BITS) else 0
         fan = g.get("fan")
+        tmem = g.get("temp_mem")
         roll.append(((ts // 3600) * 3600, host, idx,
                      g.get("util"), g.get("mem_used"), g.get("mem_total"), g.get("power"),
                      g.get("temp"), g.get("temp"), fan, fan,
-                     1 if fan is not None else 0, secs))
+                     1 if fan is not None else 0,
+                     tmem, tmem, 1 if tmem is not None else 0, secs))
     if not raw:
         return
     conn.executemany(
@@ -86,8 +88,9 @@ def record(conn, ts: int, host: str, cards, interval: int = 10):
     #   the thing the fan-stall alert fires on.
     conn.executemany(
         "INSERT INTO gpu_samples_1h(ts,host,idx,util,mem_used,mem_total,power,"
-        "temp,temp_max,fan,fan_max,fan_cnt,throttle_secs,cnt) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1) "
+        "temp,temp_max,fan,fan_max,fan_cnt,temp_mem,temp_mem_max,temp_mem_cnt,"
+        "throttle_secs,cnt) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1) "
         "ON CONFLICT(ts,host,idx) DO UPDATE SET "
         "  util=CASE WHEN excluded.util IS NOT NULL THEN (COALESCE(util,0)*cnt+excluded.util)/(cnt+1) ELSE util END,"
         "  mem_used=CASE WHEN excluded.mem_used IS NOT NULL THEN (COALESCE(mem_used,0)*cnt+excluded.mem_used)/(cnt+1) ELSE mem_used END,"
@@ -105,6 +108,16 @@ def record(conn, ts: int, host: str, cards, interval: int = 10):
         "               WHEN excluded.fan_max IS NULL THEN fan_max "
         "               ELSE MAX(fan_max, excluded.fan_max) END,"
         "  fan_cnt=fan_cnt+excluded.fan_cnt,"
+        # Memory-junction temp: averaged over temp_mem_cnt for the same reason
+        # the fan is, and its own MAX kept so an hour that spiked to 104 °C
+        # can't average down into a comfortable 82.
+        "  temp_mem=CASE WHEN excluded.temp_mem IS NULL THEN temp_mem "
+        "                WHEN temp_mem IS NULL THEN excluded.temp_mem "
+        "                ELSE (temp_mem*temp_mem_cnt+excluded.temp_mem)/(temp_mem_cnt+1) END,"
+        "  temp_mem_max=CASE WHEN temp_mem_max IS NULL THEN excluded.temp_mem_max "
+        "                    WHEN excluded.temp_mem_max IS NULL THEN temp_mem_max "
+        "                    ELSE MAX(temp_mem_max, excluded.temp_mem_max) END,"
+        "  temp_mem_cnt=temp_mem_cnt+excluded.temp_mem_cnt,"
         "  throttle_secs=throttle_secs+excluded.throttle_secs,"
         "  cnt=cnt+1",
         roll)
@@ -128,7 +141,8 @@ def series(host: str, since: int, bucket: int, conn=None) -> list:
     """Bucketed per-card series since `since`.
 
     Returns (bucket_ts, idx, util, mem_used, mem_total, power, temp, temp_max,
-    fan, fan_max, mem_util, clk_sm, throttle_any) ordered by time then card.
+    fan, fan_max, mem_util, clk_sm, temp_mem, temp_mem_max, throttle_any)
+    ordered by time then card.
 
     Reads whichever table can actually answer. Raw rows are retention-purged
     (48 h by default), so a 7d/30d/all request answered from `gpu_samples` alone
@@ -146,12 +160,14 @@ def series(host: str, since: int, bucket: int, conn=None) -> list:
         return c.execute(
             "SELECT (ts/?)*? b, idx, AVG(util), AVG(mem_used), MAX(mem_total), AVG(power), "
             "       AVG(temp), MAX(temp_max), AVG(fan), MAX(fan_max), NULL, NULL, "
+            "       AVG(temp_mem), MAX(temp_mem_max), "
             "       CASE WHEN SUM(throttle_secs) > 0 THEN ? ELSE 0 END "
             "FROM gpu_samples_1h WHERE host=? AND ts>=? GROUP BY b, idx ORDER BY b, idx",
             (bucket, bucket, _THERMAL_BITS, host, since)).fetchall()
     return c.execute(
         "SELECT (ts/?)*? b, idx, AVG(util), AVG(mem_used), MAX(mem_total), AVG(power), "
         "       AVG(temp), MAX(temp), AVG(fan), MAX(fan), AVG(mem_util), AVG(clk_sm), "
+        "       AVG(temp_mem), MAX(temp_mem), "
         "       MAX(COALESCE(throttle,0)) "
         "FROM gpu_samples WHERE host=? AND ts>=? GROUP BY b, idx ORDER BY b, idx",
         (bucket, bucket, host, since)).fetchall()
@@ -161,8 +177,12 @@ def health(host: str, since: int, hot_c: int = 84, interval: int = 10, conn=None
     """Per-card health over the window, for the card-health table.
 
     (idx, window_sec, avg_temp, peak_temp, peak_fan, throttled_sec, hot_sec,
-     capped_pct) — seconds, not sample counts, so the caller doesn't have to
-     know which table answered.
+     capped_pct, peak_temp_mem) — seconds, not sample counts, so the caller
+     doesn't have to know which table answered.
+
+    `peak_temp_mem` is the memory-junction peak, NULL for a card whose driver
+    never reported one. It is the range's worst moment, not its average, because
+    memory heat is judged by how high it ever got.
 
     `hot_c` is passed in rather than fixed so the "hot" column counts against
     the same threshold the alerts use, including a per-host override. A table
@@ -184,22 +204,24 @@ def health(host: str, since: int, hot_c: int = 84, interval: int = 10, conn=None
             "SELECT idx, SUM(cnt), AVG(temp), MAX(temp_max), MAX(fan_max), "
             "       SUM(throttle_secs), "
             "       SUM(CASE WHEN temp_max >= ? THEN 3600 ELSE 0 END), "
-            "       0 "
+            "       0, MAX(temp_mem_max) "
             "FROM gpu_samples_1h WHERE host=? AND ts>=? GROUP BY idx ORDER BY idx",
             (hot_c, host, since)).fetchall()
         # cnt is a sample count; turn it into the seconds the window covers.
         return [(r[0], (r[1] or 0) * interval, r[2], r[3], r[4],
-                 r[5] or 0, r[6] or 0, 0.0) for r in rows]
+                 r[5] or 0, r[6] or 0, 0.0, r[8]) for r in rows]
     rows = c.execute(
         "SELECT idx, COUNT(*), AVG(temp), MAX(temp), MAX(fan), "
         "       SUM(CASE WHEN COALESCE(throttle,0) & ? THEN 1 ELSE 0 END), "
         "       SUM(CASE WHEN temp >= ? THEN 1 ELSE 0 END), "
-        "       SUM(CASE WHEN power_limit > 0 AND power >= power_limit * 0.98 THEN 1 ELSE 0 END) "
+        "       SUM(CASE WHEN power_limit > 0 AND power >= power_limit * 0.98 THEN 1 ELSE 0 END), "
+        "       MAX(temp_mem) "
         "FROM gpu_samples WHERE host=? AND ts>=? GROUP BY idx ORDER BY idx",
         (_THERMAL_BITS, hot_c, host, since)).fetchall()
     return [(r[0], (r[1] or 0) * interval, r[2], r[3], r[4],
              (r[5] or 0) * interval, (r[6] or 0) * interval,
-             round((r[7] or 0) * 100.0 / r[1], 1) if r[1] else 0.0) for r in rows]
+             round((r[7] or 0) * 100.0 / r[1], 1) if r[1] else 0.0,
+             r[8]) for r in rows]
 
 
 def _use_rollup(host: str, since: int, conn) -> bool:

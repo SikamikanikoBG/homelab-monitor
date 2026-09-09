@@ -166,6 +166,40 @@ class TestSupportsMap(unittest.TestCase):
         d = self.c.get("/api/gpu/history?host=vader&range=1h").get_json()
         self.assertTrue(d["cards"][0]["supports"]["fan"])
 
+    def test_unreported_memory_temp_is_advertised_unsupported(self):
+        # Plain-GDDR6 and older cards have no memory-junction sensor at all. The
+        # row has to say "not reported" rather than draw a cool flat zero next to
+        # a core temp of 80 °C.
+        now = int(time.time())
+        _seed("vader", [(now - t, [_card(0)]) for t in range(300, 0, -10)])
+        card = self.c.get("/api/gpu/history?host=vader&range=1h").get_json()["cards"][0]
+        self.assertFalse(card["supports"]["temp_mem"])
+        self.assertTrue(all(v is None for v in card["series"]["temp_mem"]))
+
+    def test_reported_memory_temp_is_supported_and_charted(self):
+        now = int(time.time())
+        _seed("vader", [(now - t, [_card(0, temp=70, temp_mem=96)])
+                        for t in range(300, 0, -10)])
+        card = self.c.get("/api/gpu/history?host=vader&range=1h").get_json()["cards"][0]
+        self.assertTrue(card["supports"]["temp_mem"])
+        self.assertEqual(card["series"]["temp_mem"][-1], 96)
+        # The two sensors stay separate series: a memory die at 96 must not be
+        # able to move the core reading, or vice versa.
+        self.assertEqual(card["series"]["temp"][-1], 70)
+
+    def test_memory_temp_peak_lands_in_card_health(self):
+        now = int(time.time())
+        _seed("vader", [(now - t, [_card(0, temp_mem=84 if t > 100 else 102)])
+                        for t in range(300, 0, -10)])
+        h = self.c.get("/api/gpu/history?host=vader&range=1h").get_json()["cards"][0]["health"]
+        self.assertEqual(h["peak_temp_mem"], 102)
+
+    def test_health_memory_peak_is_absent_not_zero_without_a_sensor(self):
+        now = int(time.time())
+        _seed("vader", [(now - t, [_card(0)]) for t in range(300, 0, -10)])
+        h = self.c.get("/api/gpu/history?host=vader&range=1h").get_json()["cards"][0]["health"]
+        self.assertIsNone(h["peak_temp_mem"])
+
     def test_a_stalled_fan_reports_zero_and_stays_supported(self):
         now = int(time.time())
         _seed("vader", [(now - t, [_card(0, fan=0)]) for t in range(300, 0, -10)])
