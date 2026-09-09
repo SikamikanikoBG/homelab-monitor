@@ -1794,7 +1794,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <p class="cap" id="gpu_attrib_cap"></p>
     </div>
     <div class="card"><h2 data-i18n="gpu.health_title">🩺 Card health (selected range)</h2>
-      <table><thead><tr><th data-i18n="col.card">Card</th><th data-i18n="col.throttled">Throttled</th><th data-i18n="col.hot">Hot</th><th data-i18n="col.peak_temp">Peak temp</th><th data-i18n="col.peak_memtemp">Peak mem</th><th data-i18n="col.peak_fan">Peak fan</th><th data-i18n="col.capped">Capped</th></tr></thead><tbody id="gpu-health"></tbody></table>
+      <table><thead><tr><th data-i18n="col.card">Card</th><th data-i18n="col.throttled">Throttled</th><th data-i18n="col.hot">Hot</th><th data-i18n="col.peak_temp">Peak temp</th><th id="th-peak-memtemp" data-i18n="col.peak_memtemp">Peak mem</th><th data-i18n="col.peak_fan">Peak fan</th><th data-i18n="col.capped">Capped</th></tr></thead><tbody id="gpu-health"></tbody></table>
       <p class="cap" id="gpu_health_cap"></p>
     </div>
   </div>
@@ -3761,6 +3761,16 @@ function fmtTF(v){
 // Mem temp sits directly under Temp so the two sensors on the same card can be
 // read as a pair — the gap between them is the interesting part.
 const GPU_SPARK_ROWS = ['util','tflops','vram','temp','temp_mem','fan','power','clk_sm'];
+// Memory temp is the one metric a whole class of hardware simply has no sensor
+// for: nvidia-smi/NVML only expose temperature.memory on datacentre cards, so
+// every GeForce and Quadro box in the world answers "[N/A]". Fan and Mem-BW are
+// reported by nearly everything, so their "not reported" row is a rare, useful
+// statement; a Mem temp row would be a permanent dead line on the most common
+// hardware there is. So it appears only where at least one card in the box
+// actually reports it — and where it does, it gets the full treatment.
+const gpuHasMemTemp = d => (d && d.cards || []).some(c => c.supports && c.supports.temp_mem);
+const gpuRowsFor = d => gpuHasMemTemp(d) ? GPU_SPARK_ROWS : GPU_SPARK_ROWS.filter(m => m !== 'temp_mem');
+const gpuMetricsFor = d => Object.keys(GPU_METRICS).filter(m => m !== 'temp_mem' || gpuHasMemTemp(d));
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
 // Memory-junction thresholds. Fixed, not the per-host `hot_c` the core temp uses:
@@ -3871,7 +3881,7 @@ function gpuStatusPill(card){
 function gpuMiniCardBody(card, d, ranges){
   const now = card.now || {};
   const spans = spansToIdx(card.throttle_spans, d.labels);
-  const rows = GPU_SPARK_ROWS.map(m=>{
+  const rows = gpuRowsFor(d).map(m=>{
     const def = GPU_METRICS[m];
     const supported = card.supports[m] !== false;
     const vals = card.series[m] || [];
@@ -3973,7 +3983,7 @@ function updateGpuCardsLive(d){
   const cards = d.cards || [];
   if(!els.length || els.length !== cards.length) return false;   // structure changed: let the full render own it
   const ranges = {};
-  GPU_SPARK_ROWS.forEach(m=>{ ranges[m] = gpuSharedRange(cards, m) || {}; });
+  gpuRowsFor(d).forEach(m=>{ ranges[m] = gpuSharedRange(cards, m) || {}; });
   let painted = 0;
   els.forEach(el=>{
     const card = cards.find(c=>String(c.idx) === el.dataset.idx);
@@ -4168,7 +4178,7 @@ function renderGpuCards(d){
       return;
     }
     const ranges = {};
-    GPU_SPARK_ROWS.forEach(m=>{ ranges[m] = gpuSharedRange(d.cards, m) || {}; });
+    gpuRowsFor(d).forEach(m=>{ ranges[m] = gpuSharedRange(d.cards, m) || {}; });
     box.className = 'gpu-grid';
     box.innerHTML = (d.cards||[]).map(c=>gpuMiniCard(c, d, ranges)).join('');
     box.querySelectorAll('.gpu-mini').forEach(el=>{
@@ -4180,7 +4190,11 @@ function renderGpuCards(d){
       'One panel per card, same rows in the same order and the same scale per metric — so a taller line really is a hotter card. Shaded spans mark thermal throttling. Click a card for the full chart.');
   } else {
     if(pick){
-      pick.innerHTML = Object.keys(GPU_METRICS).map(m=>
+      const avail = gpuMetricsFor(d);
+      // A metric remembered from a host that has the sensor must not leave the
+      // chart empty on a host that doesn't. Fall back to the core temp.
+      if(!avail.includes(GPU_METRIC)) GPU_METRIC = 'temp';
+      pick.innerHTML = avail.map(m=>
         `<button type="button" class="btn-mini ${m===GPU_METRIC?'on':''}" data-m="${m}">${GPU_METRICS[m].label()}</button>`).join('');
       pick.querySelectorAll('button').forEach(b=>b.onclick=()=>{
         GPU_METRIC=b.dataset.m; localStorage.setItem('hl_gpumetric', GPU_METRIC); renderGpuCards(GPUC); });
@@ -4482,6 +4496,11 @@ function renderGpuHealth(d){
   // sparkline agree about when VRAM heat became a problem.
   const memPk = h => { const cls = h.peak_temp_mem!=null ? gpuMemCls(h.peak_temp_mem) : '';
     return cls==='bad' ? 'color:var(--crit)' : cls==='warn' ? 'color:var(--warn)' : ''; };
+  // Column and header travel together, and only on a box that has the sensor —
+  // same rule the Mem temp row follows, for the same reason.
+  const showMem = gpuHasMemTemp(d);
+  const memTh = document.getElementById('th-peak-memtemp');
+  if(memTh) memTh.hidden = !showMem;
   const rows = (d.cards||[]).filter(c=>c.health).map(c=>{
     const h = c.health;
     const pct = h.window_sec ? (v)=>` <span class="muted">${(v*100/h.window_sec).toFixed(1)}%</span>` : ()=>'';
@@ -4490,12 +4509,12 @@ function renderGpuHealth(d){
       <td>${h.throttled_sec ? dur(h.throttled_sec)+pct(h.throttled_sec) : '<span class="muted">—</span>'}</td>
       <td>${h.hot_sec ? dur(h.hot_sec)+pct(h.hot_sec) : '<span class="muted">—</span>'}</td>
       <td class="${h.peak_temp>=d.hot_c?'':''}" style="${h.peak_temp>=d.hot_c?'color:var(--crit)':''}">${h.peak_temp!=null?Math.round(h.peak_temp)+' °C':'—'}</td>
-      <td style="${memPk(h)}">${h.peak_temp_mem!=null ? Math.round(h.peak_temp_mem)+' °C'
-          : '<span class="muted">'+I18N.t('gpu.na','not reported')+'</span>'}</td>
+      ${showMem ? `<td style="${memPk(h)}">${h.peak_temp_mem!=null ? Math.round(h.peak_temp_mem)+' °C'
+          : '<span class="muted">'+I18N.t('gpu.na','not reported')+'</span>'}</td>` : ''}
       <td>${c.supports.fan && h.peak_fan!=null ? Math.round(h.peak_fan)+' %' : '<span class="muted">'+I18N.t('gpu.na','not reported')+'</span>'}</td>
       <td>${h.capped_pct ? h.capped_pct+' %' : '<span class="muted">—</span>'}</td></tr>`;
   }).join('');
-  tb.innerHTML = rows || `<tr><td colspan="7" class="muted">${I18N.t('gpu.no_history','No history for this host yet.')}</td></tr>`;
+  tb.innerHTML = rows || `<tr><td colspan="${showMem?7:6}" class="muted">${I18N.t('gpu.no_history','No history for this host yet.')}</td></tr>`;
   const cap = document.getElementById('gpu_health_cap');
   if(cap){
     let t = I18N.t('gpu.health_cap',
