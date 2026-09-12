@@ -116,6 +116,28 @@ def _live_cards(host):
             _app._host_is_online(entry))
 
 
+def _telemetry(host):
+    """(verdict, reporting) for `host`'s GPU telemetry.
+
+    `verdict` is app.gpu_telemetry()'s — None when the cards are there (or the
+    box never had any), else {ok: False, error, lost_since}. `reporting` is
+    whether the host is delivering ANY data right now: a remote inside its
+    online window, the hub once its sampler has run. The two together separate
+    the three ways a tab can have no live cards — host offline (calm: we don't
+    know), hub just restarted (calm: not yet asked), host answering but without
+    its GPUs (an incident: nvidia-smi is broken or the cards fell off)."""
+    import app as _app
+    if host == "local":
+        return (_app.gpu_telemetry("local", _app.LATEST),
+                _app.LATEST.get("ts") is not None)
+    with _app.HOST_DATA_LOCK:
+        entry = _app.HOST_DATA.get(host)
+    if not entry or "data" not in entry:
+        return None, False
+    return (_app.gpu_telemetry(host, entry["data"].get("host") or {}),
+            _app._host_is_online(entry))
+
+
 def _span_and_bucket(rng, host):
     """(since, bucket_seconds, now) for a range key, sized like /api/data.
 
@@ -164,20 +186,25 @@ def _stitch_spans(rows, interval):
     return sorted(spans, key=lambda s: (s["idx"], s["start"]))
 
 
-def _status_for(live, hot_c, recent=True, have_live=True):
+def _status_for(live, hot_c, recent=True, have_live=True, lost=False):
     """The status pill: what a human should conclude about this card at a glance.
 
     Ordering matters — a card can be hot AND busy, and "hot" is the fact worth
     surfacing. Power-capping is deliberately NOT a warning state: a box running a
     deliberately lowered power limit sits at its cap by design.
 
-    Three different reasons a card can be absent from the live snapshot, and
-    conflating any two of them produces a false alarm:
+    Four different reasons a card can be absent from the live snapshot, and
+    conflating any two of them produces a false alarm — or, worse, hides one:
 
-    * `have_live` false — the HOST isn't reporting any cards at all right now
-      (offline, or the hub restarted and hasn't polled yet). We don't know
-      anything about this card; that is "stale", not an incident. Without this
-      the whole tab lights up red for a minute after every restart.
+    * `have_live` false and `lost` — the host IS answering, but with no cards
+      where it had some (or with nvidia-smi's own error). A driver update that
+      broke nvidia-smi looks exactly like this. It is an incident, and it used
+      to render as the calm "stale" below — which is how a whole day of frozen
+      GPU numbers went unnoticed.
+    * `have_live` false otherwise — the host isn't reporting anything (offline,
+      or the hub restarted and hasn't polled yet). We don't know anything about
+      this card; that is "stale", not an incident. Without this the whole tab
+      lights up red for a minute after every restart.
     * `recent` false — the card's last sample is old, so it was removed from the
       machine. History, not a fault.
     * otherwise — the host is reporting cards and this one isn't among them.
@@ -186,7 +213,7 @@ def _status_for(live, hot_c, recent=True, have_live=True):
     import app as _app
     if live is None:
         if not have_live:
-            return "stale"
+            return "lost" if lost else "stale"
         return "gone" if recent else "retired"
     mask = live.get("throttle_mask") or 0
     if mask & _app._THERMAL_BITS:
@@ -211,6 +238,10 @@ def api_gpu_history():
     hot_c = _hot_c(host)
     live_cards, live_agg, live_procs, at, online = _live_cards(host)
     live_by_idx = {c["idx"]: c for c in live_cards if c.get("idx") is not None}
+    tele, reporting = _telemetry(host)
+    # "Lost" only while the host is actually answering: an offline host's
+    # missing cards are the host's problem, not the driver's.
+    lost = bool(tele) and reporting and not live_by_idx
 
     with _app.LOCK:
         rows = gpu_repo.series(host, since, bk, conn=_app.DB)
@@ -311,7 +342,7 @@ def api_gpu_history():
             "last_seen": last_seen.get(idx),
             "status": _status_for(live, hot_c,
                                   recent=(last_seen.get(idx) or 0) >= recent_cutoff,
-                                  have_live=bool(live_by_idx)),
+                                  have_live=bool(live_by_idx), lost=lost),
             "now": _now_block(live),
             "supports": supports,
             "series": s,
@@ -355,6 +386,13 @@ def api_gpu_history():
         # history hasn't accumulated yet.
         "has_gpu": bool(cards),
         "has_history": n > 0,
+        # Whether this host's GPUs are actually being watched right now. Absent
+        # (None) when they are, or when the box never had any; otherwise the
+        # probe's own diagnosis and when a card was last seen — the UI draws the
+        # red strip from this, and marks every number on the tab as last-known.
+        "telemetry": ({"ok": False, "lost": lost, "reporting": reporting,
+                       "error": tele.get("error"), "lost_since": tele.get("lost_since")}
+                      if tele else None),
     })
 
 

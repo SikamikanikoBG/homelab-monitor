@@ -355,6 +355,21 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .gpu-mini.st-hot{border-color:var(--warn)}
 .gpu-mini.st-gone{border-color:var(--crit);opacity:.72}
 .gpu-mini.st-retired,.gpu-mini.st-stale{opacity:.55}
+/* Telemetry lost: the host answers but its GPU tool doesn't. The card keeps its
+   last-known numbers on screen (they are still the best available facts) but
+   wears the border so nobody reads them as live. */
+.gpu-mini.st-lost{border-color:var(--crit);border-style:dashed}
+.spark-row .sv.lastknown{color:var(--mut);font-style:italic}
+.gpu-mini-now .lastknown{color:var(--crit);font-weight:600}
+/* The "light" on every host surface: a blinking dot next to the host name
+   whenever a sensor the host had has gone dark. CSS-only, so the reduced-motion
+   kill switch (docs/animations.md) covers it like every other animation. */
+.telelight{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--crit);
+  margin-left:5px;flex:none;box-shadow:0 0 0 0 var(--crit);animation:telepulse 1.6s ease-out infinite}
+@keyframes telepulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--crit) 55%,transparent)}
+  100%{box-shadow:0 0 0 7px transparent}}
+.mc-b-tele{ background:transparent; color:var(--crit); border-color:var(--crit); border-style:dashed }
+.kpi .v.lastknown{color:var(--mut)}
 .gpu-mini-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .gpu-mini-h b{font-size:13px}
 .gpu-mini-h .nm{font-size:12px;color:var(--mut);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2458,7 +2473,7 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <option value="5">5 s</option>
             <option value="10">10 s</option>
           </select>
-          <p class="cap" style="margin-top:4px" data-i18n-html="general.fast_interval_cap" data-i18n-def="How often the GPU tab and the Overview cockpit's live numbers refresh. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows.">How often the GPU tab and the Overview cockpit's live numbers refresh. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows.</p>
+          <p class="cap" style="margin-top:4px" data-i18n-html="general.fast_interval_cap" data-i18n-def="How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.">How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.</p>
         </div>
         <div>
           <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.ai_servers_title" data-i18n-def="🧠 Custom AI servers">🧠 Custom AI servers</div>
@@ -3846,6 +3861,9 @@ function gpuStatusPill(card){
     // The host isn't reporting cards at all right now (offline, or the hub has
     // just restarted and hasn't polled yet). We don't know — say so.
     stale:    ['',             I18N.t('gpu.st_stale','NO LIVE DATA')],
+    // The host is answering but its GPU tool isn't — a broken driver, a card
+    // off the bus. Loud on purpose: the numbers around it are frozen.
+    lost:     ['mc-pill-crit', I18N.t('gpu.st_lost','NO TELEMETRY')],
   }[card.status] || ['', card.status];
   return `<span class="mc-pill ${S[0]}">${S[1]}</span>`;
 }
@@ -3880,6 +3898,10 @@ function gpuMiniCardBody(card, d, ranges){
     }
     if(m==='temp'){ cls = last>=d.hot_c ? 'bad' : last>=d.hot_c-8 ? 'warn' : ''; }
     if(m==='fan' && last>=95) cls = 'warn';
+    // No live reading behind this number: it is the last sample the host ever
+    // sent, not what the card is doing now. Colouring it red for "hot" would
+    // be a claim about the present made from the past.
+    if(card.status==='lost'){ cls = 'lastknown'; }
     const color = m==='temp' ? gpuTint(last>=d.hot_c?100:last>=d.hot_c-8?70:10)
                 : m==='util' ? gpuTint(last) : 'var(--ok)';
     // TFLOPS sits directly under UTIL, and the pair invites exactly one wrong
@@ -3890,7 +3912,7 @@ function gpuMiniCardBody(card, d, ranges){
       ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"` : '';
     return `<div class="spark-row"${rowT}><span class="sl">${def.label()}</span>
       ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='util' ? spans : []})}
-      <span class="sv ${cls}">${disp}</span></div>`;
+      <span class="sv ${cls}"${card.status==='lost'?` title="${esc(I18N.t('gpu.lastknown_t','Last known value — the host is not reporting this card right now.'))}"`:''}>${disp}</span></div>`;
   }).join('');
 
   // Which services sit on THIS card — the piece even the hub never had.
@@ -3918,7 +3940,9 @@ function gpuMiniCardBody(card, d, ranges){
          clk:K.boost_mhz, cores:K.cores.toLocaleString()}))}">${fmtTF(K.fp32)}F</span>` : '';
 
   return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${peak}${gpuStatusPill(card)}</div>
-    <div class="gpu-mini-now">${stats || (card.status==='retired' && card.last_seen
+    <div class="gpu-mini-now">${stats || (card.status==='lost'
+        ? `<span class="lastknown">${I18N.tf('gpu.lost_now','telemetry lost · last reported {t}',{t:relTime(card.last_seen)})}</span>`
+        : card.status==='retired' && card.last_seen
         ? I18N.tf('gpu.last_seen','last reported {t}',{t:relTime(card.last_seen)})
         : I18N.t('gpu.no_live','no live reading'))}</div>
     ${rows}${attrib}`;
@@ -4043,11 +4067,17 @@ function paintGpuTab(loading){
   // are different situations and get different words. Conflating them is how a
   // monitoring tool tells its first small lie.
   if(!d.has_gpu){
+    // A box that has no GPU and a box whose GPU tool is broken are different
+    // findings, and only one of them should worry anyone.
+    const T = d.telemetry;
     if(title) title.innerHTML = `${sic('gpu')} `
-      + esc(I18N.tf('gpu.none_title','No GPU detected on {host}',{host:d.host}));
+      + esc(T ? I18N.tf('gpu.tele_title','GPU telemetry unavailable on {host}',{host:d.host})
+              : I18N.tf('gpu.none_title','No GPU detected on {host}',{host:d.host}));
     document.getElementById('gpukpis').innerHTML = '';
     const cap = document.getElementById('gpu-pooled-cap');
-    if(cap) cap.textContent = I18N.t('gpu.none_cap','The probe found no NVIDIA card (via nvidia-smi) and no AMD or Intel GPU on this host.');
+    if(cap) cap.textContent = T && T.error
+      ? T.error
+      : I18N.t('gpu.none_cap','The probe found no NVIDIA card (via nvidia-smi) and no AMD or Intel GPU on this host.');
     [perCard, combCard, nowCard].forEach(c=>{ if(c) c.hidden = true; });
     renderGpuAlertStrip(d); renderGpuHealth(d);
     return;
@@ -4065,7 +4095,10 @@ function paintGpuTab(loading){
 
   const pcap = document.getElementById('gpu-pooled-cap');
   if(pcap){
-    pcap.textContent = d.online
+    const T = d.telemetry;
+    pcap.textContent = (T && T.lost)
+      ? I18N.tf('gpu.pooled_cap_lost','Host online but not reporting its GPUs — every number here is the last known value, from {t}',{t:relTime(T.lost_since||d.at)})
+      : d.online
       ? I18N.tf('gpu.pooled_cap','Live · updated {t} · history every {i}s',{t:relTime(d.at), i:d.interval})
       : I18N.tf('gpu.pooled_cap_off','Host offline — showing the last snapshot from {t}',{t:relTime(d.at)});
   }
@@ -4087,6 +4120,16 @@ function paintGpuTab(loading){
 function renderGpuKpis(d){
   const box = document.getElementById('gpukpis');
   if(!box || !d || !d.has_gpu) return;
+  // No pooled "now" block means no card reported this poll. Zeros here would
+  // read as "GPU idle at 0 °C" — a confident wrong answer. Dashes say "unknown".
+  if(!d.now_pooled){
+    const T = d.telemetry || {};
+    const why = T.lost ? I18N.t('gpu.k_lost','telemetry lost') : I18N.t('gpu.k_nolive','no live data');
+    box.innerHTML = [I18N.t('gpu.util_kpi','GPU util'), I18N.t('gpu.vram_in_use','VRAM in use'),
+                     I18N.t('gpu.k_power','Power'), I18N.t('gpu.k_temp','Hottest card')].map(l=>
+      `<div class="kpi"><div class="v lastknown">—</div><div class="l">${l}</div><div class="s">${why}</div></div>`).join('');
+    return;
+  }
   const p = d.now_pooled || {};
   const C = d.combined || {};
   const memPct = p.mem_total ? Math.round(p.mem_used/p.mem_total*100) : 0;
@@ -4392,6 +4435,22 @@ const gpuStallBar = d => Math.max(60, (d.hot_c || 84) - 10);
 function renderGpuAlertStrip(d){
   const box = document.getElementById('gpu-alerts'); if(!box) return;
   const items = [];
+  // The host answers, its GPUs don't. Above every per-card item because it
+  // explains all of them at once, and worded from the tool's own error so the
+  // fix is obvious ("Driver/library version mismatch" → reboot / reload the
+  // module). This is the strip that was missing the day a driver auto-update
+  // froze a whole box's numbers without a single red pixel.
+  const T = d.telemetry;
+  if(T && (T.lost || T.error)){
+    const bits = [];
+    if(T.error) bits.push(esc(T.error));
+    else bits.push(I18N.t('gpu.al_tele_generic','The host is online and answering the probe, but the probe found no GPU. On an NVIDIA box that usually means nvidia-smi is broken (a driver/library version mismatch after a package update) or the cards fell off the bus (Xid).'));
+    if(T.lost_since) bits.push(I18N.tf('gpu.al_tele_since','Last good reading {t}.',{t:relTime(T.lost_since)}));
+    bits.push(I18N.t('gpu.al_tele_frozen','Every number on this tab is the last known value, not a live one.'));
+    items.push({lvl:'crit', ic:'xcircle',
+      t: I18N.tf('gpu.al_tele','GPU telemetry lost on {host}',{host:esc(d.host)}),
+      d: bits.join(' ')});
+  }
   (d.cards||[]).forEach(c=>{
     const now = c.now || {};
     const h = c.health || {};
@@ -7037,7 +7096,22 @@ function statusOfFleetRow(r){
   const summary = (r.last_check && r.last_check.summary) || {};
   if(summary.overall==='warn') return 'warn';
   if(summary.overall==='fail') return 'offline';
+  // A host that answers but has lost a sensor it used to have (its GPUs, via a
+  // broken nvidia-smi) is not "online" in the sense a human means: the numbers
+  // it shows are frozen. Amber here is what turns the host pill, the fleet
+  // table and the Overview tile amber at once.
+  if(teleLost(r)) return 'warn';
   return 'online';
+}
+// The fleet row's GPU-telemetry verdict (from /api/fleet), or null. Kept as one
+// helper so every surface asks the same question.
+function teleLost(r){ return !!(r && r.gpu_telemetry && r.gpu_telemetry.ok===false); }
+function teleTitle(r){
+  const T = r && r.gpu_telemetry; if(!T) return '';
+  return T.error || I18N.t('fleet.tele_lost_t','GPU telemetry lost — the host answers but reports no GPU');
+}
+function teleLight(r){
+  return teleLost(r) ? `<span class="telelight" title="${esc(teleTitle(r))}" aria-label="${esc(I18N.t('fleet.tele_lost','GPU telemetry lost'))}"></span>` : '';
 }
 
 async function loadFleet(){
@@ -7076,8 +7150,8 @@ function renderHostBar(){
     const dot = h.is_local ? 'ok' : statusOfFleetRow(h)==='online' ? 'ok' :
                 statusOfFleetRow(h)==='warn' ? 'warn' : 'fail';
     const label = h.is_local ? (h.label || I18N.t('host.local','Local')) : h.name;
-    return `<button class="hpill ${h.name===CURRENT_HOST?'on':''}" data-h="${esc(h.name)}">
-      <span class="pdot ${dot}"></span><span>${esc(label)}</span></button>`;
+    return `<button class="hpill ${h.name===CURRENT_HOST?'on':''}" data-h="${esc(h.name)}"${teleLost(h)?` title="${esc(teleTitle(h))}"`:''}>
+      <span class="pdot ${dot}"></span><span>${esc(label)}</span>${teleLight(h)}</button>`;
   }).join('') + `<button class="hpill add" id="hpill_add" title="${I18N.t('hostbar.manage','Manage hosts')}">${I18N.t('hostbar.add','+ Add host')}</button>`;
   bar.querySelectorAll('.hpill[data-h]').forEach(b => b.onclick = () => setHost(b.dataset.h));
   document.getElementById('hpill_add').onclick = () => showTab('hosts');
@@ -7359,6 +7433,8 @@ function renderFleet(){
     const gpu = g
       ? `<span class="pct">${g.util||0}%</span>` +
         `<span class="abs">${fmtMBshort(g.mem_used)} / ${fmtMBshort(g.mem_total)} VRAM</span>`
+      : teleLost(r)
+      ? `<span class="stale" title="${esc(teleTitle(r))}">${teleLight(r)} ${I18N.t('fleet.tele_lost','GPU telemetry lost')}</span>`
       : '<span class="muted">—</span>';
     // Load 1m: number + denominator
     const load = h.load1==null
@@ -8175,6 +8251,7 @@ function mcPaintFleet($){
     const worstDisk=((hh.disks||[]).find(d=>d.pct>=90));
     if(worstDisk) badges.push(`<span class="mc-host-badge mc-b-warn">disk ${worstDisk.pct}%</span>`);
     if(hh.gpu) badges.push(`<span class="mc-host-badge mc-b-gpu">GPU</span>`);
+    if(teleLost(h)) badges.push(`<span class="mc-host-badge mc-b-tele" title="${esc(teleTitle(h))}">${teleLight(h)} ${I18N.t('mc.tele_lost','GPU LOST')}</span>`);
     const cpuC=cpu>=80?'var(--crit)':cpu>=50?'var(--warn)':'var(--ok)';
     const ramC=ramPct>=80?'var(--crit)':ramPct>=65?'var(--warn)':'var(--info)';
     const diskPct=Math.max(...(((hh.disks)||[]).map(d=>d.pct||0)),0);
