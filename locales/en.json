@@ -843,5 +843,7 @@
   "mc.tele_lost": "GPU LOST",
   "general.fast_interval_cap": "How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.",
   "aiband.cap_lost": "GPU telemetry lost on the hub — {err}",
-  "mc.head_gpu_lost": "GPU telemetry lost"
+  "mc.head_gpu_lost": "GPU telemetry lost",
+  "mc.di_tele": "GPU telemetry lost on {h}",
+  "mc.gpu_lost": "telemetry lost"
 }

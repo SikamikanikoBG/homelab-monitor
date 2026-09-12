@@ -7633,7 +7633,8 @@ function mcPaintTriFleet($){
   const gUtil=gN?Math.round(gUtilSum/gN):0, gPw=Math.round(gPow), pg=$('mc-pct-gpu');
   if(gN){ if(pg)pg.style.visibility='visible'; mcCountUp($('mc-g-gpu'),gUtil,900,0); mcSetTriArc('mc-arc-gpu',gUtil,mcTriColor(gUtil,'var(--accent)'));
     $('mc-sub-gpu').innerHTML=esc(fmtMB(gUsed)+' / '+fmtMB(gTot)+' · '+gN+' GPU'+(gN===1?'':'s'))+(gPw?`<span class="mc-tg-pwr">${gPw} W</span>`:''); }
-  else { $('mc-g-gpu').textContent='—'; if(pg)pg.style.visibility='hidden'; mcSetTriArc('mc-arc-gpu',0,'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU'); }
+  else { $('mc-g-gpu').textContent='—'; if(pg)pg.style.visibility='hidden'; mcSetTriArc('mc-arc-gpu',0,'var(--bd)');
+    $('mc-sub-gpu').textContent=rows.some(r=>teleLost(r)) ? I18N.t('mc.gpu_lost','telemetry lost') : I18N.t('mc.no_gpu','no GPU'); }
   // CPU — average util, summed cores
   let cpuSum=0,cpuN=0,coresT=0;
   rows.forEach(r=>{ const h=r.host||{}; cpuSum+=Math.round(h.cpu||0); cpuN++; coresT+=h.cores||0; });
@@ -7694,7 +7695,8 @@ function mcPaintTri($){
       + (pw?`<span class="mc-tg-pwr">${pw} W</span>`:'');
   } else {
     $('mc-g-gpu').textContent='—'; if(pg) pg.style.visibility='hidden';
-    mcSetTriArc('mc-arc-gpu', 0, 'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU');
+    mcSetTriArc('mc-arc-gpu', 0, 'var(--bd)');
+    $('mc-sub-gpu').textContent=teleLost(fh) ? I18N.t('mc.gpu_lost','telemetry lost') : I18N.t('mc.no_gpu','no GPU');
   }
   // CPU
   const cpu=Math.round(host.cpu||0), cores=host.cores||0, load1=host.load1||0;
@@ -8114,6 +8116,7 @@ function mcAttentionCount(){
   const dk=(HH&&HH.docker)||{}; if((dk.containers||[]).some(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'))) n++;
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
   if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) n++;
+  n+=hosts.filter(h=>teleLost(h)).length;
   return n;
 }
 function mcDeriveInsights(skipAllGood){
@@ -8124,6 +8127,11 @@ function mcDeriveInsights(skipAllGood){
   if(off.length) out.push({level:'critical',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
   hosts.forEach(h=>{ const d=((h.host&&h.host.disks)||[]).find(d=>d.pct>=90);
     if(d) out.push({level:'warning',title:I18N.tf('mc.di_disk','{h} disk {m} at {p}%',{h:esc(h.label||h.name),m:esc(d.mount),p:d.pct}),detail:I18N.t('mc.di_disk_d','Worth a clean-up before writes start failing.')}); });
+  // A host answering without its GPUs. Critical, and named: the whole point
+  // is that nobody has to notice a temperature that stopped moving.
+  hosts.filter(h=>teleLost(h)).forEach(h=>out.push({level:'critical',
+    title:I18N.tf('mc.di_tele','GPU telemetry lost on {h}',{h:esc(h.label||h.name)}),
+    detail:esc(teleTitle(h))}));
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
   if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
   const dk=(HH&&HH.docker)||{}; const probs=(dk.containers||[]).filter(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'));

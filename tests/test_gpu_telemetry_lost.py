@@ -188,6 +188,8 @@ class TestCockpitLostState(_HubCase):
         self.assertIsNone(d["now_pooled"])
         self.assertTrue(d["telemetry"]["lost"])
         self.assertIn(MISMATCH, d["telemetry"]["error"])
+        # Still named: the human recognises "RTX 3090", not "GPU 0".
+        self.assertEqual(d["cards"][0]["name"], "NVIDIA GeForce RTX 3090")
 
     def test_lost_survives_the_two_minute_recent_window(self):
         # `gone` decays to `retired` after a couple of polls; a broken driver

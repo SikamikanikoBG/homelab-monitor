@@ -315,6 +315,7 @@ def api_gpu_history():
             "downsampled": downsampled,
         }
 
+    remembered = _app.gpu_last_names(host)
     cards = []
     for idx in idxs:
         live = live_by_idx.get(idx)
@@ -343,7 +344,7 @@ def api_gpu_history():
             s["tflops"] = [None] * n
         cards.append({
             "idx": idx,
-            "name": (live or {}).get("name") or f"GPU {idx}",
+            "name": (live or {}).get("name") or remembered.get(idx) or f"GPU {idx}",
             "vendor": (live or {}).get("vendor"),
             "compute": compute,
             "mem_total": (live or {}).get("mem_total") or _last(s["vram_total"]) or 0,

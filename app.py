@@ -4011,6 +4011,10 @@ def _poll_one_host(h):
 # bus), the second is a Raspberry Pi. In memory, seeded once per host from the
 # per-card history so a hub restart mid-incident doesn't forget the cards.
 _GPU_LAST_CARDS = {}
+# {host: {idx: card name}} from the last poll that carried cards, so a card the
+# host has stopped describing is still shown by name ("NVIDIA GeForce RTX 3090"),
+# not as a bare "GPU 0" — the history table stores numbers, not names.
+_GPU_LAST_NAMES = {}
 _GPU_LAST_CARDS_LOCK = threading.Lock()
 # Past this, a host that stopped reporting cards is treated as having had them
 # removed on purpose (same window the notifier uses to retire a missing card),
@@ -4035,6 +4039,12 @@ def note_gpu_cards(name, hostd):
                 _GPU_LAST_CARDS[name] = 0
         if cards:
             _GPU_LAST_CARDS[name] = int(time.time())
+            _GPU_LAST_NAMES[name] = {c.get("idx"): c.get("name") for c in cards if c.get("name")}
+
+def gpu_last_names(name):
+    """{idx: card name} as last reported by `name`; {} when never seen."""
+    with _GPU_LAST_CARDS_LOCK:
+        return dict(_GPU_LAST_NAMES.get(name) or {})
 
 def gpu_telemetry(name, hostd):
     """The GPU-telemetry verdict for one host's latest data:
