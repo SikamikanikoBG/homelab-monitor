@@ -356,7 +356,12 @@ def api_health():
                    "power": _app.LATEST["power"], "temp": _app.LATEST["temp"],
                    "available": bool(gpu_avail),
                    "gpus": _app.LATEST.get("gpus") or [],    # per-card detail (issue #95)
-                   "extra": _app.LATEST.get("gpu_extra") or {}},  # mem-bw/clocks/throttle (telemetry)
+                   "extra": _app.LATEST.get("gpu_extra") or {},  # mem-bw/clocks/throttle (telemetry)
+                   # None while the cards are there. When the hub HAD cards and
+                   # its nvidia-smi stopped answering, this carries the tool's
+                   # own error — and the UI must keep the GPU tab reachable so
+                   # the loss is visible, rather than hiding the tab as "no GPU".
+                   "telemetry": _app.gpu_telemetry("local", _app.LATEST)},
            "host": _app.enrich_os_upgrade(_app.LATEST["host"])}
     docker  = _app.HEALTH["docker"]  or {"available": False, "reason": "warming up…",
                                     "containers": [], "summary": {"total": 0, "running": 0, "problems": 0}}

@@ -57,25 +57,44 @@ def watchdog(check_interval: float = 10.0) -> None:  # pragma: no cover
 
 # ── Background workers ───────────────────────────────────────────────────────
 
-def host_poller():
+def host_poller(stop=None):
     import app as _app
     """Loop: probe every registered host whose last Test was healthy. Hosts are
     polled *concurrently* so one slow/timing-out remote can't delay the others and
     age their rows out to a false 'offline' (the flapping bug). A per-host adaptive
     timeout (issue #99) still isolates slow remotes — they self-calibrate to a
     working budget instead of going permanently dark, while fast hosts stay at the
-    15s default. Errors are kept on the cache row so the UI can show a last error."""
+    15s default. Errors are kept on the cache row so the UI can show a last error.
+
+    Every host rides its OWN cadence. The previous shape ran one pool per cycle
+    and waited for the whole cycle to finish before sleeping INTERVAL — so the
+    period of EVERY host was (slowest probe + INTERVAL). A Windows box whose
+    PowerShell probe takes 40 s made a 4 s Linux box refresh every 50 s, and the
+    GPU tab looked like it ignored the refresh interval. Now each tick submits
+    only the hosts that aren't still mid-probe: a fast host is re-polled every
+    INTERVAL, a slow one as soon as its previous probe lands, and neither ever
+    waits on the other. The pool is long-lived so the slow probe keeps running
+    across ticks instead of being joined at the end of each one.
+
+    `stop` (a threading.Event) ends the loop — only tests use it; the app runs
+    this forever on a daemon thread."""
     # Stagger the first run a touch so we don't fire before the app is fully up.
     time.sleep(2)
-    while True:
+    ex = ThreadPoolExecutor(max_workers=8, thread_name_prefix="host-poll")
+    inflight = {}   # host name -> Future of its running probe
+    while not (stop is not None and stop.is_set()):
         _heartbeat("host_poller", _app.INTERVAL)
         try:
             hosts = _app.list_hosts()
-            if hosts:
-                # Each host gets its own thread for the cycle, so the wall-clock
-                # period is the slowest single probe, not the sum of all of them.
-                with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as ex:
-                    list(ex.map(_app._poll_one_host, hosts))
+            names = {h["name"] for h in hosts}
+            for h in hosts:
+                f = inflight.get(h["name"])
+                if f is not None and not f.done():
+                    continue        # still probing from an earlier tick
+                inflight[h["name"]] = ex.submit(_app._poll_one_host, h)
+            # Forget hosts that were removed once their last probe has landed.
+            for n in [n for n in inflight if n not in names and inflight[n].done()]:
+                inflight.pop(n, None)
         except Exception as e:
             print("host_poller error:", e, flush=True)
         time.sleep(_app.INTERVAL)
@@ -131,6 +150,7 @@ def sample_once():
     gpu_pids = {}
     gpu_avail = False
     gpu_vendor = None   # "nvidia" | "amd" | "hybrid" — drives the vendor-aware GPU diagnostic
+    gpu_error = None    # nvidia-smi's own first line when an NVIDIA stack is present but broken
     try:
         # One CSV row per card (issue #95). Parse each field defensively: nvidia-_app.smi
         # emits the literal "[N/A]" / "[Not Supported]" for power.draw/temperature
@@ -180,7 +200,12 @@ def sample_once():
                 g["idx"] = base + i
         gpus = nv_gpus + amd_cards
         if not gpus:
-            raise ValueError("no NVIDIA or AMD GPU detected")
+            # "No GPU" and "the GPU tool is broken" are different facts. A
+            # driver update that leaves nvidia-smi dying with "Driver/library
+            # version mismatch" must light up as an incident, not quietly
+            # degrade the panel to "absent" (probe.py makes the same call).
+            gpu_error = _app.nvidia_failure()
+            raise ValueError(gpu_error or "no NVIDIA or AMD GPU detected")
         gpu_avail = True
         gpu_vendor = ("hybrid" if (nv_gpus and amd_cards)
                       else "amd" if amd_cards else "nvidia")
@@ -505,6 +530,7 @@ def sample_once():
     _app.LATEST.update(ts=ts, util=util, mem_used=mem_used, mem_total=mem_total, power=power, temp=temp,
                   cpu_power=cpu_power, dram_power=dram_power, rapl=rapl.get("domains"),
                   gpu_avail=gpu_avail, gpu_vendor=gpu_vendor, gpus=gpus, gpu_extra=gpu_extra,
+                  gpu_error=gpu_error,
                   procs=sorted(({"service": s, "mem": round(m),
                                  **({"by_card": {str(i): round(v) for i, v in sorted(svc_by_card[s].items())}}
                                     if s in svc_by_card else {})}
@@ -515,6 +541,9 @@ def sample_once():
                   model_meta=model_meta, serving=serving, training=training, devtools=devtools,
                   callers=sorted(({"caller": c, "server": s, "conns": n} for (c, s), n in edges.items()),
                                  key=lambda x: -x["conns"]), host=host)
+    # Remember whether this sample carried cards, so a later sample without any
+    # reads as "telemetry lost" rather than "this hub never had a GPU".
+    _app.note_gpu_cards("local", {"gpus": gpus})
     # Wake the SSE streams: the slow sample carries everything the fast lane
     # can't (containers, models, VRAM attribution, callers), so a browser must
     # not have to wait for the next fast tick to see it.
