@@ -86,9 +86,11 @@
       "fleet.tele_lost",
       "fleet.tele_lost_t",
       "mc.tele_lost",
-      "general.fast_interval_cap"
+      "general.fast_interval_cap",
+      "aiband.cap_lost",
+      "mc.head_gpu_lost"
     ],
-    "coverage": 0.902
+    "coverage": 0.8999
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -926,5 +928,7 @@
   "fleet.tele_lost": "GPU telemetry lost",
   "fleet.tele_lost_t": "GPU telemetry lost — the host answers but reports no GPU",
   "mc.tele_lost": "GPU LOST",
-  "general.fast_interval_cap": "How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others."
+  "general.fast_interval_cap": "How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.",
+  "aiband.cap_lost": "GPU telemetry lost on the hub — {err}",
+  "mc.head_gpu_lost": "GPU telemetry lost"
 }

@@ -186,7 +186,7 @@ def _stitch_spans(rows, interval):
     return sorted(spans, key=lambda s: (s["idx"], s["start"]))
 
 
-def _status_for(live, hot_c, recent=True, have_live=True, lost=False):
+def _status_for(live, hot_c, recent=True, have_live=True, lost=False, reporting=False):
     """The status pill: what a human should conclude about this card at a glance.
 
     Ordering matters — a card can be hot AND busy, and "hot" is the fact worth
@@ -213,7 +213,13 @@ def _status_for(live, hot_c, recent=True, have_live=True, lost=False):
     import app as _app
     if live is None:
         if not have_live:
-            return "lost" if lost else "stale"
+            if lost:
+                return "lost"
+            # The host answers, reports no cards, and this one was last seen
+            # long ago: it left the machine before whatever is happening now.
+            if reporting and not recent:
+                return "retired"
+            return "stale"
         return "gone" if recent else "retired"
     mask = live.get("throttle_mask") or 0
     if mask & _app._THERMAL_BITS:
@@ -253,6 +259,10 @@ def api_gpu_history():
     # polls. Generous enough to survive a slow host or one skipped cycle, tight
     # enough that a card pulled from the machine last week doesn't alert forever.
     recent_cutoff = now - max(interval * 6, 120)
+    # A card that was pulled from the machine long before the tool broke is
+    # still "retired", not "lost" — the loss only covers cards seen inside the
+    # same window the fleet verdict uses.
+    lost_cutoff = now - _app.GPU_LOST_FORGET_S
 
     labels = sorted({int(r[0]) for r in rows})
     pos = {b: i for i, b in enumerate(labels)}
@@ -342,7 +352,8 @@ def api_gpu_history():
             "last_seen": last_seen.get(idx),
             "status": _status_for(live, hot_c,
                                   recent=(last_seen.get(idx) or 0) >= recent_cutoff,
-                                  have_live=bool(live_by_idx), lost=lost),
+                                  have_live=bool(live_by_idx), reporting=reporting,
+                                  lost=lost and (last_seen.get(idx) or 0) >= lost_cutoff),
             "now": _now_block(live),
             "supports": supports,
             "series": s,

@@ -200,6 +200,17 @@ class TestCockpitLostState(_HubCase):
             d = self.c.get("/api/gpu/history?host=vader&range=6h").get_json()
         self.assertEqual(d["cards"][0]["status"], "lost")
 
+    def test_a_card_retired_long_before_the_tool_broke_stays_retired(self):
+        # Card 1 was pulled from the box days ago; card 0 was live until the
+        # driver died. Only card 0 is "lost" — the other is history.
+        now = int(time.time())
+        _seed("vader", [(now - 5 * 86400, [_card(0), _card(1)]), (now - 300, [_card(0)])])
+        self.app.note_gpu_cards("vader", {"gpus": [_card(0)]})
+        with _hostdata("vader", {"gpu_error": MISMATCH}):
+            d = self.c.get("/api/gpu/history?host=vader&range=all").get_json()
+        by_idx = {c["idx"]: c["status"] for c in d["cards"]}
+        self.assertEqual(by_idx, {0: "lost", 1: "retired"})
+
     def test_an_offline_host_is_still_stale(self):
         # Offline is the host's problem, not the driver's — calm, as before.
         now = int(time.time())
