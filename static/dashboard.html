@@ -1233,6 +1233,20 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-mb-fill{ height:100%; border-radius:4px }
 .mc-host-spark{ margin-bottom:6px }
 .mc-host-foot{ display:flex; align-items:center; gap:10px; font-size:10px; color:var(--mut); font-family:var(--mono) }
+/* Tight rail: same information, less of it per host — the OS line and the
+   cores/temp/uptime footer go, the micro-bars stay, because "how hard is that
+   box working" is the reason the rail exists. Turned on by the fit pass when a
+   fleet is taller than the fold, never by hand. */
+body.mc-tight .mc-fleet{ gap:7px; padding:3px 10px 10px }
+body.mc-tight .mc-host{ padding:8px 10px }
+body.mc-tight .mc-host-top{ margin-bottom:5px }
+body.mc-tight .mc-host-os,
+body.mc-tight .mc-host-foot{ display:none }
+body.mc-tight .mc-microbars{ margin-bottom:0 }
+/* "and N more" — the honest end of any list the fold cut short. */
+.mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
+  font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
+.mc-more-row:hover{ color:var(--accent) }
 .mc-host-foot .mc-sp{ margin-left:auto }
 .mc-off-msg{ font-size:11px; color:var(--crit); font-family:var(--mono); display:flex; align-items:center; gap:6px }
 
@@ -1349,7 +1363,11 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-host.mc-focus{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
 .mc-host-open{ background:none; border:0; color:var(--mut); cursor:pointer; font-size:12px; padding:0 2px; margin-left:4px; line-height:1; flex:none }
 .mc-host-open:hover{ color:var(--accent) }
-.mc-fleet{ max-height:560px; overflow-y:auto }
+/* The fleet rail used to scroll inside a 560px box, which cut the last host
+   card in half — a card that doesn't show what is in it is worse than one row
+   fewer. Nothing on the Overview clips now; the fit pass below decides how
+   much each list shows instead. */
+.mc-fleet{ max-height:none; overflow:visible }
 
 /* collapsed full fleet table */
 .mc-details{ margin:16px 0 }
@@ -7673,6 +7691,7 @@ function paintMissionControl(){
   mcPaintFeed($);
   mcPaintFleet($);
   lpPaint();
+  if(!_mcFitting) mcScheduleFit();
 }
 
 // Gauge ticks (built once, reused on every paint).
@@ -8125,8 +8144,9 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   const lead=$('mc-lead');
   const metered = cost.enabled!==false && (measured.indexOf('gpu')>=0 || measured.indexOf('cpu')>=0);
   let rows;
+  const capL=Math.max(2, MC_FIT.lead);
   if(metered && (cost.breakdown||[]).length){
-    const bd = cost.breakdown.slice(0,6);
+    const bd = cost.breakdown.slice(0, capL);
     const sum = bd.reduce((a,r)=>a+(r.cost||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.cost','What\'s Costing You');
     $('mc-cost-tag').textContent=I18N.tf('mc.this_week','this week · {v} {cur}',{v:(machine.cost&&machine.cost.d7!=null?machine.cost.d7:sum).toFixed(2),cur});
@@ -8139,7 +8159,7 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   } else {
     // Not metered → Heaviest Containers · by RAM
     const cs=((HH&&HH.docker&&HH.docker.containers)||[]).filter(c=>c.mem_bytes>0)
-            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0,6);
+            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0, capL);
     const sum=cs.reduce((a,c)=>a+(c.mem_bytes||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.heaviest','Heaviest Containers · by RAM');
     $('mc-cost-tag').textContent=I18N.tf('mc.n_containers','{n} containers',{n:cs.length});
@@ -8153,7 +8173,10 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
     <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
     <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
-    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
+    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('')
+    + (rows.length >= capL ? `<button type="button" class="mc-more-row" data-more="costs">${I18N.t('mc.see_all_costs','See the full breakdown →')}</button>` : '');
+  const ml=lead.querySelector('[data-more]');
+  if(ml) ml.onclick=()=>showTab('costs');
 }
 function mcAttentionCount(){
   // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
@@ -8199,14 +8222,75 @@ function mcPaintFeed($){
   ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
   if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
   const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
-  feed.innerHTML = ins.slice(0,7).map(i=>{
+  const capF=Math.max(2, MC_FIT.feed);
+  const restF=Math.max(0, ins.length-capF);
+  feed.innerHTML = ins.slice(0,capF).map(i=>{
     const lv=MC_LVL[i.level]||'info';
     return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
       <div class="mc-ins-ic">${icon[lv]||'•'}</div>
       <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
-  }).join('');
+  }).join('') + (restF ? `<button type="button" class="mc-more-row" data-more="uptime">+ ${I18N.tf('mc.n_more','{n} more',{n:restF})}</button>` : '');
+  const mf=feed.querySelector('[data-more]');
+  if(mf) mf.onclick=()=>showTab('uptime');
   $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
 }
+// ── Fit the Overview to the fold ─────────────────────────────────────────────
+// The Overview is a front page: what it says should be readable in one glance,
+// without scrolling and without a panel quietly cutting a card in half (which
+// is what the fleet rail's 560px scroll box did).
+//
+// It fits by showing FEWER ROWS, not smaller ones. Shrinking the type is how a
+// dashboard becomes unreadable at exactly the moment it has the most to say,
+// and clipping a list is a lie about what is in it. So: measure how far the
+// cockpit overruns the fold, trim the two lists that can lose rows without
+// losing meaning (the feed, the cost leaderboard — each says how many it left
+// out and links to its tab), and if the fleet rail alone is still too tall,
+// switch it to the tight tile. Below a usable minimum it stops and lets the
+// page scroll; a 20-host fleet is genuinely taller than a laptop screen, and
+// pretending otherwise would be the same lie in a new place.
+const MC_FIT = {feed: 7, lead: 6, tight: false};
+const MC_FIT_MIN = {feed: 3, lead: 3};
+let _mcFitting = false;
+function mcFitToFold(){
+  const ck = document.getElementById('mc-cockpit');
+  if(!ck || _mcFitting || DP_ON || TAB !== 'overview' || !ck.offsetParent) return;
+  // Space between the top of the cockpit and the bottom of the window, less the
+  // footer note that should stay visible under it.
+  const top = ck.getBoundingClientRect().top;
+  const avail = window.innerHeight - top - 28;
+  if(avail < 260) return;                       // a phone: let it scroll, honestly
+  const over = () => ck.getBoundingClientRect().height - avail;
+  if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
+
+  _mcFitting = true;
+  try{
+    // Grow back first, so a resized-larger window undoes earlier trimming.
+    MC_FIT.feed = 7; MC_FIT.lead = 6;
+    if(MC_FIT.tight){ MC_FIT.tight = false; document.body.classList.remove('mc-tight'); }
+    paintMissionControl();
+    // Then trim, one row at a time, re-measuring after each pass. Bounded by
+    // the minimums, so this terminates.
+    let guard = 12;
+    while(over() > 0 && guard-- > 0){
+      const feed = document.getElementById('mc-feed');
+      const lead = document.getElementById('mc-lead');
+      const tallest = (feed && feed.scrollHeight) >= (lead && lead.scrollHeight) ? 'feed' : 'lead';
+      if(MC_FIT[tallest] > MC_FIT_MIN[tallest]) MC_FIT[tallest]--;
+      else if(MC_FIT.feed > MC_FIT_MIN.feed) MC_FIT.feed--;
+      else if(MC_FIT.lead > MC_FIT_MIN.lead) MC_FIT.lead--;
+      else if(!MC_FIT.tight){ MC_FIT.tight = true; document.body.classList.add('mc-tight'); }
+      else break;                                // nothing left to give
+      paintMissionControl();
+    }
+  } finally { _mcFitting = false; }
+}
+let _mcFitT = null;
+function mcScheduleFit(){
+  clearTimeout(_mcFitT);
+  _mcFitT = setTimeout(mcFitToFold, 120);        // after the paint that triggered it
+}
+addEventListener('resize', mcScheduleFit);
+
 // Tapping a panel header jumps to that panel's own tab (data-goto).
 
 // ── Launchpad: the apps you pin on the Overview ──────────────────────────────
