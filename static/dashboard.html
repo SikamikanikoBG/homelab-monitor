@@ -1122,6 +1122,12 @@ body.display #mc-cockpit .lp-grid{ flex:1; min-height:0; align-content:start }
 /* The launchpad is a row of icons on a wall, not a column of them. */
 body.display #lp-panel{ flex:0 0 auto }
 body.display #mc-cockpit .mc-engine{ flex:1; align-content:center }
+/* Spread the rows into the height the wall gives them, instead of stacking
+   them at the top of a tall panel with dead space underneath. */
+body.display #mc-cockpit .mc-fleet{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-feed{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-lead{ display:flex; flex-direction:column; justify-content:space-evenly }
+body.display #mc-cockpit .mc-burn{ flex:1; align-content:center }
 body.display #mc-cockpit [data-dp-off]{ display:none!important }
 body.display #mc-cockpit .mc-feed{ max-height:none }
 /* A wall screen is read, not operated: the launchpad's own edit controls go,
@@ -8293,7 +8299,7 @@ function mcPaintFeed($){
 // pretending otherwise would be the same lie in a new place.
 const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
 const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
-const MC_FIT_SCALE_MIN = 0.82;   // below this the type stops being readable
+const MC_FIT_SCALE_MIN = 0.78;   // below this the type stops being readable
 let _mcFitting = false;
 function mcFitToFold(budget){
   const ck = document.getElementById('mc-cockpit');
