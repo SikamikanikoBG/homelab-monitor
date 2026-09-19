@@ -69,7 +69,13 @@ def api_models():
             # host selector sends and what the UI filters on. The probe's own
             # socket.gethostname() may differ (registered "Work" vs "DESKTOP-…"),
             # which silently hid that host's models.
-            catalog.extend(dict(m, host=_name) for m in remote_catalog)
+            for m in remote_catalog:
+                if isinstance(m, dict):
+                    catalog.append(dict(m, host=_name))
+                elif isinstance(m, (list, tuple)):
+                    # An older probe.ps1 double-nested the array ([[...]], #292);
+                    # never let one malformed remote 500 the whole registry.
+                    catalog.extend(dict(x, host=_name) for x in m if isinstance(x, dict))
     models = _app._merge_registry(ollama_models, catalog)
     return jsonify({
         "enabled": _app.COPILOT_ENABLED,

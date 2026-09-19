@@ -326,7 +326,13 @@ def sample_once():
                    "ports": [s["port"]], "fleet_host": fleet})
     models = []
     model_catalog = []   # {host, service, provider, model, loaded, vram_mb} — the Installed-models registry (#219)
-    ai_servers = []      # {name, ip, port, provider} — for the /api/ai/now throttled live re-probe
+    ai_servers = []      # {name, ip, port, provider, host} — for the /api/ai/now throttled live re-probe
+    # Every user-registered server, answering or not. A custom server whose
+    # probe returns nothing used to vanish from the tab without a trace — the
+    # user registered it, Test passed once, and from then on "down" and
+    # "never existed" looked identical. This list is what lets the UI say
+    # "registered for vader, not answering at host:port" instead.
+    custom_status = []   # {name, provider, host, target, reachable, models}
     # Needed below, ahead of its usual place further down: every non-Ollama probe
     # (vLLM, llama.cpp, TGI, …) always reports vram=None — it has no on-disk/loaded
     # split the way Ollama does, so the *only* other way to attribute VRAM is the
@@ -350,7 +356,8 @@ def sample_once():
             found_lists = list(ex.map(_probe_one, ai))
         provider_of = {c["name"]: (c.get("provider") or _match_probe_key(c)) for c in ai}
         ai_servers = [{"name": c["name"], "ip": c.get("ip") or "127.0.0.1",
-                       "port": c.get("port"), "provider": provider_of.get(c["name"])} for c in ai]
+                       "port": c.get("port"), "provider": provider_of.get(c["name"]),
+                       "host": c.get("fleet_host") if "fleet_host" in c else "local"} for c in ai]
         for ct, found in zip(ai, found_lists):
             svc = ct["name"]
             provider = provider_of.get(svc)
@@ -358,6 +365,10 @@ def sample_once():
             # hub's rows must say "local" (its raw hostname matches no pill), and
             # a custom server rides the fleet name it was registered for.
             host_label = ct.get("fleet_host") if "fleet_host" in ct else "local"
+            if "port" in ct:                              # a custom (user-registered) server
+                custom_status.append({"name": svc, "provider": provider, "host": host_label,
+                                      "target": f"{ct.get('ip')}:{ct.get('port')}",
+                                      "reachable": bool(found), "models": len(found)})
             smem = procs.get(svc)                         # MB this server holds on the GPU now
             api_vram = any(v is not None for _, v, _, _ in found)
             for mdl, vram, ram, ctx in found:
@@ -371,7 +382,7 @@ def sample_once():
                     vram_val = None                        # server up but idle / can't attribute
                     ram_val = None
                 models.append((svc, mdl, vram_val, ram_val,
-                               ctx if vram_val is not None else None))
+                               ctx if vram_val is not None else None, host_label))
                 model_catalog.append({
                     "host": host_label,
                     "service": svc,
@@ -456,7 +467,7 @@ def sample_once():
         if pp_rows:
             _app.DB.executemany("INSERT INTO power_proc(ts,kind,name,watts) VALUES(?,?,?,?)", pp_rows)
         _app.DB.executemany("INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)",
-                            [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx in models if vram is not None])
+                            [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx, _h in models if vram is not None])
         _app.DB.executemany("INSERT INTO edges VALUES(?,?,?,?)",
                             [(ts, caller, server, n) for (caller, server), n in edges.items()])
         # Per-card history for the hub's own cards, stored under host='local' so
@@ -535,9 +546,14 @@ def sample_once():
                                  **({"by_card": {str(i): round(v) for i, v in sorted(svc_by_card[s].items())}}
                                     if s in svc_by_card else {})}
                                 for s, m in procs.items()), key=lambda x: -x["mem"]),
-                  models=[{"service": s, "model": m, "vram": v, "ram": r, "ctx_now": c}
-                          for s, m, v, r, c in models],
+                  # `host` is the fleet name the row belongs to ("local" = the
+                  # hub): the hub probes a custom server registered for a
+                  # remote box, so without it the hub's own AI Models panel
+                  # listed that box's server under the hub.
+                  models=[{"service": s, "model": m, "vram": v, "ram": r, "ctx_now": c, "host": h}
+                          for s, m, v, r, c, h in models],
                   model_catalog=model_catalog,
+                  custom_servers=custom_status,
                   model_meta=model_meta, serving=serving, training=training, devtools=devtools,
                   callers=sorted(({"caller": c, "server": s, "conns": n} for (c, s), n in edges.items()),
                                  key=lambda x: -x["conns"]), host=host)

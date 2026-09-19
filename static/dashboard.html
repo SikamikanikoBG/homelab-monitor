@@ -4847,8 +4847,12 @@ function renderRegistry(j){
   // totals are fleet-wide and would contradict a host-scoped list.
   const tBytes=all.reduce((a,m)=>a+(m.size_bytes||0),0);
   const tLoaded=all.filter(m=>m.loaded).length;
-  if(sum) sum.textContent=I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
-    {n:all.length, gb:fmtBytes(tBytes).replace(' GB',''), loaded:tLoaded});
+  // Only ollama reports on-disk sizes; a list of vLLM/whisper entries has none,
+  // and "0,00 GB on disk" there was a lie in the locale's decimal separator.
+  if(sum) sum.textContent = tBytes>0
+    ? I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
+        {n:all.length, gb:fmtBytes(tBytes).replace(' GB',''), loaded:tLoaded})
+    : I18N.tf('registry.summary_nosize','{n} models · {loaded} loaded',{n:all.length, loaded:tLoaded});
   const q=(document.getElementById('registry-filter')||{}).value||'';
   const needle=q.trim().toLowerCase();
   const models=needle
@@ -4981,13 +4985,45 @@ function modelComputeCell(K, m){
     {base:base, kind:kind, where:where, shared:shared}))}">${fmtTF(base)}F</span>`;
 }
 
+// A user-registered server that isn't answering, as one honest row. Before
+// this a custom server whose probe came back empty simply vanished from the
+// tab — indistinguishable from "never registered" — which is what made the
+// custom-servers feature feel broken: register, Test passes, then nothing.
+function customServerNotice(host){
+  const down=((D&&D.now&&D.now.custom_servers)||[]).filter(s=>(s.host||'local')===host && !s.reachable);
+  if(!down.length) return '';
+  return down.map(s=>`<div class="ins warning" style="margin:0 0 10px"><div class="ic">${sic('alert')}</div><div>
+    <div class="t">${esc(s.name)} — ${I18N.t('models.custom_down','not answering')}</div>
+    <div class="d">${I18N.tf('models.custom_down_d','Registered as {p} at {t}. Nothing answered the probe on the last sample — the server is down, the port moved, or it has no models to list. Check it in Settings → General → Custom AI servers.',{p:esc(s.provider||'?'),t:esc(s.target||'')})}</div></div></div>`).join('');
+}
+// Patch a server card in place: the card is a fixed set of parts (header,
+// serving chips, VRAM timeline, callers, table) and each part only repaints
+// when its own markup changed. Rebuilding the whole panel's innerHTML on every
+// 5s poll — as this did — dropped hover tooltips, text selection and the scroll
+// anchor every time a tok/s figure ticked, which is the "jumping" the tab was
+// known for.
+function patchParts(el, parts){
+  if(el.children.length!==parts.length || el._nparts!==parts.length){
+    el.innerHTML=parts.map(()=>'<div class="mpart"></div>').join('');
+    el._nparts=parts.length;
+  }
+  parts.forEach((h,i)=>setHTML(el.children[i], h));
+}
 function renderModels(){
   if(!D) return;
   // The AI-tab fast poll (below) calls this every 5s regardless of whether the
   // throttled server-side re-probe actually returned anything new.
   if(TAB==='models') pulseIfChanged('models', [D.now.models, D.now.serving]);
   const tot=D.mem_total;
-  const live=D.now.models||[], sums=D.model_summary||[];
+  // This panel is the HUB's: rows stamped for a remote fleet host (a custom
+  // server the hub probes on that box's behalf) belong on that box's card,
+  // not here. Rows without a host (older payloads) are the hub's.
+  const live=(D.now.models||[]).filter(m=>(m.host||'local')==='local');
+  const liveSvcs=new Set(live.map(m=>m.service));
+  const remoteSvcs=new Set((D.now.models||[]).filter(m=>(m.host||'local')!=='local').map(m=>m.service));
+  // model_summary is DB history keyed by service only; keep a service's
+  // history rows unless it is currently known to belong to a remote host.
+  const sums=(D.model_summary||[]).filter(m=>liveSvcs.has(m.service) || !remoteSvcs.has(m.service));
   const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
   const curOf={}, ramOf={}, ctxOf={}; live.forEach(m=>{const k=m.model+'|'+m.service; curOf[k]=m.vram; ramOf[k]=m.ram; ctxOf[k]=m.ctx_now;});
   // Group models under their server. Per-model peak/avg ARE distinct (model_summary);
@@ -4999,13 +5035,36 @@ function renderModels(){
     runs:m.runs||0,spilled:m.runs_spilled||0,peakRam:m.peak_ram||0,usedBy:m.used_by||[]});});
   live.forEach(m=>{const arr=bySvc[m.service]=bySvc[m.service]||[]; if(!arr.some(x=>x.model===m.model)) arr.push({model:m.model,peak:null,avg:null,vram:m.vram,ram:m.ram,ctxNow:m.ctx_now,runs:0,spilled:0,peakRam:0,usedBy:[]});});
   const host=document.getElementById('modelsbody'); if(!host) return;
-  const services=Object.keys(bySvc);
-  if(!services.length){ setHTML(host, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'); return; }
+  // Stable order: by name. The fast poll rebuilds D.now.models in whatever
+  // order the probes answered, and Object.keys() followed it — cards swapped
+  // places between polls.
+  const services=Object.keys(bySvc).sort((a,b)=>a.localeCompare(b));
+  let notice=host.querySelector(':scope > .custom-notice');
+  if(!notice){ notice=document.createElement('div'); notice.className='custom-notice'; host.prepend(notice); }
+  setHTML(notice, customServerNotice('local'));
+  if(!services.length){
+    let empty=host.querySelector(':scope > .models-empty');
+    if(!empty){ empty=document.createElement('div'); empty.className='models-empty'; host.appendChild(empty); }
+    setHTML(empty, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>');
+    host.querySelectorAll(':scope > .card[data-svc]').forEach(el=>el.remove());
+    return;
+  }
+  const emptyEl=host.querySelector(':scope > .models-empty'); if(emptyEl) emptyEl.remove();
   const maxV=Math.max(tot||1, ...sums.map(m=>m.peak||0));
-  setHTML(host, services.map(svc=>{
+  // One card element per service, keyed by data-svc, kept in sorted order;
+  // stale services drop out, new ones slot in, and the rest are patched.
+  const want=new Set(services);
+  host.querySelectorAll(':scope > .card[data-svc]').forEach(el=>{ if(!want.has(el.dataset.svc)) el.remove(); });
+  let prev=notice;
+  services.forEach(svc=>{
+    let card=host.querySelector(':scope > .card[data-svc="'+CSS.escape(svc)+'"]');
+    if(!card){ card=document.createElement('div'); card.className='card'; card.dataset.svc=svc; }
+    if(prev.nextElementSibling!==card) prev.after(card);
+    prev=card;
     const ss=svcSum[svc]||{}, c=colorFor(svc);
     const svcK=serverCompute(svc);
-    const models=bySvc[svc].slice().sort((a,b)=>(b.peak||0)-(a.peak||0));
+    // Peak desc, then name — a null-peak tie used to reorder rows between polls.
+    const models=bySvc[svc].slice().sort((a,b)=>((b.peak||0)-(a.peak||0)) || a.model.localeCompare(b.model));
     const rows=models.map(m=>{
       const pW=m.peak!=null?Math.max(2,m.peak/maxV*100):0, aW=m.avg!=null?Math.max(2,m.avg/maxV*100):0;
       const spillingNow=m.vram!=null&&(m.ram||0)>0;
@@ -5043,8 +5102,7 @@ function renderModels(){
         <td class="vbars"><div class="vbar" title="peak ${m.peak!=null?fmtMB(m.peak):'—'}"><i style="width:${pW}%;background:${c}"></i></div>
           <div class="vbar" title="avg ${m.avg!=null?fmtMB(m.avg):'—'}"><i style="width:${aW}%;background:${c};opacity:.5"></i></div></td></tr>`;
     }).join('');
-    return `<div class="card">
-      <h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
+    const header=`<h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
         <span class="dot" style="background:${c}"></span>${esc(svc)}
         <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span>
         ${svcK?`<span class="pill" style="text-transform:none" title="${esc(I18N.tf('models.server_tf_t',
@@ -5053,13 +5111,10 @@ function renderModels(){
            which:svcK.attributed?I18N.tf('models.server_tf_which',' ({list})',{list:'GPU '+svcK.cards.join(', ')})
                                 :I18N.t('models.server_tf_all',' (every card in this box — the host cannot attribute VRAM per card)'),
            f32:svcK.fp32, f16:svcK.fp16!=null?I18N.tf('models.server_tf16',' / {v} TFLOPS FP16 tensor',{v:svcK.fp16}):''}))}">${
-          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>
-      ${servingFor(svc)}
-      ${modelSpark(svc,tot)}
-      ${callersFor(svc)}
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
-    </div>`;
-  }).join(''));
+          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>`;
+    const table=`<table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>`;
+    patchParts(card, [header, servingFor(svc,'local'), modelSpark(svc,tot), callersFor(svc), table]);
+  });
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
@@ -9332,7 +9387,7 @@ function paintRemoteModels(sec, host, mine){
   pulseIfChanged('models-'+host, mine);
 
   const old=sec.querySelector('.remote-models');
-  if(!mine.length){
+  if(!mine.length && !customServerNotice(host)){
     // Resolved and genuinely empty. Call showScopeNotice directly — going back
     // through renderLocalOnlyNotice would re-enter this function via
     // maybeRenderRemoteModels (the cache is warm by now) and recurse.
@@ -9357,10 +9412,21 @@ function paintRemoteModels(sec, host, mine){
   const g=hostGpu(host)||{};
   const cap=g.mem_total||0;
   const committed=loadedM.reduce((a,m)=>a+(m.vram_mb||0),0);
+  // A remote vLLM/llama.cpp reports no per-model VRAM (only ollama does), and
+  // the hub's nvidia-smi can't see a process on another box — so "committed"
+  // read 0 MB under a server visibly holding 60 GB. When nothing attributes
+  // but something is loaded, show what the box's own GPU sampler reports in
+  // use instead, labelled as such.
+  const inUse=g.mem_used||0;
+  const vramTile = committed>0 || !loadedM.length
+    ? {v:fmtMB(committed), l:I18N.t('rmod.vram_committed','VRAM committed'),
+       s:cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(committed/cap*100)})+' · '+fmtMB(cap):''}
+    : {v:fmtMB(inUse), l:I18N.t('rmod.vram_in_use','VRAM in use on host'),
+       s:(cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(inUse/cap*100)})+' · '+fmtMB(cap):'')
+         +' · '+I18N.t('rmod.vram_unattributed','not attributable per model from here')};
   const kpis=[
     {v:String(loadedM.length), l:I18N.t('rmod.loaded','Loaded now'), s:I18N.tf('rmod.of_installed','of {n} installed',{n:mine.length})},
-    {v:fmtMB(committed), l:I18N.t('rmod.vram_committed','VRAM committed'),
-     s:cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(committed/cap*100)})+' · '+fmtMB(cap):''},
+    vramTile,
   ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
   // Live serving telemetry (tokens/sec, running/queued, KV-cache, TTFT) for
   // whichever of this box's servers expose a Prometheus /metrics endpoint —
@@ -9375,11 +9441,21 @@ function paintRemoteModels(sec, host, mine){
   const rows = loadedM.map(m=>{
     const pct=cap?Math.round((m.vram_mb||0)/cap*100):0;
     const det=[m.param_size, m.quant].filter(Boolean).join(' · ');
+    // No VRAM figure but confirmed serving: say so, rather than a dash next to
+    // an empty bar that reads as "loaded nothing".
+    const vram = m.vram_mb!=null ? fmtMB(m.vram_mb)
+      : `<span class="badge ok" title="${I18N.t('rmod.serving_t','Confirmed live by the server itself (/metrics or its model list); the VRAM it holds is not reported per model by this server type.')}">${I18N.t('rmod.serving','serving')}</span>`;
+    const bar = m.vram_mb!=null ? `<span class="mini" style="width:${Math.max(2,pct)}%;background:${tint(pct)}"></span>` : `<span class="muted">${esc(m.service||'')}</span>`;
     return `<tr><td><span class="dot" style="background:${colorFor(m.name)}"></span>${copyable(m.name)}${det?` <span class="muted">${esc(det)}</span>`:''}</td>
-      <td>${m.vram_mb!=null?fmtMB(m.vram_mb):'—'}</td>
-      <td style="width:42%"><span class="mini" style="width:${Math.max(2,pct)}%;background:${tint(pct)}"></span></td></tr>`;
+      <td>${vram}</td>
+      <td style="width:42%">${bar}</td></tr>`;
   }).join('') || `<tr><td class="muted" colspan="3">${I18N.t('rmod.none','Nothing loaded right now — the installed models below are idle.')}</td></tr>`;
-  box.innerHTML =
+  // setHTML, not a bare innerHTML assignment: this paints on every fleet
+  // poll, and rebuilding an unchanged card dropped hover/tooltips and re-made
+  // the Add button under the cursor mid-click.
+  const wasHtml = box._sig;
+  setHTML(box,
+    customServerNotice(host) +
     `<div class="card"><div style="display:flex;align-items:center;gap:10px">
         <h2 style="margin:0">🧠 ${I18N.tf('rmod.title','AI models on {host}',{host:esc(host)})}</h2>
         <button type="button" class="btn-mini rmod-add" style="margin-left:auto"
@@ -9389,9 +9465,11 @@ function paintRemoteModels(sec, host, mine){
       ${serving}
       <table style="margin-top:12px"><tbody>${rows}</tbody></table>
       <p class="cap">${I18N.t('rmod.cap','Read on the host itself: ollama\'s resident set with live VRAM, plus any other recognised AI server answering on its standard port and any custom server registered for this host. The per-model VRAM timeline stays hub-only for now.')}</p>
-    </div>`;
-  box.querySelector('.rmod-add').onclick=()=>openAiServerForHost(host);
-  applyIcons(box);
+    </div>`);
+  if(box._sig!==wasHtml){
+    box.querySelector('.rmod-add').onclick=()=>openAiServerForHost(host);
+    applyIcons(box);
+  }
 }
 
 // The scope notice — "this tab has nothing for the selected host, and here is

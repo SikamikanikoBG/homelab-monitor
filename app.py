@@ -907,7 +907,7 @@ _AI_NOW_TTL = float(os.environ.get("AI_NOW_TTL", "3"))
 def ai_models_now():
     """Return (models, probed_at) — LATEST.models with the ollama entries
     replaced by a just-probed view when the cache is stale. Shape matches
-    LATEST['models'] rows exactly ({service, model, vram, ram, ctx_now})."""
+    LATEST['models'] rows exactly ({service, model, vram, ram, ctx_now, host})."""
     now = time.time()
     with _AI_NOW_LOCK:
         if _AI_NOW_CACHE["models"] is not None and now - _AI_NOW_CACHE["at"] < _AI_NOW_TTL:
@@ -932,7 +932,8 @@ def ai_models_now():
             out.append({"service": srv["name"], "model": name,
                         "vram": round(vram) if loaded else None,
                         "ram": (round(ram) if ram else 0) if loaded else None,
-                        "ctx_now": ctx if loaded else None})
+                        "ctx_now": ctx if loaded else None,
+                        "host": srv.get("host") or "local"})
         fresh[srv["name"]] = out
     models = [m for m in base if m.get("service") not in fresh]
     for out in fresh.values():
@@ -6734,12 +6735,18 @@ def _merge_registry(ollama_models, catalog):
         name = c.get("model")
         provider = c.get("provider") or "other"
         chost = c.get("host") or "local"
-        # The hub's OWN ollama is covered by the richer disk registry above —
-        # drop only those duplicates. A REMOTE host's ollama models arrive
-        # through this catalog and MUST pass through: dropping every
-        # provider=='ollama' entry (as this did originally) silently blinded
-        # the fleet registry to exactly the hosts #236 set out to cover.
-        if not name or (provider == "ollama" and chost in ("local", hub)):
+        if chost == hub:
+            chost = "local"
+        # The hub's OWN ollama is covered by the richer disk registry above, so
+        # its models dedupe against it by name (the `seen` check below). They
+        # are NOT dropped wholesale any more: the disk registry only ever talks
+        # to ONE ollama (COPILOT_OLLAMA_URL, 127.0.0.1:11434 by default), so a
+        # second ollama container on the hub — or the only one, listening on a
+        # non-default port — had every model silently missing from the
+        # Installed list while the panel above showed it loaded. A REMOTE
+        # host's ollama models arrive through this catalog and pass through
+        # the same way.
+        if not name:
             continue
         key = (name, provider, chost)
         if key in seen:
