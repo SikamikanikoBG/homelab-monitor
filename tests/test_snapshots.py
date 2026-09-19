@@ -479,6 +479,7 @@ class TestSnapshots(unittest.TestCase):
         with frozen_time(), \
              patch.object(app, "LATEST", ml), \
              patch.object(app, "HEALTH", mh), \
+             patch.dict(app._GPU_LAST_CARDS, {}, clear=True), \
              patch("app.os_updates_summary", return_value={"available": 0}), \
              patch("app.local_diagnostics", return_value=[]), \
              patch("app.enrich_os_upgrade", side_effect=lambda x: x):
@@ -615,6 +616,7 @@ class TestSnapshots(unittest.TestCase):
     def test_api_fleet(self):
         with frozen_time(), \
              patch("app._local_now_snapshot", return_value={"cpu": 30, "hostname": "testhost"}), \
+             patch.dict(app._GPU_LAST_CARDS, {}, clear=True), \
              patch("app.enrich_os_upgrade", side_effect=lambda x: x), \
              patch("app.socket.gethostname", return_value="testhost"):
             r = self.client.get("/api/fleet")

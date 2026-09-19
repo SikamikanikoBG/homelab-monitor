@@ -57,25 +57,44 @@ def watchdog(check_interval: float = 10.0) -> None:  # pragma: no cover
 
 # ── Background workers ───────────────────────────────────────────────────────
 
-def host_poller():
+def host_poller(stop=None):
     import app as _app
     """Loop: probe every registered host whose last Test was healthy. Hosts are
     polled *concurrently* so one slow/timing-out remote can't delay the others and
     age their rows out to a false 'offline' (the flapping bug). A per-host adaptive
     timeout (issue #99) still isolates slow remotes — they self-calibrate to a
     working budget instead of going permanently dark, while fast hosts stay at the
-    15s default. Errors are kept on the cache row so the UI can show a last error."""
+    15s default. Errors are kept on the cache row so the UI can show a last error.
+
+    Every host rides its OWN cadence. The previous shape ran one pool per cycle
+    and waited for the whole cycle to finish before sleeping INTERVAL — so the
+    period of EVERY host was (slowest probe + INTERVAL). A Windows box whose
+    PowerShell probe takes 40 s made a 4 s Linux box refresh every 50 s, and the
+    GPU tab looked like it ignored the refresh interval. Now each tick submits
+    only the hosts that aren't still mid-probe: a fast host is re-polled every
+    INTERVAL, a slow one as soon as its previous probe lands, and neither ever
+    waits on the other. The pool is long-lived so the slow probe keeps running
+    across ticks instead of being joined at the end of each one.
+
+    `stop` (a threading.Event) ends the loop — only tests use it; the app runs
+    this forever on a daemon thread."""
     # Stagger the first run a touch so we don't fire before the app is fully up.
     time.sleep(2)
-    while True:
+    ex = ThreadPoolExecutor(max_workers=8, thread_name_prefix="host-poll")
+    inflight = {}   # host name -> Future of its running probe
+    while not (stop is not None and stop.is_set()):
         _heartbeat("host_poller", _app.INTERVAL)
         try:
             hosts = _app.list_hosts()
-            if hosts:
-                # Each host gets its own thread for the cycle, so the wall-clock
-                # period is the slowest single probe, not the sum of all of them.
-                with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as ex:
-                    list(ex.map(_app._poll_one_host, hosts))
+            names = {h["name"] for h in hosts}
+            for h in hosts:
+                f = inflight.get(h["name"])
+                if f is not None and not f.done():
+                    continue        # still probing from an earlier tick
+                inflight[h["name"]] = ex.submit(_app._poll_one_host, h)
+            # Forget hosts that were removed once their last probe has landed.
+            for n in [n for n in inflight if n not in names and inflight[n].done()]:
+                inflight.pop(n, None)
         except Exception as e:
             print("host_poller error:", e, flush=True)
         time.sleep(_app.INTERVAL)
@@ -131,6 +150,7 @@ def sample_once():
     gpu_pids = {}
     gpu_avail = False
     gpu_vendor = None   # "nvidia" | "amd" | "hybrid" — drives the vendor-aware GPU diagnostic
+    gpu_error = None    # nvidia-smi's own first line when an NVIDIA stack is present but broken
     try:
         # One CSV row per card (issue #95). Parse each field defensively: nvidia-_app.smi
         # emits the literal "[N/A]" / "[Not Supported]" for power.draw/temperature
@@ -180,7 +200,12 @@ def sample_once():
                 g["idx"] = base + i
         gpus = nv_gpus + amd_cards
         if not gpus:
-            raise ValueError("no NVIDIA or AMD GPU detected")
+            # "No GPU" and "the GPU tool is broken" are different facts. A
+            # driver update that leaves nvidia-smi dying with "Driver/library
+            # version mismatch" must light up as an incident, not quietly
+            # degrade the panel to "absent" (probe.py makes the same call).
+            gpu_error = _app.nvidia_failure()
+            raise ValueError(gpu_error or "no NVIDIA or AMD GPU detected")
         gpu_avail = True
         gpu_vendor = ("hybrid" if (nv_gpus and amd_cards)
                       else "amd" if amd_cards else "nvidia")
@@ -301,7 +326,13 @@ def sample_once():
                    "ports": [s["port"]], "fleet_host": fleet})
     models = []
     model_catalog = []   # {host, service, provider, model, loaded, vram_mb} — the Installed-models registry (#219)
-    ai_servers = []      # {name, ip, port, provider} — for the /api/ai/now throttled live re-probe
+    ai_servers = []      # {name, ip, port, provider, host} — for the /api/ai/now throttled live re-probe
+    # Every user-registered server, answering or not. A custom server whose
+    # probe returns nothing used to vanish from the tab without a trace — the
+    # user registered it, Test passed once, and from then on "down" and
+    # "never existed" looked identical. This list is what lets the UI say
+    # "registered for vader, not answering at host:port" instead.
+    custom_status = []   # {name, provider, host, target, reachable, models}
     # Needed below, ahead of its usual place further down: every non-Ollama probe
     # (vLLM, llama.cpp, TGI, …) always reports vram=None — it has no on-disk/loaded
     # split the way Ollama does, so the *only* other way to attribute VRAM is the
@@ -325,7 +356,8 @@ def sample_once():
             found_lists = list(ex.map(_probe_one, ai))
         provider_of = {c["name"]: (c.get("provider") or _match_probe_key(c)) for c in ai}
         ai_servers = [{"name": c["name"], "ip": c.get("ip") or "127.0.0.1",
-                       "port": c.get("port"), "provider": provider_of.get(c["name"])} for c in ai]
+                       "port": c.get("port"), "provider": provider_of.get(c["name"]),
+                       "host": c.get("fleet_host") if "fleet_host" in c else "local"} for c in ai]
         for ct, found in zip(ai, found_lists):
             svc = ct["name"]
             provider = provider_of.get(svc)
@@ -333,6 +365,10 @@ def sample_once():
             # hub's rows must say "local" (its raw hostname matches no pill), and
             # a custom server rides the fleet name it was registered for.
             host_label = ct.get("fleet_host") if "fleet_host" in ct else "local"
+            if "port" in ct:                              # a custom (user-registered) server
+                custom_status.append({"name": svc, "provider": provider, "host": host_label,
+                                      "target": f"{ct.get('ip')}:{ct.get('port')}",
+                                      "reachable": bool(found), "models": len(found)})
             smem = procs.get(svc)                         # MB this server holds on the GPU now
             api_vram = any(v is not None for _, v, _, _ in found)
             for mdl, vram, ram, ctx in found:
@@ -346,7 +382,7 @@ def sample_once():
                     vram_val = None                        # server up but idle / can't attribute
                     ram_val = None
                 models.append((svc, mdl, vram_val, ram_val,
-                               ctx if vram_val is not None else None))
+                               ctx if vram_val is not None else None, host_label))
                 model_catalog.append({
                     "host": host_label,
                     "service": svc,
@@ -431,7 +467,7 @@ def sample_once():
         if pp_rows:
             _app.DB.executemany("INSERT INTO power_proc(ts,kind,name,watts) VALUES(?,?,?,?)", pp_rows)
         _app.DB.executemany("INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)",
-                            [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx in models if vram is not None])
+                            [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx, _h in models if vram is not None])
         _app.DB.executemany("INSERT INTO edges VALUES(?,?,?,?)",
                             [(ts, caller, server, n) for (caller, server), n in edges.items()])
         # Per-card history for the hub's own cards, stored under host='local' so
@@ -505,16 +541,25 @@ def sample_once():
     _app.LATEST.update(ts=ts, util=util, mem_used=mem_used, mem_total=mem_total, power=power, temp=temp,
                   cpu_power=cpu_power, dram_power=dram_power, rapl=rapl.get("domains"),
                   gpu_avail=gpu_avail, gpu_vendor=gpu_vendor, gpus=gpus, gpu_extra=gpu_extra,
+                  gpu_error=gpu_error,
                   procs=sorted(({"service": s, "mem": round(m),
                                  **({"by_card": {str(i): round(v) for i, v in sorted(svc_by_card[s].items())}}
                                     if s in svc_by_card else {})}
                                 for s, m in procs.items()), key=lambda x: -x["mem"]),
-                  models=[{"service": s, "model": m, "vram": v, "ram": r, "ctx_now": c}
-                          for s, m, v, r, c in models],
+                  # `host` is the fleet name the row belongs to ("local" = the
+                  # hub): the hub probes a custom server registered for a
+                  # remote box, so without it the hub's own AI Models panel
+                  # listed that box's server under the hub.
+                  models=[{"service": s, "model": m, "vram": v, "ram": r, "ctx_now": c, "host": h}
+                          for s, m, v, r, c, h in models],
                   model_catalog=model_catalog,
+                  custom_servers=custom_status,
                   model_meta=model_meta, serving=serving, training=training, devtools=devtools,
                   callers=sorted(({"caller": c, "server": s, "conns": n} for (c, s), n in edges.items()),
                                  key=lambda x: -x["conns"]), host=host)
+    # Remember whether this sample carried cards, so a later sample without any
+    # reads as "telemetry lost" rather than "this hub never had a GPU".
+    _app.note_gpu_cards("local", {"gpus": gpus})
     # Wake the SSE streams: the slow sample carries everything the fast lane
     # can't (containers, models, VRAM attribution, callers), so a browser must
     # not have to wait for the next fast tick to see it.
@@ -563,7 +608,11 @@ def fast_sample_once():
 
 def fast_sampler():
     import app as _app
-    """Loop the cheap re-read at FAST_INTERVAL. Inert when FAST_INTERVAL is 0."""
+    """Loop the cheap re-read at the fast-interval setting (Settings -> General
+    -> Live refresh interval; get_fast_interval() re-reads it from the DB each
+    cycle, so a change takes effect on the next sleep with no restart needed).
+    Inert when the fast lane starts disabled (FAST_INTERVAL env var = 0) — the
+    whole thread returns immediately rather than looping idle."""
     if not _app.FAST_INTERVAL:
         return
     # Prime the CPU delta before the first published reading, otherwise that
@@ -572,14 +621,18 @@ def fast_sampler():
         _app.read_host_fast()
     except Exception as e:
         print("fast_sampler prime error:", e, flush=True)
-    time.sleep(_app.FAST_INTERVAL)
+    time.sleep(_app.get_fast_interval())
     while True:
-        _heartbeat("fast_sampler", _app.FAST_INTERVAL)
+        secs = _app.get_fast_interval()
+        # Cached for live_payload() (SSE "now" + /api/data), which is hit far
+        # more often than this loop turns over and must stay DB-free.
+        _app.LATEST["fast_interval"] = secs
+        _heartbeat("fast_sampler", secs)
         try:
             fast_sample_once()
         except Exception as e:
             print("fast_sampler error:", e, flush=True)
-        time.sleep(_app.FAST_INTERVAL)
+        time.sleep(secs)
 
 
 def collector():

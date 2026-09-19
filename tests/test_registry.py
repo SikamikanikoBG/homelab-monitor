@@ -186,13 +186,35 @@ class TestMergeRegistry(unittest.TestCase):
         self.assertEqual(m["param_size"], "110.5B")
         self.assertEqual(m["size_gb"], round(65495378161 / 1073741824, 2))
 
-    def test_hub_hostname_ollama_entries_still_deduped(self):
-        # The hub's own probe stamps its real hostname — those are covered by
-        # the richer disk registry and must still be dropped like host-less ones.
+    def test_hub_hostname_ollama_entries_deduped_against_disk_registry(self):
+        # The hub's own probe stamps its real hostname — folded to "local" so
+        # it dedupes against the richer disk registry entry for the same model.
+        ollama = app._parse_model_registry(SAMPLE_TAGS, [])
         with mock.patch.object(app.socket, "gethostname", return_value="hubbox"):
-            out = app._merge_registry([], [{"host": "hubbox", "provider": "ollama",
-                                            "model": "gemma3:1b", "loaded": False}])
-        self.assertEqual(out, [])
+            out = app._merge_registry(ollama, [{"host": "hubbox", "provider": "ollama",
+                                                "model": "gemma3:1b", "loaded": False}])
+        self.assertEqual(len(out), 3)
+        self.assertTrue(all(m["host"] == "local" for m in out))
+
+    def test_hub_ollama_container_unknown_to_disk_registry_passes_through(self):
+        # The disk registry only ever talks to ONE ollama (COPILOT_OLLAMA_URL).
+        # A second ollama container on the hub — or the only one, on a
+        # non-default port the registry can't reach — used to have every model
+        # dropped from the Installed list while the panel above showed it
+        # loaded. Its models must pass through when the registry doesn't
+        # already list them.
+        catalog = [{"host": "local", "service": "ollama-embed", "provider": "ollama",
+                    "model": "nomic-embed-text:latest", "loaded": True, "vram_mb": 600}]
+        out = app._merge_registry([], catalog)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["name"], "nomic-embed-text:latest")
+        self.assertEqual(out[0]["service"], "ollama-embed")
+        self.assertTrue(out[0]["loaded"])
+        # ...and still dedupes when the disk registry DOES know the model.
+        ollama = app._parse_model_registry(SAMPLE_TAGS, [])
+        dup = [{"host": "local", "service": "ollama", "provider": "ollama",
+                "model": "gemma3:1b", "loaded": False}]
+        self.assertEqual(len(app._merge_registry(ollama, dup)), 3)
 
     def test_catalog_entries_missing_model_name_skipped(self):
         catalog = [{"service": "x", "provider": "vllm", "model": None}]
@@ -288,6 +310,30 @@ class TestEndpoint(unittest.TestCase):
         self.assertEqual(len(j["models"]), 1)
         self.assertEqual(j["models"][0]["host"], "Work")          # registered name wins
         self.assertEqual(j["models"][0]["name"], "qwen3:8b")
+
+    def test_double_nested_remote_catalog_does_not_500(self):
+        """#292: probe.ps1 double-wrapped its model array ([[{...}]]) and
+        /api/models raised on dict(list) for every Windows host with models —
+        the whole AI Models tab sat on a spinner. The probe is fixed; the hub
+        also unwraps defensively so an older probe can never 500 the fleet."""
+        app.COPILOT_ENABLED = True
+        app.COPILOT_OLLAMA_URL = "http://127.0.0.1:1"
+        with app.HOST_DATA_LOCK:
+            app.HOST_DATA["Win"] = {"data": {"model_catalog": [[
+                {"host": "DESKTOP-ABC", "service": "ollama", "provider": "ollama",
+                 "model": "llama3:8b", "loaded": False, "vram_mb": None},
+                {"host": "DESKTOP-ABC", "service": "ollama", "provider": "ollama",
+                 "model": "qwen3:8b", "loaded": True, "vram_mb": 5200},
+            ]]}}
+        try:
+            r = self.c.get("/api/models")
+        finally:
+            with app.HOST_DATA_LOCK:
+                app.HOST_DATA.pop("Win", None)
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(sorted(m["name"] for m in j["models"]), ["llama3:8b", "qwen3:8b"])
+        self.assertTrue(all(m["host"] == "Win" for m in j["models"]))
 
     def test_disabled_returns_enabled_false_empty(self):
         app.COPILOT_ENABLED = False

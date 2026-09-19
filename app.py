@@ -54,7 +54,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.34.0"
+VERSION      = "0.35.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -518,7 +518,7 @@ _backfill_rollups(DB)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
           "cpu_power": None, "dram_power": None,
-          "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None, "gpu_vendor": None, "gpus": [], "gpu_extra": {},
+          "procs": [], "models": [], "callers": [], "host": {}, "gpu_avail": None, "gpu_vendor": None, "gpus": [], "gpu_extra": {}, "gpu_error": None,
           "model_meta": {}, "serving": [], "training": [], "devtools": [], "model_catalog": []}
 # ── Live revision: the "something changed" signal the SSE stream rides on ────
 # Bumped by every producer that refreshes LATEST (the sampler, the fast lane) and
@@ -555,7 +555,10 @@ def fleet_payload():
     rows = [{"name": "local", "label": socket.gethostname() + " (this hub)",
              "ssh_target": None, "host": enrich_os_upgrade(_local_now_snapshot()),
              "at": int(time.time()), "online": True, "is_local": True,
-             "last_check": {"summary": {"overall": "ok"}}}]
+             "last_check": {"summary": {"overall": "ok"}},
+             # Verdict on whether this host's GPUs are actually being watched —
+             # the "light" every host-level surface (pill, tile, table) shows.
+             "gpu_telemetry": gpu_telemetry("local", LATEST)}]
     hosts = list_hosts()
     with HOST_DATA_LOCK:
         for h in hosts:
@@ -571,6 +574,7 @@ def fleet_payload():
                 "is_local": False,
                 "last_check": h.get("last_check"),
                 "error": entry.get("error"),
+                "gpu_telemetry": gpu_telemetry(h["name"], data.get("host")) if data else None,
             })
     return {"hosts": rows, "interval": INTERVAL, "rev": FLEET_REV}
 
@@ -583,8 +587,12 @@ def live_payload():
     LOCK (it always has), so iterating the live dict could otherwise trip over a
     key being added mid-serialization."""
     now = live_now()
+    # Read the cached value fast_sampler() resolved on its last cycle, not a
+    # fresh get_fast_interval() — this route is deliberately DB-free and can be
+    # hit every second or faster by several open tabs; the interval itself only
+    # ever changes at that same cadence, so a cycle-old value costs nothing.
     return {"version": VERSION, "rev": LIVE_REV, "interval": INTERVAL,
-            "fast_interval": FAST_INTERVAL,
+            "fast_interval": LATEST.get("fast_interval") or FAST_INTERVAL,
             "mem_total": now.get("mem_total") or 24576, "now": now}
 
 def live_now():
@@ -689,6 +697,7 @@ from backend.probes import (
     PROBES, _match_probe, _match_probe_key, CATALOG_MAX, probe_models,
     validate_custom_servers,
 )
+from backend.shortcuts import parse_shortcuts, validate_shortcuts
 
 # ── Model intelligence: per-model metadata + live serving telemetry ───────────
 # Two passive, no-dep enrichments that make the AI Models tab authoritative:
@@ -899,7 +908,7 @@ _AI_NOW_TTL = float(os.environ.get("AI_NOW_TTL", "3"))
 def ai_models_now():
     """Return (models, probed_at) — LATEST.models with the ollama entries
     replaced by a just-probed view when the cache is stale. Shape matches
-    LATEST['models'] rows exactly ({service, model, vram, ram, ctx_now})."""
+    LATEST['models'] rows exactly ({service, model, vram, ram, ctx_now, host})."""
     now = time.time()
     with _AI_NOW_LOCK:
         if _AI_NOW_CACHE["models"] is not None and now - _AI_NOW_CACHE["at"] < _AI_NOW_TTL:
@@ -924,7 +933,8 @@ def ai_models_now():
             out.append({"service": srv["name"], "model": name,
                         "vram": round(vram) if loaded else None,
                         "ram": (round(ram) if ram else 0) if loaded else None,
-                        "ctx_now": ctx if loaded else None})
+                        "ctx_now": ctx if loaded else None,
+                        "host": srv.get("host") or "local"})
         fresh[srv["name"]] = out
     models = [m for m in base if m.get("service") not in fresh]
     for out in fresh.values():
@@ -1277,9 +1287,17 @@ def gpu_cards_fast():
     Returns {idx: {field: value}} for the caller to merge. {} on any failure — a
     wedged driver degrades the refresh rate of the GPU chips, nothing else."""
     out = {}
+    base_fields = "index,utilization.gpu,memory.used,power.draw,temperature.gpu"
     try:
-        rows = smi(["--query-gpu=index,utilization.gpu,memory.used,power.draw,temperature.gpu",
+        # fan.speed is asked for in the same pass, but nvidia-smi rejects the WHOLE
+        # query on an unrecognised field name — so a driver too old to know it
+        # falls back to the exact base query rather than reporting no cards at all
+        # (same fallback the full sampler uses for this same field).
+        rows = smi([f"--query-gpu={base_fields},fan.speed",
                     "--format=csv,noheader,nounits"]).splitlines()
+        if not any(line.strip() for line in rows):
+            rows = smi([f"--query-gpu={base_fields}",
+                        "--format=csv,noheader,nounits"]).splitlines()
     except Exception:
         return {}
     for line in rows:
@@ -1292,8 +1310,14 @@ def gpu_cards_fast():
             idx = int(_gpu_num(p[0]))
         except (TypeError, ValueError):
             continue
-        out[idx] = {"util": _gpu_num(p[1]), "mem_used": _gpu_num(p[2]),
-                    "power": _gpu_num(p[3]), "temp": _gpu_num(p[4])}
+        card = {"util": _gpu_num(p[1]), "mem_used": _gpu_num(p[2]),
+                "power": _gpu_num(p[3]), "temp": _gpu_num(p[4])}
+        # Absent, not 0: a passively-cooled card has no fan to report, and a 0
+        # here would trip the fan-stall alert on hardware that has none to stall.
+        fan = _gpu_opt(p[5]) if len(p) > 5 else None
+        if fan is not None:
+            card["fan"] = round(fan)
+        out[idx] = card
     return out
 
 # ── System / Hardware / Network / Security inventory (local hub) ──────────────
@@ -3858,6 +3882,9 @@ def _local_now_snapshot():
             "util":      (LATEST or {}).get("util", 0),
             "temp":      (LATEST or {}).get("temp", 0),
         }
+    # Same key a remote's probe emits, so the per-host tabs read one shape.
+    if (LATEST or {}).get("gpu_error"):
+        out["gpu_error"] = LATEST["gpu_error"]
     return out
 
 # ── Adaptive per-host poll timeout (issue #99) ────────────────────────────────
@@ -3974,17 +4001,93 @@ def _poll_one_host(h):
         # of it, which was up to 15 s of pure queueing latency per host.
         bump_fleet()
         if data:
+            note_gpu_cards(h["name"], data.get("host") or {})
             _record_host_sample(h["name"], data.get("host") or {})
     except Exception as e:
         print(f"host poll error ({h.get('name')}):", e, flush=True)
 
+# ── GPU telemetry loss ───────────────────────────────────────────────────────
+# {host: ts of the last poll that carried at least one GPU card}. This is what
+# makes "no cards in this poll" distinguishable from "this box never had a GPU":
+# the first is an incident (a driver update broke nvidia-smi, a card fell off the
+# bus), the second is a Raspberry Pi. In memory, seeded once per host from the
+# per-card history so a hub restart mid-incident doesn't forget the cards.
+_GPU_LAST_CARDS = {}
+# {host: {idx: card name}} from the last poll that carried cards, so a card the
+# host has stopped describing is still shown by name ("NVIDIA GeForce RTX 3090"),
+# not as a bare "GPU 0" — the history table stores numbers, not names.
+_GPU_LAST_NAMES = {}
+_GPU_LAST_CARDS_LOCK = threading.Lock()
+# Past this, a host that stopped reporting cards is treated as having had them
+# removed on purpose (same window the notifier uses to retire a missing card),
+# and the indicator clears rather than nagging forever.
+GPU_LOST_FORGET_S = 3600
+
+def note_gpu_cards(name, hostd):
+    """Remember whether this poll of `name` carried GPU cards. Called on every
+    successful poll (and every hub sample), before anything reads the state."""
+    cards = (hostd or {}).get("gpus") or []
+    with _GPU_LAST_CARDS_LOCK:
+        if name not in _GPU_LAST_CARDS:
+            # First sighting in this process: what did the history last see?
+            # A restart in the middle of an outage must still know the host
+            # HAD cards, or the loss indicator would vanish with the restart.
+            try:
+                from backend.db.repos import gpu_samples as _gs_repo
+                with LOCK:
+                    seen = _gs_repo.last_seen(name, conn=DB) or {}
+                _GPU_LAST_CARDS[name] = max(seen.values()) if seen else 0
+            except Exception:
+                _GPU_LAST_CARDS[name] = 0
+        if cards:
+            _GPU_LAST_CARDS[name] = int(time.time())
+            _GPU_LAST_NAMES[name] = {c.get("idx"): c.get("name") for c in cards if c.get("name")}
+
+def gpu_last_names(name):
+    """{idx: card name} as last reported by `name`; {} when never seen."""
+    with _GPU_LAST_CARDS_LOCK:
+        return dict(_GPU_LAST_NAMES.get(name) or {})
+
+def gpu_telemetry(name, hostd):
+    """The GPU-telemetry verdict for one host's latest data:
+
+        None                      — nothing to say: cards present, or a box
+                                    that never had any
+        {"ok": False, "error": …, "lost_since": ts|None}
+                                  — cards are missing where there should be
+                                    some. `error` is the probe's own diagnosis
+                                    (nvidia-smi's first line) when it has one;
+                                    `lost_since` is when the host last reported
+                                    a card, None if only the error is known.
+
+    Both the fleet rows and the GPU cockpit read this, so the host pill, the
+    fleet table, the host tile and the GPU tab can never disagree about whether
+    a host's GPUs are being watched."""
+    hostd = hostd or {}
+    if hostd.get("gpus"):
+        return None
+    err = hostd.get("gpu_error") or None
+    with _GPU_LAST_CARDS_LOCK:
+        last = _GPU_LAST_CARDS.get(name) or 0
+    lost = last if (last and int(time.time()) - last < GPU_LOST_FORGET_S) else None
+    if not err and not lost:
+        return None
+    return {"ok": False, "error": err, "lost_since": lost}
+
 def fleet_gpu_cards():
-    """[(host, cards, online)] for every host that reports GPUs right now.
+    """[(host, cards, online)] for every host the hub holds data for — the hub
+    itself, then every remote with at least one successful poll.
 
     One accessor so the alert scan doesn't need to know that the hub keeps its
     cards in LATEST while remotes keep theirs in HOST_DATA. Offline hosts are
     included with online=False so the caller can decide — a stale reading must
-    not be alerted on as if it were current."""
+    not be alerted on as if it were current.
+
+    Hosts whose latest poll carries NO cards are included too (with an empty
+    list). They used to be dropped, which meant a host losing ALL its cards at
+    once — exactly what a broken driver does — vanished from the scan entirely
+    and never raised the "stopped reporting" alert that losing ONE card would
+    have. The missing-card check needs to see the empty list to notice."""
     out = [("local", list(LATEST.get("gpus") or []), True)]
     with HOST_DATA_LOCK:
         items = list(HOST_DATA.items())
@@ -3992,8 +4095,21 @@ def fleet_gpu_cards():
         if "data" not in entry:
             continue
         cards = ((entry["data"].get("host") or {}).get("gpus")) or []
-        if cards:
-            out.append((name, list(cards), _host_is_online(entry)))
+        out.append((name, list(cards), _host_is_online(entry)))
+    return out
+
+def fleet_gpu_errors():
+    """{host: nvidia-smi's own diagnosis} for every host whose latest data
+    carries a gpu_error — the text the notifier puts in the alert body."""
+    out = {}
+    if LATEST.get("gpu_error"):
+        out["local"] = LATEST["gpu_error"]
+    with HOST_DATA_LOCK:
+        items = list(HOST_DATA.items())
+    for name, entry in items:
+        err = ((entry.get("data") or {}).get("host") or {}).get("gpu_error")
+        if err:
+            out[name] = err
     return out
 
 def _record_host_sample(name, hostd):
@@ -4442,8 +4558,19 @@ SETTING_DEFAULTS = {
     # containers on standard ports and remotes' localhost ollama, so a vLLM
     # living on another box at a non-standard port needs this to show up.
     "custom_ai_servers":   "",
+    # ── Home shortcuts (the Overview launchpad) ────────────────────────────
+    # The apps pinned on the Overview: a JSON array of
+    # {"name","url","icon","group","host","container"}. Stored server-side on
+    # purpose — pinned on the laptop, there on the phone and the wall screen.
+    "home_shortcuts":      "",
     # ── Display preferences ────────────────────────────────────────────────
     "reduced_motion":       "0",      # "0" (default, matches prior behaviour) / "1" — disables gauge animations
+    # Screen-refresh cadence (seconds) for the GPU tab + Overview cockpit "now"
+    # numbers — see FAST_INTERVAL/get_fast_interval(). Defaults to whatever the
+    # FAST_INTERVAL env var resolved to at startup; live-adjustable from here
+    # with no restart, but never faster than that startup value ever allowed
+    # (fast_sampler() only runs at all when FAST_INTERVAL started non-zero).
+    "fast_interval_s":     str(FAST_INTERVAL),
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 
@@ -4548,6 +4675,38 @@ def get_retention_secs():
         days = _RETENTION_DAYS_DEFAULT
     return days * 86400
 
+def get_fast_interval():
+    """Effective fast-lane cadence in seconds — the screen-refresh rate behind
+    the GPU tab and the Overview cockpit's "now" numbers. Read live from
+    settings, same pattern as get_retention_secs(), so a change in
+    Settings -> General takes effect on fast_sampler()'s next cycle with no
+    restart. Pinned to 0 when the fast lane was disabled at startup
+    (FAST_INTERVAL env var) since that loop never runs regardless of the
+    setting."""
+    if not FAST_INTERVAL:
+        return 0
+    try:
+        secs = int(get_settings().get("fast_interval_s") or FAST_INTERVAL)
+    except (ValueError, TypeError):
+        secs = FAST_INTERVAL
+    secs = max(1, min(secs, 30))
+    return secs if secs < INTERVAL else FAST_INTERVAL
+
+def _validate_fast_interval_settings(updates):
+    """Return an error string if fast_interval_s is invalid, else None."""
+    if "fast_interval_s" not in updates:
+        return None
+    val = (updates["fast_interval_s"] or "").strip()
+    if not val:
+        return None
+    try:
+        secs = int(val)
+    except ValueError:
+        return "Live refresh interval must be a whole number of seconds."
+    if not (1 <= secs <= 30):
+        return "Live refresh interval must be between 1 and 30 seconds."
+    return None
+
 def _validate_retention_settings(updates):
     """Return an error string if retention_days is invalid, else None."""
     if "retention_days" not in updates:
@@ -4619,6 +4778,15 @@ def _validate_custom_ai_servers(updates):
     if "custom_ai_servers" not in updates:
         return None
     return validate_custom_servers(updates["custom_ai_servers"])
+
+def _validate_home_shortcuts(updates):
+    """Return an error string if home_shortcuts is malformed, else None. Same
+    door-vs-read discipline as the custom AI servers: the value comes back to
+    every browser that opens this hub, so a bad URL is rejected here rather
+    than rendered as an <a href> later."""
+    if "home_shortcuts" not in updates:
+        return None
+    return validate_shortcuts(updates["home_shortcuts"])
 
 # ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
 # User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
@@ -5422,6 +5590,38 @@ def smi(args):
     # sample_once is non-fatal, so a short timeout degrades the GPU panel quickly
     # instead of stalling host metrics (CPU/RAM/temp) for the full window.
     return subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, timeout=3).stdout.strip()
+
+def nvidia_failure():
+    """Why nvidia-smi answered nothing, on a box that evidently HAS an NVIDIA
+    stack — None when there is simply no NVIDIA driver here at all. Mirror of
+    probe._nvidia_failure() for the hub's own cards; the two must not drift.
+
+    The kernel driver leaves /proc/driver/nvidia and /dev/nvidiactl behind even
+    when nvidia-smi can no longer talk to it (userspace libraries updated, kernel
+    module not yet reloaded — "Driver/library version mismatch"), so those are
+    the tell that distinguishes "broken" from "absent". The container shares the
+    host's /proc (pid: host), so this sees the host's driver even from inside.
+    The message is the tool's own first line — what a human would see running
+    it by hand."""
+    have_bin = bool(shutil.which("nvidia-smi"))
+    have_drv = (os.path.exists("/proc/driver/nvidia") or os.path.exists("/dev/nvidiactl")
+                or bool(glob.glob("/dev/nvidia[0-9]*")))
+    if not have_bin and not have_drv:
+        return None
+    if not have_bin:
+        return ("NVIDIA kernel driver is loaded but nvidia-smi is not available in this "
+                "container (start the hub with docker-compose.gpu.yml)")
+    try:
+        r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3)
+    except subprocess.TimeoutExpired:
+        return "nvidia-smi timed out after 3 s (wedged driver / card off the bus?)"
+    except Exception as e:
+        return f"nvidia-smi could not be run: {e}"
+    if r.returncode == 0 and (r.stdout or "").strip():
+        return None
+    text = (r.stderr or "") + "\n" + (r.stdout or "")
+    line = next((l.strip() for l in text.splitlines() if l.strip()), "") or "no output"
+    return f"nvidia-smi failed (exit {r.returncode}): {line[:200]}"
 
 def _gpu_num(x):
     """Tolerant float for nvidia-smi CSV fields: '[N/A]' / '[Not Supported]' /
@@ -6550,12 +6750,18 @@ def _merge_registry(ollama_models, catalog):
         name = c.get("model")
         provider = c.get("provider") or "other"
         chost = c.get("host") or "local"
-        # The hub's OWN ollama is covered by the richer disk registry above —
-        # drop only those duplicates. A REMOTE host's ollama models arrive
-        # through this catalog and MUST pass through: dropping every
-        # provider=='ollama' entry (as this did originally) silently blinded
-        # the fleet registry to exactly the hosts #236 set out to cover.
-        if not name or (provider == "ollama" and chost in ("local", hub)):
+        if chost == hub:
+            chost = "local"
+        # The hub's OWN ollama is covered by the richer disk registry above, so
+        # its models dedupe against it by name (the `seen` check below). They
+        # are NOT dropped wholesale any more: the disk registry only ever talks
+        # to ONE ollama (COPILOT_OLLAMA_URL, 127.0.0.1:11434 by default), so a
+        # second ollama container on the hub — or the only one, listening on a
+        # non-default port — had every model silently missing from the
+        # Installed list while the panel above showed it loaded. A REMOTE
+        # host's ollama models arrive through this catalog and pass through
+        # the same way.
+        if not name:
             continue
         key = (name, provider, chost)
         if key in seen:

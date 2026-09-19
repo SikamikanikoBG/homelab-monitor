@@ -301,5 +301,67 @@ class TestFastIntervalConfig(unittest.TestCase):
             fast_sampler()      # must return, not loop
 
 
+class TestGetFastInterval(unittest.TestCase):
+    """get_fast_interval() — the live-adjustable screen cadence behind
+    Settings -> General -> Live refresh interval. Same read-live-from-settings
+    pattern as get_retention_secs(), so every case here pins FAST_INTERVAL and
+    INTERVAL to known values rather than trusting the real environment's."""
+
+    def test_reads_the_persisted_value(self):
+        with patch.object(app, "FAST_INTERVAL", 2), patch.object(app, "INTERVAL", 10), \
+             patch.object(app, "get_settings", return_value={"fast_interval_s": "1"}):
+            self.assertEqual(app.get_fast_interval(), 1)
+
+    def test_missing_setting_falls_back_to_startup_value(self):
+        with patch.object(app, "FAST_INTERVAL", 2), patch.object(app, "INTERVAL", 10), \
+             patch.object(app, "get_settings", return_value={}):
+            self.assertEqual(app.get_fast_interval(), 2)
+
+    def test_clamped_to_the_1_30_range(self):
+        with patch.object(app, "FAST_INTERVAL", 2), patch.object(app, "INTERVAL", 60), \
+             patch.object(app, "get_settings", return_value={"fast_interval_s": "999"}):
+            self.assertEqual(app.get_fast_interval(), 30)
+
+    def test_never_as_slow_or_slower_than_the_sampler(self):
+        # A stale/tampered setting requesting >= INTERVAL degrades to the
+        # startup value rather than doubling the reads for nothing.
+        with patch.object(app, "FAST_INTERVAL", 2), patch.object(app, "INTERVAL", 10), \
+             patch.object(app, "get_settings", return_value={"fast_interval_s": "10"}):
+            self.assertEqual(app.get_fast_interval(), 2)
+
+    def test_pinned_to_zero_when_the_fast_lane_never_started(self):
+        # The setting is irrelevant once FAST_INTERVAL started at 0 — the
+        # fast_sampler thread returned immediately and nothing is running.
+        with patch.object(app, "FAST_INTERVAL", 0), \
+             patch.object(app, "get_settings", return_value={"fast_interval_s": "1"}):
+            self.assertEqual(app.get_fast_interval(), 0)
+
+    def test_non_numeric_setting_falls_back_to_startup_value(self):
+        with patch.object(app, "FAST_INTERVAL", 2), patch.object(app, "INTERVAL", 10), \
+             patch.object(app, "get_settings", return_value={"fast_interval_s": "abc"}):
+            self.assertEqual(app.get_fast_interval(), 2)
+
+
+class TestValidateFastIntervalSettings(unittest.TestCase):
+    def test_absent_or_blank_is_fine(self):
+        self.assertIsNone(app._validate_fast_interval_settings({}))
+        self.assertIsNone(app._validate_fast_interval_settings({"fast_interval_s": ""}))
+        self.assertIsNone(app._validate_fast_interval_settings({"fast_interval_s": None}))
+
+    def test_valid_values_accepted(self):
+        for v in ("1", "2", "10", "30"):
+            self.assertIsNone(app._validate_fast_interval_settings({"fast_interval_s": v}), f"v={v!r}")
+
+    def test_out_of_range_rejected(self):
+        for v in ("0", "-1", "31", "999"):
+            err = app._validate_fast_interval_settings({"fast_interval_s": v})
+            self.assertIsNotNone(err, f"v={v!r} should be rejected")
+            self.assertIn("30", err)
+
+    def test_non_numeric_rejected(self):
+        err = app._validate_fast_interval_settings({"fast_interval_s": "fast"})
+        self.assertIsNotNone(err)
+
+
 if __name__ == "__main__":
     unittest.main()
