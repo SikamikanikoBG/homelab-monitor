@@ -1260,8 +1260,13 @@ body.mc-tight .mc-panel{ padding-bottom:4px }
 body.mc-tight .mc-tg-ring{ max-width:104px }
 body.mc-tight .mc-tg-num{ font-size:22px }
 body.mc-tight .mc-tg-pct{ font-size:12px }
-body.mc-tight .mc-engine{ padding:6px 14px 12px }
-body.mc-tight .mc-burn-num{ font-size:38px }
+body.mc-tight .mc-engine{ padding:4px 14px 8px }
+body.mc-tight .mc-tg-label{ font-size:10px }
+body.mc-tight .mc-tg-sub{ font-size:9px; min-height:0 }
+body.mc-tight .mc-burn-num{ font-size:34px }
+body.mc-tight .mc-burn{ padding-top:2px }
+body.mc-tight .mc-bstat{ padding:5px 8px }
+body.mc-tight .mc-ph{ padding-bottom:4px }
 body.mc-tight .mc-burn{ padding-bottom:4px }
 body.mc-tight .mc-lp .lp-grid{ gap:5px }
 body.mc-tight .mc-lp .lp-tile{ padding:7px 5px 6px }
@@ -8272,8 +8277,8 @@ function mcPaintFeed($){
 // switch it to the tight tile. Below a usable minimum it stops and lets the
 // page scroll; a 20-host fleet is genuinely taller than a laptop screen, and
 // pretending otherwise would be the same lie in a new place.
-const MC_FIT = {feed: 7, lead: 6, tight: false};
-const MC_FIT_MIN = {feed: 3, lead: 3};
+const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
+const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
 let _mcFitting = false;
 function mcFitToFold(){
   const ck = document.getElementById('mc-cockpit');
@@ -8289,7 +8294,7 @@ function mcFitToFold(){
   _mcFitting = true;
   try{
     // Grow back first, so a resized-larger window undoes earlier trimming.
-    MC_FIT.feed = 7; MC_FIT.lead = 6;
+    MC_FIT.feed = 7; MC_FIT.lead = 6; MC_FIT.pins = 99;
     if(MC_FIT.tight){ MC_FIT.tight = false; document.body.classList.remove('mc-tight'); }
     paintMissionControl();
     // Then trim, one row at a time, re-measuring after each pass. Bounded by
@@ -8303,6 +8308,12 @@ function mcFitToFold(){
       else if(MC_FIT.feed > MC_FIT_MIN.feed) MC_FIT.feed--;
       else if(MC_FIT.lead > MC_FIT_MIN.lead) MC_FIT.lead--;
       else if(!MC_FIT.tight){ MC_FIT.tight = true; document.body.classList.add('mc-tight'); }
+      // The pins go last and never below five: the launchpad is the half of
+      // this page the fold is FOR, so it is the last thing to give ground —
+      // and what it folds away says how many and comes back on one click.
+      else if(!LP_SHOW_ALL && MC_FIT.pins > MC_FIT_MIN.pins){
+        MC_FIT.pins = Math.max(MC_FIT_MIN.pins, Math.min(MC_FIT.pins, LP_ITEMS.length) - 1);
+      }
       else break;                                // nothing left to give
       paintMissionControl();
     }
@@ -8328,6 +8339,7 @@ addEventListener('resize', mcScheduleFit);
 // wall screen. Only the "which widgets in display mode" choice is per-browser.
 let LP_ITEMS = [];
 let LP_LOADED = false;
+let LP_SHOW_ALL = false;   // set by the "+N" tile: never fold the pins away again
 // Icons are the app's own stroke family (same set the headings use), so a tile
 // never looks like a sticker pasted on the dashboard. A pin with no icon gets
 // the brand logo when we recognise the app, else a monogram in a stable colour.
@@ -8424,8 +8436,14 @@ function lpPaint(){
   }
   // Grouped, groups in first-seen order, ungrouped first — the order the user
   // dragged them into, not an alphabetical reshuffle behind their back.
+  // On a short screen the fit pass caps how many tiles are drawn (see
+  // mcFitToFold); the rest are one "+N" tile away, and asking for them once
+  // pins the full grid open for the session.
+  const cap = LP_SHOW_ALL ? LP_ITEMS.length : Math.max(3, MC_FIT.pins);
+  const shown = LP_ITEMS.slice(0, cap);
+  const hidden = LP_ITEMS.length - shown.length;
   const groups=[]; const byGroup=new Map();
-  LP_ITEMS.forEach((it,i)=>{
+  shown.forEach((it,i)=>{
     const g=it.group||'';
     if(!byGroup.has(g)){ byGroup.set(g,[]); groups.push(g); }
     byGroup.get(g).push({it,i});
@@ -8446,8 +8464,12 @@ function lpPaint(){
         <span class="lp-nm">${esc(it.name)}</span></a>`;
     }).join('');
   });
-  html+=`<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
+  html+= hidden
+    ? `<a class="lp-tile lp-add" href="#" id="lp-showall" title="${I18N.t('lp.show_all_t','Show every pin (the screen is short, so some were folded away)')}"><span class="lp-ic">+${hidden}</span><span class="lp-nm">${I18N.t('lp.more','more')}</span></a>`
+    : `<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
   setHTML(grid, html);
+  const sa=document.getElementById('lp-showall');
+  if(sa) sa.onclick=e=>{ e.preventDefault(); LP_SHOW_ALL=true; lpPaint(); };
   grid.querySelectorAll('[data-rm]').forEach(btn=>btn.onclick=e=>{
     e.preventDefault(); e.stopPropagation();
     LP_ITEMS.splice(+btn.dataset.rm,1); lpSave();
