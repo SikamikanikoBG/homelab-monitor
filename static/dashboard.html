@@ -1083,18 +1083,30 @@ body.lp-editing .lp-tile{ cursor:grab }
 .mcp-pop h4{ margin:0 0 6px; font-size:13px }
 .mcp-pop .row{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap }
 /* ── Display (kiosk) mode ───────────────────────────────────────────────── */
-body.display .side, body.display header, body.display .hostbar, body.display .mc-details,
-body.display .ghbox, body.display .social, body.display footer, body.display .foot{ display:none!important }
+/* Everything that is not the stage goes away — by structure, so a later
+   layout change can't quietly leave a stray bar on the wall screen. */
+body.display > *:not(#dp-stage){ display:none!important }
 body.display{ overflow:hidden; background:var(--bg) }
-body.display .wrap{ max-width:none; padding:0 }
-body.display #dp-stage{ position:fixed; inset:0; display:grid; grid-template-rows:auto 1fr; gap:10px;
-  padding:16px 20px; overflow:hidden }
-body.display #dp-bar{ display:flex; align-items:center; gap:14px; font-size:13px; color:var(--mut) }
-body.display #dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
+body.display #dp-stage{ position:fixed; inset:0; display:grid!important; grid-template-rows:auto 1fr;
+  gap:10px; padding:14px 18px; overflow:hidden }
+#dp-bar{ display:flex; align-items:center; gap:14px; font-size:13px; color:var(--mut) }
+#dp-title b{ color:var(--tx) }
+#dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
   letter-spacing:-.02em; color:var(--tx); font-variant-numeric:tabular-nums }
-body.display #dp-fit{ transform-origin:top left; width:1440px }
+#dp-fit{ transform-origin:top left; width:1440px }
 body.display.dp-idle{ cursor:none }
+body.display.dp-idle .dp-exit{ opacity:0 }
+.dp-exit{ transition:opacity .3s }
+/* In display mode the cockpit is one glanceable board: the widgets the user
+   left on, side by side, nothing scrolling out of sight. */
+body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)) }
+body.display #mc-cockpit [data-dp-off]{ display:none!important }
+body.display #mc-cockpit .mc-feed{ max-height:none }
 #dp-stage{ display:none }
+.dp-widgets{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 }
+.dp-widgets label{ display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--bd);
+  border-radius:8px; padding:5px 10px; cursor:pointer }
+.dp-widgets input{ accent-color:var(--accent) }
 .dp-exit{ border:1px solid var(--bd); border-radius:7px; background:var(--card); color:var(--mut); cursor:pointer;
   font:inherit; font-size:11px; padding:2px 9px }
 .dp-screens{ display:flex; gap:10px; margin:10px 0 }
@@ -1721,7 +1733,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
     <div class="mc-grid">
       <!-- ───── LEFT: fleet rail — every host at a glance ───── -->
       <div class="mc-col">
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-fleet">
           <div class="mc-ph"><span class="mc-hic" id="mc-ic-fleet"></span><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag" style="margin-left:auto">—</span></div>
           <div class="mc-fleet" id="mc-fleet"></div>
         </div>
@@ -1730,7 +1742,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <!-- ───── CENTER: burn rate · engine gauge · compute history ───── -->
       <div class="mc-col">
         <!-- burn rate (the money) -->
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-burn">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
           <div class="mc-burn">
             <div class="mc-burn-hero">
@@ -1747,7 +1759,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
         </div>
 
         <!-- engine: three gauges — GPU · CPU · RAM for the focused host -->
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-engine">
           <div class="mc-ph mc-engine-ph" id="mc-engine-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-goto-arrow">›</span><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span> <span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span></span><div class="mc-modeseg mc-triseg" id="mc-triseg" style="margin-left:auto"><button data-m="host" type="button" data-i18n="mc.mode_host">This host</button><button data-m="fleet" type="button" data-i18n="mc.mode_fleet">Whole fleet</button></div></div>
           <div class="mc-engine mc-tri">
             <div class="mc-tg">
@@ -1790,11 +1802,11 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 
       <!-- ───── RIGHT: insight feed · cost leaderboard ───── -->
       <div class="mc-col">
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-feed">
           <div class="mc-ph"><span class="mc-hic" id="mc-ic-feed"></span><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag" style="margin-left:auto"></span></div>
           <div class="mc-feed" id="mc-feed"></div>
         </div>
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-cost">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-cost"></span><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
           <div class="mc-lead" id="mc-lead"></div>
         </div>
@@ -8447,15 +8459,36 @@ function lpInit(){
 // into it, which is all a dedicated kiosk box (a Pi, an old laptop running
 // Chromium --kiosk) needs.
 let DP_ON=false, DP_IDLE=null;
+// Which panels the wall screen shows. Per-browser (this is a property of the
+// screen in the hallway, not of the homelab), and the pins themselves stay
+// server-side like everywhere else.
+const DP_WIDGETS=[['lp-panel','Launchpad'],['mc-w-fleet','Fleet'],['mc-w-burn','Burn rate'],
+                  ['mc-w-engine','Engine'],['mc-w-feed','Event feed'],['mc-w-cost','Costs']];
+const DP_KEY='hl_display_widgets';
+function dpShown(){
+  try{ const v=JSON.parse(localStorage.getItem(DP_KEY)); if(Array.isArray(v)) return new Set(v); }catch(e){}
+  return new Set(['lp-panel','mc-w-fleet','mc-w-burn','mc-w-engine','mc-w-feed']);   // costs off: a long list reads badly across a room
+}
+function dpApplyWidgets(){
+  const on=dpShown();
+  DP_WIDGETS.forEach(([id])=>{
+    const el=document.getElementById(id); if(!el) return;
+    if(on.has(id)) el.removeAttribute('data-dp-off'); else el.setAttribute('data-dp-off','1');
+  });
+}
 function dpFit(){
   if(!DP_ON) return;
   const fit=document.getElementById('dp-fit'), stage=document.getElementById('dp-stage');
   if(!fit||!stage) return;
   fit.style.transform='';
-  const avail=stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 26;
-  const s=Math.min((stage.clientWidth-40)/1440, avail/Math.max(1,fit.scrollHeight), 2.2);
+  const avail=stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 24;
+  const h=fit.scrollHeight||1;
+  const s=Math.min((stage.clientWidth-36)/1440, avail/h, 2.5);
   fit.style.transform=`scale(${s.toFixed(3)})`;
-  fit.style.marginBottom=`${Math.round(fit.scrollHeight*(s-1))}px`;
+  // The transform doesn't change layout size, so centre what is left over
+  // horizontally rather than leaving a wide empty gutter on the right.
+  const slack=Math.max(0, (stage.clientWidth-36) - 1440*s);
+  fit.style.marginLeft=`${Math.round(slack/2)}px`;
 }
 function dpClock(){
   const c=document.getElementById('dp-clock');
@@ -8464,11 +8497,14 @@ function dpClock(){
 function dpEnter(){
   if(DP_ON) return;
   DP_ON=true;
-  document.body.classList.add('display');
+  showTab('overview');                       // paint the cockpit before it moves
   const stage=document.getElementById('dp-stage');
-  stage.style.display='grid';
+  document.body.appendChild(stage);          // must be a body child for the hide-everything-else rule
+  document.body.classList.add('display');
   document.getElementById('dp-fit').appendChild(document.getElementById('mc-cockpit'));
-  showTab('overview');
+  dpApplyWidgets();
+  const t=document.getElementById('dp-title');
+  if(t) t.innerHTML=`<b>${esc(document.title.replace(/ ?[—·].*$/,''))}</b>`;
   dpClock(); dpFit();
   clearInterval(dpEnter._t); dpEnter._t=setInterval(()=>{ dpClock(); dpFit(); }, 20000);
   addEventListener('resize', dpFit);
@@ -8483,7 +8519,8 @@ function dpExit(){
   removeEventListener('resize', dpFit);
   document.body.classList.remove('display','dp-idle');
   const ck=document.getElementById('mc-cockpit');
-  ck.style.transform='';
+  ck.querySelectorAll('[data-dp-off]').forEach(el=>el.removeAttribute('data-dp-off'));
+  document.getElementById('lp-panel').removeAttribute('data-dp-off');
   document.querySelector('section[data-tab="overview"]').prepend(ck);
   document.getElementById('dp-fit').style.transform='';
   document.getElementById('dp-stage').style.display='none';
@@ -8502,20 +8539,30 @@ async function dpOpenPicker(){
       screens=d.screens.map((s,i)=>({i, label:s.label||`Screen ${i+1}`, w:s.width, h:s.height, primary:s.isPrimary, ref:s}));
     }
   }catch(e){ screens=null; }
-  if(!screens || screens.length<2){ dpStart(null); return; }
   const m=document.getElementById('lpmodal');
   m.querySelector('.hd b').textContent=I18N.t('dp.title','Display mode');
-  let pick=screens.findIndex(s=>!s.primary); if(pick<0) pick=0;
+  let pick = screens ? Math.max(0, screens.findIndex(s=>!s.primary)) : 0;
+  const on=dpShown();
   const draw=()=>{
     m.querySelector('.bd').innerHTML=`
-      <div class="muted">${I18N.t('dp.pick','Which screen should the wall display use?')}</div>
+      ${screens && screens.length>1 ? `<div class="muted">${I18N.t('dp.pick','Which screen should the wall display use?')}</div>
       <div class="dp-screens">${screens.map((s,i)=>`<div class="dp-scr ${i===pick?'sel':''}" data-s="${i}">
-        <div class="shape"></div>${esc(s.label)}<br>${s.w}×${s.h}${s.primary?' · '+I18N.t('dp.primary','primary'):''}</div>`).join('')}</div>
+        <div class="shape"></div>${esc(s.label)}<br>${s.w}×${s.h}${s.primary?' · '+I18N.t('dp.primary','primary'):''}</div>`).join('')}</div>`
+      : `<div class="muted">${I18N.t('dp.one_screen','Opens full-screen on this screen. To use a second monitor, drag this window there first — only Chromium-based browsers can be told which screen to use.')}</div>`}
+      <div style="margin-top:12px;font-size:12px;color:var(--mut)">${I18N.t('dp.widgets','What to show')}</div>
+      <div class="dp-widgets">${DP_WIDGETS.map(([id,label])=>`<label><input type="checkbox" data-w="${id}" ${on.has(id)?'checked':''}> ${esc(I18N.t('dp.w_'+id, label))}</label>`).join('')}</div>
+      <div class="muted" style="font-size:11px">${I18N.t('dp.hint','Scaled to fit the screen exactly — no scrolling. Esc leaves, and /?display=1 opens straight into it (what a dedicated kiosk box wants).')}</div>
       <div class="row"><button class="btn" type="button" id="dp_go">${I18N.t('dp.open','Open display')}</button>
         <button class="btn" type="button" id="dp_cancel">${I18N.t('btn.cancel','Cancel')}</button></div>`;
     m.querySelectorAll('.dp-scr').forEach(el=>el.onclick=()=>{ pick=+el.dataset.s; draw(); });
+    m.querySelectorAll('.dp-widgets input').forEach(cb=>cb.onchange=()=>{
+      if(cb.checked) on.add(cb.dataset.w); else on.delete(cb.dataset.w);
+      try{ localStorage.setItem(DP_KEY, JSON.stringify([...on])); }catch(e){}
+    });
+    m.querySelector('.hd .x').onclick=()=>m.classList.remove('show');
     document.getElementById('dp_cancel').onclick=()=>m.classList.remove('show');
-    document.getElementById('dp_go').onclick=()=>{ m.classList.remove('show'); dpStart(screens[pick].ref); };
+    document.getElementById('dp_go').onclick=()=>{ m.classList.remove('show');
+      dpStart(screens && screens.length>1 ? screens[pick].ref : null); };
   };
   draw();
   m.classList.add('show');
