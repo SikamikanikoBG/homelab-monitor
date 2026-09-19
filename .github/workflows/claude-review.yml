@@ -45,6 +45,10 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Let bot-initiated PRs (dependabot) trigger the review instead of
+          # failing the bot-allowlist gate. Scoped to dependabot only — not '*' —
+          # so external apps can't invoke the action on a public repo.
+          allowed_bots: "dependabot[bot]"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}

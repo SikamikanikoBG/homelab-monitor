@@ -56,7 +56,7 @@ jobs:
     steps:
       - name: Resolve release
         id: rel
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             let r;
