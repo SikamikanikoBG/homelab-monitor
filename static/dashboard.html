@@ -1099,13 +1099,29 @@ body.display #dp-stage{ position:fixed; inset:0; display:grid!important; grid-te
 #dp-title b{ color:var(--tx) }
 #dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
   letter-spacing:-.02em; color:var(--tx); font-variant-numeric:tabular-nums }
-#dp-fit{ transform-origin:top left; width:1440px }
+#dp-fit{ min-width:0; min-height:0 }
 body.display.dp-idle{ cursor:none }
 body.display.dp-idle .dp-exit{ opacity:0 }
 .dp-exit{ transition:opacity .3s }
 /* In display mode the cockpit is one glanceable board: the widgets the user
    left on, side by side, nothing scrolling out of sight. */
-body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)) }
+/* Fill the screen, both ways: the grid takes the leftover height and every
+   panel stretches into its share of it, so a wall display is a full board
+   rather than a letterboxed one. */
+body.display #dp-fit{ display:flex; flex-direction:column }
+body.display #mc-cockpit{ display:flex; flex-direction:column; gap:12px; flex:1; min-height:0 }
+body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch;
+  flex:1; min-height:0 }
+body.display #mc-cockpit .mc-col{ min-height:0 }
+body.display #mc-cockpit .mc-col > .mc-panel{ flex:1; min-height:0 }
+body.display #mc-cockpit .mc-panel{ display:flex; flex-direction:column }
+body.display #mc-cockpit .mc-fleet,
+body.display #mc-cockpit .mc-feed,
+body.display #mc-cockpit .mc-lead,
+body.display #mc-cockpit .lp-grid{ flex:1; min-height:0; align-content:start }
+/* The launchpad is a row of icons on a wall, not a column of them. */
+body.display #lp-panel{ flex:0 0 auto }
+body.display #mc-cockpit .mc-engine{ flex:1; align-content:center }
 body.display #mc-cockpit [data-dp-off]{ display:none!important }
 body.display #mc-cockpit .mc-feed{ max-height:none }
 /* A wall screen is read, not operated: the launchpad's own edit controls go,
@@ -2856,9 +2872,6 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
   </div>
 </section>
 
-<p class="cap" data-i18n-html="footer.about">Self-hosted &amp; open source • single container • no Prometheus/Grafana required • history downsampled on read.
-GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker API.
-<br>Ideas welcome — see <a href="https://github.com/SikamikanikoBG/homelab-monitor/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md</a> · issues &amp; PRs always open.</p>
 </div></main></div>
 
 <!-- ───────── Update-available modal ───────── -->
@@ -8282,9 +8295,10 @@ const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
 const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
 const MC_FIT_SCALE_MIN = 0.82;   // below this the type stops being readable
 let _mcFitting = false;
-function mcFitToFold(){
+function mcFitToFold(budget){
   const ck = document.getElementById('mc-cockpit');
-  if(!ck || _mcFitting || DP_ON || TAB !== 'overview' || !ck.offsetParent) return;
+  if(!ck || _mcFitting || TAB !== 'overview' || !ck.offsetParent) return;
+  if(DP_ON && budget == null) return;            // display mode passes its own budget
   // Space between the top of the cockpit and the bottom of the window, less the
   // footer note that should stay visible under it.
   ck.style.transform = ''; ck.style.width = '';     // measure at natural size
@@ -8298,7 +8312,7 @@ function mcFitToFold(){
       if(el.offsetParent) below += el.getBoundingClientRect().height;
     }
   }
-  const avail = window.innerHeight - top - below;
+  const avail = budget != null ? budget : (window.innerHeight - top - below);
   if(avail < 260) return;                       // a phone: let it scroll, honestly
   const over = () => ck.getBoundingClientRect().height - avail;
   if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
@@ -8335,7 +8349,7 @@ function mcFitToFold(){
     // dashboard, so below MC_FIT_SCALE_MIN it stops and lets the page scroll.
     const ck2 = document.getElementById('mc-cockpit');
     ck2.style.transform = ''; ck2.style.width = '';
-    const natural = ck2.getBoundingClientRect().height;
+    const natural = DP_ON ? 0 : ck2.getBoundingClientRect().height;
     if(natural > avail){
       const s = Math.max(MC_FIT_SCALE_MIN, avail / natural);
       if(s < 0.999){
@@ -8646,15 +8660,14 @@ function dpFit(){
   if(!DP_ON) return;
   const fit=document.getElementById('dp-fit'), stage=document.getElementById('dp-stage');
   if(!fit||!stage) return;
-  fit.style.transform='';
-  const avail=stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 24;
-  const h=fit.scrollHeight||1;
-  const s=Math.min((stage.clientWidth-36)/1440, avail/h, 2.5);
-  fit.style.transform=`scale(${s.toFixed(3)})`;
-  // The transform doesn't change layout size, so centre what is left over
-  // horizontally rather than leaving a wide empty gutter on the right.
-  const slack=Math.max(0, (stage.clientWidth-36) - 1440*s);
-  fit.style.marginLeft=`${Math.round(slack/2)}px`;
+  // The board is fluid in display mode — it fills the stage's width, and its
+  // panels stretch into the leftover height (see body.display in the CSS), so
+  // nothing is scaled and nothing is letterboxed. The only thing left to do is
+  // trim the lists when even a stretched board would overflow: the same
+  // content-level fit the Overview uses, measured against the stage.
+  const avail = stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 22;
+  fit.style.height = avail + 'px';
+  mcFitToFold(avail);
 }
 function dpClock(){
   const c=document.getElementById('dp-clock');
