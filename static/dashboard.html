@@ -1309,6 +1309,12 @@ body.mc-tight .mc-lp .lp-grid{ gap:5px }
 body.mc-tight .mc-lp .lp-tile{ padding:7px 5px 6px }
 body.mc-tight .mc-lp .lp-ic{ width:26px; height:26px; border-radius:8px }
 body.mc-tight .mc-lp .lp-ic svg{ width:15px; height:15px }
+/* The fit's last-resort scale pays for itself with a negative bottom margin on
+   the cockpit. That margin has to stay INSIDE the tab section, or it collapses
+   straight out of it and the page keeps the unscaled height — which is exactly
+   what happened on a 1280x720 screen: the board shrank and the window scrolled
+   anyway. flow-root makes the section contain it. */
+section[data-tab="overview"]{ display:flow-root }
 /* "and N more" — the honest end of any list the fold cut short. */
 .mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
   font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
