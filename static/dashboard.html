@@ -414,11 +414,20 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .ports{display:inline-flex;flex-wrap:wrap;gap:4px}
 .portpill{font-size:11px;padding:1px 7px;border:1px solid var(--bd);border-radius:9px;color:var(--mut);text-decoration:none;line-height:1.6;background:var(--inset);white-space:nowrap;transition:color .2s,border-color .2s,background .2s}
 .portpill:hover{border-color:var(--accent);color:var(--accent);background:#d2992211}
-/* hide non-essential columns on narrow screens so the table doesn't horiz-scroll */
+/* Narrow screens drop the two columns you can live without (image, disk) —
+   but NEVER the controls. Start/stop/restart/logs/pin is the reason to open
+   this tab on a phone in the first place; hiding them there made the mobile
+   dashboard read-only for no reason. They stack into two rows instead. */
 @media(max-width:1100px){
   th[data-col="image"],td[data-col="image"],
-  th[data-col="disk"], td[data-col="disk"],
-  th[data-col="ctl"], td[data-col="ctl"]  { display:none }
+  th[data-col="disk"], td[data-col="disk"]  { display:none }
+}
+@media(max-width:760px){
+  td[data-col="ctl"] .ctlbtns{ flex-wrap:wrap }
+  td[data-col="ctl"] .ctl-policy{ margin-top:4px }
+  td[data-col="ctl"] .ctl-policy select{ max-width:118px }
+  .ctrow td{ padding-top:9px; padding-bottom:9px }       /* thumb-sized rows */
+  .btn-mini{ min-height:28px; min-width:28px }
 }
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
@@ -1243,6 +1252,21 @@ body.mc-tight .mc-host-top{ margin-bottom:5px }
 body.mc-tight .mc-host-os,
 body.mc-tight .mc-host-foot{ display:none }
 body.mc-tight .mc-microbars{ margin-bottom:0 }
+/* Tier two of the fit: when trimming lists and tightening the rail still
+   leaves the board taller than the fold, the centre column gives up its
+   ceremony — the gauges and the burn figure are decorative at that size, the
+   numbers inside them are not. */
+body.mc-tight .mc-panel{ padding-bottom:4px }
+body.mc-tight .mc-tg-ring{ max-width:104px }
+body.mc-tight .mc-tg-num{ font-size:22px }
+body.mc-tight .mc-tg-pct{ font-size:12px }
+body.mc-tight .mc-engine{ padding:6px 14px 12px }
+body.mc-tight .mc-burn-num{ font-size:38px }
+body.mc-tight .mc-burn{ padding-bottom:4px }
+body.mc-tight .mc-lp .lp-grid{ gap:5px }
+body.mc-tight .mc-lp .lp-tile{ padding:7px 5px 6px }
+body.mc-tight .mc-lp .lp-ic{ width:26px; height:26px; border-radius:8px }
+body.mc-tight .mc-lp .lp-ic svg{ width:15px; height:15px }
 /* "and N more" — the honest end of any list the fold cut short. */
 .mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
   font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
@@ -5568,7 +5592,7 @@ function renderHealth(){
     const actBtn = e.target.closest('.ct-act');
     if(actBtn){ e.stopPropagation();
       const tr = actBtn.closest('.ctrow');
-      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1');
+      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1', 'local');
       return;
     }
     if(e.target.closest('.ctl-policy')) return;
@@ -5580,7 +5604,7 @@ function renderHealth(){
     if(!confirm(`Change restart policy for "${tr.dataset.ct}" to "${sel.value}"?`)){
       loadHealth(); return; // revert the select to server state
     }
-    setContainerRestartPolicy(tr.dataset.ct, sel.value);
+    setContainerRestartPolicy(tr.dataset.ct, sel.value, 'local');
   };
   if(TAB==='containers') pulseIfChanged('containers', dk);
 
@@ -9612,7 +9636,11 @@ function _rctBadge(c){
                                                    : ['warn', I18N.t('rct.exited','EXITED')];
   return ['info', esc(st.toUpperCase()||'?')];
 }
+// Controls are a property of the HUB (ENABLE_CONTROLS), not of the host being
+// shown: the hub is what runs the docker command, locally or over SSH.
+let RCT_CONTROLS = true;
 function renderRemoteContainers(sec, rc){
+  RCT_CONTROLS = ((HH && HH.docker) || {}).controls_enabled !== false;
   let box = sec.querySelector('.remote-ct');
   if(!box){
     box = document.createElement('div');
@@ -9635,7 +9663,18 @@ function renderRemoteContainers(sec, rc){
     const vb = c.vram_mb!=null ? c.vram_mb*1048576 : null;
     if(vb!=null){ tVram+=vb; anyVram=true; }
     if(c.disk_bytes!=null){ tDisk+=c.disk_bytes; anyDisk=true; }
-    return `<tr class="ctrow"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
+    const rp = c.restart_policy || '';
+    const ctl = RCT_CONTROLS ? `
+      <div class="ctlbtns">
+        <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
+        <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
+        <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+        <button type="button" class="btn-mini ct-pin${lpIsPinned(c.name,CURRENT_HOST)?' on':''}" data-pin="1" title="${lpIsPinned(c.name,CURRENT_HOST)?I18N.t('lp.pinned','On the Overview launchpad'):I18N.t('lp.pin_this','Pin to the Overview launchpad')}">${lpIsPinned(c.name,CURRENT_HOST)?'★':'☆'}</button>
+      </div>
+      ${rp?`<div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
+        ${['no','unless-stopped','on-failure','always'].map(pol=>`<option value="${pol}" ${rp===pol?'selected':''}>${pol}</option>`).join('')}
+      </select></div>`:''}` : `<span class="ctl-locked">🔒</span>`;
+    return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
       <td><span class="badge ${lvl}">${label}</span></td>
       <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.image)}">${esc(c.image)}</td>
       <td class="muted">${ports}</td>
@@ -9644,23 +9683,57 @@ function renderRemoteContainers(sec, rc){
       <td class="muted">${vb!=null ? fmtBytes(vb) : '—'}</td>
       <td data-col="disk" class="muted">${c.disk_bytes!=null ? fmtBytes(c.disk_bytes) : '—'}</td>
       <td class="muted">${c.cpu_pct!=null ? c.cpu_pct.toFixed(1)+'%' : '—'}</td>
-      <td class="muted">${esc(c.status||'')}</td></tr>`;
-  }).join('') || `<tr><td colspan="10" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
+      <td class="muted">${esc(c.status||'')}</td>
+      <td data-col="ctl">${ctl}</td></tr>`;
+  }).join('') || `<tr><td colspan="11" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
   const totals = rc.containers.length ? `<tr class="cttot">
       <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:s.running||0})}</span></td>
       <td></td><td data-col="image"></td><td></td><td></td>
       <td><b>${fmtBytes(tRam)}</b></td>
       <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
       <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
-      <td></td><td></td></tr>` : '';
+      <td></td><td></td><td data-col="ctl"></td></tr>` : '';
   const stale = rc.online ? '' : ` · <span style="color:var(--warn)">${I18N.t('rgpu.stale','host offline — showing last snapshot')}</span>`;
   box.innerHTML =
     `<div class="card"><h2>📦 ${I18N.tf('rct.title','Containers on {host}',{host:esc(CURRENT_HOST)})}</h2>
       <div class="grid">${kpis}</div>
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
-      <p class="cap">${I18N.tf('rct.cap','Read-only inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${I18N.t('rct.cap2','Logs and start/stop controls are hub-only for now.')}</p>
+      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th><th data-col="ctl">${I18N.t('col.controls','Controls')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
+      <p class="cap">${I18N.tf('rct.cap2','Inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${RCT_CONTROLS
+        ? I18N.t('rct.cap_ctl','Start/stop/restart, the restart policy and the logs all run over the same SSH connection the probe uses — the remote user needs docker access. Logs are a refreshing tail, not a live follow.')
+        : I18N.t('rct.cap_noctl','Controls are disabled on this hub (ENABLE_CONTROLS=0).')}</p>
     </div>`;
   applyIcons(box);
+  const host = CURRENT_HOST;
+  const tbl = box.querySelector('table');
+  if(tbl){
+    tbl.onclick = e => {
+      if(e.target.closest('.copybtn')) return;
+      const tr = e.target.closest('.ctrow'); if(!tr || !tr.dataset.ct) return;
+      const pinBtn = e.target.closest('.ct-pin');
+      if(pinBtn){ e.stopPropagation();
+        const c = (rc.containers||[]).find(x=>x.name===tr.dataset.ct) || {};
+        // The remote probe reports ports as a string ("0.0.0.0:8080->80/tcp"),
+        // not the hub's array — pull the published ports out of it so the pin
+        // form pre-fills the same way it does on the hub.
+        const ports = String(c.ports||'').split(',').map(s=>s.trim())
+          .map(s=>{ const m=s.match(/:(\d+)->/); return m?+m[1]:null; }).filter(Boolean);
+        lpPinContainer(tr.dataset.ct, ports, host);
+        return;
+      }
+      const actBtn = e.target.closest('.ct-act');
+      if(actBtn){ e.stopPropagation(); containerAction(tr.dataset.ct, actBtn.dataset.act, false, host); return; }
+      if(e.target.closest('.ctl-policy')) return;
+      openLogDrawer(tr.dataset.ct, host);
+    };
+    tbl.onchange = e => {
+      const sel = e.target.closest('.ct-policy'); if(!sel) return;
+      const tr = sel.closest('.ctrow');
+      if(!confirm(`Change restart policy for "${tr.dataset.ct}" on ${host} to "${sel.value}"?`)){
+        loadHostData(host).then(()=>renderLocalOnlyNotice('containers')); return;
+      }
+      setContainerRestartPolicy(tr.dataset.ct, sel.value, host);
+    };
+  }
   // Not the whole rc — rc.at is this poll's own timestamp, always different,
   // which would defeat the point of checking for a real change at all.
   if(TAB==='containers') pulseIfChanged('containers-'+CURRENT_HOST, [rc.containers, rc.summary]);
@@ -10787,43 +10860,59 @@ function burstSparkles(){
     if(!wasStarred) burstSparkles();   // reward the first click only
   });
 })();
-// ── Container controls (opt-in, ENABLE_CONTROLS) — local host only, the
-//    Containers tab has no remote inventory yet. ───────────────────────────────
-async function containerAction(name, action, isSelf){
+// ── Container controls (opt-in, ENABLE_CONTROLS) ─────────────────────────────
+// Host-aware: the hub goes through the Docker socket, a registered host through
+// SSH + `docker` (same plumbing the remote service controls already use). A
+// remote box's Containers tab therefore has every control the hub's does.
+async function containerAction(name, action, isSelf, host){
+  host = host || 'local';
   const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
   const msg = isSelf
     ? `${verb} ${name} — this is the container running this dashboard. ${action==='stop'?"You'll lose the UI until it's started again.":'The page may go briefly unreachable while it restarts.'} Continue?`
-    : `${verb} container '${name}'?`;
+    : `${verb} container '${name}'${host!=='local'?` on ${host}`:''}?`;
   if(!confirm(msg)) return;
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/action`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action, host})})).json();
   } catch(e){ toast('critical', `${verb} failed: ${e}`); return; }
   if(j.ok) toast('ok', `${verb === 'Restart' ? 'Restarted' : verb === 'Start' ? 'Started' : 'Stopped'} ${name}.`);
   else toast('critical', j.error || `${verb} failed.`);
-  await loadHealth();
+  await afterContainerChange(host);
 }
 
-async function setContainerRestartPolicy(name, policy){
+async function setContainerRestartPolicy(name, policy, host){
+  host = host || 'local';
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/restart-policy`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy, host})})).json();
   } catch(e){ toast('critical', `Could not change restart policy: ${e}`); return; }
   if(j.ok) toast('ok', `${name} will now restart: ${policy}.`);
   else toast('critical', j.error || 'Could not change restart policy.');
-  await loadHealth();
+  await afterContainerChange(host);
+}
+// After an action: the hub re-reads its own Docker list (instant), a remote is
+// re-probed so the row's new state lands now rather than up to a poll later.
+async function afterContainerChange(host){
+  if(!host || host==='local'){ await loadHealth(); return; }
+  // /test is the fleet's own "probe this host now" endpoint (it runs
+  // probe_host and stores the result), which is exactly what is needed here.
+  try{ await fetch('/api/hosts/'+encodeURIComponent(host)+'/test', {method:'POST'}); }catch(e){}
+  await loadFleet();
+  await loadHostData(host);
+  if(TAB==='containers') renderLocalOnlyNotice('containers');
 }
 
 // ── Container logs side drawer (issue #28) ───────────────────────────────────
-let LOG_ES=null, LOG_NAME=null;
-function openLogDrawer(name){
-  LOG_NAME=name;
-  document.getElementById('logdrawer-name').textContent=name;
+let LOG_ES=null, LOG_NAME=null, LOG_HOST='local', LOG_POLL=null;
+function openLogDrawer(name, host){
+  LOG_NAME=name; LOG_HOST=host||'local';
+  document.getElementById('logdrawer-name').textContent = LOG_HOST==='local' ? name : name+' · '+LOG_HOST;
   document.getElementById('logdrawer-follow').checked=true;
   document.getElementById('logdrawer').hidden=false;
   startLogStream(name, true);
 }
-function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; } }
+function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; }
+  if(LOG_POLL){ clearTimeout(LOG_POLL); LOG_POLL=null; } }
 function closeLogDrawer(){ stopLogStream(); document.getElementById('logdrawer').hidden=true; LOG_NAME=null; }
 function startLogStream(name, follow){
   stopLogStream();
@@ -10831,10 +10920,26 @@ function startLogStream(name, follow){
   body.textContent=''; status.textContent = follow ? 'streaming live…' : 'last 200 lines';
   let atBottom=true;
   body.onscroll=()=>{ atBottom = body.scrollTop+body.clientHeight >= body.scrollHeight-30; };
-  const es=new EventSource('/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0));
+  const remote = LOG_HOST && LOG_HOST!=='local';
+  if(remote) status.textContent = follow
+    ? I18N.tf('logs.remote_follow','last 200 lines from {h} · refreshing every 5s',{h:LOG_HOST})
+    : I18N.tf('logs.remote_snap','last 200 lines from {h}',{h:LOG_HOST});
+  const url='/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0)
+    + (remote?'&host='+encodeURIComponent(LOG_HOST):'');
+  const es=new EventSource(url);
   LOG_ES=es;
   es.onmessage=ev=>{ body.textContent += (body.textContent?'\n':'')+ev.data; if(atBottom) body.scrollTop=body.scrollHeight; };
-  es.addEventListener('end', ()=>{ status.textContent='— end of logs —'; stopLogStream(); });
+  es.addEventListener('end', ()=>{
+    stopLogStream();
+    // A remote host has no live follow (an SSH `docker logs -f` would hold a
+    // process open per viewer), so re-read the tail on a timer instead — and
+    // say that is what is happening.
+    if(remote && follow && !document.getElementById('logdrawer').hidden){
+      LOG_POLL=setTimeout(()=>{ if(LOG_NAME) startLogStream(LOG_NAME, true); }, 5000);
+      return;
+    }
+    status.textContent='— end of logs —';
+  });
   es.addEventListener('srverror', ev=>{ status.textContent='error: '+(ev.data||'could not read logs'); stopLogStream(); });
   es.onerror=()=>{ if(LOG_ES!==es) return; status.textContent = follow ? 'connection lost — retrying…' : 'stream closed'; };
 }
