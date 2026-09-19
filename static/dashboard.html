@@ -669,7 +669,12 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 /* ═══════════ rev 6 migration — Portainer-style shell + enterprise restyle (additive; overrides win by source order) ═══════════ */
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
-.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7;
+  /* The nav list is the only thing in here that may scroll. Without the clip
+     (and the min-height:0 on the list below), a tall nav on a short screen
+     pushed the whole PAGE past the viewport — the Overview fitted the fold
+     and the window scrolled anyway, because of the sidebar. */
+  overflow:hidden}
 /* visual hierarchy: nav surfaces distinct from content */
 .main{min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 .sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
@@ -678,7 +683,7 @@ body{background:var(--canvas)}
 .sbrand-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
 .sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:14px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut);background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:2px 8px;line-height:1.4}
-.navlist{flex:1 1 auto;overflow:auto;padding:8px}
+.navlist{flex:1 1 auto;min-height:0;overflow:auto;padding:8px;scrollbar-width:thin}
 .navgroup{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
 .nrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer}
 .nrow:hover{background:var(--hover);color:var(--tx)}
