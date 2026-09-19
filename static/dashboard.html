@@ -8035,6 +8035,164 @@ function mcBuildFleetCPU(){
     headroom:I18N.tf('mc.head_fcpu','<b>{free} RAM free</b> across {n} hosts.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:ramPct>=90, red:false,
     breakdown:list.map(x=>({label:x.host,sub:x.cores+'c',pct:x.cpu,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.cpu>=80?'var(--crit)':x.cpu>=50?'var(--accent)':'var(--ok)'})) };
 }
+function mcPaintBurn($, cost, machine, measured, cur, g, host){
+  const nowW = machine.now_w || {};
+  const c = machine.cost || {};
+  // Cost disabled (no kWh price) → fall to the muted ESTIMATE branch, never blank.
+  const metering = (cost.enabled===false) ? 'none'
+                 : measured.indexOf('gpu')>=0 ? 'gpu'
+                 : (measured.indexOf('cpu')>=0 || cost.rapl_available) ? 'cpu' : 'none';
+  // tariff window (day/night) from the local clock
+  let tariffNote='';
+  const tf = cost.tariff;
+  if(tf && tf.mode==='dual' && tf.price_night!=null){
+    const mins = d => { const p=String(d||'').split(':'); return (+p[0]||0)*60+(+p[1]||0); };
+    const ns=mins(tf.night_start), ne=mins(tf.night_end), nowm=(()=>{const d=new Date();return d.getHours()*60+d.getMinutes();})();
+    const isNight = ns===ne ? false : (ns<ne ? (nowm>=ns&&nowm<ne) : (nowm>=ns||nowm<ne));
+    tariffNote = isNight ? I18N.t('mc.night','night tariff') : I18N.t('mc.day','day tariff');
+  }
+  const num=$('mc-burn-num');
+  if(metering==='none'){
+    // No power sensor → TDP-guess estimate, never blank.
+    const watt = nowW.total || (g.available ? Math.round(g.power||0) : Math.round(35 + (host.cpu||0)*0.6));
+    const price = (cost.tariff && cost.tariff.price_day) || 0;
+    const rate = price>0 ? watt/1000*price : 0;
+    $('mc-burn-title').textContent=I18N.t('mc.power_cost','Power & Cost');
+    $('mc-burn-src').innerHTML=I18N.t('mc.no_sensor','no power sensor')+' <span class="mc-est-chip">ESTIMATE</span>';
+    $('mc-burn-lbl').textContent=I18N.t('mc.est_draw','Estimated draw');
+    num.classList.add('mc-muted');
+    mcCountUp(num, rate, 1200, 3);
+    $('mc-burn-unit').textContent=cur+'/h';
+    $('mc-burn-proj').innerHTML=I18N.tf('mc.est_proj','from <span class="mono">~{w} W</span> TDP estimate',{w:watt});
+    $('mc-u1').textContent=$('mc-u2').textContent=$('mc-u3').textContent=cur+' est';
+  } else {
+    // Fleet-aware: /api/costs?host=all returns one machine per box with
+    // measurable power (hub first). The hero figure is the whole fleet's
+    // burn; the projection line splits hub vs remotes so the number stays
+    // explainable. With no measurable remotes this reduces to the old
+    // hub-only view — same wattage source, same math.
+    const machines = (cost.machines||[]).length ? cost.machines : [machine];
+    const remotes = machines.slice(1);
+    // Apples-to-apples: in fleet mode every box contributes the sum of its
+    // MEASURED components (gpu+cpu+dram — never the idle estimate); hub-only
+    // keeps the original single-component figure so the lone-box number
+    // doesn't shift under anyone.
+    const mSum = m => ((m.now_w&&m.now_w.gpu)||0)+((m.now_w&&m.now_w.cpu)||0)+((m.now_w&&m.now_w.dram)||0);
+    const hubW = remotes.length ? mSum(machine) : (metering==='gpu' ? (nowW.gpu||0) : (nowW.cpu||0));
+    const remW = remotes.reduce((a,m)=>a+mSum(m),0);
+    const watt = hubW + remW;
+    const price = (cost.tariff && cost.tariff.price_day) || 0;
+    const rate = price>0 ? watt/1000*price : 0;
+    $('mc-burn-title').textContent=I18N.t('mc.burn','Burn Rate');
+    $('mc-burn-src').textContent = (metering==='gpu' ? I18N.t('mc.gpu_metered','GPU energy · metered') : I18N.t('mc.cpu_rapl','CPU package · RAPL')) + (tariffNote?' · '+tariffNote:'');
+    const scope=$('mc-burn-scope');
+    if(scope){ scope.textContent = remotes.length ? I18N.tf('mc.scope_fleet','fleet · {n} boxes',{n:machines.length}) : I18N.t('mc.scope_hub','hub');
+               scope.title = remotes.length ? I18N.t('mc.scope_fleet_t','Every box with measurable power, priced from its own poll history') : I18N.t('mc.scope_hub_t','Power metering runs on the hub'); }
+    $('mc-burn-lbl').textContent=I18N.t('mc.spending_now','Spending right now');
+    num.classList.remove('mc-muted');
+    mcCountUp(num, rate, 1400, 3);
+    $('mc-burn-unit').textContent=cur+'/h';
+    const proj=(rate*24*30.4).toFixed(2);
+    $('mc-burn-proj').innerHTML = remotes.length
+      ? I18N.tf('mc.proj_fleet','at this rate ≈ <b>{v} {cur}</b> / month · <span class="mono">{hw} W</span> hub + <span class="mono">{rw} W</span> fleet',{v:proj,cur,hw:hubW,rw:remW})
+      : I18N.tf('mc.proj','at this rate ≈ <b>{v} {cur}</b> / month · <span class="mono">{w} W</span>',{v:proj,cur,w:watt});
+    $('mc-u1').textContent=$('mc-u2').textContent=$('mc-u3').textContent=cur;
+  }
+  const dec = metering==='none' ? 2 : 2;
+  // Cost windows: summed across every machine in the response (fleet), which
+  // is just the hub when nothing else is measurable.
+  const wins = (cost.machines||[machine]).reduce((a,m)=>{const mc=m.cost||{};
+    a.today+=mc.today||0; a.d7+=mc.d7||0; a.d30+=mc.d30||0; return a;}, {today:0,d7:0,d30:0});
+  mcCountUp($('mc-c-today'), (cost.machines||[]).length>1 ? wins.today : (c.today||0), 1100, dec);
+  mcCountUp($('mc-c-d7'),    (cost.machines||[]).length>1 ? wins.d7    : (c.d7||0),    1100, dec);
+  mcCountUp($('mc-c-d30'),   (cost.machines||[]).length>1 ? wins.d30   : (c.d30||0),   1100, dec);
+}
+function mcPaintLeaderboard($, cost, machine, measured, cur){
+  const lead=$('mc-lead');
+  const metered = cost.enabled!==false && (measured.indexOf('gpu')>=0 || measured.indexOf('cpu')>=0);
+  let rows;
+  if(metered && (cost.breakdown||[]).length){
+    const bd = cost.breakdown.slice(0,6);
+    const sum = bd.reduce((a,r)=>a+(r.cost||0),0) || 1;
+    $('mc-cost-title').textContent=I18N.t('mc.cost','What\'s Costing You');
+    $('mc-cost-tag').textContent=I18N.tf('mc.this_week','this week · {v} {cur}',{v:(machine.cost&&machine.cost.d7!=null?machine.cost.d7:sum).toFixed(2),cur});
+    rows = bd.map(r=>{
+      const share=Math.round((r.cost||0)/sum*100);
+      return {name:r.name, kind:r.kind||'', cost:(r.cost||0).toFixed(2)+' '+cur, share,
+              metaL:I18N.tf('mc.share_week','{n}% of week',{n:share}),
+              metaR:(r.avg_w!=null?r.avg_w+' W avg · ':'')+((r.energy_kwh||0).toFixed(2))+' kWh'};
+    });
+  } else {
+    // Not metered → Heaviest Containers · by RAM
+    const cs=((HH&&HH.docker&&HH.docker.containers)||[]).filter(c=>c.mem_bytes>0)
+            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0,6);
+    const sum=cs.reduce((a,c)=>a+(c.mem_bytes||0),0) || 1;
+    $('mc-cost-title').textContent=I18N.t('mc.heaviest','Heaviest Containers · by RAM');
+    $('mc-cost-tag').textContent=I18N.tf('mc.n_containers','{n} containers',{n:cs.length});
+    rows = cs.map(c=>{
+      const mb=(c.mem_bytes||0)/1048576, share=Math.round((c.mem_bytes||0)/sum*100);
+      return {name:c.name, kind:(c.image||'').split('/').pop().split(':')[0]||'app', cost:fmtMBshort(mb), share,
+              metaL:I18N.tf('mc.share_ram','{n}% of RAM',{n:share}), metaR:esc((c.image||'').split('@')[0])};
+    });
+  }
+  if(!rows.length){ lead.innerHTML='<div style="font-size:11px;color:var(--mut);padding:6px 0">'+I18N.t('mc.no_consumers','Nothing to rank yet.')+'</div>'; return; }
+  lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
+    <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
+    <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
+    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
+}
+function mcAttentionCount(){
+  // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  let n=hosts.filter(h=>!h.is_local && !h.online).length;
+  n+=hosts.filter(h=>((h.host&&h.host.disks)||[]).some(d=>d.pct>=90)).length;
+  if(hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0)>0) n++;
+  const dk=(HH&&HH.docker)||{}; if((dk.containers||[]).some(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'))) n++;
+  const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
+  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) n++;
+  n+=hosts.filter(h=>teleLost(h)).length;
+  return n;
+}
+function mcDeriveInsights(skipAllGood){
+  // The detailed alert feed (the fleet bar only shows a rollup count, never this detail).
+  const out=[];
+  const hosts=(FLEET&&FLEET.hosts)||[];
+  const off=hosts.filter(h=>!h.is_local && !h.online);
+  if(off.length) out.push({level:'critical',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
+  hosts.forEach(h=>{ const d=((h.host&&h.host.disks)||[]).find(d=>d.pct>=90);
+    if(d) out.push({level:'warning',title:I18N.tf('mc.di_disk','{h} disk {m} at {p}%',{h:esc(h.label||h.name),m:esc(d.mount),p:d.pct}),detail:I18N.t('mc.di_disk_d','Worth a clean-up before writes start failing.')}); });
+  // A host answering without its GPUs. Critical, and named: the whole point
+  // is that nobody has to notice a temperature that stopped moving.
+  hosts.filter(h=>teleLost(h)).forEach(h=>out.push({level:'critical',
+    title:I18N.tf('mc.di_tele','GPU telemetry lost on {h}',{h:esc(h.label||h.name)}),
+    detail:esc(teleTitle(h))}));
+  const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
+  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
+  const dk=(HH&&HH.docker)||{}; const probs=(dk.containers||[]).filter(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'));
+  if(probs.length) out.push({level:'warning',title:I18N.tf('mc.di_ctprob','{n} container(s) need attention',{n:probs.length}),detail:probs.slice(0,3).map(p=>esc(p.name)).join(', ')});
+  const upd=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
+  if(upd>0) out.push({level:'info',title:I18N.tf('mc.di_upd','{n} package updates pending',{n:upd}),detail:I18N.t('mc.di_upd_d','Across the fleet — a good time to patch.')});
+  if(!out.length && !skipAllGood) out.push({level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')});
+  return out;
+}
+function mcPaintFeed($){
+  const feed=$('mc-feed');
+  // Merge fleet-derived alerts with the server's own insights, dedupe, severity-sort.
+  const order={critical:0,crit:0,warning:1,warn:1,info:2,ok:3};
+  const di=((D&&D.insights)||[]).map(i=>({level:i.level,title:i.title,detail:i.detail}));
+  let ins=[...mcDeriveInsights(true), ...di];
+  const seen=new Set(); ins=ins.filter(i=>{ if(seen.has(i.title)) return false; seen.add(i.title); return true; });
+  ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
+  if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
+  const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
+  feed.innerHTML = ins.slice(0,7).map(i=>{
+    const lv=MC_LVL[i.level]||'info';
+    return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
+      <div class="mc-ins-ic">${icon[lv]||'•'}</div>
+      <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
+  }).join('');
+  $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
+}
 // Tapping a panel header jumps to that panel's own tab (data-goto).
 
 // ── Launchpad: the apps you pin on the Overview ──────────────────────────────
