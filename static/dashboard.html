@@ -1032,6 +1032,77 @@ h2 .hic{ opacity:.9 }
 .mc-grid2{ display:grid; grid-template-columns:320px minmax(0,1fr) 360px; gap:16px; align-items:start }
 .mc-chartpanel{ margin-bottom:16px }
 .mc-chartbox{ position:relative; height:208px; padding:4px 16px 16px }
+/* ── Launchpad: the pinned apps on the Overview ─────────────────────────── */
+.mc-lp{ margin-bottom:16px }
+.mc-lp .btn-mini{ text-transform:none; letter-spacing:0 }
+.lp-accent{ border-color:var(--accent)!important; color:var(--accent)!important }
+.lp-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:9px }
+.lp-group{ grid-column:1/-1; display:flex; align-items:center; gap:9px; font-size:10px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--mut); margin:4px 0 0 }
+.lp-group:after{ content:""; flex:1; height:1px; background:var(--bd) }
+.lp-tile{ position:relative; display:flex; flex-direction:column; align-items:center; gap:7px; padding:13px 9px 10px;
+  border:1px solid var(--bd); border-radius:12px; background:var(--card); color:var(--tx); text-decoration:none;
+  transition:transform .12s ease, border-color .15s ease }
+.lp-tile:hover{ transform:translateY(-1px); border-color:var(--mut) }
+.lp-tile:focus-visible{ outline:2px solid var(--info); outline-offset:2px }
+.lp-ic{ width:38px; height:38px; border-radius:11px; display:grid; place-items:center; color:#fff;
+  font-family:var(--mono); font-weight:700; font-size:15px; flex:none }
+.lp-ic svg{ width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.lp-ic .brandlg{ margin:0; width:22px; height:22px }
+.lp-ic .brandlg svg{ width:22px; height:22px; stroke:none }
+.lp-nm{ font-size:12px; font-weight:600; line-height:1.2; text-align:center; max-width:100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.lp-sub{ font-size:10px; color:var(--mut); font-family:var(--mono); max-width:100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.lp-dot{ position:absolute; top:8px; right:8px; width:7px; height:7px; border-radius:50%; background:var(--ok) }
+.lp-dot.warn{ background:var(--warn) } .lp-dot.crit{ background:var(--crit) } .lp-dot.off{ background:var(--mut); opacity:.55 }
+.lp-x{ position:absolute; top:4px; left:5px; border:0; background:none; color:var(--mut); font-size:15px;
+  line-height:1; cursor:pointer; padding:2px 4px; display:none }
+.lp-x:hover{ color:var(--crit) }
+body.lp-editing .lp-x{ display:block }
+body.lp-editing .lp-tile{ cursor:grab }
+.lp-tile.lp-drag{ opacity:.45 } .lp-tile.lp-over{ border-color:var(--accent) }
+.lp-add{ border-style:dashed; justify-content:center; color:var(--mut); background:transparent }
+.lp-add .lp-ic{ background:transparent; border:1px dashed var(--bd); color:var(--mut); font-size:19px }
+.lp-empty{ grid-column:1/-1; font-size:12px; color:var(--mut); padding:6px 2px }
+/* the pin form */
+.lp-form{ display:grid; grid-template-columns:120px 1fr; gap:10px 12px; align-items:center; font-size:13px }
+.lp-form label{ color:var(--mut) }
+.lp-form .field{ width:100% }
+.lp-icons{ display:flex; flex-wrap:wrap; gap:6px }
+.lp-icons button{ width:32px; height:32px; border:1px solid var(--bd); border-radius:9px; background:var(--inset);
+  color:var(--tx); display:grid; place-items:center; cursor:pointer; padding:0 }
+.lp-icons button svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.lp-icons button.sel{ border-color:var(--accent); color:var(--accent) }
+/* pin action on a container row */
+.ct-pin{ color:var(--mut) } .ct-pin.on{ color:var(--accent) }
+/* ── MCP pill → popover ─────────────────────────────────────────────────── */
+.mcp-pop{ position:fixed; z-index:60; width:min(420px,92vw); background:var(--card); border:1px solid var(--bd);
+  border-radius:12px; box-shadow:var(--mc-shadow); padding:13px 15px; font-size:12px; color:var(--tx) }
+.mcp-pop[hidden]{ display:none }
+.mcp-pop h4{ margin:0 0 6px; font-size:13px }
+.mcp-pop .row{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap }
+/* ── Display (kiosk) mode ───────────────────────────────────────────────── */
+body.display .side, body.display header, body.display .hostbar, body.display .mc-details,
+body.display .ghbox, body.display .social, body.display footer, body.display .foot{ display:none!important }
+body.display{ overflow:hidden; background:var(--bg) }
+body.display .wrap{ max-width:none; padding:0 }
+body.display #dp-stage{ position:fixed; inset:0; display:grid; grid-template-rows:auto 1fr; gap:10px;
+  padding:16px 20px; overflow:hidden }
+body.display #dp-bar{ display:flex; align-items:center; gap:14px; font-size:13px; color:var(--mut) }
+body.display #dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
+  letter-spacing:-.02em; color:var(--tx); font-variant-numeric:tabular-nums }
+body.display #dp-fit{ transform-origin:top left; width:1440px }
+body.display.dp-idle{ cursor:none }
+#dp-stage{ display:none }
+.dp-exit{ border:1px solid var(--bd); border-radius:7px; background:var(--card); color:var(--mut); cursor:pointer;
+  font:inherit; font-size:11px; padding:2px 9px }
+.dp-screens{ display:flex; gap:10px; margin:10px 0 }
+.dp-scr{ flex:1; border:1px solid var(--bd); border-radius:9px; padding:9px; text-align:center; cursor:pointer;
+  font-family:var(--mono); font-size:11px; color:var(--mut) }
+.dp-scr.sel{ border-color:var(--accent); color:var(--tx) }
+.dp-scr .shape{ height:42px; border:1px solid var(--bd); border-radius:5px; background:var(--inset); margin-bottom:6px }
+.dp-scr.sel .shape{ background:var(--warnbg) }
 /* customizable widget board */
 .mc-boardbar{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
 .mc-custbtn,.mc-resetbtn{ font:inherit; font-size:11px; font-weight:600; color:var(--mut); background:var(--card); border:1px solid var(--bd); border-radius:9px; padding:5px 11px; cursor:pointer }
@@ -1556,7 +1627,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
 <button type="button" class="upd osupd" id="osupdbadge" title="One or more machines have OS/kernel updates pending — click for details">⬆ <span id="osupdtext">updates</span></button>
-<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse" data-i18n-attr="title:header.pulse_title" title="Live — rings once on every real refresh of the tab you're viewing"></span><span id="lastup">connecting…</span></span></header>
+<span class="live"><button type="button" id="mcppill" class="mcp-pill" hidden></button><span class="pulse" data-i18n-attr="title:header.pulse_title" title="Live — rings once on every real refresh of the tab you're viewing"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
 
 <div class="topnav">
@@ -1577,6 +1648,9 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <span class="spacer"></span><label class="tg"><input type="checkbox" id="auto" checked> <span data-i18n="range.autorefresh">auto-refresh</span></label>
 </div>
 <span class="ctrl-spring"></span>
+<button class="sharebtn" id="dispbtn" type="button" data-i18n-attr="title:dp.button_title" title="Full-screen wall display — fits the screen, no scrolling. Esc to leave.">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+  <span data-i18n="dp.button">Display</span></button>
 <div class="sharewrap" id="sharewrap">
   <button class="sharebtn" id="sharebtn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-attr="title:share.button_title" title="Snapshot or share this view">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16a3 3 0 0 0-2.3 1.1l-6.8-3.9a3 3 0 0 0 0-2.4l6.8-3.9A3 3 0 1 0 15 4l-.1.5-6.8 3.9a3 3 0 1 0 0 5.2l6.8 3.9.1.5A3 3 0 1 0 18 16z"/></svg>
@@ -1603,17 +1677,46 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <!-- Degraded-setup banner: shown on any tab when a requirement isn't met. -->
 <div class="diagbanner" id="diagbanner" hidden></div>
 
+<!-- Launchpad / display-mode dialog (one box, contents built per use). -->
+<div class="umodal" id="lpmodal"><div class="box">
+  <div class="hd"><b></b><button class="x" type="button" title="Close">×</button></div>
+  <div class="bd"></div>
+</div></div>
+<!-- Display mode's own stage: the cockpit is MOVED in here (not cloned), so it
+     keeps its live bindings and there is never a second copy to repaint. -->
+<div id="dp-stage">
+  <div id="dp-bar"><span id="dp-title"></span>
+    <button class="dp-exit" type="button" id="dp-exitbtn">Esc · exit display</button>
+    <span id="dp-clock"></span></div>
+  <div id="dp-fit"></div>
+</div>
+
 <!-- ───────── Overview = Mission Control ───────── -->
 <section data-tab="overview">
-  <!-- Mission Control cockpit leads (live data); the full fleet table moves into
-       a collapsed <details> below it; AI band, MCP and Setup keep their cards. -->
+  <!-- The Overview is deliberately short: the apps you open (Launchpad), the
+       fleet, what it costs, how hard it is working, and what needs attention.
+       Everything else has its own tab — a number that is one click away does
+       not need to be on the front page too. Setup & requirements moved to
+       System; the MCP card lives behind the MCP pill in the header. -->
 
-  <!-- Mission Control cockpit (renderMissionControl) — concept-a 3-column command
-       center: FLEET rail · BURN+ENGINE+HISTORY · INSIGHT FEED + COST. Every element
-       is filled by id by paintMissionControl(); structure is static. -->
+  <!-- Mission Control cockpit (renderMissionControl) — LAUNCHPAD · FLEET ·
+       BURN+ENGINE · INSIGHT FEED + COST. Every element is filled by id by
+       paintMissionControl(); structure is static. -->
   <div id="mc-cockpit">
     <!-- fleet-wide rollup bar leads the cockpit (full width) -->
     <div class="mc-fleetbar" id="mc-fleetbar"></div>
+
+    <!-- Launchpad — the apps you actually open, pinned. Full width above the
+         money/engine row: this is the half of the Overview that is a homepage
+         rather than a monitor, and it reads first. -->
+    <div class="mc-panel mc-lp" id="lp-panel">
+      <div class="mc-ph"><span class="mc-hic" id="mc-ic-lp"></span><h3 data-i18n="lp.title">Launchpad</h3>
+        <span class="mc-tag" id="lp-tag" style="margin-left:auto"></span>
+        <button type="button" class="btn-mini" id="lp-edit" data-i18n="lp.edit">Edit</button>
+        <button type="button" class="btn-mini lp-accent" id="lp-add" data-i18n="lp.add">+ Pin</button>
+      </div>
+      <div class="lp-grid" id="lp-grid"></div>
+    </div>
 
     <div class="mc-grid">
       <!-- ───── LEFT: fleet rail — every host at a glance ───── -->
@@ -1683,11 +1786,6 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
           </div>
         </div>
 
-        <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) -->
-        <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
-          <div class="mc-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-goto-arrow">›</span><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
-          <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
-        </div>
       </div>
 
       <!-- ───── RIGHT: insight feed · cost leaderboard ───── -->
@@ -1703,58 +1801,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       </div>
     </div>
 
-    <!-- ───── BOTTOM STRIP: containers · services · diagnostics ───── -->
-    <div class="mc-strip">
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h" data-goto="containers"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
-        <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
-      </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h" data-goto="services"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
-        <div class="mc-failed-note" id="mc-failed-note">
-          <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
-          <div class="mc-tip" id="mc-fail-tip"></div>
-        </div>
-      </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-diag"></span><span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
-        <div class="mc-diag-grid" id="mc-diag"></div>
-      </div>
-    </div>
   </div>
-
-  <!-- The fleet rail (left column) is the canonical fleet view — the old detailed
-       table was a duplicate and has been removed. -->
-  <details class="mc-details" id="mc-more">
-    <summary data-i18n="mc.more">AI workload · MCP · setup &amp; requirements</summary>
-  <div class="card" id="ai-band" hidden>
-    <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
-    <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
-    <div class="grid" id="ai-band-kpis"></div>
-    <p class="cap" id="ai-band-cap"></p>
-  </div>
-  <div class="card" id="mcpcard">
-    <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
-    <div class="fleet-meta" data-i18n-html="mcp.card_desc">A read-only <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run. <span id="mcpstatus"></span></div>
-    <div id="mcpconn" style="margin-top:10px" hidden>
-      <div class="muted" data-i18n="mcp.connect_hint">Connect with the Claude CLI (then ask it about your fleet):</div>
-      <pre class="cmd" id="mcpcmd">claude mcp add --transport http homelab …</pre>
-      <div class="row">
-        <button class="btn" type="button" id="mcpcopy" data-i18n="btn.copy_command">📋 Copy command</button>
-        <a class="btn" id="mcpdocs" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener" data-i18n="mcp.docs">MCP docs →</a>
-      </div>
-    </div>
-  </div>
-  <div class="card" id="diagcard" hidden>
-    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
-    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
-    <div style="overflow-x:auto">
-      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
-    </div>
-  </div>
-  </details>
 </section>
 
 <!-- ───────── GPU ───────── -->
@@ -2591,6 +2638,13 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
     <div id="disks" style="margin-top:14px"></div>
     <div id="sysinfo" style="margin-top:16px"></div>
   </div>
+  <div class="card" id="diagcard" hidden>
+    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
+    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
+    <div style="overflow-x:auto">
+      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
+    </div>
+  </div>
   <div class="card" id="topproc-card" hidden><h2 data-i18n="host.topproc_title">🧠 Top processes</h2>
     <div class="topproc-grid" id="topproc"></div>
     <p class="cap" id="topproc_cap"></p>
@@ -3400,7 +3454,7 @@ function showTab(id){
     if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
     else renderLocalOnlyNotice(id);
   }
-  if(id==='overview'){ renderFleet(); renderAiBand(); renderMissionControl(); }
+  if(id==='overview'){ renderFleet(); renderMissionControl(); }
   if(id==='gpu')      renderGpuTab(true);
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -3463,6 +3517,8 @@ function pulseIfChanged(key, sig){
 function renderMcpPill(s){
   const el = document.getElementById('mcppill');
   if(!el) return;
+  if(!el.__wired){ el.__wired=true; el.onclick=toggleMcpPopover;
+    el.setAttribute('aria-label', I18N.t('mcp.pill_aria','AI agent (MCP) — how to connect')); }
   if(!s || !s.enabled || s.state === 'off'){ el.hidden = true; return; }
   el.hidden = false;
   const labels = {active: I18N.t('mcp.active','MCP active'), idle: I18N.t('mcp.idle','MCP idle'), down: I18N.t('mcp.down','MCP down')};
@@ -3474,6 +3530,47 @@ function renderMcpPill(s){
   if(s.active_requests > 0) tip.push(I18N.tf('mcp.active_requests','Active requests: {n}',{n:s.active_requests}));
   if(s.port) tip.push(I18N.tf('mcp.port','Port {n}',{n:s.port}));
   el.title = tip.join(' · ');
+}
+// What the header's MCP pill opens: the "there is an AI agent door into this
+// homelab" card, which used to sit in a collapsed <details> at the bottom of
+// the Overview where nobody found it. Same content, one click from the status
+// it already advertises.
+let MCP_INFO = {};
+function mcpPopover(){
+  let el=document.getElementById('mcp-pop');
+  if(!el){
+    el=document.createElement('div'); el.id='mcp-pop'; el.className='mcp-pop'; el.hidden=true;
+    document.body.appendChild(el);
+    document.addEventListener('click', e=>{
+      if(el.hidden) return;
+      if(e.target.closest('#mcp-pop') || e.target.closest('#mcppill')) return;
+      el.hidden=true;
+    });
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape') el.hidden=true; });
+  }
+  return el;
+}
+function toggleMcpPopover(){
+  const el=mcpPopover(), pill=document.getElementById('mcppill');
+  if(!el.hidden){ el.hidden=true; return; }
+  const host=location.hostname||'YOUR-HUB';
+  const ep=`http://${host}:${MCP_INFO.port||9810}/mcp`;
+  const off = MCP_INFO.enabled === false;
+  el.innerHTML = `<h4>${I18N.t('mcp.title','AI agent (MCP)')}</h4>
+    <div class="muted">${I18N.t('mcp.card_desc','A read-only MCP server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run.')}</div>
+    <div style="margin-top:8px">${off
+      ? I18N.t('mcp.disabled_html','<span class="badge warn">Disabled</span> — set <code>ENABLE_MCP=1</code> to turn it on.')
+      : I18N.tf('mcp.enabled_html','<span class="badge ok">Enabled</span> — serving on <code>{ep}</code>.',{ep:esc(ep)})}</div>
+    ${off ? '' : `<pre class="cmd" style="margin-top:9px;font-size:12px">claude mcp add --transport http homelab ${esc(ep)}</pre>
+    <div class="row"><button class="btn-mini" type="button" id="mcp-pop-copy">${I18N.t('btn.copy_command','📋 Copy command')}</button>
+      <a class="btn-mini" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener">${I18N.t('mcp.docs','MCP docs →')}</a></div>`}`;
+  el.hidden=false;
+  const r=pill.getBoundingClientRect();
+  el.style.top=(r.bottom+8)+'px';
+  el.style.left=Math.max(8, Math.min(window.innerWidth-el.offsetWidth-8, r.right-el.offsetWidth))+'px';
+  const cp=document.getElementById('mcp-pop-copy');
+  if(cp) cp.onclick=()=>{ navigator.clipboard.writeText(`claude mcp add --transport http homelab ${ep}`);
+    cp.textContent=I18N.t('btn.copied','Copied'); };
 }
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
@@ -3621,7 +3718,6 @@ function paintLive(){
 
   // AI models — expandable rows + per-model VRAM timeline (see renderModels)
   renderModels();
-  renderAiBand();   // overview hero refreshes when new /api/data lands (guarded to that tab)
   if(TAB==='overview') renderMissionControl();   // cockpit binds D (insights, host, models)
 
   // Host KPIs + disks — only when local is the active host. Otherwise
@@ -5273,7 +5369,6 @@ function renderHealth(){
   if(!HH) return;
   setVer(HH.version);
   renderTopProcs();   // mini-htop card refreshes on every health poll (issue #32)
-  renderAiBand();     // overview AI band uses fresh GPU/throttle data from /api/health
   if(TAB==='overview') renderMissionControl();   // cockpit binds HH (gpu, docker, systemd, diagnostics)
   if(TAB==='experiments') renderExperiments(false);   // throttled live refresh of training cards
   if(TAB==='costs') renderCosts(false);               // throttled live refresh of the costs page
@@ -5329,23 +5424,7 @@ function renderHealth(){
     }).join('');
     if(dcard) dcard.hidden = false;
   }
-  // Built-in MCP server: tell the user it's there and how to connect.
-  const mcp = HH.mcp || {};
-  const mcard = document.getElementById('mcpcard');
-  if(mcard){
-    const host = location.hostname || 'YOUR-HUB';
-    const ep = `http://${host}:${mcp.port||9810}/mcp`;
-    const st = document.getElementById('mcpstatus'), conn = document.getElementById('mcpconn');
-    if(mcp.enabled === false){
-      if(st) st.innerHTML = I18N.t('mcp.disabled_html','<span class="badge warn">Disabled</span> — set <code>ENABLE_MCP=1</code> to turn it on.');
-      if(conn) conn.hidden = true;
-    } else {
-      if(st) st.innerHTML = I18N.tf('mcp.enabled_html','<span class="badge ok">Enabled</span> — serving on <code>{ep}</code>.',{ep:esc(ep)});
-      const cmd = document.getElementById('mcpcmd');
-      if(cmd) cmd.textContent = `claude mcp add --transport http homelab ${ep}`;
-      if(conn) conn.hidden = false;
-    }
-  }
+  MCP_INFO = HH.mcp || {};      // the popover behind the header's MCP pill reads this
   const overall = (diag.summary||{}).overall;
   const banner = document.getElementById('diagbanner');
   if(banner){
@@ -5355,7 +5434,7 @@ function renderHealth(){
       banner.innerHTML = _lead + ` `
         + `<a href="#" id="diaggo">${I18N.t('diag.banner_link','See Setup &amp; requirements')}</a><button class="x" id="diagx" title="${I18N.t('common.dismiss','Dismiss')}">×</button>`;
       banner.hidden = false;
-      document.getElementById('diaggo').onclick = e=>{e.preventDefault(); showTab('overview');
+      document.getElementById('diaggo').onclick = e=>{e.preventDefault(); showTab('host');
         const dc=document.getElementById('diagcard'); if(dc) dc.scrollIntoView({behavior:'smooth'});};
       document.getElementById('diagx').onclick = ()=>{ DIAG_DISMISSED=true; banner.hidden=true; };
     } else {
@@ -5418,6 +5497,7 @@ function renderHealth(){
         <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
         <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
         <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+        <button type="button" class="btn-mini ct-pin${lpIsPinned(c.name,'local')?' on':''}" data-pin="1" title="${lpIsPinned(c.name,'local')?I18N.t('lp.pinned','On the Overview launchpad'):I18N.t('lp.pin_this','Pin to the Overview launchpad')}">${lpIsPinned(c.name,'local')?'★':'☆'}</button>
       </div>
       <div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
         ${RESTART_POLICIES.map(p=>`<option value="${p}" ${rp===p?'selected':''}>${p}</option>`).join('')}
@@ -5446,6 +5526,13 @@ function renderHealth(){
   // also open the log drawer.
   document.getElementById('cttbl').onclick = e => {
     if(e.target.closest('.copybtn')) return;
+    const pinBtn = e.target.closest('.ct-pin');
+    if(pinBtn){ e.stopPropagation();
+      const tr = pinBtn.closest('.ctrow');
+      const c = (((HH&&HH.docker)||{}).containers||[]).find(x=>x.name===tr.dataset.ct) || {};
+      lpPinContainer(tr.dataset.ct, c.ports, 'local');
+      return;
+    }
     const actBtn = e.target.closest('.ct-act');
     if(actBtn){ e.stopPropagation();
       const tr = actBtn.closest('.ctrow');
@@ -7237,69 +7324,6 @@ function refreshCurrentTab(){
   if(LOCAL_ONLY_TABS.has(TAB)) renderLocalOnlyNotice(TAB);
 }
 
-// ── AI workload band (Overview hero) ─────────────────────────────────────────
-// At-a-glance cockpit strip for the hub's AI work: loaded models + VRAM committed,
-// GPU util + mem-bandwidth, live throughput (tok/s) and efficiency (tokens/Joule),
-// today's GPU energy cost, and a throttle banner. Sources already on the page:
-// HH.now.gpu(+extra), D.now.models / D.now.serving, plus a throttled /api/cost fetch.
-let AI_COST=null, AI_COST_AT=0;
-async function refreshAiCost(){
-  if(Date.now()-AI_COST_AT < 30000 && AI_COST!==null) return;
-  AI_COST_AT=Date.now();
-  try{ AI_COST = await (await fetch('/api/cost?range=24h')).json(); }catch(e){ AI_COST=null; }
-}
-function renderAiBand(){
-  const card=document.getElementById('ai-band'); if(!card) return;
-  if(TAB!=='overview') return;
-  const g=(HH&&HH.now&&HH.now.gpu)||{}, x=g.extra||{};
-  const models=(D&&D.now&&D.now.models)||[], serving=(D&&D.now&&D.now.serving)||[];
-  const loaded=models.filter(m=>m.vram!=null);
-  const gLost=teleLost({gpu_telemetry:g.telemetry});
-  const hasGpu=!!g.available || gLost, hasAI=loaded.length>0 || serving.length>0;
-  if(!hasGpu && !hasAI){ card.hidden=true; return; }
-  card.hidden=false;
-  refreshAiCost().then(()=>paintAiBand(g,x,loaded,serving));
-  paintAiBand(g,x,loaded,serving);
-}
-function paintAiBand(g,x,loaded,serving){
-  const sub=document.getElementById('ai-band-sub');
-  if(sub) sub.textContent = serving.length ? I18N.t('aiband.sub_serving','· live serving telemetry active') : (loaded.length?I18N.t('aiband.sub_resident','· models resident'):'');
-  // throttle banner mirrors the GPU tab so it's visible from the landing page
-  const tb=document.getElementById('ai-band-throttle');
-  if(tb){ if(x.throttled && (x.throttle||[]).length){ tb.style.display='flex';
-      tb.innerHTML=`<div class="ic" style="color:var(--crit)">${sic('flame')}</div><div><div class="t">${I18N.tf('aiband.throttle_t','GPU throttling — {reason}',{reason:(x.throttle||[]).map(esc).join(', ')})}</div><div class="d">${I18N.t('aiband.throttle_d','Real throughput is below what the util % implies.')}</div></div>`;
-    } else tb.style.display='none'; }
-  const tokS=serving.reduce((a,s)=>a+(s.tok_per_s||0),0);
-  const running=serving.reduce((a,s)=>a+(s.running||0),0);
-  const waiting=serving.reduce((a,s)=>a+(s.waiting||0),0);
-  const vramCommit=loaded.reduce((a,m)=>a+(m.vram||0),0);
-  const memTot=g.mem_total||0, memUsed=g.mem_used||0, power=Math.round(g.power||0);
-  const cur=(AI_COST&&AI_COST.currency)||'$';
-  const tiles=[];
-  tiles.push({v:String(loaded.length), l:I18N.t('aiband.models_loaded','Models loaded'), s:vramCommit?fmtMB(vramCommit)+' VRAM':''});
-  if(g.available){
-    tiles.push({v:Math.round(g.util||0)+'%', l:I18N.t('gpu.util_kpi','GPU util'), s:(x.mem_util!=null?I18N.tf('aiband.membw','mem-BW {n}%',{n:Math.round(x.mem_util)}):'')});
-    tiles.push({v:fmtMB(memUsed), l:I18N.t('gpu.vram_in_use','VRAM in use'), s:memTot?I18N.tf('aiband.free','{v} free',{v:fmtMB(Math.max(0,memTot-memUsed))}):''});
-    tiles.push({v:power+' W', l:I18N.t('aiband.gpu_power','GPU power'), s:x.power_limit?I18N.tf('aiband.of_cap','{n}% of cap',{n:Math.round(power/x.power_limit*100)}):''});
-  }
-  if(serving.length){
-    tiles.push({v:tokS?tokS.toFixed(0):'0', l:I18N.t('aiband.tok_sec','Tokens / sec'), s:(running||waiting)?I18N.tf('aiband.run_queue','{running} running · {waiting} queued',{running,waiting}):I18N.t('aiband.idle','idle')});
-    if(tokS>0 && power>0) tiles.push({v:(tokS/power).toFixed(1), l:I18N.t('aiband.tok_joule','Tokens / Joule'), s:I18N.tf('aiband.efficiency','efficiency @ {n} W',{n:power})});
-  }
-  if(AI_COST && AI_COST.enabled){
-    tiles.push({v:cur+(AI_COST.cost&&AI_COST.cost.today!=null?AI_COST.cost.today.toFixed(2):'0.00'), l:I18N.t('aiband.cost_today','GPU cost today'),
-                s:(AI_COST.kwh&&AI_COST.kwh.today!=null?AI_COST.kwh.today.toFixed(2)+' kWh':'')});
-  }
-  document.getElementById('ai-band-kpis').innerHTML = tiles.map(t=>
-    `<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-  const cap=document.getElementById('ai-band-cap');
-  if(cap) cap.textContent = g.available
-    ? I18N.t('aiband.cap_gpu','Live snapshot of this hub’s GPU + model servers. Tokens/sec and efficiency come from vLLM/TGI /metrics when present.')
-    : gLost
-    ? I18N.tf('aiband.cap_lost','GPU telemetry lost on the hub — {err}',{err:(g.telemetry&&g.telemetry.error)||I18N.t('fleet.tele_lost_t','GPU telemetry lost — the host answers but reports no GPU')})
-    : I18N.t('aiband.cap_nogpu','No GPU detected on the hub — showing model servers only.');
-}
-
 // ── Runs (pushed from notebooks / MLflow) — the primary Experiments view ──────
 // Source → colour dot (srcDot) and status → stroke icon+colour (stIcon) live in the
 // icon section; emoji maps replaced by the SVG status-icon family.
@@ -7553,8 +7577,8 @@ function renderFleet(){
 // The cockpit at the top of the Overview, wired to LIVE data (D / HH / FLEET +
 // a throttled /api/costs fetch). Null-safe: each of D/HH/FLEET/MC_COST may be
 // undefined on the first paint. Only does work when TAB==='overview'. The four
-// legacy Overview cards (#fleet_tbl, #ai-band, #mcpcard, #diagcard) are untouched
-// and keep being driven by renderFleet()/renderAiBand()/renderHealth().
+// It is the whole Overview now — the old legacy cards below it (AI band, MCP,
+// Setup & requirements) moved out to the MCP pill and the System tab.
 // True when either the OS-level "prefers-reduced-motion" is set or the user
 // opted into the "Reduced motion" setting — either source turns gauges into
 // plain value displays. applyReducedMotion() re-derives this whenever the
@@ -7579,7 +7603,6 @@ let MC_COST=null, MC_COST_AT=0;
 let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
 // Three-gauge engine scope: 'host' (the focused box) or 'fleet' (whole homelab aggregate).
 let MC_TRIMODE=(function(){ try{ return localStorage.getItem('hl_mc_trimode')||'host'; }catch(e){ return 'host'; } })();
-let MC_CHART_SIG='';
 async function refreshMcCost(){
   if(Date.now()-MC_COST_AT < 30000 && MC_COST!==null) return;
   MC_COST_AT=Date.now();
@@ -7609,7 +7632,8 @@ function mcSparkline(data, w, h, color){
 function renderMissionControl(){
   if(typeof TAB!=='undefined' && TAB!=='overview') return;
   if(!document.getElementById('mc-cockpit')) return;
-  mcInitBoard();                            // one-time: wire drag-board + apply saved layout
+  mcInitGoto();                             // one-time: panel header → its detail tab
+  lpInit();                                 // one-time: wire the Launchpad
   mcInitCockpitIcons();                     // one-time: swap cockpit icons to the app's SVG family
   mcInitTriToggle();                        // one-time: wire the engine This-host / Whole-fleet toggle
   refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
@@ -7630,12 +7654,11 @@ function paintMissionControl(){
 
   mcPaintFleetBar($);
   mcPaintTri($);
-  renderMcChart($);
   mcPaintBurn($, cost, machine, measured, cur, g, host);
   mcPaintLeaderboard($, cost, machine, measured, cur);
   mcPaintFeed($);
   mcPaintFleet($);
-  mcPaintStrip($);
+  lpPaint();
 }
 
 // Gauge ticks (built once, reused on every paint).
@@ -7921,8 +7944,7 @@ function mcSetGaugeLegend(arcLabel, arcVal, ringLabel, ringVal){
 function mcInitCockpitIcons(){
   const ck=document.getElementById('mc-cockpit'); if(!ck || ck.__ic) return; ck.__ic=true;
   mcSetIc('mc-ic-fleet','🖥'); mcSetIc('mc-ic-feed','🔔'); mcSetIc('mc-ic-cost','🧾');
-  mcSetIc('mc-ic-burn','💰'); mcSetIc('mc-ic-chart','📊'); mcSetIc('mc-ic-engine','🎮');
-  mcSetIc('mc-ic-containers','📦'); mcSetIc('mc-ic-services','🧩'); mcSetIc('mc-ic-diag','🩺');
+  mcSetIc('mc-ic-burn','💰'); mcSetIc('mc-ic-engine','🎮'); mcSetIc('mc-ic-lp','🧩');
 }
 // ── Hero compute-mode helpers (This host / Fleet GPU united / Fleet CPU united) ──
 function mcRenderModeSeg($, mode, fleetHasGpu){
@@ -8013,254 +8035,349 @@ function mcBuildFleetCPU(){
     headroom:I18N.tf('mc.head_fcpu','<b>{free} RAM free</b> across {n} hosts.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:ramPct>=90, red:false,
     breakdown:list.map(x=>({label:x.host,sub:x.cores+'c',pct:x.cpu,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.cpu>=80?'var(--crit)':x.cpu>=50?'var(--accent)':'var(--ok)'})) };
 }
-// Adaptive compute-history chart with legend (Chart.js, already vendored).
-// Hub-scoped; GPU util/power/temp when a GPU is present (and not in Fleet-CPU
-// mode), else CPU%/RAM%/load. Rebuilds only when new samples / range / mode land.
-function renderMcChart(){
-  const panel=document.getElementById('mc-chartpanel'); if(!panel) return;
-  const cvs=document.getElementById('mc-chart');
-  const t=(D&&D.total)||null;
-  const haveData = !!(typeof Chart!=='undefined' && cvs && D && D.labels && D.labels.length>1 && t);
-  if(!haveData){ panel.style.display='none'; return; }
-  panel.style.display='';
-  const hasGpu=!!(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.available);
-  const useGpu=(MC_HEROMODE!=='fcpu') && hasGpu && (t.util&&t.util.length);
-  const rng=(typeof R!=='undefined'&&R)||'6h';
-  // The signature has to include the values, not just the bucket labels. The
-  // newest bucket keeps being re-averaged (and, between polls, updated from the
-  // live stream) under a label that does not change until the bucket closes —
-  // a label-only signature held this chart still for a whole bucket at a time
-  // while every tile around it moved.
-  const tl=a=>{ const v=(a&&a.length)?a[a.length-1]:null; return v==null?'-':(+v).toFixed(2); };
-  const sig=(useGpu?'g':'c')+'_'+D.labels.length+'_'+(D.labels[D.labels.length-1]||0)+'_'+rng+'_'+(document.documentElement.getAttribute('data-theme')||'')
-    +'_'+(useGpu ? tl(t.util)+tl(t.power)+tl(t.temp) : tl(t.cpu)+tl(t.ram_used)+tl(t.load1));
-  const titleEl=document.getElementById('mc-chart-title'), tagEl=document.getElementById('mc-chart-tag');
-  if(titleEl) titleEl.textContent = useGpu ? I18N.t('mc.chart_gpu','GPU · util, power & temp') : I18N.t('mc.chart_cpu','CPU, RAM & load');
-  if(tagEl) tagEl.textContent = I18N.tf('mc.last_range','last {r}',{r:rng});
-  if(sig===MC_CHART_SIG) return;   // nothing new → keep the existing chart (and its legend toggles)
-  MC_CHART_SIG=sig;
-  const labels=fmtLabels(D.labels);
-  let datasets;
-  if(useGpu){
-    datasets=[
-      {label:I18N.t('mc.ch_util','GPU util %'),data:t.util,borderColor:'#4dabf7',backgroundColor:'#4dabf733',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_power','Power W'),data:t.power,borderColor:'#ff922b',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y1'},
-      {label:I18N.t('mc.ch_temp','Temp °C'),data:t.temp,borderColor:'#f783ac',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
-  } else {
-    const ramPct=(t.ram_used||[]).map((u,i)=>(t.ram_total&&t.ram_total[i])?Math.round(u/t.ram_total[i]*100):0);
-    datasets=[
-      {label:I18N.t('mc.ch_cpu','CPU %'),data:t.cpu,borderColor:'#3fb950',backgroundColor:'#3fb95033',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_ram','RAM %'),data:ramPct,borderColor:'#a371f7',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_load','Load'),data:t.load1,borderColor:'#e3b341',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
+// Tapping a panel header jumps to that panel's own tab (data-goto).
+
+// ── Launchpad: the apps you pin on the Overview ──────────────────────────────
+// The Overview is two things at once — a monitor and the homepage you open the
+// browser on. This is the homepage half: shortcuts to the containers, services
+// and URLs you actually use, with a real status dot rather than a decorative
+// one (a tile pinned from a container follows that container's state).
+//
+// The pins live on the SERVER (the home_shortcuts setting, /api/shortcuts), not
+// in localStorage: pin it on the laptop and it is there on the phone and on the
+// wall screen. Only the "which widgets in display mode" choice is per-browser.
+let LP_ITEMS = [];
+let LP_LOADED = false;
+// Icons are the app's own stroke family (same set the headings use), so a tile
+// never looks like a sticker pasted on the dashboard. A pin with no icon gets
+// the brand logo when we recognise the app, else a monogram in a stable colour.
+const LP_ICONS = {
+  app:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  media:'<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/>',
+  music:'<path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>',
+  film:'<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 9h5M2 15h5M17 9h5M17 15h5"/>',
+  photo:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  game:'<rect x="3" y="7" width="18" height="12" rx="3"/><path d="M8 11v4M6 13h4M15 12h.01M18 15h.01"/>',
+  chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/>',
+  cloud:'<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.2 10.3 3.5 3.5 0 0 0 7 19z"/>',
+  code:'<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
+  terminal:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M13 15h5"/>',
+  database:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+  chart:'<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 5-6"/>',
+  shield:'<path d="M12 22s8-3.5 8-9V5l-8-3-8 3v8c0 5.5 8 9 8 9z"/>',
+  home:'<path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+  network:'<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M5 16v-2h14v2"/>',
+  printer:'<path d="M6 9V2h12v7"/><rect x="2" y="9" width="20" height="8" rx="2"/><path d="M6 14h12v8H6z"/>',
+  camera:'<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+  ai:'<path d="M12 5a3 3 0 1 0-5.997.142 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.142 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>',
+  tools:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  calendar:'<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>',
+  notes:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+  money:'<circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/>',
+  cart:'<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 7H6"/>',
+  heart:'<path d="M20.8 5.6a5.5 5.5 0 0 0-7.8 0L12 6.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 22l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/>',
+  globe:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+};
+function lpIconSvg(id){
+  const d=LP_ICONS[id]; if(!d) return '';
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+}
+// The tile face: an explicit icon wins; else the brand logo we already ship for
+// ~70 well-known self-hosted apps; else a monogram on the name's stable colour.
+function lpFace(it){
+  if(it.icon) return {html:lpIconSvg(it.icon), bg:colorFor(it.name)};
+  const lg=svcLogo(it.container||it.name, it.name);
+  if(lg) return {html:lg, bg:'var(--inset)', plain:true};
+  const mono=(it.name||'?').replace(/[^\p{L}\p{N}]/gu,'').slice(0,2).toUpperCase() || '?';
+  return {html:esc(mono), bg:colorFor(it.name)};
+}
+// The status dot. A pin that names a container follows that container's real
+// state — on the hub from /api/health, on a remote from its own probe payload.
+// A pin that names no container gets no dot: a green light we cannot actually
+// verify is worse than none.
+function lpStatus(it){
+  if(!it.container) return null;
+  const hostName=it.host||'local';
+  let list=null;
+  if(hostName==='local') list=((HH&&HH.docker)||{}).containers;
+  else{
+    const h=(FLEET&&(FLEET.hosts||[]).find(x=>x.name===hostName));
+    if(h && !h.is_local && !h.online) return {cls:'off', t:I18N.tf('lp.host_offline','{h} is offline',{h:hostName})};
+    list=((h&&h.host&&h.host.docker)||{}).containers;
   }
-  try{ const o=dualOpts(labels,100); o.animation=false; mk('mc-chart',{type:'line',data:{labels,datasets},options:o,plugins:[areaBg]}); }
-  catch(e){ panel.style.display='none'; }
+  if(!list) return null;
+  const c=list.find(x=>x.name===it.container);
+  if(!c) return {cls:'off', t:I18N.tf('lp.ct_missing','No container named {n} on {h}',{n:it.container,h:hostName})};
+  if(c.state!=='running') return {cls:'crit', t:esc(c.status_text||c.state||'')};
+  if(c.status && c.status!=='ok') return {cls:'warn', t:esc(c.status_text||c.status)};
+  return {cls:'', t:esc(c.status_text||'running')};
 }
-function mcPaintBurn($, cost, machine, measured, cur, g, host){
-  const nowW = machine.now_w || {};
-  const c = machine.cost || {};
-  // Cost disabled (no kWh price) → fall to the muted ESTIMATE branch, never blank.
-  const metering = (cost.enabled===false) ? 'none'
-                 : measured.indexOf('gpu')>=0 ? 'gpu'
-                 : (measured.indexOf('cpu')>=0 || cost.rapl_available) ? 'cpu' : 'none';
-  // tariff window (day/night) from the local clock
-  let tariffNote='';
-  const tf = cost.tariff;
-  if(tf && tf.mode==='dual' && tf.price_night!=null){
-    const mins = d => { const p=String(d||'').split(':'); return (+p[0]||0)*60+(+p[1]||0); };
-    const ns=mins(tf.night_start), ne=mins(tf.night_end), nowm=(()=>{const d=new Date();return d.getHours()*60+d.getMinutes();})();
-    const isNight = ns===ne ? false : (ns<ne ? (nowm>=ns&&nowm<ne) : (nowm>=ns||nowm<ne));
-    tariffNote = isNight ? I18N.t('mc.night','night tariff') : I18N.t('mc.day','day tariff');
+async function lpLoad(){
+  try{ const j=await(await fetch('/api/shortcuts')).json(); LP_ITEMS=j.shortcuts||[]; }
+  catch(e){ LP_ITEMS=[]; }
+  LP_LOADED=true;
+  lpPaint();
+}
+async function lpSave(){
+  let j;
+  try{ j=await(await fetch('/api/shortcuts',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({shortcuts:LP_ITEMS})})).json(); }
+  catch(e){ return I18N.t('lp.err_network','Could not reach the server.'); }
+  if(j && j.ok===false) return j.error||I18N.t('lp.err_save','Could not save.');
+  LP_ITEMS=j.shortcuts||LP_ITEMS;
+  lpPaint();
+  if(typeof renderHealth==='function' && TAB==='containers') renderHealth();   // refresh the row's Pin state
+  return null;
+}
+function lpPaint(){
+  const grid=document.getElementById('lp-grid'); if(!grid) return;
+  const tag=document.getElementById('lp-tag');
+  if(tag) tag.textContent = LP_ITEMS.length
+    ? I18N.tf('lp.n_pinned','{n} pinned',{n:LP_ITEMS.length}) : '';
+  if(!LP_LOADED){ return; }
+  if(!LP_ITEMS.length){
+    setHTML(grid, `<div class="lp-empty">${I18N.t('lp.empty','Nothing pinned yet. Pin the apps you open every day — from a container row on the Containers tab, or with + Pin for anything with a URL.')}</div>`);
+    return;
   }
-  const num=$('mc-burn-num');
-  if(metering==='none'){
-    // No power sensor → TDP-guess estimate, never blank.
-    const watt = nowW.total || (g.available ? Math.round(g.power||0) : Math.round(35 + (host.cpu||0)*0.6));
-    const price = (cost.tariff && cost.tariff.price_day) || 0;
-    const rate = price>0 ? watt/1000*price : 0;
-    $('mc-burn-title').textContent=I18N.t('mc.power_cost','Power & Cost');
-    $('mc-burn-src').innerHTML=I18N.t('mc.no_sensor','no power sensor')+' <span class="mc-est-chip">ESTIMATE</span>';
-    $('mc-burn-lbl').textContent=I18N.t('mc.est_draw','Estimated draw');
-    num.classList.add('mc-muted');
-    mcCountUp(num, rate, 1200, 3);
-    $('mc-burn-unit').textContent=cur+'/h';
-    $('mc-burn-proj').innerHTML=I18N.tf('mc.est_proj','from <span class="mono">~{w} W</span> TDP estimate',{w:watt});
-    $('mc-u1').textContent=$('mc-u2').textContent=$('mc-u3').textContent=cur+' est';
-  } else {
-    // Fleet-aware: /api/costs?host=all returns one machine per box with
-    // measurable power (hub first). The hero figure is the whole fleet's
-    // burn; the projection line splits hub vs remotes so the number stays
-    // explainable. With no measurable remotes this reduces to the old
-    // hub-only view — same wattage source, same math.
-    const machines = (cost.machines||[]).length ? cost.machines : [machine];
-    const remotes = machines.slice(1);
-    // Apples-to-apples: in fleet mode every box contributes the sum of its
-    // MEASURED components (gpu+cpu+dram — never the idle estimate); hub-only
-    // keeps the original single-component figure so the lone-box number
-    // doesn't shift under anyone.
-    const mSum = m => ((m.now_w&&m.now_w.gpu)||0)+((m.now_w&&m.now_w.cpu)||0)+((m.now_w&&m.now_w.dram)||0);
-    const hubW = remotes.length ? mSum(machine) : (metering==='gpu' ? (nowW.gpu||0) : (nowW.cpu||0));
-    const remW = remotes.reduce((a,m)=>a+mSum(m),0);
-    const watt = hubW + remW;
-    const price = (cost.tariff && cost.tariff.price_day) || 0;
-    const rate = price>0 ? watt/1000*price : 0;
-    $('mc-burn-title').textContent=I18N.t('mc.burn','Burn Rate');
-    $('mc-burn-src').textContent = (metering==='gpu' ? I18N.t('mc.gpu_metered','GPU energy · metered') : I18N.t('mc.cpu_rapl','CPU package · RAPL')) + (tariffNote?' · '+tariffNote:'');
-    const scope=$('mc-burn-scope');
-    if(scope){ scope.textContent = remotes.length ? I18N.tf('mc.scope_fleet','fleet · {n} boxes',{n:machines.length}) : I18N.t('mc.scope_hub','hub');
-               scope.title = remotes.length ? I18N.t('mc.scope_fleet_t','Every box with measurable power, priced from its own poll history') : I18N.t('mc.scope_hub_t','Power metering runs on the hub'); }
-    $('mc-burn-lbl').textContent=I18N.t('mc.spending_now','Spending right now');
-    num.classList.remove('mc-muted');
-    mcCountUp(num, rate, 1400, 3);
-    $('mc-burn-unit').textContent=cur+'/h';
-    const proj=(rate*24*30.4).toFixed(2);
-    $('mc-burn-proj').innerHTML = remotes.length
-      ? I18N.tf('mc.proj_fleet','at this rate ≈ <b>{v} {cur}</b> / month · <span class="mono">{hw} W</span> hub + <span class="mono">{rw} W</span> fleet',{v:proj,cur,hw:hubW,rw:remW})
-      : I18N.tf('mc.proj','at this rate ≈ <b>{v} {cur}</b> / month · <span class="mono">{w} W</span>',{v:proj,cur,w:watt});
-    $('mc-u1').textContent=$('mc-u2').textContent=$('mc-u3').textContent=cur;
-  }
-  const dec = metering==='none' ? 2 : 2;
-  // Cost windows: summed across every machine in the response (fleet), which
-  // is just the hub when nothing else is measurable.
-  const wins = (cost.machines||[machine]).reduce((a,m)=>{const mc=m.cost||{};
-    a.today+=mc.today||0; a.d7+=mc.d7||0; a.d30+=mc.d30||0; return a;}, {today:0,d7:0,d30:0});
-  mcCountUp($('mc-c-today'), (cost.machines||[]).length>1 ? wins.today : (c.today||0), 1100, dec);
-  mcCountUp($('mc-c-d7'),    (cost.machines||[]).length>1 ? wins.d7    : (c.d7||0),    1100, dec);
-  mcCountUp($('mc-c-d30'),   (cost.machines||[]).length>1 ? wins.d30   : (c.d30||0),   1100, dec);
+  // Grouped, groups in first-seen order, ungrouped first — the order the user
+  // dragged them into, not an alphabetical reshuffle behind their back.
+  const groups=[]; const byGroup=new Map();
+  LP_ITEMS.forEach((it,i)=>{
+    const g=it.group||'';
+    if(!byGroup.has(g)){ byGroup.set(g,[]); groups.push(g); }
+    byGroup.get(g).push({it,i});
+  });
+  const named=groups.filter(g=>g).length>0;
+  let html='';
+  groups.forEach(g=>{
+    if(g || (named && !g)) html+=`<div class="lp-group">${esc(g||I18N.t('lp.ungrouped','Pinned'))}</div>`;
+    html+=byGroup.get(g).map(({it,i})=>{
+      const f=lpFace(it), st=lpStatus(it);
+      let sub='';
+      try{ sub=new URL(it.url).host; }catch(e){ sub=it.url; }
+      return `<a class="lp-tile" href="${esc(it.url)}" target="_blank" rel="noopener" data-i="${i}" title="${esc(it.url)}">
+        <button type="button" class="lp-x" data-rm="${i}" title="${I18N.t('lp.unpin','Unpin')}">×</button>
+        ${st?`<span class="lp-dot ${st.cls}" title="${st.t}"></span>`:''}
+        <span class="lp-ic" style="background:${f.plain?'var(--inset)':f.bg};${f.plain?'border:1px solid var(--bd)':''}">${f.html}</span>
+        <span class="lp-nm">${esc(it.name)}</span><span class="lp-sub">${esc(sub)}</span></a>`;
+    }).join('');
+  });
+  html+=`<a class="lp-tile lp-add" href="#" id="lp-addtile"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.add_tile','Pin an app')}</span></a>`;
+  setHTML(grid, html);
+  grid.querySelectorAll('[data-rm]').forEach(btn=>btn.onclick=e=>{
+    e.preventDefault(); e.stopPropagation();
+    LP_ITEMS.splice(+btn.dataset.rm,1); lpSave();
+  });
+  const at=document.getElementById('lp-addtile');
+  if(at) at.onclick=e=>{ e.preventDefault(); lpOpenForm(null); };
+  lpWireDrag(grid);
 }
-function mcPaintLeaderboard($, cost, machine, measured, cur){
-  const lead=$('mc-lead');
-  const metered = cost.enabled!==false && (measured.indexOf('gpu')>=0 || measured.indexOf('cpu')>=0);
-  let rows;
-  if(metered && (cost.breakdown||[]).length){
-    const bd = cost.breakdown.slice(0,6);
-    const sum = bd.reduce((a,r)=>a+(r.cost||0),0) || 1;
-    $('mc-cost-title').textContent=I18N.t('mc.cost','What\'s Costing You');
-    $('mc-cost-tag').textContent=I18N.tf('mc.this_week','this week · {v} {cur}',{v:(machine.cost&&machine.cost.d7!=null?machine.cost.d7:sum).toFixed(2),cur});
-    rows = bd.map(r=>{
-      const share=Math.round((r.cost||0)/sum*100);
-      return {name:r.name, kind:r.kind||'', cost:(r.cost||0).toFixed(2)+' '+cur, share,
-              metaL:I18N.tf('mc.share_week','{n}% of week',{n:share}),
-              metaR:(r.avg_w!=null?r.avg_w+' W avg · ':'')+((r.energy_kwh||0).toFixed(2))+' kWh'};
-    });
-  } else {
-    // Not metered → Heaviest Containers · by RAM
-    const cs=((HH&&HH.docker&&HH.docker.containers)||[]).filter(c=>c.mem_bytes>0)
-            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0,6);
-    const sum=cs.reduce((a,c)=>a+(c.mem_bytes||0),0) || 1;
-    $('mc-cost-title').textContent=I18N.t('mc.heaviest','Heaviest Containers · by RAM');
-    $('mc-cost-tag').textContent=I18N.tf('mc.n_containers','{n} containers',{n:cs.length});
-    rows = cs.map(c=>{
-      const mb=(c.mem_bytes||0)/1048576, share=Math.round((c.mem_bytes||0)/sum*100);
-      return {name:c.name, kind:(c.image||'').split('/').pop().split(':')[0]||'app', cost:fmtMBshort(mb), share,
-              metaL:I18N.tf('mc.share_ram','{n}% of RAM',{n:share}), metaR:esc((c.image||'').split('@')[0])};
-    });
-  }
-  if(!rows.length){ lead.innerHTML='<div style="font-size:11px;color:var(--mut);padding:6px 0">'+I18N.t('mc.no_consumers','Nothing to rank yet.')+'</div>'; return; }
-  lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
-    <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
-    <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
-    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
+// Drag to reorder, only while editing — a tile is a link the rest of the time
+// and must stay clickable with no modifier.
+function lpWireDrag(grid){
+  grid.querySelectorAll('.lp-tile:not(.lp-add)').forEach(el=>{
+    el.draggable = document.body.classList.contains('lp-editing');
+    el.ondragstart=e=>{ e.dataTransfer.effectAllowed='move'; el.classList.add('lp-drag');
+      try{ e.dataTransfer.setData('text/plain', el.dataset.i); }catch(_){} };
+    el.ondragend=()=>{ el.classList.remove('lp-drag'); grid.querySelectorAll('.lp-over').forEach(x=>x.classList.remove('lp-over')); };
+    el.ondragover=e=>{ if(!document.body.classList.contains('lp-editing')) return; e.preventDefault(); el.classList.add('lp-over'); };
+    el.ondragleave=()=>el.classList.remove('lp-over');
+    el.ondrop=e=>{
+      e.preventDefault(); el.classList.remove('lp-over');
+      const from=+e.dataTransfer.getData('text/plain'), to=+el.dataset.i;
+      if(isNaN(from)||isNaN(to)||from===to) return;
+      const moved=LP_ITEMS.splice(from,1)[0];
+      // A tile dropped on a tile in another group joins that group — the
+      // group label is a property of the pin, so moving it has to say so.
+      moved.group=LP_ITEMS[to>from?to-1:to] ? (LP_ITEMS[to>from?to-1:to].group||'') : moved.group;
+      LP_ITEMS.splice(to>from?to-1:to, 0, moved);
+      lpSave();
+    };
+  });
 }
-function mcAttentionCount(){
-  // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
-  const hosts=(FLEET&&FLEET.hosts)||[];
-  let n=hosts.filter(h=>!h.is_local && !h.online).length;
-  n+=hosts.filter(h=>((h.host&&h.host.disks)||[]).some(d=>d.pct>=90)).length;
-  if(hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0)>0) n++;
-  const dk=(HH&&HH.docker)||{}; if((dk.containers||[]).some(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'))) n++;
-  const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
-  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) n++;
-  n+=hosts.filter(h=>teleLost(h)).length;
-  return n;
+// ── The pin form ─────────────────────────────────────────────────────────────
+let LP_EDIT=null;      // index being edited, or null for a new pin
+function lpOpenForm(prefill, index){
+  LP_EDIT = (index==null) ? null : index;
+  const it = prefill || (index!=null ? LP_ITEMS[index] : null) || {name:'',url:'',icon:'',group:'',host:'',container:''};
+  const hosts=[['', I18N.t('lp.host_hub','This hub')]]
+    .concat(((FLEET&&FLEET.hosts)||[]).filter(h=>!h.is_local).map(h=>[h.name, h.label||h.name]));
+  const m=document.getElementById('lpmodal');
+  m.querySelector('.hd b').textContent = index!=null
+    ? I18N.t('lp.edit_title','Edit shortcut') : I18N.t('lp.add_title','Pin to Home');
+  m.querySelector('.bd').innerHTML = `
+    <div class="lp-form">
+      <label for="lp_f_name">${I18N.t('lp.f_name','Name')}</label>
+      <input class="field" id="lp_f_name" maxlength="40" value="${esc(it.name)}" placeholder="Immich">
+      <label for="lp_f_url">${I18N.t('lp.f_url','Opens')}</label>
+      <input class="field" id="lp_f_url" maxlength="500" value="${esc(it.url)}" placeholder="http://hub:2283">
+      <label for="lp_f_group">${I18N.t('lp.f_group','Group')}</label>
+      <input class="field" id="lp_f_group" maxlength="24" value="${esc(it.group||'')}" placeholder="${I18N.t('lp.f_group_ph','Media, AI, Admin… (optional)')}"
+        list="lp_groups">
+      <datalist id="lp_groups">${[...new Set(LP_ITEMS.map(x=>x.group).filter(Boolean))].map(g=>`<option value="${esc(g)}">`).join('')}</datalist>
+      <label for="lp_f_host">${I18N.t('lp.f_host','Runs on')}</label>
+      <select class="field" id="lp_f_host">${hosts.map(([v,l])=>`<option value="${esc(v)}" ${v===(it.host||'')?'selected':''}>${esc(l)}</option>`).join('')}</select>
+      <label for="lp_f_ct">${I18N.t('lp.f_container','Status from')}</label>
+      <input class="field" id="lp_f_ct" maxlength="120" value="${esc(it.container||'')}" placeholder="${I18N.t('lp.f_container_ph','container name (optional) — the tile\'s dot follows it')}">
+      <label>${I18N.t('lp.f_icon','Icon')}</label>
+      <div class="lp-icons" id="lp_f_icons">
+        <button type="button" data-ic="" class="${it.icon?'':'sel'}" title="${I18N.t('lp.icon_auto','Automatic — the app\'s logo, else its initials')}">A</button>
+        ${Object.keys(LP_ICONS).map(k=>`<button type="button" data-ic="${k}" class="${it.icon===k?'sel':''}" title="${k}">${lpIconSvg(k)}</button>`).join('')}
+      </div>
+    </div>
+    <div class="ins warning" id="lp_f_err" style="display:none;margin-top:12px"></div>
+    <div class="row"><button class="btn" type="button" id="lp_f_save">${index!=null?I18N.t('btn.save','Save'):I18N.t('lp.pin','Pin')}</button>
+      <button class="btn" type="button" id="lp_f_cancel">${I18N.t('btn.cancel','Cancel')}</button></div>`;
+  m.classList.add('show');
+  let icon=it.icon||'';
+  m.querySelectorAll('#lp_f_icons button').forEach(btn=>btn.onclick=()=>{
+    icon=btn.dataset.ic;
+    m.querySelectorAll('#lp_f_icons button').forEach(x=>x.classList.toggle('sel', x===btn));
+  });
+  const close=()=>m.classList.remove('show');
+  m.querySelector('.hd .x').onclick=close;
+  document.getElementById('lp_f_cancel').onclick=close;
+  document.getElementById('lp_f_name').focus();
+  document.getElementById('lp_f_save').onclick=async()=>{
+    const g=id=>document.getElementById(id).value.trim();
+    const entry={name:g('lp_f_name'), url:g('lp_f_url'), icon, group:g('lp_f_group'),
+                 host:g('lp_f_host'), container:g('lp_f_ct')};
+    const err=document.getElementById('lp_f_err');
+    if(!entry.name || !/^https?:\/\//i.test(entry.url)){
+      err.textContent=I18N.t('lp.err_fields','A shortcut needs a name and a http:// or https:// address.');
+      err.style.display=''; return;
+    }
+    if(LP_EDIT!=null) LP_ITEMS[LP_EDIT]=entry; else LP_ITEMS.push(entry);
+    const e2=await lpSave();
+    if(e2){ if(LP_EDIT==null) LP_ITEMS.pop(); err.textContent=e2; err.style.display=''; return; }
+    close();
+  };
 }
-function mcDeriveInsights(skipAllGood){
-  // The detailed alert feed (the fleet bar only shows a rollup count, never this detail).
-  const out=[];
-  const hosts=(FLEET&&FLEET.hosts)||[];
-  const off=hosts.filter(h=>!h.is_local && !h.online);
-  if(off.length) out.push({level:'critical',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
-  hosts.forEach(h=>{ const d=((h.host&&h.host.disks)||[]).find(d=>d.pct>=90);
-    if(d) out.push({level:'warning',title:I18N.tf('mc.di_disk','{h} disk {m} at {p}%',{h:esc(h.label||h.name),m:esc(d.mount),p:d.pct}),detail:I18N.t('mc.di_disk_d','Worth a clean-up before writes start failing.')}); });
-  // A host answering without its GPUs. Critical, and named: the whole point
-  // is that nobody has to notice a temperature that stopped moving.
-  hosts.filter(h=>teleLost(h)).forEach(h=>out.push({level:'critical',
-    title:I18N.tf('mc.di_tele','GPU telemetry lost on {h}',{h:esc(h.label||h.name)}),
-    detail:esc(teleTitle(h))}));
-  const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
-  if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
-  const dk=(HH&&HH.docker)||{}; const probs=(dk.containers||[]).filter(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'));
-  if(probs.length) out.push({level:'warning',title:I18N.tf('mc.di_ctprob','{n} container(s) need attention',{n:probs.length}),detail:probs.slice(0,3).map(p=>esc(p.name)).join(', ')});
-  const upd=hosts.reduce((a,h)=>a+(((h.host&&h.host.sec&&h.host.sec.updates)||{}).count||0),0);
-  if(upd>0) out.push({level:'info',title:I18N.tf('mc.di_upd','{n} package updates pending',{n:upd}),detail:I18N.t('mc.di_upd_d','Across the fleet — a good time to patch.')});
-  if(!out.length && !skipAllGood) out.push({level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')});
-  return out;
+// "Pin" on a container row: everything the form needs is already on the row.
+function lpPinContainer(name, ports, hostName){
+  const port=(ports||[])[0];
+  const h=(hostName&&hostName!=='local')?hostName:'';
+  const target=h || location.hostname;
+  lpOpenForm({name:name.replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).slice(0,40),
+              url: port?`${location.protocol}//${target}:${port}`:'', icon:'', group:'',
+              host:h, container:name});
 }
-function mcPaintFeed($){
-  const feed=$('mc-feed');
-  // Merge fleet-derived alerts with the server's own insights, dedupe, severity-sort.
-  const order={critical:0,crit:0,warning:1,warn:1,info:2,ok:3};
-  const di=((D&&D.insights)||[]).map(i=>({level:i.level,title:i.title,detail:i.detail}));
-  let ins=[...mcDeriveInsights(true), ...di];
-  const seen=new Set(); ins=ins.filter(i=>{ if(seen.has(i.title)) return false; seen.add(i.title); return true; });
-  ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
-  if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
-  const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
-  feed.innerHTML = ins.slice(0,7).map(i=>{
-    const lv=MC_LVL[i.level]||'info';
-    return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
-      <div class="mc-ins-ic">${icon[lv]||'•'}</div>
-      <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
-  }).join('');
-  $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
+function lpIsPinned(name, hostName){
+  const h=(hostName&&hostName!=='local')?hostName:'';
+  return LP_ITEMS.some(it=>it.container===name && (it.host||'')===h);
 }
-// ── Customizable widget board: drag-reorder + hide/show + reset, persisted ──────
-const MC_BOARD_KEY='hl_mc_layout';
-const MC_W_NAMES={insights:'Insights',cost:'Cost',containers:'Containers',services:'Services',diagnostics:'Diagnostics'};
-const MC_W_DEFAULT=['insights','cost','containers','services','diagnostics'];  // fleet promoted to the hero
-function mcBoardState(){ try{ return JSON.parse(localStorage.getItem(MC_BOARD_KEY))||{}; }catch(e){ return {}; } }
-function mcSaveBoard(st){ try{ localStorage.setItem(MC_BOARD_KEY, JSON.stringify(st)); }catch(e){} }
-function mcCurrentOrder(){ return Array.from(document.querySelectorAll('#mc-board .mc-widget')).map(el=>el.dataset.w); }
-function mcRenderHiddenTray(){
-  const tray=document.getElementById('mc-hiddentray'); if(!tray) return;
-  const hidden=(mcBoardState().hidden)||[];
-  tray.innerHTML=hidden.map(w=>`<span class="mc-hchip" data-w="${w}">+ ${esc(MC_W_NAMES[w]||w)}</span>`).join('');
-  tray.querySelectorAll('.mc-hchip').forEach(c=>c.onclick=()=>{ const st=mcBoardState(); st.hidden=(st.hidden||[]).filter(x=>x!==c.dataset.w); mcSaveBoard(st); mcApplyBoard(); });
+function lpInit(){
+  const panel=document.getElementById('lp-panel'); if(!panel || panel.__init) return; panel.__init=true;
+  document.getElementById('lp-add').onclick=()=>lpOpenForm(null);
+  const eb=document.getElementById('lp-edit');
+  eb.onclick=()=>{
+    const on=document.body.classList.toggle('lp-editing');
+    eb.textContent = on ? I18N.t('lp.done','Done') : I18N.t('lp.edit','Edit');
+    eb.classList.toggle('lp-accent', on);
+    lpWireDrag(document.getElementById('lp-grid'));
+  };
+  if(!LP_LOADED) lpLoad();
 }
-function mcApplyBoard(){
-  const board=document.getElementById('mc-board'); if(!board) return;
-  const st=mcBoardState();
-  (st.order||[]).forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); });
-  const hidden=new Set(st.hidden||[]);
-  board.querySelectorAll('.mc-widget').forEach(el=>{ el.hidden=hidden.has(el.dataset.w); });
-  mcRenderHiddenTray();
+
+// ── Display mode: the dashboard as a wall screen ─────────────────────────────
+// Everything but the cockpit goes away, and the cockpit is scaled — one CSS
+// transform on the whole board — so it fits the screen exactly, with no
+// scrollbar and no per-widget responsive rewrite. `?display=1` opens straight
+// into it, which is all a dedicated kiosk box (a Pi, an old laptop running
+// Chromium --kiosk) needs.
+let DP_ON=false, DP_IDLE=null;
+function dpFit(){
+  if(!DP_ON) return;
+  const fit=document.getElementById('dp-fit'), stage=document.getElementById('dp-stage');
+  if(!fit||!stage) return;
+  fit.style.transform='';
+  const avail=stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 26;
+  const s=Math.min((stage.clientWidth-40)/1440, avail/Math.max(1,fit.scrollHeight), 2.2);
+  fit.style.transform=`scale(${s.toFixed(3)})`;
+  fit.style.marginBottom=`${Math.round(fit.scrollHeight*(s-1))}px`;
 }
-function mcInitBoard(){
-  const board=document.getElementById('mc-board'); if(!board || board.__mcInit) return; board.__mcInit=true;
-  mcApplyBoard();
-  // tap a panel header → its detail tab (ignored while customizing or on interactive children)
+function dpClock(){
+  const c=document.getElementById('dp-clock');
+  if(c) c.textContent=new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+function dpEnter(){
+  if(DP_ON) return;
+  DP_ON=true;
+  document.body.classList.add('display');
+  const stage=document.getElementById('dp-stage');
+  stage.style.display='grid';
+  document.getElementById('dp-fit').appendChild(document.getElementById('mc-cockpit'));
+  showTab('overview');
+  dpClock(); dpFit();
+  clearInterval(dpEnter._t); dpEnter._t=setInterval(()=>{ dpClock(); dpFit(); }, 20000);
+  addEventListener('resize', dpFit);
+  const idle=()=>{ document.body.classList.remove('dp-idle');
+    clearTimeout(DP_IDLE); DP_IDLE=setTimeout(()=>document.body.classList.add('dp-idle'), 5000); };
+  addEventListener('mousemove', idle); idle();
+}
+function dpExit(){
+  if(!DP_ON) return;
+  DP_ON=false;
+  clearInterval(dpEnter._t); clearTimeout(DP_IDLE);
+  removeEventListener('resize', dpFit);
+  document.body.classList.remove('display','dp-idle');
   const ck=document.getElementById('mc-cockpit');
-  if(ck) ck.addEventListener('click', e=>{
-    if(document.body.classList.contains('mc-customizing')) return;
-    if(e.target.closest('button,a,select,input,.mc-modeseg,.mc-host,.mc-fb-chip,.mc-hchip,.mc-whide,.mc-wgrip')) return;
+  ck.style.transform='';
+  document.querySelector('section[data-tab="overview"]').prepend(ck);
+  document.getElementById('dp-fit').style.transform='';
+  document.getElementById('dp-stage').style.display='none';
+  if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  const u=new URL(location.href); u.searchParams.delete('display'); history.replaceState(null,'',u);
+  paintMissionControl();
+}
+// Which screen. Chromium's window-management API can enumerate them and open
+// full-screen on the one you pick; every other browser gets the current screen
+// (and the honest sentence that says so).
+async function dpOpenPicker(){
+  let screens=null;
+  try{
+    if(window.getScreenDetails){
+      const d=await window.getScreenDetails();
+      screens=d.screens.map((s,i)=>({i, label:s.label||`Screen ${i+1}`, w:s.width, h:s.height, primary:s.isPrimary, ref:s}));
+    }
+  }catch(e){ screens=null; }
+  if(!screens || screens.length<2){ dpStart(null); return; }
+  const m=document.getElementById('lpmodal');
+  m.querySelector('.hd b').textContent=I18N.t('dp.title','Display mode');
+  let pick=screens.findIndex(s=>!s.primary); if(pick<0) pick=0;
+  const draw=()=>{
+    m.querySelector('.bd').innerHTML=`
+      <div class="muted">${I18N.t('dp.pick','Which screen should the wall display use?')}</div>
+      <div class="dp-screens">${screens.map((s,i)=>`<div class="dp-scr ${i===pick?'sel':''}" data-s="${i}">
+        <div class="shape"></div>${esc(s.label)}<br>${s.w}×${s.h}${s.primary?' · '+I18N.t('dp.primary','primary'):''}</div>`).join('')}</div>
+      <div class="row"><button class="btn" type="button" id="dp_go">${I18N.t('dp.open','Open display')}</button>
+        <button class="btn" type="button" id="dp_cancel">${I18N.t('btn.cancel','Cancel')}</button></div>`;
+    m.querySelectorAll('.dp-scr').forEach(el=>el.onclick=()=>{ pick=+el.dataset.s; draw(); });
+    document.getElementById('dp_cancel').onclick=()=>m.classList.remove('show');
+    document.getElementById('dp_go').onclick=()=>{ m.classList.remove('show'); dpStart(screens[pick].ref); };
+  };
+  draw();
+  m.classList.add('show');
+}
+function dpStart(screen){
+  dpEnter();
+  const opts = screen ? {screen} : undefined;
+  const el=document.documentElement;
+  try{ el.requestFullscreen(opts).catch(()=>{}); }catch(e){ try{ el.requestFullscreen(); }catch(_){} }
+  setTimeout(dpFit, 300);
+}
+addEventListener('keydown', e=>{ if(e.key==='Escape' && DP_ON) dpExit(); });
+document.addEventListener('fullscreenchange', ()=>{ if(!document.fullscreenElement && DP_ON) dpExit(); });
+function mcInitGoto(){
+  const ck=document.getElementById('mc-cockpit'); if(!ck || ck.__goto) return; ck.__goto=true;
+  ck.addEventListener('click', e=>{
+    if(e.target.closest('button,a,select,input,.mc-modeseg,.mc-host,.mc-fb-chip,.lp-tile')) return;
     const h=e.target.closest('[data-goto]'); if(!h) return;
     const t=h.getAttribute('data-goto'); if(t && typeof showTab==='function') showTab(t);
   });
-  let dragEl=null;
-  board.querySelectorAll('.mc-widget').forEach(el=>{
-    el.setAttribute('draggable','false');
-    const hb=el.querySelector('.mc-whide');
-    if(hb) hb.onclick=(e)=>{ e.stopPropagation(); const st=mcBoardState(); st.hidden=Array.from(new Set([...(st.hidden||[]), el.dataset.w])); mcSaveBoard(st); mcApplyBoard(); };
-    el.addEventListener('dragstart',e=>{ if(!document.body.classList.contains('mc-customizing')){ e.preventDefault(); return; } dragEl=el; el.classList.add('mc-drag'); e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',el.dataset.w); }catch(_){} });
-    el.addEventListener('dragend',()=>{ if(dragEl) dragEl.classList.remove('mc-drag'); board.querySelectorAll('.mc-over').forEach(x=>x.classList.remove('mc-over')); dragEl=null; const st=mcBoardState(); st.order=mcCurrentOrder(); mcSaveBoard(st); });
-    el.addEventListener('dragover',e=>{ if(!dragEl||dragEl===el) return; e.preventDefault(); const r=el.getBoundingClientRect(); const after=(e.clientY-r.top)/r.height>0.5; board.querySelectorAll('.mc-over').forEach(x=>{ if(x!==el) x.classList.remove('mc-over'); }); el.classList.add('mc-over'); if(after) el.after(dragEl); else el.before(dragEl); });
-    el.addEventListener('dragleave',()=>el.classList.remove('mc-over'));
-  });
-  const btn=document.getElementById('mc-custbtn'), hint=document.getElementById('mc-boardhint'), reset=document.getElementById('mc-resetbtn');
-  if(btn) btn.onclick=()=>{ const on=document.body.classList.toggle('mc-customizing'); btn.classList.toggle('on',on); if(hint) hint.hidden=!on; if(reset) reset.hidden=!on;
-    btn.textContent = on ? I18N.t('mc.done','✓ Done') : I18N.t('mc.customize','⠿ Customize layout');
-    board.querySelectorAll('.mc-widget').forEach(el=>el.setAttribute('draggable', on?'true':'false')); };
-  if(reset) reset.onclick=()=>{ mcSaveBoard({}); MC_W_DEFAULT.forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); }); board.querySelectorAll('.mc-widget').forEach(el=>el.hidden=false); mcRenderHiddenTray(); };
 }
 function mcPaintFleetBar($){
   const bar=$('mc-fleetbar'); if(!bar) return;
@@ -8352,55 +8469,6 @@ function mcPaintFleet($){
     const ob=el.querySelector('.mc-host-open');
     if(ob) ob.onclick=(e)=>{ e.stopPropagation(); setHost(el.dataset.h); showTab('host'); };
   });
-}
-// systemd units whose failure is benign (KDE crash relays / coredump processors).
-function mcIsBenignUnit(name){ return /^(drkonqi|systemd-coredump)/i.test(name||''); }
-function mcPaintStrip($){
-  // Containers
-  const dk=(HH&&HH.docker)||{};
-  const ctl=dk.containers||[];
-  const ds=dk.summary||{};
-  const running = dk.available ? (ds.running!=null?ds.running:ctl.filter(c=>c.state==='running').length) : 0;
-  const total   = dk.available ? (ds.total!=null?ds.total:ctl.length) : 0;
-  const probs = ctl.filter(c=>(c.state && c.state!=='running') || (c.status && c.status!=='ok'));
-  $('mc-c-run').textContent=running; $('mc-c-tot').textContent=total;
-  const cp=$('mc-c-pill');
-  if(!dk.available){ cp.className='mc-pill mc-pill-warn'; cp.textContent=I18N.t('mc.docker_off','DOCKER OFF'); $('mc-c-prob').textContent=esc(dk.reason||''); }
-  else if(probs.length){ cp.className='mc-pill mc-pill-crit'; cp.textContent=probs.length+' '+I18N.t('mc.problems','PROBLEMS');
-    $('mc-c-prob').innerHTML=probs.slice(0,4).map(p=>`<span style="color:var(--crit)">●</span> <b style="color:var(--tx)">${esc(p.name)}</b> ${esc(p.status_text||p.state||'')}`).join('<br>');
-  } else { cp.className='mc-pill mc-pill-ok'; cp.textContent=I18N.t('mc.all_healthy','ALL HEALTHY'); $('mc-c-prob').textContent=I18N.t('mc.zero_problems','0 problems'); }
-
-  // Services
-  const sd=(HH&&HH.systemd)||{};
-  const ss=sd.summary||{};
-  const svcs=sd.services||[];
-  const failed = svcs.filter(s=>s.status==='crit');
-  const failedN = ss.failed!=null ? ss.failed : failed.length;
-  $('mc-s-run').textContent = ss.running!=null?ss.running:'—';
-  const sp=$('mc-s-pill'), tip=$('mc-fail-tip'), hint=$('mc-s-hint');
-  if(!sd.available){ sp.className='mc-pill mc-pill-warn'; sp.textContent=I18N.t('mc.svc_off','OFF'); hint.textContent='— '+I18N.t('mc.svc_off_hint','monitoring off'); tip.innerHTML=''; }
-  else if(failedN===0){ sp.className='mc-pill mc-pill-ok'; sp.textContent='0 '+I18N.t('mc.failed','FAILED'); hint.textContent='— '+I18N.t('mc.all_clean','all clean'); tip.innerHTML=''; }
-  else {
-    const benign = failed.length>0 && failed.every(s=>mcIsBenignUnit(s.name));
-    if(benign){ sp.className='mc-pill mc-pill-warn'; sp.textContent=failedN+' '+I18N.t('mc.failed_lc','failed'); hint.textContent='— '+I18N.t('mc.harmless','harmless, hover for why');
-      tip.innerHTML='<h4 style="color:var(--ok)">✓ '+I18N.tf('mc.all_benign','All {n} are benign',{n:failedN})+'</h4>'+failed.map(s=>`<div class="mc-fitem"><b>${esc(s.name)}</b>${s.desc?' · '+esc(s.desc):''}</div>`).join('');
-    } else { sp.className='mc-pill mc-pill-crit'; sp.textContent=failedN+' '+I18N.t('mc.failed','FAILED'); hint.textContent='— '+I18N.t('mc.needs_attn','needs attention');
-      tip.innerHTML='<h4 style="color:var(--crit)">✕ '+I18N.tf('mc.real_failures','{n} real failure(s)',{n:failedN})+'</h4>'+(failed.length?failed:[{name:I18N.t('mc.see_services','See the Services tab'),desc:''}]).map(s=>`<div class="mc-fitem"><b>${esc(s.name)}</b>${s.desc?' · '+esc(s.desc):''}</div>`).join('');
-    }
-  }
-
-  // Diagnostics
-  const diag=(HH&&HH.diagnostics)||{};
-  const checks=diag.checks||[];
-  const okN=checks.filter(c=>c.status==='ok').length;
-  $('mc-diag-summary').innerHTML = checks.length
-    ? `<span style="color:${checks.some(c=>c.status==='fail')?'var(--crit)':'var(--ok)'}">${okN} / ${checks.length} ${I18N.t('mc.green','green')}</span>` : '';
-  $('mc-diag').innerHTML = checks.map(c=>{
-    const cls={ok:'mc-ok',info:'mc-info',warn:'mc-warn',fail:'mc-fail'}[c.status]||'mc-info';
-    // GPU row label is vendor-aware from the backend (see diagnostics table above).
-    const lbl = c.id==='nvidia' ? c.label : I18N.t('diag.lbl.'+c.id, c.label);
-    return `<div class="mc-diag"><span class="mc-dd ${cls}"></span><div><b>${esc(lbl)}</b><div class="mc-dsub">${esc(c.detail||'')}</div></div></div>`;
-  }).join('') || '<div style="font-size:11px;color:var(--mut)">'+I18N.t('mc.no_checks','No checks reported.')+'</div>';
 }
 
 async function loadHostData(name){
@@ -9999,6 +10067,20 @@ loadData(); loadHealth(); loadFleet();
 // Pick up the reduced-motion preference before the Settings tab is ever
 // opened — otherwise gauges would animate on first paint regardless of it.
 (async () => { try{ const j=await(await fetch('/api/settings')).json(); applyReducedMotion(j&&j.settings&&j.settings.reduced_motion==='1'); }catch(e){} })();
+// The launchpad's pins are needed before the Overview paints (and by the
+// Containers tab, for the star on each row), so they load at boot rather than
+// on first view of the cockpit.
+lpLoad();
+(function wireDisplayMode(){
+  const btn=document.getElementById('dispbtn');
+  if(btn) btn.onclick=dpOpenPicker;
+  const ex=document.getElementById('dp-exitbtn');
+  if(ex) ex.onclick=dpExit;
+  // ?display=1 — what a dedicated kiosk box opens. No fullscreen request here:
+  // a browser only grants that from a user gesture, and Chromium --kiosk is
+  // already full-screen.
+  try{ if(new URL(location.href).searchParams.get('display')==='1'){ showTab('overview'); setTimeout(dpEnter, 400); } }catch(e){}
+})();
 
 // ── Live values over SSE, history on a timer ─────────────────────────────────
 // Two cadences instead of one. `/api/stream` pushes the live values the moment

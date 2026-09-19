@@ -637,11 +637,35 @@ def api_settings():
         err = (_app._validate_url_settings(updates) or _app._validate_email_settings(updates)
                or _app._validate_brief_settings(updates) or _app._validate_retention_settings(updates)
                or _app._validate_gpu_alert_settings(updates) or _app._validate_custom_ai_servers(updates)
+               or _app._validate_home_shortcuts(updates)
                or _app._validate_fast_interval_settings(updates))
         if err:
             return jsonify({"ok": False, "error": err}), 400
         _app.save_settings(updates)
     return jsonify({"version": _app.VERSION, "settings": _app._public_settings()})
+
+
+@bp.route("/api/shortcuts", methods=["GET", "POST"])
+def api_shortcuts():
+    """The Overview launchpad's pinned apps. Its own endpoint rather than a
+    field on /api/settings: the Overview needs this list on every load, and
+    /api/settings is the whole (partly redacted) settings blob. POST replaces
+    the list wholesale — the launchpad edits a local copy and saves it, the
+    same shape the custom-AI-servers editor uses."""
+    import app as _app
+    if request.method == "POST":
+        body = request.get_json(silent=True)
+        raw = body.get("shortcuts") if isinstance(body, dict) else body
+        entries, err = _app.parse_shortcuts(raw if isinstance(raw, str) else json.dumps(raw or []))
+        if err:
+            return jsonify({"ok": False, "error": f"Home shortcuts: {err}."}), 400
+        _app.save_settings({"home_shortcuts": json.dumps(entries)})
+        return jsonify({"ok": True, "shortcuts": entries})
+    entries, err = _app.parse_shortcuts(_app.get_settings().get("home_shortcuts"))
+    if err:                      # a hand-edited DB value must not blank the tab
+        print(f"home_shortcuts ignored ({err})", flush=True)
+        entries = []
+    return jsonify({"shortcuts": entries})
 
 
 @bp.route("/api/settings/ai_servers/providers")

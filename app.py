@@ -697,6 +697,7 @@ from backend.probes import (
     PROBES, _match_probe, _match_probe_key, CATALOG_MAX, probe_models,
     validate_custom_servers,
 )
+from backend.shortcuts import parse_shortcuts, validate_shortcuts
 
 # ── Model intelligence: per-model metadata + live serving telemetry ───────────
 # Two passive, no-dep enrichments that make the AI Models tab authoritative:
@@ -4557,6 +4558,11 @@ SETTING_DEFAULTS = {
     # containers on standard ports and remotes' localhost ollama, so a vLLM
     # living on another box at a non-standard port needs this to show up.
     "custom_ai_servers":   "",
+    # ── Home shortcuts (the Overview launchpad) ────────────────────────────
+    # The apps pinned on the Overview: a JSON array of
+    # {"name","url","icon","group","host","container"}. Stored server-side on
+    # purpose — pinned on the laptop, there on the phone and the wall screen.
+    "home_shortcuts":      "",
     # ── Display preferences ────────────────────────────────────────────────
     "reduced_motion":       "0",      # "0" (default, matches prior behaviour) / "1" — disables gauge animations
     # Screen-refresh cadence (seconds) for the GPU tab + Overview cockpit "now"
@@ -4772,6 +4778,15 @@ def _validate_custom_ai_servers(updates):
     if "custom_ai_servers" not in updates:
         return None
     return validate_custom_servers(updates["custom_ai_servers"])
+
+def _validate_home_shortcuts(updates):
+    """Return an error string if home_shortcuts is malformed, else None. Same
+    door-vs-read discipline as the custom AI servers: the value comes back to
+    every browser that opens this hub, so a bad URL is rejected here rather
+    than rendered as an <a href> later."""
+    if "home_shortcuts" not in updates:
+        return None
+    return validate_shortcuts(updates["home_shortcuts"])
 
 # ── Uptime checks: HTTP/TCP endpoint monitors ──────────────────────────────
 # User-defined HTTP/TCP endpoint monitors, probed from inside the container on a
