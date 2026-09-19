@@ -1033,37 +1033,34 @@ h2 .hic{ opacity:.9 }
 .mc-chartpanel{ margin-bottom:16px }
 .mc-chartbox{ position:relative; height:208px; padding:4px 16px 16px }
 /* ── Launchpad: the pinned apps on the Overview ─────────────────────────── */
-.mc-lp{ margin-bottom:16px }
 .mc-lp .btn-mini{ text-transform:none; letter-spacing:0 }
 .lp-accent{ border-color:var(--accent)!important; color:var(--accent)!important }
-.lp-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:9px }
-.lp-group{ grid-column:1/-1; display:flex; align-items:center; gap:9px; font-size:10px; letter-spacing:.1em;
-  text-transform:uppercase; color:var(--mut); margin:4px 0 0 }
+.lp-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(74px,1fr)); gap:6px }
+.lp-group{ grid-column:1/-1; display:flex; align-items:center; gap:8px; font-size:9px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--mut); margin:3px 0 0 }
 .lp-group:after{ content:""; flex:1; height:1px; background:var(--bd) }
-.lp-tile{ position:relative; display:flex; flex-direction:column; align-items:center; gap:7px; padding:13px 9px 10px;
-  border:1px solid var(--bd); border-radius:12px; background:var(--card); color:var(--tx); text-decoration:none;
+.lp-tile{ position:relative; display:flex; flex-direction:column; align-items:center; gap:5px; padding:9px 5px 7px;
+  border:1px solid var(--bd); border-radius:10px; background:var(--card); color:var(--tx); text-decoration:none;
   transition:transform .12s ease, border-color .15s ease }
 .lp-tile:hover{ transform:translateY(-1px); border-color:var(--mut) }
 .lp-tile:focus-visible{ outline:2px solid var(--info); outline-offset:2px }
-.lp-ic{ width:38px; height:38px; border-radius:11px; display:grid; place-items:center; color:#fff;
-  font-family:var(--mono); font-weight:700; font-size:15px; flex:none }
-.lp-ic svg{ width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
-.lp-ic .brandlg{ margin:0; width:22px; height:22px }
-.lp-ic .brandlg svg{ width:22px; height:22px; stroke:none }
-.lp-nm{ font-size:12px; font-weight:600; line-height:1.2; text-align:center; max-width:100%;
+.lp-ic{ width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#fff;
+  font-family:var(--mono); font-weight:700; font-size:12px; flex:none }
+.lp-ic svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round }
+.lp-ic .brandlg{ margin:0; width:18px; height:18px }
+.lp-ic .brandlg svg{ width:18px; height:18px; stroke:none }
+.lp-nm{ font-size:10.5px; font-weight:600; line-height:1.15; text-align:center; max-width:100%;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.lp-sub{ font-size:10px; color:var(--mut); font-family:var(--mono); max-width:100%;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.lp-dot{ position:absolute; top:8px; right:8px; width:7px; height:7px; border-radius:50%; background:var(--ok) }
+.lp-dot{ position:absolute; top:6px; right:6px; width:6px; height:6px; border-radius:50%; background:var(--ok) }
 .lp-dot.warn{ background:var(--warn) } .lp-dot.crit{ background:var(--crit) } .lp-dot.off{ background:var(--mut); opacity:.55 }
-.lp-x{ position:absolute; top:4px; left:5px; border:0; background:none; color:var(--mut); font-size:15px;
-  line-height:1; cursor:pointer; padding:2px 4px; display:none }
+.lp-x{ position:absolute; top:2px; left:3px; border:0; background:none; color:var(--mut); font-size:14px;
+  line-height:1; cursor:pointer; padding:1px 4px; display:none }
 .lp-x:hover{ color:var(--crit) }
 body.lp-editing .lp-x{ display:block }
 body.lp-editing .lp-tile{ cursor:grab }
 .lp-tile.lp-drag{ opacity:.45 } .lp-tile.lp-over{ border-color:var(--accent) }
 .lp-add{ border-style:dashed; justify-content:center; color:var(--mut); background:transparent }
-.lp-add .lp-ic{ background:transparent; border:1px dashed var(--bd); color:var(--mut); font-size:19px }
+.lp-add .lp-ic{ background:transparent; border:1px dashed var(--bd); color:var(--mut); font-size:16px }
 .lp-empty{ grid-column:1/-1; font-size:12px; color:var(--mut); padding:6px 2px }
 /* the pin form */
 .lp-form{ display:grid; grid-template-columns:120px 1fr; gap:10px 12px; align-items:center; font-size:13px }
@@ -1106,8 +1103,7 @@ body.display #mc-cockpit .mc-feed{ max-height:none }
    and its tiles get denser so the pins fill the width instead of floating in
    a third of it. */
 body.display #lp-panel .btn-mini, body.display .lp-add{ display:none }
-body.display .lp-grid{ grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:7px }
-body.display .lp-tile{ padding:10px 7px 8px }
+body.display .lp-grid{ grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:6px }
 #dp-stage{ display:none }
 .dp-widgets{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 }
 .dp-widgets label{ display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--bd);
@@ -1724,18 +1720,6 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
     <!-- fleet-wide rollup bar leads the cockpit (full width) -->
     <div class="mc-fleetbar" id="mc-fleetbar"></div>
 
-    <!-- Launchpad — the apps you actually open, pinned. Full width above the
-         money/engine row: this is the half of the Overview that is a homepage
-         rather than a monitor, and it reads first. -->
-    <div class="mc-panel mc-lp" id="lp-panel">
-      <div class="mc-ph"><span class="mc-hic" id="mc-ic-lp"></span><h3 data-i18n="lp.title">Launchpad</h3>
-        <span class="mc-tag" id="lp-tag" style="margin-left:auto"></span>
-        <button type="button" class="btn-mini" id="lp-edit" data-i18n="lp.edit">Edit</button>
-        <button type="button" class="btn-mini lp-accent" id="lp-add" data-i18n="lp.add">+ Pin</button>
-      </div>
-      <div class="lp-grid" id="lp-grid"></div>
-    </div>
-
     <div class="mc-grid">
       <!-- ───── LEFT: fleet rail — every host at a glance ───── -->
       <div class="mc-col">
@@ -1747,6 +1731,18 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 
       <!-- ───── CENTER: burn rate · engine gauge · compute history ───── -->
       <div class="mc-col">
+        <!-- Launchpad — the apps you actually open. First in the centre
+             column, above the money: the Overview's homepage half reads
+             before its monitoring half. -->
+        <div class="mc-panel mc-lp" id="lp-panel">
+          <div class="mc-ph"><span class="mc-hic" id="mc-ic-lp"></span><h3 data-i18n="lp.title">Launchpad</h3>
+            <span class="mc-tag" id="lp-tag" style="margin-left:auto"></span>
+            <button type="button" class="btn-mini" id="lp-edit" data-i18n="lp.edit">Edit</button>
+            <button type="button" class="btn-mini lp-accent" id="lp-add" data-i18n="lp.add">+ Pin</button>
+          </div>
+          <div class="lp-grid" id="lp-grid"></div>
+        </div>
+
         <!-- burn rate (the money) -->
         <div class="mc-panel" id="mc-w-burn">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
@@ -8332,16 +8328,17 @@ function lpPaint(){
     if(g || (named && !g)) html+=`<div class="lp-group">${esc(g||I18N.t('lp.ungrouped','Pinned'))}</div>`;
     html+=byGroup.get(g).map(({it,i})=>{
       const f=lpFace(it), st=lpStatus(it);
-      let sub='';
-      try{ sub=new URL(it.url).host; }catch(e){ sub=it.url; }
-      return `<a class="lp-tile" href="${esc(it.url)}" target="_blank" rel="noopener" data-i="${i}" title="${esc(it.url)}">
+      // The URL is the tooltip, not a second line: at this size the name is
+      // all that fits, and the tile's whole job is to be recognised at a glance.
+      const tip=[it.url, st?st.t:''].filter(Boolean).join(' · ');
+      return `<a class="lp-tile" href="${esc(it.url)}" target="_blank" rel="noopener" data-i="${i}" title="${esc(tip)}">
         <button type="button" class="lp-x" data-rm="${i}" title="${I18N.t('lp.unpin','Unpin')}">×</button>
-        ${st?`<span class="lp-dot ${st.cls}" title="${st.t}"></span>`:''}
+        ${st?`<span class="lp-dot ${st.cls}"></span>`:''}
         <span class="lp-ic" style="background:${f.plain?'var(--inset)':f.bg};${f.plain?'border:1px solid var(--bd)':''}">${f.html}</span>
-        <span class="lp-nm">${esc(it.name)}</span><span class="lp-sub">${esc(sub)}</span></a>`;
+        <span class="lp-nm">${esc(it.name)}</span></a>`;
     }).join('');
   });
-  html+=`<a class="lp-tile lp-add" href="#" id="lp-addtile"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.add_tile','Pin an app')}</span></a>`;
+  html+=`<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
   setHTML(grid, html);
   grid.querySelectorAll('[data-rm]').forEach(btn=>btn.onclick=e=>{
     e.preventDefault(); e.stopPropagation();
@@ -8349,6 +8346,12 @@ function lpPaint(){
   });
   const at=document.getElementById('lp-addtile');
   if(at) at.onclick=e=>{ e.preventDefault(); lpOpenForm(null); };
+  // While editing, a tile is an edit handle rather than a link — otherwise a
+  // pin could be unpinned but never corrected.
+  grid.querySelectorAll('.lp-tile:not(.lp-add)').forEach(el=>el.onclick=e=>{
+    if(!document.body.classList.contains('lp-editing')) return;
+    e.preventDefault(); lpOpenForm(null, +el.dataset.i);
+  });
   lpWireDrag(grid);
 }
 // Drag to reorder, only while editing — a tile is a link the rest of the time

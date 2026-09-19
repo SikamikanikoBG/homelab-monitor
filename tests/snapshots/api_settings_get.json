@@ -30,6 +30,7 @@
     "gpu_throttle_sustain_s": "120",
     "gpu_vram_alert_pct": "95",
     "gpu_vram_sustain_s": "300",
+    "home_shortcuts": "",
     "kwh_price": "",
     "kwh_price_night": "",
     "mlflow_token_set": false,

@@ -117,16 +117,17 @@ def test_mk_reassigns_inline_plugins():
     )
 
 
-def test_mc_chart_signature_includes_values():
-    """The overview chart's cache key must not be labels-only.
-
-    The newest bucket is re-averaged (and now updated from the stream) under a
-    label that does not change until the bucket closes, so a label-only signature
-    held the chart still for a whole bucket at a time.
+def test_overview_has_no_compute_history_chart():
+    """The Overview's compute-history chart was removed in 0.35.0 — it duplicated
+    the GPU tab one click away, and the front page is deliberately short now.
+    This test replaces the old signature invariant (which existed because that
+    chart's labels-only cache key froze it for a whole bucket at a time): if the
+    chart ever comes back, it comes back with that invariant re-tested, not by
+    accident.
     """
-    body = _function(_source(), "renderMcChart")
-    sig = re.search(r"const sig=.*?;", body, re.S)
-    assert sig, "renderMcChart() no longer builds a signature"
-    assert "tl(" in sig.group(0), (
-        "the mc-chart signature must include the tail values, not just bucket labels"
+    src = _source()
+    assert "\nfunction renderMcChart(" not in src, (
+        "renderMcChart() is back on the Overview — restore its value-based cache "
+        "signature test (see git history) along with it"
     )
+    assert 'id="mc-chartpanel"' not in src
