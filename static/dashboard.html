@@ -8302,17 +8302,14 @@ function mcFitToFold(budget){
   // Space between the top of the cockpit and the bottom of the window, less the
   // footer note that should stay visible under it.
   ck.style.transform = ''; ck.style.width = '';     // measure at natural size
-  const top = ck.getBoundingClientRect().top;
-  // Reserve whatever sits under the cockpit (the about/footer note), measured
-  // rather than guessed — "fits the fold" has to include the last line on the
-  // page, or the window still scrolls and the promise is broken by 40 pixels.
-  let below = 24;
-  for(let node = ck; node && node !== document.body; node = node.parentElement){
-    for(let el = node.nextElementSibling; el; el = el.nextElementSibling){
-      if(el.offsetParent) below += el.getBoundingClientRect().height;
-    }
-  }
-  const avail = budget != null ? budget : (window.innerHeight - top - below);
+  // How much height the cockpit may occupy. Derived from the page's own
+  // overflow rather than from a guess at what sits above and below it: every
+  // margin, every ancestor's padding and anything that lands under it are
+  // then accounted for exactly, and "fits the fold" means the window does not
+  // scroll — not "fits except for forty pixels of padding".
+  const natural0 = ck.getBoundingClientRect().height;
+  const over0 = document.documentElement.scrollHeight - window.innerHeight;
+  const avail = budget != null ? budget : (natural0 - Math.max(0, over0));
   if(avail < 260) return;                       // a phone: let it scroll, honestly
   const over = () => ck.getBoundingClientRect().height - avail;
   if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
@@ -8350,7 +8347,10 @@ function mcFitToFold(budget){
     const ck2 = document.getElementById('mc-cockpit');
     ck2.style.transform = ''; ck2.style.width = '';
     const natural = DP_ON ? 0 : ck2.getBoundingClientRect().height;
-    if(natural > avail){
+    // Only on a screen wide enough for the three-column board. A phone stacks
+    // the columns into one long page — shrinking that to 82% would make it
+    // unreadable AND still scroll, which is the worst of both.
+    if(natural > avail && window.innerWidth >= 900){
       const s = Math.max(MC_FIT_SCALE_MIN, avail / natural);
       if(s < 0.999){
         ck2.style.transformOrigin = 'top left';
