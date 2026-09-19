@@ -1102,6 +1102,12 @@ body.display.dp-idle .dp-exit{ opacity:0 }
 body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)) }
 body.display #mc-cockpit [data-dp-off]{ display:none!important }
 body.display #mc-cockpit .mc-feed{ max-height:none }
+/* A wall screen is read, not operated: the launchpad's own edit controls go,
+   and its tiles get denser so the pins fill the width instead of floating in
+   a third of it. */
+body.display #lp-panel .btn-mini, body.display .lp-add{ display:none }
+body.display .lp-grid{ grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:7px }
+body.display .lp-tile{ padding:10px 7px 8px }
 #dp-stage{ display:none }
 .dp-widgets{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 }
 .dp-widgets label{ display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--bd);
