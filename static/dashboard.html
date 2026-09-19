@@ -423,11 +423,20 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
   th[data-col="disk"], td[data-col="disk"]  { display:none }
 }
 @media(max-width:760px){
-  td[data-col="ctl"] .ctlbtns{ flex-wrap:wrap }
+  td[data-col="ctl"] .ctlbtns{ flex-wrap:nowrap }
   td[data-col="ctl"] .ctl-policy{ margin-top:4px }
-  td[data-col="ctl"] .ctl-policy select{ max-width:118px }
+  td[data-col="ctl"] .ctl-policy select{ max-width:110px }
   .ctrow td{ padding-top:9px; padding-bottom:9px }       /* thumb-sized rows */
   .btn-mini{ min-height:28px; min-width:28px }
+  /* The table scrolls sideways on a phone, so the two columns you need to
+     keep your bearings ride along: the container's name on the left, its
+     controls on the right. Scrolling to reach a restart button is how the
+     mobile view stopped being usable in the first place. */
+  .ctrow td:first-child, thead th:first-child{ position:sticky; left:0; z-index:2;
+    background:var(--card); box-shadow:6px 0 8px -7px rgba(0,0,0,.45) }
+  td[data-col="ctl"], th[data-col="ctl"]{ position:sticky; right:0; z-index:2;
+    background:var(--card); box-shadow:-6px 0 8px -7px rgba(0,0,0,.45) }
+  .cttot td{ background:var(--inset) }
 }
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
