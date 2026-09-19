@@ -8289,7 +8289,16 @@ function mcFitToFold(){
   // footer note that should stay visible under it.
   ck.style.transform = ''; ck.style.width = '';     // measure at natural size
   const top = ck.getBoundingClientRect().top;
-  const avail = window.innerHeight - top - 28;
+  // Reserve whatever sits under the cockpit (the about/footer note), measured
+  // rather than guessed — "fits the fold" has to include the last line on the
+  // page, or the window still scrolls and the promise is broken by 40 pixels.
+  let below = 24;
+  for(let node = ck; node && node !== document.body; node = node.parentElement){
+    for(let el = node.nextElementSibling; el; el = el.nextElementSibling){
+      if(el.offsetParent) below += el.getBoundingClientRect().height;
+    }
+  }
+  const avail = window.innerHeight - top - below;
   if(avail < 260) return;                       // a phone: let it scroll, honestly
   const over = () => ck.getBoundingClientRect().height - avail;
   if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
