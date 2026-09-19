@@ -8301,7 +8301,7 @@ function mcFitToFold(budget){
   if(DP_ON && budget == null) return;            // display mode passes its own budget
   // Space between the top of the cockpit and the bottom of the window, less the
   // footer note that should stay visible under it.
-  ck.style.transform = ''; ck.style.width = '';     // measure at natural size
+  ck.style.transform = ''; ck.style.width = ''; ck.style.marginBottom = '';   // measure at natural size
   // How much height the cockpit may occupy. Derived from the page's own
   // overflow rather than from a guess at what sits above and below it: every
   // margin, every ancestor's padding and anything that lands under it are
@@ -8345,7 +8345,7 @@ function mcFitToFold(budget){
     // keep the page on one screen; a 40% one would just be an unreadable
     // dashboard, so below MC_FIT_SCALE_MIN it stops and lets the page scroll.
     const ck2 = document.getElementById('mc-cockpit');
-    ck2.style.transform = ''; ck2.style.width = '';
+    ck2.style.transform = ''; ck2.style.width = ''; ck2.style.marginBottom = '';
     const natural = DP_ON ? 0 : ck2.getBoundingClientRect().height;
     // Only on a screen wide enough for the three-column board. A phone stacks
     // the columns into one long page — shrinking that to 82% would make it
@@ -8356,6 +8356,10 @@ function mcFitToFold(budget){
         ck2.style.transformOrigin = 'top left';
         ck2.style.transform = `scale(${s.toFixed(3)})`;
         ck2.style.width = `${(100 / s).toFixed(3)}%`;     // keep it full-bleed after the scale
+        // A transform doesn't change layout size: without this the page still
+        // reserves the unscaled height and still scrolls, which is exactly the
+        // bug this whole pass exists to kill.
+        ck2.style.marginBottom = `${Math.round(-natural * (1 - s))}px`;
       }
     }
   } finally { _mcFitting = false; }
@@ -8681,7 +8685,7 @@ function dpEnter(){
   document.body.appendChild(stage);          // must be a body child for the hide-everything-else rule
   document.body.classList.add('display');
   const ck0 = document.getElementById('mc-cockpit');
-  ck0.style.transform = ''; ck0.style.width = '';   // the stage does its own fitting
+  ck0.style.transform = ''; ck0.style.width = ''; ck0.style.marginBottom = '';   // the stage does its own fitting
   document.getElementById('dp-fit').appendChild(ck0);
   dpApplyWidgets();
   const t=document.getElementById('dp-title');
@@ -8700,6 +8704,7 @@ function dpExit(){
   removeEventListener('resize', dpFit);
   document.body.classList.remove('display','dp-idle');
   const ck=document.getElementById('mc-cockpit');
+  ck.style.height='';
   ck.querySelectorAll('[data-dp-off]').forEach(el=>el.removeAttribute('data-dp-off'));
   document.getElementById('lp-panel').removeAttribute('data-dp-off');
   document.querySelector('section[data-tab="overview"]').prepend(ck);
