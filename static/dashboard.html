@@ -3569,8 +3569,8 @@ function toggleMcpPopover(){
   el.style.top=(r.bottom+8)+'px';
   el.style.left=Math.max(8, Math.min(window.innerWidth-el.offsetWidth-8, r.right-el.offsetWidth))+'px';
   const cp=document.getElementById('mcp-pop-copy');
-  if(cp) cp.onclick=()=>{ navigator.clipboard.writeText(`claude mcp add --transport http homelab ${ep}`);
-    cp.textContent=I18N.t('btn.copied','Copied'); };
+  if(cp) cp.onclick=async()=>{ const ok=await copyText(`claude mcp add --transport http homelab ${ep}`);
+    cp.textContent = ok ? I18N.t('btn.copied','✓ Copied') : I18N.t('btn.copy_failed','⚠️ Copy failed'); };
 }
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
@@ -10192,12 +10192,6 @@ document.getElementById('h_target').addEventListener('keydown', e => { if(e.key=
 document.getElementById('key_copy').onclick = async () => {
   const b=document.getElementById('key_copy'), t=b.textContent;
   const ok = await copyText(document.getElementById('key_cmd').textContent);
-  b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
-  setTimeout(()=>{b.textContent=t;}, 1800);
-};
-document.getElementById('mcpcopy').onclick = async () => {
-  const b=document.getElementById('mcpcopy'), t=b.textContent;
-  const ok = await copyText(document.getElementById('mcpcmd').textContent);
   b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
   setTimeout(()=>{b.textContent=t;}, 1800);
 };
