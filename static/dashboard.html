@@ -1257,7 +1257,8 @@ body.mc-tight .mc-microbars{ margin-bottom:0 }
    ceremony — the gauges and the burn figure are decorative at that size, the
    numbers inside them are not. */
 body.mc-tight .mc-panel{ padding-bottom:4px }
-body.mc-tight .mc-tg-ring{ max-width:104px }
+body.mc-tight .mc-tg-ring{ max-width:88px }
+body.mc-tight .mc-engine.mc-tri{ gap:10px }
 body.mc-tight .mc-tg-num{ font-size:22px }
 body.mc-tight .mc-tg-pct{ font-size:12px }
 body.mc-tight .mc-engine{ padding:4px 14px 8px }
@@ -8279,12 +8280,14 @@ function mcPaintFeed($){
 // pretending otherwise would be the same lie in a new place.
 const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
 const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
+const MC_FIT_SCALE_MIN = 0.82;   // below this the type stops being readable
 let _mcFitting = false;
 function mcFitToFold(){
   const ck = document.getElementById('mc-cockpit');
   if(!ck || _mcFitting || DP_ON || TAB !== 'overview' || !ck.offsetParent) return;
   // Space between the top of the cockpit and the bottom of the window, less the
   // footer note that should stay visible under it.
+  ck.style.transform = ''; ck.style.width = '';     // measure at natural size
   const top = ck.getBoundingClientRect().top;
   const avail = window.innerHeight - top - 28;
   if(avail < 260) return;                       // a phone: let it scroll, honestly
@@ -8299,7 +8302,7 @@ function mcFitToFold(){
     paintMissionControl();
     // Then trim, one row at a time, re-measuring after each pass. Bounded by
     // the minimums, so this terminates.
-    let guard = 12;
+    let guard = 40;
     while(over() > 0 && guard-- > 0){
       const feed = document.getElementById('mc-feed');
       const lead = document.getElementById('mc-lead');
@@ -8316,6 +8319,21 @@ function mcFitToFold(){
       }
       else break;                                // nothing left to give
       paintMissionControl();
+    }
+    // Last resort, after every row that could go has gone: shrink the board
+    // itself, but only a little. A 4% squeeze nobody notices is worth it to
+    // keep the page on one screen; a 40% one would just be an unreadable
+    // dashboard, so below MC_FIT_SCALE_MIN it stops and lets the page scroll.
+    const ck2 = document.getElementById('mc-cockpit');
+    ck2.style.transform = ''; ck2.style.width = '';
+    const natural = ck2.getBoundingClientRect().height;
+    if(natural > avail){
+      const s = Math.max(MC_FIT_SCALE_MIN, avail / natural);
+      if(s < 0.999){
+        ck2.style.transformOrigin = 'top left';
+        ck2.style.transform = `scale(${s.toFixed(3)})`;
+        ck2.style.width = `${(100 / s).toFixed(3)}%`;     // keep it full-bleed after the scale
+      }
     }
   } finally { _mcFitting = false; }
 }
@@ -8640,7 +8658,9 @@ function dpEnter(){
   const stage=document.getElementById('dp-stage');
   document.body.appendChild(stage);          // must be a body child for the hide-everything-else rule
   document.body.classList.add('display');
-  document.getElementById('dp-fit').appendChild(document.getElementById('mc-cockpit'));
+  const ck0 = document.getElementById('mc-cockpit');
+  ck0.style.transform = ''; ck0.style.width = '';   // the stage does its own fitting
+  document.getElementById('dp-fit').appendChild(ck0);
   dpApplyWidgets();
   const t=document.getElementById('dp-title');
   if(t) t.innerHTML=`<b>${esc(document.title.replace(/ ?[—·].*$/,''))}</b>`;
