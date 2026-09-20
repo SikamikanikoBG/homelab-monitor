@@ -414,11 +414,29 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .ports{display:inline-flex;flex-wrap:wrap;gap:4px}
 .portpill{font-size:11px;padding:1px 7px;border:1px solid var(--bd);border-radius:9px;color:var(--mut);text-decoration:none;line-height:1.6;background:var(--inset);white-space:nowrap;transition:color .2s,border-color .2s,background .2s}
 .portpill:hover{border-color:var(--accent);color:var(--accent);background:#d2992211}
-/* hide non-essential columns on narrow screens so the table doesn't horiz-scroll */
+/* Narrow screens drop the two columns you can live without (image, disk) —
+   but NEVER the controls. Start/stop/restart/logs/pin is the reason to open
+   this tab on a phone in the first place; hiding them there made the mobile
+   dashboard read-only for no reason. They stack into two rows instead. */
 @media(max-width:1100px){
   th[data-col="image"],td[data-col="image"],
-  th[data-col="disk"], td[data-col="disk"],
-  th[data-col="ctl"], td[data-col="ctl"]  { display:none }
+  th[data-col="disk"], td[data-col="disk"]  { display:none }
+}
+@media(max-width:760px){
+  td[data-col="ctl"] .ctlbtns{ flex-wrap:nowrap }
+  td[data-col="ctl"] .ctl-policy{ margin-top:4px }
+  td[data-col="ctl"] .ctl-policy select{ max-width:110px }
+  .ctrow td{ padding-top:9px; padding-bottom:9px }       /* thumb-sized rows */
+  .btn-mini{ min-height:28px; min-width:28px }
+  /* The table scrolls sideways on a phone, so the two columns you need to
+     keep your bearings ride along: the container's name on the left, its
+     controls on the right. Scrolling to reach a restart button is how the
+     mobile view stopped being usable in the first place. */
+  .ctrow td:first-child, thead th:first-child{ position:sticky; left:0; z-index:2;
+    background:var(--card); box-shadow:6px 0 8px -7px rgba(0,0,0,.45) }
+  td[data-col="ctl"], th[data-col="ctl"]{ position:sticky; right:0; z-index:2;
+    background:var(--card); box-shadow:-6px 0 8px -7px rgba(0,0,0,.45) }
+  .cttot td{ background:var(--inset) }
 }
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
@@ -651,7 +669,12 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 /* ═══════════ rev 6 migration — Portainer-style shell + enterprise restyle (additive; overrides win by source order) ═══════════ */
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
-.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7;
+  /* The nav list is the only thing in here that may scroll. Without the clip
+     (and the min-height:0 on the list below), a tall nav on a short screen
+     pushed the whole PAGE past the viewport — the Overview fitted the fold
+     and the window scrolled anyway, because of the sidebar. */
+  overflow:hidden}
 /* visual hierarchy: nav surfaces distinct from content */
 .main{min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 .sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
@@ -660,7 +683,7 @@ body{background:var(--canvas)}
 .sbrand-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
 .sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:14px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut);background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:2px 8px;line-height:1.4}
-.navlist{flex:1 1 auto;overflow:auto;padding:8px}
+.navlist{flex:1 1 auto;min-height:0;overflow:auto;padding:8px;scrollbar-width:thin}
 .navgroup{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
 .nrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer}
 .nrow:hover{background:var(--hover);color:var(--tx)}
@@ -1090,13 +1113,35 @@ body.display #dp-stage{ position:fixed; inset:0; display:grid!important; grid-te
 #dp-title b{ color:var(--tx) }
 #dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
   letter-spacing:-.02em; color:var(--tx); font-variant-numeric:tabular-nums }
-#dp-fit{ transform-origin:top left; width:1440px }
+#dp-fit{ min-width:0; min-height:0 }
 body.display.dp-idle{ cursor:none }
 body.display.dp-idle .dp-exit{ opacity:0 }
 .dp-exit{ transition:opacity .3s }
 /* In display mode the cockpit is one glanceable board: the widgets the user
    left on, side by side, nothing scrolling out of sight. */
-body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)) }
+/* Fill the screen, both ways: the grid takes the leftover height and every
+   panel stretches into its share of it, so a wall display is a full board
+   rather than a letterboxed one. */
+body.display #dp-fit{ display:flex; flex-direction:column }
+body.display #mc-cockpit{ display:flex; flex-direction:column; gap:12px; flex:1; min-height:0 }
+body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch;
+  flex:1; min-height:0 }
+body.display #mc-cockpit .mc-col{ min-height:0 }
+body.display #mc-cockpit .mc-col > .mc-panel{ flex:1; min-height:0 }
+body.display #mc-cockpit .mc-panel{ display:flex; flex-direction:column }
+body.display #mc-cockpit .mc-fleet,
+body.display #mc-cockpit .mc-feed,
+body.display #mc-cockpit .mc-lead,
+body.display #mc-cockpit .lp-grid{ flex:1; min-height:0; align-content:start }
+/* The launchpad is a row of icons on a wall, not a column of them. */
+body.display #lp-panel{ flex:0 0 auto }
+body.display #mc-cockpit .mc-engine{ flex:1; align-content:center }
+/* Spread the rows into the height the wall gives them, instead of stacking
+   them at the top of a tall panel with dead space underneath. */
+body.display #mc-cockpit .mc-fleet{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-feed{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-lead{ display:flex; flex-direction:column; justify-content:space-evenly }
+body.display #mc-cockpit .mc-burn{ flex:1; align-content:center }
 body.display #mc-cockpit [data-dp-off]{ display:none!important }
 body.display #mc-cockpit .mc-feed{ max-height:none }
 /* A wall screen is read, not operated: the launchpad's own edit controls go,
@@ -1233,6 +1278,47 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-mb-fill{ height:100%; border-radius:4px }
 .mc-host-spark{ margin-bottom:6px }
 .mc-host-foot{ display:flex; align-items:center; gap:10px; font-size:10px; color:var(--mut); font-family:var(--mono) }
+/* Tight rail: same information, less of it per host — the OS line and the
+   cores/temp/uptime footer go, the micro-bars stay, because "how hard is that
+   box working" is the reason the rail exists. Turned on by the fit pass when a
+   fleet is taller than the fold, never by hand. */
+body.mc-tight .mc-fleet{ gap:7px; padding:3px 10px 10px }
+body.mc-tight .mc-host{ padding:8px 10px }
+body.mc-tight .mc-host-top{ margin-bottom:5px }
+body.mc-tight .mc-host-os,
+body.mc-tight .mc-host-foot{ display:none }
+body.mc-tight .mc-microbars{ margin-bottom:0 }
+/* Tier two of the fit: when trimming lists and tightening the rail still
+   leaves the board taller than the fold, the centre column gives up its
+   ceremony — the gauges and the burn figure are decorative at that size, the
+   numbers inside them are not. */
+body.mc-tight .mc-panel{ padding-bottom:4px }
+body.mc-tight .mc-tg-ring{ max-width:88px }
+body.mc-tight .mc-engine.mc-tri{ gap:10px }
+body.mc-tight .mc-tg-num{ font-size:22px }
+body.mc-tight .mc-tg-pct{ font-size:12px }
+body.mc-tight .mc-engine{ padding:4px 14px 8px }
+body.mc-tight .mc-tg-label{ font-size:10px }
+body.mc-tight .mc-tg-sub{ font-size:9px; min-height:0 }
+body.mc-tight .mc-burn-num{ font-size:34px }
+body.mc-tight .mc-burn{ padding-top:2px }
+body.mc-tight .mc-bstat{ padding:5px 8px }
+body.mc-tight .mc-ph{ padding-bottom:4px }
+body.mc-tight .mc-burn{ padding-bottom:4px }
+body.mc-tight .mc-lp .lp-grid{ gap:5px }
+body.mc-tight .mc-lp .lp-tile{ padding:7px 5px 6px }
+body.mc-tight .mc-lp .lp-ic{ width:26px; height:26px; border-radius:8px }
+body.mc-tight .mc-lp .lp-ic svg{ width:15px; height:15px }
+/* The fit's last-resort scale pays for itself with a negative bottom margin on
+   the cockpit. That margin has to stay INSIDE the tab section, or it collapses
+   straight out of it and the page keeps the unscaled height — which is exactly
+   what happened on a 1280x720 screen: the board shrank and the window scrolled
+   anyway. flow-root makes the section contain it. */
+section[data-tab="overview"]{ display:flow-root }
+/* "and N more" — the honest end of any list the fold cut short. */
+.mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
+  font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
+.mc-more-row:hover{ color:var(--accent) }
 .mc-host-foot .mc-sp{ margin-left:auto }
 .mc-off-msg{ font-size:11px; color:var(--crit); font-family:var(--mono); display:flex; align-items:center; gap:6px }
 
@@ -1349,7 +1435,11 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-host.mc-focus{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
 .mc-host-open{ background:none; border:0; color:var(--mut); cursor:pointer; font-size:12px; padding:0 2px; margin-left:4px; line-height:1; flex:none }
 .mc-host-open:hover{ color:var(--accent) }
-.mc-fleet{ max-height:560px; overflow-y:auto }
+/* The fleet rail used to scroll inside a 560px box, which cut the last host
+   card in half — a card that doesn't show what is in it is worse than one row
+   fewer. Nothing on the Overview clips now; the fit pass below decides how
+   much each list shows instead. */
+.mc-fleet{ max-height:none; overflow:visible }
 
 /* collapsed full fleet table */
 .mc-details{ margin:16px 0 }
@@ -2808,9 +2898,6 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
   </div>
 </section>
 
-<p class="cap" data-i18n-html="footer.about">Self-hosted &amp; open source • single container • no Prometheus/Grafana required • history downsampled on read.
-GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker API.
-<br>Ideas welcome — see <a href="https://github.com/SikamikanikoBG/homelab-monitor/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md</a> · issues &amp; PRs always open.</p>
 </div></main></div>
 
 <!-- ───────── Update-available modal ───────── -->
@@ -5550,7 +5637,7 @@ function renderHealth(){
     const actBtn = e.target.closest('.ct-act');
     if(actBtn){ e.stopPropagation();
       const tr = actBtn.closest('.ctrow');
-      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1');
+      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1', 'local');
       return;
     }
     if(e.target.closest('.ctl-policy')) return;
@@ -5562,7 +5649,7 @@ function renderHealth(){
     if(!confirm(`Change restart policy for "${tr.dataset.ct}" to "${sel.value}"?`)){
       loadHealth(); return; // revert the select to server state
     }
-    setContainerRestartPolicy(tr.dataset.ct, sel.value);
+    setContainerRestartPolicy(tr.dataset.ct, sel.value, 'local');
   };
   if(TAB==='containers') pulseIfChanged('containers', dk);
 
@@ -7673,6 +7760,7 @@ function paintMissionControl(){
   mcPaintFeed($);
   mcPaintFleet($);
   lpPaint();
+  if(!_mcFitting) mcScheduleFit();
 }
 
 // Gauge ticks (built once, reused on every paint).
@@ -8125,8 +8213,9 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   const lead=$('mc-lead');
   const metered = cost.enabled!==false && (measured.indexOf('gpu')>=0 || measured.indexOf('cpu')>=0);
   let rows;
+  const capL=Math.max(2, MC_FIT.lead);
   if(metered && (cost.breakdown||[]).length){
-    const bd = cost.breakdown.slice(0,6);
+    const bd = cost.breakdown.slice(0, capL);
     const sum = bd.reduce((a,r)=>a+(r.cost||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.cost','What\'s Costing You');
     $('mc-cost-tag').textContent=I18N.tf('mc.this_week','this week · {v} {cur}',{v:(machine.cost&&machine.cost.d7!=null?machine.cost.d7:sum).toFixed(2),cur});
@@ -8139,7 +8228,7 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   } else {
     // Not metered → Heaviest Containers · by RAM
     const cs=((HH&&HH.docker&&HH.docker.containers)||[]).filter(c=>c.mem_bytes>0)
-            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0,6);
+            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0, capL);
     const sum=cs.reduce((a,c)=>a+(c.mem_bytes||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.heaviest','Heaviest Containers · by RAM');
     $('mc-cost-tag').textContent=I18N.tf('mc.n_containers','{n} containers',{n:cs.length});
@@ -8153,7 +8242,10 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
     <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
     <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
-    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
+    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('')
+    + (rows.length >= capL ? `<button type="button" class="mc-more-row" data-more="costs">${I18N.t('mc.see_all_costs','See the full breakdown →')}</button>` : '');
+  const ml=lead.querySelector('[data-more]');
+  if(ml) ml.onclick=()=>showTab('costs');
 }
 function mcAttentionCount(){
   // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
@@ -8199,14 +8291,112 @@ function mcPaintFeed($){
   ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
   if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
   const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
-  feed.innerHTML = ins.slice(0,7).map(i=>{
+  const capF=Math.max(2, MC_FIT.feed);
+  const restF=Math.max(0, ins.length-capF);
+  feed.innerHTML = ins.slice(0,capF).map(i=>{
     const lv=MC_LVL[i.level]||'info';
     return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
       <div class="mc-ins-ic">${icon[lv]||'•'}</div>
       <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
-  }).join('');
+  }).join('') + (restF ? `<button type="button" class="mc-more-row" data-more="uptime">+ ${I18N.tf('mc.n_more','{n} more',{n:restF})}</button>` : '');
+  const mf=feed.querySelector('[data-more]');
+  if(mf) mf.onclick=()=>showTab('uptime');
   $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
 }
+// ── Fit the Overview to the fold ─────────────────────────────────────────────
+// The Overview is a front page: what it says should be readable in one glance,
+// without scrolling and without a panel quietly cutting a card in half (which
+// is what the fleet rail's 560px scroll box did).
+//
+// It fits by showing FEWER ROWS, not smaller ones. Shrinking the type is how a
+// dashboard becomes unreadable at exactly the moment it has the most to say,
+// and clipping a list is a lie about what is in it. So: measure how far the
+// cockpit overruns the fold, trim the two lists that can lose rows without
+// losing meaning (the feed, the cost leaderboard — each says how many it left
+// out and links to its tab), and if the fleet rail alone is still too tall,
+// switch it to the tight tile. Below a usable minimum it stops and lets the
+// page scroll; a 20-host fleet is genuinely taller than a laptop screen, and
+// pretending otherwise would be the same lie in a new place.
+const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
+const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
+const MC_FIT_SCALE_MIN = 0.78;   // below this the type stops being readable
+let _mcFitting = false;
+function mcFitToFold(budget){
+  const ck = document.getElementById('mc-cockpit');
+  if(!ck || _mcFitting || TAB !== 'overview' || !ck.offsetParent) return;
+  if(DP_ON && budget == null) return;            // display mode passes its own budget
+  // Space between the top of the cockpit and the bottom of the window, less the
+  // footer note that should stay visible under it.
+  ck.style.transform = ''; ck.style.width = ''; ck.style.marginBottom = '';   // measure at natural size
+  // How much height the cockpit may occupy. Derived from the page's own
+  // overflow rather than from a guess at what sits above and below it: every
+  // margin, every ancestor's padding and anything that lands under it are
+  // then accounted for exactly, and "fits the fold" means the window does not
+  // scroll — not "fits except for forty pixels of padding".
+  const natural0 = ck.getBoundingClientRect().height;
+  const over0 = document.documentElement.scrollHeight - window.innerHeight;
+  const avail = budget != null ? budget : (natural0 - Math.max(0, over0));
+  if(avail < 260) return;                       // a phone: let it scroll, honestly
+  const over = () => ck.getBoundingClientRect().height - avail;
+  if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
+
+  _mcFitting = true;
+  try{
+    // Grow back first, so a resized-larger window undoes earlier trimming.
+    MC_FIT.feed = 7; MC_FIT.lead = 6; MC_FIT.pins = 99;
+    if(MC_FIT.tight){ MC_FIT.tight = false; document.body.classList.remove('mc-tight'); }
+    paintMissionControl();
+    // Then trim, one row at a time, re-measuring after each pass. Bounded by
+    // the minimums, so this terminates.
+    let guard = 40;
+    while(over() > 0 && guard-- > 0){
+      const feed = document.getElementById('mc-feed');
+      const lead = document.getElementById('mc-lead');
+      const tallest = (feed && feed.scrollHeight) >= (lead && lead.scrollHeight) ? 'feed' : 'lead';
+      if(MC_FIT[tallest] > MC_FIT_MIN[tallest]) MC_FIT[tallest]--;
+      else if(MC_FIT.feed > MC_FIT_MIN.feed) MC_FIT.feed--;
+      else if(MC_FIT.lead > MC_FIT_MIN.lead) MC_FIT.lead--;
+      else if(!MC_FIT.tight){ MC_FIT.tight = true; document.body.classList.add('mc-tight'); }
+      // The pins go last and never below five: the launchpad is the half of
+      // this page the fold is FOR, so it is the last thing to give ground —
+      // and what it folds away says how many and comes back on one click.
+      else if(!LP_SHOW_ALL && MC_FIT.pins > MC_FIT_MIN.pins){
+        MC_FIT.pins = Math.max(MC_FIT_MIN.pins, Math.min(MC_FIT.pins, LP_ITEMS.length) - 1);
+      }
+      else break;                                // nothing left to give
+      paintMissionControl();
+    }
+    // Last resort, after every row that could go has gone: shrink the board
+    // itself, but only a little. A 4% squeeze nobody notices is worth it to
+    // keep the page on one screen; a 40% one would just be an unreadable
+    // dashboard, so below MC_FIT_SCALE_MIN it stops and lets the page scroll.
+    const ck2 = document.getElementById('mc-cockpit');
+    ck2.style.transform = ''; ck2.style.width = ''; ck2.style.marginBottom = '';
+    const natural = DP_ON ? 0 : ck2.getBoundingClientRect().height;
+    // Only on a screen wide enough for the three-column board. A phone stacks
+    // the columns into one long page — shrinking that to 82% would make it
+    // unreadable AND still scroll, which is the worst of both.
+    if(natural > avail && window.innerWidth >= 900){
+      const s = Math.max(MC_FIT_SCALE_MIN, avail / natural);
+      if(s < 0.999){
+        ck2.style.transformOrigin = 'top left';
+        ck2.style.transform = `scale(${s.toFixed(3)})`;
+        ck2.style.width = `${(100 / s).toFixed(3)}%`;     // keep it full-bleed after the scale
+        // A transform doesn't change layout size: without this the page still
+        // reserves the unscaled height and still scrolls, which is exactly the
+        // bug this whole pass exists to kill.
+        ck2.style.marginBottom = `${Math.round(-natural * (1 - s))}px`;
+      }
+    }
+  } finally { _mcFitting = false; }
+}
+let _mcFitT = null;
+function mcScheduleFit(){
+  clearTimeout(_mcFitT);
+  _mcFitT = setTimeout(mcFitToFold, 120);        // after the paint that triggered it
+}
+addEventListener('resize', mcScheduleFit);
+
 // Tapping a panel header jumps to that panel's own tab (data-goto).
 
 // ── Launchpad: the apps you pin on the Overview ──────────────────────────────
@@ -8220,6 +8410,7 @@ function mcPaintFeed($){
 // wall screen. Only the "which widgets in display mode" choice is per-browser.
 let LP_ITEMS = [];
 let LP_LOADED = false;
+let LP_SHOW_ALL = false;   // set by the "+N" tile: never fold the pins away again
 // Icons are the app's own stroke family (same set the headings use), so a tile
 // never looks like a sticker pasted on the dashboard. A pin with no icon gets
 // the brand logo when we recognise the app, else a monogram in a stable colour.
@@ -8316,8 +8507,14 @@ function lpPaint(){
   }
   // Grouped, groups in first-seen order, ungrouped first — the order the user
   // dragged them into, not an alphabetical reshuffle behind their back.
+  // On a short screen the fit pass caps how many tiles are drawn (see
+  // mcFitToFold); the rest are one "+N" tile away, and asking for them once
+  // pins the full grid open for the session.
+  const cap = LP_SHOW_ALL ? LP_ITEMS.length : Math.max(3, MC_FIT.pins);
+  const shown = LP_ITEMS.slice(0, cap);
+  const hidden = LP_ITEMS.length - shown.length;
   const groups=[]; const byGroup=new Map();
-  LP_ITEMS.forEach((it,i)=>{
+  shown.forEach((it,i)=>{
     const g=it.group||'';
     if(!byGroup.has(g)){ byGroup.set(g,[]); groups.push(g); }
     byGroup.get(g).push({it,i});
@@ -8338,8 +8535,12 @@ function lpPaint(){
         <span class="lp-nm">${esc(it.name)}</span></a>`;
     }).join('');
   });
-  html+=`<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
+  html+= hidden
+    ? `<a class="lp-tile lp-add" href="#" id="lp-showall" title="${I18N.t('lp.show_all_t','Show every pin (the screen is short, so some were folded away)')}"><span class="lp-ic">+${hidden}</span><span class="lp-nm">${I18N.t('lp.more','more')}</span></a>`
+    : `<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
   setHTML(grid, html);
+  const sa=document.getElementById('lp-showall');
+  if(sa) sa.onclick=e=>{ e.preventDefault(); LP_SHOW_ALL=true; lpPaint(); };
   grid.querySelectorAll('[data-rm]').forEach(btn=>btn.onclick=e=>{
     e.preventDefault(); e.stopPropagation();
     LP_ITEMS.splice(+btn.dataset.rm,1); lpSave();
@@ -8489,15 +8690,14 @@ function dpFit(){
   if(!DP_ON) return;
   const fit=document.getElementById('dp-fit'), stage=document.getElementById('dp-stage');
   if(!fit||!stage) return;
-  fit.style.transform='';
-  const avail=stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 24;
-  const h=fit.scrollHeight||1;
-  const s=Math.min((stage.clientWidth-36)/1440, avail/h, 2.5);
-  fit.style.transform=`scale(${s.toFixed(3)})`;
-  // The transform doesn't change layout size, so centre what is left over
-  // horizontally rather than leaving a wide empty gutter on the right.
-  const slack=Math.max(0, (stage.clientWidth-36) - 1440*s);
-  fit.style.marginLeft=`${Math.round(slack/2)}px`;
+  // The board is fluid in display mode — it fills the stage's width, and its
+  // panels stretch into the leftover height (see body.display in the CSS), so
+  // nothing is scaled and nothing is letterboxed. The only thing left to do is
+  // trim the lists when even a stretched board would overflow: the same
+  // content-level fit the Overview uses, measured against the stage.
+  const avail = stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 22;
+  fit.style.height = avail + 'px';
+  mcFitToFold(avail);
 }
 function dpClock(){
   const c=document.getElementById('dp-clock');
@@ -8510,7 +8710,9 @@ function dpEnter(){
   const stage=document.getElementById('dp-stage');
   document.body.appendChild(stage);          // must be a body child for the hide-everything-else rule
   document.body.classList.add('display');
-  document.getElementById('dp-fit').appendChild(document.getElementById('mc-cockpit'));
+  const ck0 = document.getElementById('mc-cockpit');
+  ck0.style.transform = ''; ck0.style.width = ''; ck0.style.marginBottom = '';   // the stage does its own fitting
+  document.getElementById('dp-fit').appendChild(ck0);
   dpApplyWidgets();
   const t=document.getElementById('dp-title');
   if(t) t.innerHTML=`<b>${esc(document.title.replace(/ ?[—·].*$/,''))}</b>`;
@@ -8528,6 +8730,7 @@ function dpExit(){
   removeEventListener('resize', dpFit);
   document.body.classList.remove('display','dp-idle');
   const ck=document.getElementById('mc-cockpit');
+  ck.style.height='';
   ck.querySelectorAll('[data-dp-off]').forEach(el=>el.removeAttribute('data-dp-off'));
   document.getElementById('lp-panel').removeAttribute('data-dp-off');
   document.querySelector('section[data-tab="overview"]').prepend(ck);
@@ -9528,7 +9731,11 @@ function _rctBadge(c){
                                                    : ['warn', I18N.t('rct.exited','EXITED')];
   return ['info', esc(st.toUpperCase()||'?')];
 }
+// Controls are a property of the HUB (ENABLE_CONTROLS), not of the host being
+// shown: the hub is what runs the docker command, locally or over SSH.
+let RCT_CONTROLS = true;
 function renderRemoteContainers(sec, rc){
+  RCT_CONTROLS = ((HH && HH.docker) || {}).controls_enabled !== false;
   let box = sec.querySelector('.remote-ct');
   if(!box){
     box = document.createElement('div');
@@ -9551,7 +9758,18 @@ function renderRemoteContainers(sec, rc){
     const vb = c.vram_mb!=null ? c.vram_mb*1048576 : null;
     if(vb!=null){ tVram+=vb; anyVram=true; }
     if(c.disk_bytes!=null){ tDisk+=c.disk_bytes; anyDisk=true; }
-    return `<tr class="ctrow"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
+    const rp = c.restart_policy || '';
+    const ctl = RCT_CONTROLS ? `
+      <div class="ctlbtns">
+        <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
+        <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
+        <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+        <button type="button" class="btn-mini ct-pin${lpIsPinned(c.name,CURRENT_HOST)?' on':''}" data-pin="1" title="${lpIsPinned(c.name,CURRENT_HOST)?I18N.t('lp.pinned','On the Overview launchpad'):I18N.t('lp.pin_this','Pin to the Overview launchpad')}">${lpIsPinned(c.name,CURRENT_HOST)?'★':'☆'}</button>
+      </div>
+      ${rp?`<div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
+        ${['no','unless-stopped','on-failure','always'].map(pol=>`<option value="${pol}" ${rp===pol?'selected':''}>${pol}</option>`).join('')}
+      </select></div>`:''}` : `<span class="ctl-locked">🔒</span>`;
+    return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
       <td><span class="badge ${lvl}">${label}</span></td>
       <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.image)}">${esc(c.image)}</td>
       <td class="muted">${ports}</td>
@@ -9560,23 +9778,57 @@ function renderRemoteContainers(sec, rc){
       <td class="muted">${vb!=null ? fmtBytes(vb) : '—'}</td>
       <td data-col="disk" class="muted">${c.disk_bytes!=null ? fmtBytes(c.disk_bytes) : '—'}</td>
       <td class="muted">${c.cpu_pct!=null ? c.cpu_pct.toFixed(1)+'%' : '—'}</td>
-      <td class="muted">${esc(c.status||'')}</td></tr>`;
-  }).join('') || `<tr><td colspan="10" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
+      <td class="muted">${esc(c.status||'')}</td>
+      <td data-col="ctl">${ctl}</td></tr>`;
+  }).join('') || `<tr><td colspan="11" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
   const totals = rc.containers.length ? `<tr class="cttot">
       <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:s.running||0})}</span></td>
       <td></td><td data-col="image"></td><td></td><td></td>
       <td><b>${fmtBytes(tRam)}</b></td>
       <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
       <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
-      <td></td><td></td></tr>` : '';
+      <td></td><td></td><td data-col="ctl"></td></tr>` : '';
   const stale = rc.online ? '' : ` · <span style="color:var(--warn)">${I18N.t('rgpu.stale','host offline — showing last snapshot')}</span>`;
   box.innerHTML =
     `<div class="card"><h2>📦 ${I18N.tf('rct.title','Containers on {host}',{host:esc(CURRENT_HOST)})}</h2>
       <div class="grid">${kpis}</div>
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
-      <p class="cap">${I18N.tf('rct.cap','Read-only inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${I18N.t('rct.cap2','Logs and start/stop controls are hub-only for now.')}</p>
+      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th><th data-col="ctl">${I18N.t('col.controls','Controls')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
+      <p class="cap">${I18N.tf('rct.cap2','Inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${RCT_CONTROLS
+        ? I18N.t('rct.cap_ctl','Start/stop/restart, the restart policy and the logs all run over the same SSH connection the probe uses — the remote user needs docker access. Logs are a refreshing tail, not a live follow.')
+        : I18N.t('rct.cap_noctl','Controls are disabled on this hub (ENABLE_CONTROLS=0).')}</p>
     </div>`;
   applyIcons(box);
+  const host = CURRENT_HOST;
+  const tbl = box.querySelector('table');
+  if(tbl){
+    tbl.onclick = e => {
+      if(e.target.closest('.copybtn')) return;
+      const tr = e.target.closest('.ctrow'); if(!tr || !tr.dataset.ct) return;
+      const pinBtn = e.target.closest('.ct-pin');
+      if(pinBtn){ e.stopPropagation();
+        const c = (rc.containers||[]).find(x=>x.name===tr.dataset.ct) || {};
+        // The remote probe reports ports as a string ("0.0.0.0:8080->80/tcp"),
+        // not the hub's array — pull the published ports out of it so the pin
+        // form pre-fills the same way it does on the hub.
+        const ports = String(c.ports||'').split(',').map(s=>s.trim())
+          .map(s=>{ const m=s.match(/:(\d+)->/); return m?+m[1]:null; }).filter(Boolean);
+        lpPinContainer(tr.dataset.ct, ports, host);
+        return;
+      }
+      const actBtn = e.target.closest('.ct-act');
+      if(actBtn){ e.stopPropagation(); containerAction(tr.dataset.ct, actBtn.dataset.act, false, host); return; }
+      if(e.target.closest('.ctl-policy')) return;
+      openLogDrawer(tr.dataset.ct, host);
+    };
+    tbl.onchange = e => {
+      const sel = e.target.closest('.ct-policy'); if(!sel) return;
+      const tr = sel.closest('.ctrow');
+      if(!confirm(`Change restart policy for "${tr.dataset.ct}" on ${host} to "${sel.value}"?`)){
+        loadHostData(host).then(()=>renderLocalOnlyNotice('containers')); return;
+      }
+      setContainerRestartPolicy(tr.dataset.ct, sel.value, host);
+    };
+  }
   // Not the whole rc — rc.at is this poll's own timestamp, always different,
   // which would defeat the point of checking for a real change at all.
   if(TAB==='containers') pulseIfChanged('containers-'+CURRENT_HOST, [rc.containers, rc.summary]);
@@ -10703,43 +10955,59 @@ function burstSparkles(){
     if(!wasStarred) burstSparkles();   // reward the first click only
   });
 })();
-// ── Container controls (opt-in, ENABLE_CONTROLS) — local host only, the
-//    Containers tab has no remote inventory yet. ───────────────────────────────
-async function containerAction(name, action, isSelf){
+// ── Container controls (opt-in, ENABLE_CONTROLS) ─────────────────────────────
+// Host-aware: the hub goes through the Docker socket, a registered host through
+// SSH + `docker` (same plumbing the remote service controls already use). A
+// remote box's Containers tab therefore has every control the hub's does.
+async function containerAction(name, action, isSelf, host){
+  host = host || 'local';
   const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
   const msg = isSelf
     ? `${verb} ${name} — this is the container running this dashboard. ${action==='stop'?"You'll lose the UI until it's started again.":'The page may go briefly unreachable while it restarts.'} Continue?`
-    : `${verb} container '${name}'?`;
+    : `${verb} container '${name}'${host!=='local'?` on ${host}`:''}?`;
   if(!confirm(msg)) return;
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/action`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action, host})})).json();
   } catch(e){ toast('critical', `${verb} failed: ${e}`); return; }
   if(j.ok) toast('ok', `${verb === 'Restart' ? 'Restarted' : verb === 'Start' ? 'Started' : 'Stopped'} ${name}.`);
   else toast('critical', j.error || `${verb} failed.`);
-  await loadHealth();
+  await afterContainerChange(host);
 }
 
-async function setContainerRestartPolicy(name, policy){
+async function setContainerRestartPolicy(name, policy, host){
+  host = host || 'local';
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/restart-policy`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy, host})})).json();
   } catch(e){ toast('critical', `Could not change restart policy: ${e}`); return; }
   if(j.ok) toast('ok', `${name} will now restart: ${policy}.`);
   else toast('critical', j.error || 'Could not change restart policy.');
-  await loadHealth();
+  await afterContainerChange(host);
+}
+// After an action: the hub re-reads its own Docker list (instant), a remote is
+// re-probed so the row's new state lands now rather than up to a poll later.
+async function afterContainerChange(host){
+  if(!host || host==='local'){ await loadHealth(); return; }
+  // /test is the fleet's own "probe this host now" endpoint (it runs
+  // probe_host and stores the result), which is exactly what is needed here.
+  try{ await fetch('/api/hosts/'+encodeURIComponent(host)+'/test', {method:'POST'}); }catch(e){}
+  await loadFleet();
+  await loadHostData(host);
+  if(TAB==='containers') renderLocalOnlyNotice('containers');
 }
 
 // ── Container logs side drawer (issue #28) ───────────────────────────────────
-let LOG_ES=null, LOG_NAME=null;
-function openLogDrawer(name){
-  LOG_NAME=name;
-  document.getElementById('logdrawer-name').textContent=name;
+let LOG_ES=null, LOG_NAME=null, LOG_HOST='local', LOG_POLL=null;
+function openLogDrawer(name, host){
+  LOG_NAME=name; LOG_HOST=host||'local';
+  document.getElementById('logdrawer-name').textContent = LOG_HOST==='local' ? name : name+' · '+LOG_HOST;
   document.getElementById('logdrawer-follow').checked=true;
   document.getElementById('logdrawer').hidden=false;
   startLogStream(name, true);
 }
-function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; } }
+function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; }
+  if(LOG_POLL){ clearTimeout(LOG_POLL); LOG_POLL=null; } }
 function closeLogDrawer(){ stopLogStream(); document.getElementById('logdrawer').hidden=true; LOG_NAME=null; }
 function startLogStream(name, follow){
   stopLogStream();
@@ -10747,10 +11015,26 @@ function startLogStream(name, follow){
   body.textContent=''; status.textContent = follow ? 'streaming live…' : 'last 200 lines';
   let atBottom=true;
   body.onscroll=()=>{ atBottom = body.scrollTop+body.clientHeight >= body.scrollHeight-30; };
-  const es=new EventSource('/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0));
+  const remote = LOG_HOST && LOG_HOST!=='local';
+  if(remote) status.textContent = follow
+    ? I18N.tf('logs.remote_follow','last 200 lines from {h} · refreshing every 5s',{h:LOG_HOST})
+    : I18N.tf('logs.remote_snap','last 200 lines from {h}',{h:LOG_HOST});
+  const url='/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0)
+    + (remote?'&host='+encodeURIComponent(LOG_HOST):'');
+  const es=new EventSource(url);
   LOG_ES=es;
   es.onmessage=ev=>{ body.textContent += (body.textContent?'\n':'')+ev.data; if(atBottom) body.scrollTop=body.scrollHeight; };
-  es.addEventListener('end', ()=>{ status.textContent='— end of logs —'; stopLogStream(); });
+  es.addEventListener('end', ()=>{
+    stopLogStream();
+    // A remote host has no live follow (an SSH `docker logs -f` would hold a
+    // process open per viewer), so re-read the tail on a timer instead — and
+    // say that is what is happening.
+    if(remote && follow && !document.getElementById('logdrawer').hidden){
+      LOG_POLL=setTimeout(()=>{ if(LOG_NAME) startLogStream(LOG_NAME, true); }, 5000);
+      return;
+    }
+    status.textContent='— end of logs —';
+  });
   es.addEventListener('srverror', ev=>{ status.textContent='error: '+(ev.data||'could not read logs'); stopLogStream(); });
   es.onerror=()=>{ if(LOG_ES!==es) return; status.textContent = follow ? 'connection lost — retrying…' : 'stream closed'; };
 }

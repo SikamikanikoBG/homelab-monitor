@@ -857,7 +857,8 @@ def read_docker(gpu_procs=None):
     each pid's cgroup, mirroring what the hub does locally. {} when docker is
     absent or the SSH user can't reach the socket — the Hosts-tab capability
     check explains which of the two it is. Read-only by design: the probe never
-    starts, stops or inspects beyond `ps`/`stats`."""
+    starts or stops anything — it reads `ps`, `stats` and one `inspect` for the
+    restart policy."""
     try:
         r = subprocess.run(["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"],
                            capture_output=True, timeout=5)
@@ -881,6 +882,28 @@ def read_docker(gpu_procs=None):
                 "ports":  d.get("Ports") or "",
                 "uptime": (d.get("RunningFor") or "").replace(" ago", "") if state == "running" else "",
             })
+        # Restart policy, one `docker inspect` for the whole list (not one per
+        # container): the per-host Containers tab shows and sets it exactly as
+        # the hub's does, and without it the remote table's policy control has
+        # nothing to show. A failure here costs only that column.
+        try:
+            ids = [c["id"] for c in conts if c["id"]]
+            if ids:
+                r4 = subprocess.run(["docker", "inspect", "--format",
+                                     "{{.Id}}	{{.HostConfig.RestartPolicy.Name}}"] + ids,
+                                    capture_output=True, timeout=8)
+                if r4.returncode == 0:
+                    pol = {}
+                    for line in r4.stdout.decode("utf-8", "replace").splitlines():
+                        cid, _, name = line.partition("	")
+                        cid, name = cid.strip()[:64], name.strip()
+                        if cid and name:
+                            pol[cid] = name
+                    for c in conts:
+                        if c["id"] in pol:
+                            c["restart_policy"] = pol[c["id"]]
+        except (OSError, subprocess.SubprocessError):
+            pass
         # Writable-layer disk per container ("2.5MB (virtual 1.2GB)" → rw part).
         # Sizes make the daemon walk layers, so this pass is separate and its
         # failure only costs the Disk column.
