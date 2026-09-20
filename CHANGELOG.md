@@ -7,7 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
-## [0.36.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.0) — 2026-09-19 · **The front page fits the screen, the wall display fills it, and every box gets its controls**
+## [0.36.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.0) — 2026-09-20 · **The front page fits the screen, the wall display fills it, and every box gets its controls**
 **Added**
 - **Every control the hub's Containers tab has, on every box in the fleet.** A remote host's containers were a read-only list: no logs, no start/stop/restart, no restart policy, no pin. All of it works now, over the same SSH connection the probe already uses — the hub runs `docker` on that box (the remote user needs docker access, exactly as it does to be listed at all). The logs drawer opens for a remote container too; it is a refreshing 200-line tail rather than a live follow, because a real `docker logs --follow` over SSH would hold an ssh process open per viewer, and the drawer says so instead of looking live when it isn't. The probe also reports each container's restart policy now (one `docker inspect` for the whole list), which is what the remote policy control needs to show.
 - **The Containers tab works on a phone.** The controls column was hidden below 1100px, which made the mobile dashboard read-only for no reason other than table width. It stays now, and while the table scrolls sideways the container's name (left) and its controls (right) stick to the edges, so restarting something from your phone never means scrolling to find the button.
