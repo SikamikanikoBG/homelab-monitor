@@ -725,6 +725,44 @@ body{background:var(--canvas)}
 .hpill.on{border-color:var(--mut);background:var(--sel);color:var(--tx)}
 .hpill .pdot{width:7px;height:7px;border-radius:2px}
 .hpill.add{font-family:inherit}
+/* ── Global search (top bar, every tab) ─────────────────────────────────────
+   One box that does two things: filters the rows of whatever tab you are on
+   as you type, and lists matches from the whole fleet (containers, services,
+   hosts, models, pinned apps, pages) so a hit on another tab is one Enter away. */
+.gsearch{position:relative;margin-left:auto;flex:0 1 340px;min-width:200px}
+.gsearch .gs-box{display:flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 9px;border:1px solid var(--bd);border-radius:8px;background:var(--inset);transition:border-color .12s, box-shadow .12s}
+.gsearch .gs-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
+.gsearch .gs-ic{width:14px;height:14px;color:var(--mut);flex:none}
+.gsearch input{flex:1 1 auto;min-width:0;border:0;background:none;color:var(--tx);font:inherit;font-size:12.5px;outline:none;padding:0}
+.gsearch input::placeholder{color:var(--mut)}
+.gsearch input::-webkit-search-cancel-button{display:none}
+.gsearch kbd{font-family:var(--mono);font-size:10px;color:var(--mut);border:1px solid var(--bd);border-radius:4px;padding:0 5px;line-height:16px;background:var(--card)}
+.gsearch .gs-box:focus-within kbd{display:none}
+.gsearch .gs-count{font-family:var(--mono);font-size:10.5px;color:var(--accent);white-space:nowrap}
+.gsearch .gs-x{border:0;background:none;color:var(--mut);cursor:pointer;font-size:15px;line-height:1;padding:0 2px;display:none}
+.gsearch.has-q .gs-x{display:inline-block}.gsearch .gs-x:hover{color:var(--tx)}
+.gs-pop{position:absolute;top:calc(100% + 6px);right:0;width:min(520px, calc(100vw - 32px));max-height:min(60vh, 520px);overflow:auto;background:var(--card);border:1px solid var(--bd);border-radius:10px;box-shadow:0 12px 32px #0000004d, 0 1px 2px #00000033;padding:6px;z-index:40}
+.gs-pop[hidden]{display:none}
+.gs-grp{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);padding:8px 8px 3px}
+.gs-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;cursor:pointer;color:var(--tx);font-size:12.5px}
+.gs-row:hover,.gs-row.on{background:var(--hover)}
+.gs-row.on{box-shadow:inset 2px 0 0 var(--accent)}
+.gs-row .hic{width:15px;height:15px;color:var(--mut);flex:none}
+.gs-row .gs-dot{width:7px;height:7px;border-radius:2px;flex:none;background:var(--mut)}
+.gs-row .gs-dot.ok{background:var(--ok)}.gs-row .gs-dot.warn{background:var(--warn)}.gs-row .gs-dot.crit{background:var(--crit)}
+.gs-row .gs-nm{font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gs-row .gs-nm mark{background:none;color:var(--accent);font-weight:700}
+.gs-row .gs-sub{color:var(--mut);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto}
+.gs-row .gs-host{font-family:var(--mono);font-size:10px;color:var(--mut);border:1px solid var(--bd);border-radius:4px;padding:0 5px;line-height:16px;flex:none}
+.gs-row .gs-go{color:var(--mut);font-size:11px;flex:none;opacity:0}.gs-row.on .gs-go{opacity:1}
+.gs-empty{padding:14px 10px;color:var(--mut);font-size:12px;text-align:center}
+.gs-foot{display:flex;gap:12px;padding:6px 8px 2px;border-top:1px solid var(--bd);margin-top:4px;color:var(--mut);font-size:10.5px}
+.gs-foot kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--bd);border-radius:4px;padding:0 4px;background:var(--inset)}
+/* rows the filter hid, and the row a result jumped to */
+.gs-hide{display:none!important}
+@keyframes gsflash{0%{box-shadow:inset 3px 0 0 var(--accent);background:color-mix(in srgb, var(--accent) 18%, transparent)}100%{box-shadow:inset 3px 0 0 transparent;background:transparent}}
+.gs-flash td,.gs-flash{animation:gsflash 1.8s ease-out}
+@media (max-width:760px){.gsearch{flex:1 1 100%;margin-left:0;order:9}}
 /* range relocate into the top bar as a flat segmented control */
 #controls{margin:0;padding:0;border:0;background:none}
 #controls .ranges{gap:0;border:1px solid var(--bd);border-radius:6px;overflow:hidden;display:inline-flex;align-items:center}
@@ -1313,8 +1351,10 @@ body.mc-tight .mc-lp .lp-ic svg{ width:15px; height:15px }
    the cockpit. That margin has to stay INSIDE the tab section, or it collapses
    straight out of it and the page keeps the unscaled height — which is exactly
    what happened on a 1280x720 screen: the board shrank and the window scrolled
-   anyway. flow-root makes the section contain it. */
-section[data-tab="overview"]{ display:flow-root }
+   anyway. flow-root makes the section contain it. The :not([hidden]) guard
+   matters: an author display beats the hidden attribute (see .nav[hidden]),
+   and without it the cockpit painted on top of every other tab. */
+section[data-tab="overview"]:not([hidden]){ display:flow-root }
 /* "and N more" — the honest end of any list the fold cut short. */
 .mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
   font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
@@ -3496,6 +3536,7 @@ function mountShell(){
   const upd = document.getElementById('updbadge'); if(upd) tb.appendChild(upd);
   const osupd = document.getElementById('osupdbadge'); if(osupd) tb.appendChild(osupd);
   const live = document.querySelector('header .live'); if(live) tb.appendChild(live);
+  tb.insertAdjacentHTML('beforeend', gsMarkup());   // global search, last so it right-aligns
   const foot = document.getElementById('foot');
   foot.insertAdjacentHTML('beforeend',
     '<div class="footrow">'
@@ -10045,9 +10086,202 @@ function refreshLocalOnlyNotices(){
   });
 }
 
+// ── Global search ─────────────────────────────────────────────────────────────
+// Lives in the top bar on every tab. Two behaviours from one box:
+//   1. live filter — every table row (and Launchpad tile) on the current tab
+//      that doesn't match the query is hidden, with an "n / m" tally;
+//   2. fleet-wide results — a popover of matching containers, services, hosts,
+//      models, pinned apps and pages across ALL hosts; Enter/click jumps to the
+//      right host + tab, keeps the filter on, and flashes the row.
+// Shortcuts: "/" or Ctrl/Cmd+K focuses, ↑↓ pick, Enter opens, Esc closes/clears.
+let GS_Q = '', GS_RES = [], GS_SEL = 0, GS_RAF = 0;
+const GS_KIND = {
+  container:{ icon:'📦', tab:'containers', label:()=>I18N.t('search.kind.container','Containers') },
+  service:  { icon:'🧩', tab:'services',   label:()=>I18N.t('search.kind.service','Services') },
+  host:     { icon:'🖥', tab:'hosts',      label:()=>I18N.t('search.kind.host','Hosts') },
+  model:    { icon:'🧠', tab:'models',     label:()=>I18N.t('search.kind.model','AI models') },
+  app:      { icon:'🌐', tab:'overview',   label:()=>I18N.t('search.kind.app','Launchpad') },
+  page:     { icon:'📋', tab:null,         label:()=>I18N.t('search.kind.page','Pages') },
+};
+function gsMarkup(){
+  return `<div class="gsearch" id="gsearch"><div class="gs-box">`
+    + `<svg class="gs-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`
+    + `<input id="gs-in" type="search" autocomplete="off" spellcheck="false" placeholder="${I18N.t('search.placeholder','Search containers, services, hosts…')}" data-i18n-attr="placeholder:search.placeholder;aria-label:search.placeholder" aria-label="${I18N.t('search.placeholder','Search containers, services, hosts…')}">`
+    + `<span class="gs-count" id="gs-count"></span><kbd>/</kbd>`
+    + `<button type="button" class="gs-x" id="gs-x" title="${I18N.t('search.clear','Clear')}" data-i18n-attr="title:search.clear">×</button>`
+    + `</div><div class="gs-pop" id="gs-pop" hidden role="listbox"></div></div>`;
+}
+// Everything searchable, rebuilt per keystroke from the payloads already in
+// memory (HH / FLEET / D / LP_ITEMS) — no extra fetches, always as fresh as
+// the tab itself.
+function gsIndex(){
+  const out = [];
+  const ctStatus = c => (c.state && c.state!=='running') ? 'crit' : (c.status && c.status!=='ok') ? 'warn' : 'ok';
+  const addDocker = (dk, host) => ((dk&&dk.containers)||[]).forEach(c => out.push({
+    kind:'container', name:c.name, host, status:ctStatus(c),
+    sub:[c.image, c.status_text||c.state, typeof c.ports==='string'?c.ports:''].filter(Boolean).join(' · '),
+    text:[c.name, c.image, c.state, c.status_text, c.ports].filter(Boolean).join(' ') }));
+  const addSystemd = (sd, host) => ((sd&&sd.services)||[]).forEach(s => out.push({
+    kind:'service', name:s.name, host, status:s.status||'ok',
+    sub:[s.active, s.desc].filter(Boolean).join(' · '),
+    text:[s.name, s.desc, s.active, s.sub].filter(Boolean).join(' ') }));
+  if(HH){ addDocker(HH.docker, 'local'); addSystemd(HH.systemd, 'local'); }
+  ((FLEET&&FLEET.hosts)||[]).forEach(h => {
+    const st = h.is_local ? 'ok' : statusOfFleetRow(h)==='online' ? 'ok' : statusOfFleetRow(h)==='warn' ? 'warn' : 'crit';
+    out.push({ kind:'host', name:h.name, host:null, status:st,
+      sub:[h.is_local ? I18N.t('host.local','Local') : h.ssh_target, (h.host&&h.host.os&&h.host.os.label)||''].filter(Boolean).join(' · '),
+      text:[h.name, h.label, h.ssh_target, h.host&&h.host.hostname].filter(Boolean).join(' ') });
+    if(!h.is_local && h.host){ addDocker(h.host.docker, h.name); addSystemd(h.host.systemd, h.name); }
+  });
+  ((D&&D.now&&D.now.models)||[]).forEach(m => out.push({
+    kind:'model', name:m.model||m.name||'', host:m.host||'local', status:'ok',
+    sub:[m.service, m.vram?fmtMB(m.vram):''].filter(Boolean).join(' · '),
+    text:[m.model, m.name, m.service].filter(Boolean).join(' ') }));
+  (LP_ITEMS||[]).forEach(it => out.push({
+    kind:'app', name:it.name, host:it.host||'local', url:it.url, status:(lpStatus(it)||{}).cls || 'ok',
+    sub:[it.group, it.url].filter(Boolean).join(' · '),
+    text:[it.name, it.url, it.container, it.group].filter(Boolean).join(' ') }));
+  TABS.forEach(t => {
+    const btn = document.querySelector(`.nrow[data-t="${t.id}"]`);
+    if(btn && btn.style.display==='none') return;      // GPU-less box hides gpu/models
+    out.push({ kind:'page', name:I18N.t('nav.'+t.id, t.label), tab:t.id, host:null, status:null,
+      sub:I18N.t('nav.group.'+(t.zone||'monitoring'), t.zone||'monitoring'), text:t.label+' '+t.id });
+  });
+  return out;
+}
+// Scoring: whole-name prefix > word-start > substring in the name > substring
+// anywhere else > in-order subsequence of the name (so "imsv" finds immich_server).
+function gsScore(e, q){
+  const n = (e.name||'').toLowerCase(), t = (e.text||'').toLowerCase();
+  if(n===q) return 100;
+  if(n.startsWith(q)) return 80;
+  if(new RegExp('(^|[^a-z0-9])'+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).test(n)) return 60;
+  if(n.includes(q)) return 40;
+  if(t.includes(q)) return 20;
+  let i = 0; for(const ch of n){ if(ch===q[i]) i++; if(i===q.length) return 8; }
+  return 0;
+}
+function gsMark(name, q){
+  const i = name.toLowerCase().indexOf(q);
+  if(i<0) return esc(name);
+  return esc(name.slice(0,i)) + '<mark>' + esc(name.slice(i,i+q.length)) + '</mark>' + esc(name.slice(i+q.length));
+}
+function gsSearch(q){
+  q = q.trim().toLowerCase(); if(!q) return [];
+  const words = q.split(/\s+/);
+  return gsIndex().map(e => {
+      // every word must land somewhere; the first word decides the rank
+      const ok = words.every(w => gsScore(e, w) > 0); if(!ok) return null;
+      return Object.assign({score: gsScore(e, words[0]) - (e.kind==='page' ? 5 : 0)}, e);
+    }).filter(Boolean).sort((a,b)=>b.score-a.score || a.name.localeCompare(b.name)).slice(0, 30);
+}
+function gsRenderPop(){
+  const pop = document.getElementById('gs-pop'); if(!pop) return;
+  const q = GS_Q.trim().toLowerCase();
+  if(!q){ pop.hidden = true; pop.innerHTML=''; return; }
+  if(!GS_RES.length){
+    pop.innerHTML = `<div class="gs-empty">${I18N.tf('search.none','No matches for “{q}” anywhere in the fleet',{q:esc(GS_Q.trim())})}</div>`;
+    pop.hidden = false; return;
+  }
+  let html = '', last = null;
+  GS_RES.forEach((e, i) => {
+    if(e.kind!==last){ html += `<div class="gs-grp">${GS_KIND[e.kind].label()}</div>`; last = e.kind; }
+    const hostTag = e.host && e.host!=='local' ? `<span class="gs-host">${esc(e.host)}</span>` : '';
+    html += `<div class="gs-row${i===GS_SEL?' on':''}" data-i="${i}" role="option" aria-selected="${i===GS_SEL}">`
+      + svgIc(ICONS[GS_KIND[e.kind].icon]||'')
+      + (e.status ? `<span class="gs-dot ${e.status}"></span>` : '')
+      + `<span class="gs-nm">${gsMark(e.name, q.split(/\s+/)[0])}</span>`
+      + `<span class="gs-sub">${esc(e.sub||'')}</span>${hostTag}<span class="gs-go">↵</span></div>`;
+  });
+  html += `<div class="gs-foot"><span><kbd>↑</kbd><kbd>↓</kbd> ${I18N.t('search.hint_pick','pick')}</span><span><kbd>↵</kbd> ${I18N.t('search.hint_open','open')}</span><span><kbd>esc</kbd> ${I18N.t('search.hint_close','close')}</span></div>`;
+  pop.innerHTML = html; pop.hidden = false;
+  const on = pop.querySelector('.gs-row.on'); if(on) on.scrollIntoView({block:'nearest'});
+}
+// Filter the visible tab: table rows (never the header/footer/totals) and the
+// Launchpad tiles. Class toggles only, so the re-render observer below doesn't
+// see its own work.
+function gsApplyFilter(){
+  const q = GS_Q.trim().toLowerCase(), words = q ? q.split(/\s+/) : [];
+  const sec = document.querySelector(`section[data-tab="${TAB}"]`);
+  let shown = 0, total = 0;
+  if(sec){
+    const rows = sec.querySelectorAll('table tbody tr:not(.cttot):not(.gs-keep), .lp-tile[data-i]');
+    rows.forEach(r => {
+      if(r.querySelector('td[colspan]') && r.children.length===1) return;   // "no rows" placeholder
+      total++;
+      const t = r.textContent.toLowerCase();
+      const hit = !q || words.every(w => t.includes(w));
+      r.classList.toggle('gs-hide', !hit);
+      if(hit) shown++;
+    });
+  }
+  const c = document.getElementById('gs-count');
+  if(c) c.textContent = q && total ? `${shown} / ${total}` : '';
+  const box = document.getElementById('gsearch'); if(box) box.classList.toggle('has-q', !!q);
+}
+function gsSetQuery(v){
+  GS_Q = v; GS_RES = gsSearch(v); GS_SEL = 0;
+  gsRenderPop(); gsApplyFilter();
+}
+function gsClear(){ const i = document.getElementById('gs-in'); if(i) i.value=''; gsSetQuery(''); }
+function gsFlash(sel){
+  // after the jump the tab may still be rendering — poll briefly for the row
+  let tries = 0;
+  const tick = () => {
+    const el = document.querySelector(sel);
+    if(el){ el.classList.remove('gs-hide'); el.classList.add('gs-flash'); el.scrollIntoView({behavior:'smooth', block:'center'});
+      setTimeout(()=>el.classList.remove('gs-flash'), 1900); return; }
+    if(++tries < 20) setTimeout(tick, 150);
+  };
+  tick();
+}
+function gsOpen(e){
+  if(!e) return;
+  const pop = document.getElementById('gs-pop'); if(pop) pop.hidden = true;
+  if(e.kind==='page'){ gsClear(); showTab(e.tab); return; }
+  if(e.kind==='app' && e.url){ window.open(e.url, '_blank', 'noopener'); return; }
+  if(e.kind==='host'){ showTab('hosts'); gsFlash(`.hostrow[data-h="${CSS.escape(e.name)}"]`); return; }
+  if(e.host && e.host!==CURRENT_HOST && (e.kind==='container'||e.kind==='service')) setHost(e.host);
+  showTab(GS_KIND[e.kind].tab);
+  if(e.kind==='container') gsFlash(`section[data-tab="containers"] tr[data-ct="${CSS.escape(e.name)}"]`);
+  if(e.kind==='service')   gsFlash(`section[data-tab="services"] tr[data-svc="${CSS.escape(e.name)}"]`);
+}
+function gsInit(){
+  const inp = document.getElementById('gs-in'), pop = document.getElementById('gs-pop'), box = document.getElementById('gsearch');
+  if(!inp || !pop) return;
+  inp.addEventListener('input', () => gsSetQuery(inp.value));
+  inp.addEventListener('focus', () => { if(GS_Q.trim()) gsRenderPop(); });
+  inp.addEventListener('keydown', e => {
+    if(e.key==='ArrowDown'){ e.preventDefault(); if(GS_RES.length){ GS_SEL=(GS_SEL+1)%GS_RES.length; gsRenderPop(); } }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); if(GS_RES.length){ GS_SEL=(GS_SEL-1+GS_RES.length)%GS_RES.length; gsRenderPop(); } }
+    else if(e.key==='Enter'){ e.preventDefault(); gsOpen(GS_RES[GS_SEL]); }
+    else if(e.key==='Escape'){ e.preventDefault(); if(!pop.hidden){ pop.hidden = true; } else { gsClear(); inp.blur(); } }
+  });
+  pop.addEventListener('mousedown', e => e.preventDefault());   // keep the input focused
+  pop.addEventListener('click', e => { const r = e.target.closest('.gs-row'); if(r) gsOpen(GS_RES[+r.dataset.i]); });
+  document.getElementById('gs-x').addEventListener('click', () => { gsClear(); inp.focus(); });
+  document.addEventListener('click', e => { if(!box.contains(e.target)) pop.hidden = true; });
+  document.addEventListener('keydown', e => {
+    const tag = (e.target.tagName||'').toLowerCase();
+    const typing = tag==='input' || tag==='textarea' || tag==='select' || e.target.isContentEditable;
+    if(((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k') || (!typing && e.key==='/' && !e.ctrlKey && !e.metaKey && !e.altKey)){
+      e.preventDefault(); inp.focus(); inp.select();
+    }
+  });
+  // Tabs re-render their tables on every poll; re-apply the filter whenever
+  // the content changes (coalesced to one pass per frame). Attribute changes
+  // are deliberately not observed — our own class toggles must not loop.
+  new MutationObserver(() => { if(!GS_Q.trim() || GS_RAF) return;
+    GS_RAF = requestAnimationFrame(() => { GS_RAF = 0; gsApplyFilter(); }); })
+    .observe(document.querySelector('.content'), {childList:true, subtree:true});
+  const _showTab = showTab;
+  showTab = function(id){ _showTab(id); if(GS_Q.trim()) requestAnimationFrame(gsApplyFilter); };
+}
+
 // ── Wire-up ───────────────────────────────────────────────────────────────────
 mountShell();
 buildNav();
+gsInit();
 I18N.captureDefaults();  // record English (incl. heading emoji) before applyIcons strips it
 applyIcons();        // swap heading emoji for the SVG icon family (static markup + brand logo)
 initTheme();
