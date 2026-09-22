@@ -90,9 +90,21 @@
       "aiband.cap_lost",
       "mc.head_gpu_lost",
       "mc.di_tele",
-      "mc.gpu_lost"
+      "mc.gpu_lost",
+      "search.placeholder",
+      "search.clear",
+      "search.kind.container",
+      "search.kind.service",
+      "search.kind.host",
+      "search.kind.model",
+      "search.kind.app",
+      "search.kind.page",
+      "search.none",
+      "search.hint_pick",
+      "search.hint_open",
+      "search.hint_close"
     ],
-    "coverage": 0.8977
+    "coverage": 0.8851
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -934,5 +946,17 @@
   "aiband.cap_lost": "GPU telemetry lost on the hub — {err}",
   "mc.head_gpu_lost": "GPU telemetry lost",
   "mc.di_tele": "GPU telemetry lost on {h}",
-  "mc.gpu_lost": "telemetry lost"
+  "mc.gpu_lost": "telemetry lost",
+  "search.placeholder": "Search containers, services, hosts…",
+  "search.clear": "Clear",
+  "search.kind.container": "Containers",
+  "search.kind.service": "Services",
+  "search.kind.host": "Hosts",
+  "search.kind.model": "AI models",
+  "search.kind.app": "Launchpad",
+  "search.kind.page": "Pages",
+  "search.none": "No matches for “{q}” anywhere in the fleet",
+  "search.hint_pick": "pick",
+  "search.hint_open": "open",
+  "search.hint_close": "close"
 }

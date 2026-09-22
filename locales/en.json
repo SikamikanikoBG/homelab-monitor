@@ -845,5 +845,17 @@
   "aiband.cap_lost": "GPU telemetry lost on the hub — {err}",
   "mc.head_gpu_lost": "GPU telemetry lost",
   "mc.di_tele": "GPU telemetry lost on {h}",
-  "mc.gpu_lost": "telemetry lost"
+  "mc.gpu_lost": "telemetry lost",
+  "search.placeholder": "Search containers, services, hosts…",
+  "search.clear": "Clear",
+  "search.kind.container": "Containers",
+  "search.kind.service": "Services",
+  "search.kind.host": "Hosts",
+  "search.kind.model": "AI models",
+  "search.kind.app": "Launchpad",
+  "search.kind.page": "Pages",
+  "search.none": "No matches for “{q}” anywhere in the fleet",
+  "search.hint_pick": "pick",
+  "search.hint_open": "open",
+  "search.hint_close": "close"
 }
