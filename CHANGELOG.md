@@ -7,6 +7,13 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.36.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.1) — 2026-09-22 · **Search the whole fleet from the top bar — and the Overview stays on the Overview**
+**Added**
+- **A search box in the top bar, on every tab.** Type and the tab you are on filters itself: rows on the Containers, Services, Models, Hosts, Network and every other table that don't match are hidden, with an `n / m` tally so you know what the filter is doing; Launchpad tiles filter too. At the same time a results list opens with matches from the **whole fleet** — containers and services on every host, hosts themselves, loaded AI models, pinned apps and the pages of the dashboard — grouped by kind, each with its status dot and the host it lives on. Pick one and the dashboard switches to that host and tab, keeps the filter on and flashes the row; a pinned app opens; a page just opens. `/` or `Ctrl`/`Cmd`+`K` focuses it from anywhere, `↑`/`↓` pick, `Enter` opens, `Esc` closes, then clears. Nothing is fetched for it: it searches the payloads the tabs already hold, so it is exactly as current as what's on screen.
+
+**Fixed**
+- **The Overview cockpit painted on top of every other tab.** The 0.36.0 fit fix gave the Overview section `display:flow-root` to contain the scale compensation, and an author `display` beats the `hidden` attribute — so the Launchpad, Burn Rate and Engine board sat above the Containers, GPU, Costs and every other page. The rule now applies only while the section is shown.
+
 ## [0.36.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.0) — 2026-09-20 · **The front page fits the screen, the wall display fills it, and every box gets its controls**
 **Added**
 - **Every control the hub's Containers tab has, on every box in the fleet.** A remote host's containers were a read-only list: no logs, no start/stop/restart, no restart policy, no pin. All of it works now, over the same SSH connection the probe already uses — the hub runs `docker` on that box (the remote user needs docker access, exactly as it does to be listed at all). The logs drawer opens for a remote container too; it is a refreshing 200-line tail rather than a live follow, because a real `docker logs --follow` over SSH would hold an ssh process open per viewer, and the drawer says so instead of looking live when it isn't. The probe also reports each container's restart policy now (one `docker inspect` for the whole list), which is what the remote policy control needs to show.
