@@ -6,6 +6,8 @@ project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
 ## [Unreleased] — `next`
+**Fixed**
+- **The new search box rendered as two fields stacked on each other** — a wide one with the magnifying glass, and a taller one inside it. The dashboard's global input styling sits later in the stylesheet than the search box's own rules and outranks them, so the field kept drawing its own background, border and padding inside the box it was supposed to fill. It draws nothing of its own now.
 
 ## [0.36.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.1) — 2026-09-22 · **Search the whole fleet from the top bar — and the Overview stays on the Overview**
 **Added**
