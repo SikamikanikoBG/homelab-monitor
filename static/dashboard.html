@@ -262,6 +262,10 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .brandlg{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-right:6px;vertical-align:-3px}
 .brandlg svg{width:16px;height:16px;display:block}
 .brandlg.lg-mono{color:var(--tx);opacity:.8}
+/* An icon the hub fetched from the selfh.st set. Same slot as a bundled mark;
+   it simply removes itself if the hub has no icon for that name. */
+.brandlg img{width:16px;height:16px;display:block;object-fit:contain}
+.lp-ic .brandlg img{width:18px;height:18px}
 .mini{display:inline-block;height:8px;border-radius:3px;vertical-align:middle}
 .badge{font-size:11px;border-radius:20px;padding:1px 9px;border:1px solid var(--bd);white-space:nowrap}
 .badge.crit{color:var(--crit);border-color:#f8514955}.badge.warn{color:var(--warn);border-color:#d2992255}
@@ -2661,6 +2665,11 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <input type="checkbox" id="al_reduced_motion">
             <span data-i18n-html="general.reduced_motion_label"><b>Reduced motion</b> — turn off gauge animations, gauges just show the current value.</span>
           </label>
+          <label style="display:flex;align-items:center;gap:9px;margin:4px 0">
+            <input type="checkbox" id="al_icon_pack">
+            <span data-i18n-html="general.icon_pack_label"><b>App icons</b> — give containers and services their real logos, from the ~2,900-icon <a href="https://selfh.st/icons/" target="_blank" rel="noopener">selfh.st</a> set.</span>
+          </label>
+          <p class="cap" id="iconpack_cap" style="margin:2px 0 0 27px" data-i18n-html="general.icon_pack_cap" data-i18n-def="The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.">The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.</p>
         </div>
         <div>
           <div class="flabel" data-i18n="general.fast_interval_label" data-i18n-def="Live refresh interval">Live refresh interval</div>
@@ -3407,7 +3416,33 @@ function svcLogo(name, extra){
   for(const pair of SVC_LOGO_MATCH){ if(hay.indexOf(pair[0])>=0){ const lg=SVC_LOGOS[pair[1]];
     if(lg){ const fill=lg.m?'currentColor':lg.c;
       return `<span class="brandlg${lg.m?' lg-mono':''}" title="${esc(pair[1])}"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="${fill}" d="${lg.d}"></path></svg></span>`; } } }
-  return '';
+  // No bundled mark: ask the hub. It resolves the name against the selfh.st
+  // catalogue and serves the SVG from its own cache — the browser never talks
+  // to the icon CDN. Unknown name => 404 => the <img> quietly removes itself,
+  // leaving exactly the blank we'd have shown anyway.
+  if(!ICON_PACK) return '';
+  const q = '/api/icon?name=' + encodeURIComponent(name||'') + (extra ? '&ref=' + encodeURIComponent(extra) : '');
+  return `<span class="brandlg"><img src="${esc(q)}" alt="" loading="lazy" decoding="async" onerror="this.parentNode.remove()"></span>`;
+}
+// Off when the operator turns the icon pack off in Settings; flipped by
+// renderHealth() from /api/health, so the very first paint of a fresh page
+// uses whatever the last one knew rather than flashing icons on and off.
+let ICON_PACK = localStorage.getItem('hl_iconpack') !== '0';
+function setIconPack(on){
+  on = !!on;
+  if(on === ICON_PACK) return;
+  ICON_PACK = on; localStorage.setItem('hl_iconpack', on ? '1' : '0');
+}
+// The Settings caption tells you what the hub actually holds — "2,914 known,
+// 37 cached here" is the honest version of "app icons: on".
+async function loadIconStats(){
+  const cap = document.getElementById('iconpack_cap'); if(!cap) return;
+  let j; try{ j = await(await fetch('/api/icons/status')).json(); }catch(e){ return; }
+  const base = cap.getAttribute('data-i18n-def') || cap.textContent;
+  cap.innerHTML = base + (j && j.known
+    ? ' <b>' + I18N.tf('general.icon_pack_stats', '{known} icons known, {cached} cached on this hub.',
+        {known: j.known.toLocaleString(), cached: (j.cached||0).toLocaleString()}) + '</b>'
+    : '');
 }
 function applyIcons(scope){
   (scope||document).querySelectorAll('h2,.card-sub,.logo,.subtab,.mc-ph h3,.mc-hero-ph h3,.mc-scard-h').forEach(el=>{
@@ -6349,6 +6384,9 @@ async function loadAlerts(){
   document.getElementById('al_retention_days').value = s.retention_days||'180';
   document.getElementById('al_reduced_motion').checked = s.reduced_motion==='1';
   applyReducedMotion(s.reduced_motion==='1');
+  document.getElementById('al_icon_pack').checked = s.icon_pack!=='0';
+  setIconPack(s.icon_pack!=='0');
+  loadIconStats();
   // The dropdown only lists common choices; a box whose FAST_INTERVAL env var
   // picked something else needs that value present as an option too, or
   // .value silently falls back to "" and the next autosave (any field, not
@@ -6528,6 +6566,7 @@ function collectSettingsBody(){
     gpu_missing_alerts:     document.getElementById('al_gpu_missing').checked ? '1' : '0',
     retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
     reduced_motion:   document.getElementById('al_reduced_motion').checked ? '1' : '0',
+    icon_pack:        document.getElementById('al_icon_pack').checked ? '1' : '0',
     fast_interval_s:  (v=>{const n=parseInt(v,10);return String(isNaN(n)?2:Math.max(1,Math.min(30,n)));})(document.getElementById('al_fast_interval_s').value),
     // Omitted (not sent) until the draft is seeded from the server — an
     // autosave racing the first load would otherwise POST an empty list and
@@ -6619,7 +6658,7 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
   'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme',
-  'al_public_status_enabled','al_retention_days','al_reduced_motion','al_fast_interval_s'];
+  'al_public_status_enabled','al_retention_days','al_reduced_motion','al_icon_pack','al_fast_interval_s'];
 function wireAutoSave(){
   const rmChk=document.getElementById('al_reduced_motion');
   if(rmChk) rmChk.addEventListener('change', () => applyReducedMotion(rmChk.checked));

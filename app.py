@@ -137,6 +137,7 @@ from backend.api.experiments import bp as _experiments_bp
 from backend.api.uptime_api import bp as _uptime_api_bp
 from backend.api.hosts_api import bp as _hosts_api_bp
 from backend.api.integrations import bp as _integrations_bp
+from backend.api.icons_api import bp as _icons_bp
 from backend.api.benchmarks import bp as _benchmarks_bp
 app.register_blueprint(_system_bp)
 app.register_blueprint(_gpu_bp)
@@ -146,6 +147,7 @@ app.register_blueprint(_experiments_bp)
 app.register_blueprint(_uptime_api_bp)
 app.register_blueprint(_hosts_api_bp)
 app.register_blueprint(_integrations_bp)
+app.register_blueprint(_icons_bp)
 app.register_blueprint(_benchmarks_bp)
 
 # ── Prometheus gauges (defined once at module level) ──────────────────────────
@@ -4571,6 +4573,10 @@ SETTING_DEFAULTS = {
     # with no restart, but never faster than that startup value ever allowed
     # (fast_sampler() only runs at all when FAST_INTERVAL started non-zero).
     "fast_interval_s":     str(FAST_INTERVAL),
+    # ── App icons (#icons) — the selfh.st set, fetched by the hub and cached
+    # under the data volume. The browser only ever talks to this hub; see
+    # backend/icons.py. "0" falls back to the ~65 marks bundled in the page.
+    "icon_pack":           "1",      # "0" / "1"
 }
 SETTING_SECRETS = {"discord_webhook_url", "telegram_token", "email_password", "slack_webhook_url", "webhook_url", "api_key", "mlflow_token"}   # never round-tripped to the UI in full
 
@@ -7569,6 +7575,18 @@ from backend.collectors import brief_worker
 from backend.collectors import watchdog as _collector_watchdog
 from backend.collectors import fast_sampler, fast_sample_once
 
+# ── App icons (selfh.st), cached on the hub ───────────────────────────────────
+# The store lives next to the history DB, so the icons the hub has fetched ride
+# the same ./data volume and survive a rebuild. The catalogue loads from that
+# cache at boot (so a box with no internet still has yesterday's icons) and is
+# refreshed on a background thread, weekly, only when the feature is on.
+import backend.icons as _icons
+ICON_STORE = _icons.IconStore(
+    os.path.join(os.path.dirname(DB_PATH) or ".", "icons"),
+    enabled=lambda: get_settings().get("icon_pack", "1") == "1")
+ICON_STORE.load_cached_index()
+
+
 
 if "pytest" not in sys.modules:
     threading.Thread(target=collector, daemon=True).start()
@@ -7577,6 +7595,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=uptime_worker, daemon=True).start()
     threading.Thread(target=brief_worker, daemon=True).start()
     threading.Thread(target=_collector_watchdog, daemon=True).start()
+    ICON_STORE.refresh_index_async()
 
 
 import os as _os
