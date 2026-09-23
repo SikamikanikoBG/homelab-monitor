@@ -7,6 +7,10 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.36.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.2) — 2026-09-23 · **One search box, not two**
+**Fixed**
+- **The new search box rendered as two fields stacked on each other** — a wide one with the magnifying glass, and a taller one inside it. The dashboard's global input styling sits later in the stylesheet than the search box's own rules and outranks them, so the field kept drawing its own background, border and padding inside the box it was supposed to fill. It draws nothing of its own now.
+
 ## [0.36.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.1) — 2026-09-22 · **Search the whole fleet from the top bar — and the Overview stays on the Overview**
 **Added**
 - **A search box in the top bar, on every tab.** Type and the tab you are on filters itself: rows on the Containers, Services, Models, Hosts, Network and every other table that don't match are hidden, with an `n / m` tally so you know what the filter is doing; Launchpad tiles filter too. At the same time a results list opens with matches from the **whole fleet** — containers and services on every host, hosts themselves, loaded AI models, pinned apps and the pages of the dashboard — grouped by kind, each with its status dot and the host it lives on. Pick one and the dashboard switches to that host and tab, keeps the filter on and flashes the row; a pinned app opens; a page just opens. `/` or `Ctrl`/`Cmd`+`K` focuses it from anywhere, `↑`/`↓` pick, `Enter` opens, `Esc` closes, then clears. Nothing is fetched for it: it searches the payloads the tabs already hold, so it is exactly as current as what's on screen.
