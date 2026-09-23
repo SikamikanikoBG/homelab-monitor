@@ -36,6 +36,7 @@ SVG_URL   = "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/{slug}.svg"
 INDEX_TTL   = 7 * 86400   # re-fetch the catalogue weekly; new apps appear often
 MISS_TTL    = 86400       # remember a 404 for a day before asking again
 MAX_SVG     = 256 * 1024  # a logo that big is not a logo
+MAX_INDEX   = 8 * 1024 * 1024   # the catalogue is ~900 KB and grows; this is slack
 HTTP_TIMEOUT = 8
 
 # A slug is a filename on someone else's CDN and a path segment here. Keep it
@@ -241,10 +242,13 @@ class IconStore:
 
     # ── plumbing ──────────────────────────────────────────────────────────────
     @staticmethod
-    def _http_get(url):
+    def _http_get(url, limit=MAX_SVG):
+        """Read at most `limit`+1 bytes, so an oversized body is detected rather
+        than silently truncated — which is what a single shared cap did to the
+        catalogue: 256 KB of an 862 KB JSON document parses as nothing at all."""
         req = urllib.request.Request(url, headers={"User-Agent": "homelab-monitor"})
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-            return r.read(MAX_SVG + 1)
+            return r.read(limit + 1)
 
     def _path(self, slug, suffix=".svg"):
         return os.path.join(self.dir, slug + suffix)
@@ -279,9 +283,9 @@ class IconStore:
         if not self._enabled() or (not force and not self.index_stale()):
             return self.index.count
         try:
-            raw = self._open(INDEX_URL)
+            raw = self._open(INDEX_URL, MAX_INDEX)
             rows = json.loads(raw.decode("utf-8"))
-            if not isinstance(rows, list) or not rows:
+            if len(raw) > MAX_INDEX or not isinstance(rows, list) or not rows:
                 return self.index.count
             self.index.load(rows)
             self.index.fetched_at = time.time()
@@ -335,7 +339,7 @@ class IconStore:
         except OSError:
             pass
         try:
-            body = self._open(SVG_URL.format(slug=slug))
+            body = self._open(SVG_URL.format(slug=slug), MAX_SVG)
         except Exception as e:
             _log.debug("icon fetch failed for %s: %s", slug, e)
             self._mark_miss(slug)

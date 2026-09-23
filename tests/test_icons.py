@@ -117,7 +117,7 @@ class FakeNet:
         self.files = files
         self.calls = []
 
-    def __call__(self, url):
+    def __call__(self, url, limit=None):
         self.calls.append(url)
         if url in self.files:
             return self.files[url]
@@ -214,6 +214,16 @@ def test_a_failed_refresh_keeps_the_previous_catalogue(tmp_path):
     st.index.fetched_at = 0
     assert st.refresh_index() == 9
     assert st.index.resolve("plex") == "plex"
+
+
+def test_index_is_not_truncated_by_the_svg_size_cap(tmp_path):
+    """One shared read cap turned the 862 KB catalogue into 256 KB of broken
+    JSON — every icon silently missing. The index gets its own, larger limit."""
+    big = json.dumps(ROWS + [{"Name": "Pad %d" % i, "Reference": "pad-%d" % i,
+                              "SVG": "Yes"} for i in range(9000)]).encode()
+    assert len(big) > 256 * 1024
+    st, _ = _store(tmp_path, {INDEX: big})
+    assert st.refresh_index(force=True) == 9009
 
 
 def test_garbage_index_is_ignored(tmp_path):
