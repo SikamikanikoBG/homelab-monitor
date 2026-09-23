@@ -733,9 +733,16 @@ body{background:var(--canvas)}
 .gsearch .gs-box{display:flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 9px;border:1px solid var(--bd);border-radius:8px;background:var(--inset);transition:border-color .12s, box-shadow .12s}
 .gsearch .gs-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
 .gsearch .gs-ic{width:14px;height:14px;color:var(--mut);flex:none}
-.gsearch input{flex:1 1 auto;min-width:0;border:0;background:none;color:var(--tx);font:inherit;font-size:12.5px;outline:none;padding:0}
-.gsearch input::placeholder{color:var(--mut)}
-.gsearch input::-webkit-search-cancel-button{display:none}
+/* The box IS the .gs-box; the input inside it must draw nothing of its own.
+   The global input floor further down (input:not([type=checkbox])… , 0-4-1) is
+   later in the sheet and outranks any class selector here, so it would give the
+   field its own inset background, border and 7px padding — a second, taller box
+   drawn inside this one. The id wins that outright. */
+#gs-in{flex:1 1 auto;min-width:0;width:auto;height:100%;border:0!important;background:none!important;
+  color:var(--tx);font:inherit;font-size:12.5px;outline:none;box-shadow:none!important;padding:0;border-radius:0}
+#gs-in:hover,#gs-in:focus,#gs-in:focus-visible{border:0!important;background:none!important;box-shadow:none!important;outline:none}
+#gs-in::placeholder{color:var(--mut)}
+#gs-in::-webkit-search-cancel-button,#gs-in::-webkit-search-decoration{-webkit-appearance:none;display:none}
 .gsearch kbd{font-family:var(--mono);font-size:10px;color:var(--mut);border:1px solid var(--bd);border-radius:4px;padding:0 5px;line-height:16px;background:var(--card)}
 .gsearch .gs-box:focus-within kbd{display:none}
 .gsearch .gs-count{font-family:var(--mono);font-size:10.5px;color:var(--accent);white-space:nowrap}
