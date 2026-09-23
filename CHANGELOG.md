@@ -7,6 +7,10 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.37.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.37.0) — 2026-09-23 · **Your containers get their logos**
+**Added**
+- **Containers and services show their real logos.** The dashboard bundled ~65 brand marks, which covered the usual suspects and left everything else with a bare name. It now falls back to the [selfh.st icon set](https://selfh.st/icons/) — about 2,900 icons — so most of what you run gets its own mark, on the Containers and Services tabs, on every host in the fleet, and on Launchpad pins. **Your browser never talks to the icon CDN:** it asks the hub, and the hub fetches each icon once and serves it from the `./data` volume forever after. That keeps the list of icons you request — a precise inventory of what you self-host — off a third party's logs, keeps the icons working on a box with no internet, and keeps what you already have if the CDN ever goes away. Matching reads the container name and its image, so `immich_server` on `ghcr.io/immich-app/immich-server` is Immich, a snap unit is unwrapped, compose's `-1` suffix is ignored and `postgres` finds PostgreSQL — and it refuses to guess when two apps fit, because "whisper" is not Whisper Money. Nothing matched still means no icon, exactly the blank that was there before. On by default; **Settings → General → App icons** turns it off, and the caption there tells you how many icons this hub actually holds.
+
 ## [0.36.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.36.2) — 2026-09-23 · **One search box, not two**
 **Fixed**
 - **The new search box rendered as two fields stacked on each other** — a wide one with the magnifying glass, and a taller one inside it. The dashboard's global input styling sits later in the stylesheet than the search box's own rules and outranks them, so the field kept drawing its own background, border and padding inside the box it was supposed to fill. It draws nothing of its own now.

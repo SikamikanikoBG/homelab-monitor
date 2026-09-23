@@ -857,5 +857,8 @@
   "search.none": "No matches for “{q}” anywhere in the fleet",
   "search.hint_pick": "pick",
   "search.hint_open": "open",
-  "search.hint_close": "close"
+  "search.hint_close": "close",
+  "general.icon_pack_label": "<b>App icons</b> — give containers and services their real logos, from the ~2,900-icon <a href=\"https://selfh.st/icons/\" target=\"_blank\" rel=\"noopener\">selfh.st</a> set.",
+  "general.icon_pack_cap": "The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.",
+  "general.icon_pack_stats": "{known} icons known, {cached} cached on this hub."
 }
