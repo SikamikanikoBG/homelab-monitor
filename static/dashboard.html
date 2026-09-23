@@ -1120,6 +1120,7 @@ h2 .hic{ opacity:.9 }
   font-family:var(--mono); font-weight:700; font-size:12px; flex:none }
 .lp-ic svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round }
 .lp-ic .brandlg{ margin:0; width:18px; height:18px }
+.lp-ic .lp-over{ width:18px; height:18px; object-fit:contain; display:block }
 .lp-ic .brandlg svg{ width:18px; height:18px; stroke:none }
 .lp-nm{ font-size:10.5px; font-weight:600; line-height:1.15; text-align:center; max-width:100%;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
@@ -3411,7 +3412,7 @@ function _lgNorm(s){ return (' '+(s||'')).toLowerCase()
   .replace(/\b(docker\.io|ghcr\.io|lscr\.io|linuxserver\.io|quay\.io|gcr\.io|mcr\.microsoft\.com|registry\.[a-z0-9.-]+)\//g,' '); }
 // Returns a brand-logo chip (HTML) for a service/container, or '' if unrecognised.
 // `extra` is the container image (or a service description) used as a fallback haystack.
-function svcLogo(name, extra){
+function svcLogo(name, extra, bundledOnly){
   const hay=_lgNorm((name||'')+' '+(extra||''));
   for(const pair of SVC_LOGO_MATCH){ if(hay.indexOf(pair[0])>=0){ const lg=SVC_LOGOS[pair[1]];
     if(lg){ const fill=lg.m?'currentColor':lg.c;
@@ -3420,10 +3421,11 @@ function svcLogo(name, extra){
   // catalogue and serves the SVG from its own cache — the browser never talks
   // to the icon CDN. Unknown name => 404 => the <img> quietly removes itself,
   // leaving exactly the blank we'd have shown anyway.
-  if(!ICON_PACK) return '';
-  const q = '/api/icon?name=' + encodeURIComponent(name||'') + (extra ? '&ref=' + encodeURIComponent(extra) : '');
-  return `<span class="brandlg"><img src="${esc(q)}" alt="" loading="lazy" decoding="async" onerror="this.parentNode.remove()"></span>`;
+  if(!ICON_PACK || bundledOnly) return '';
+  return `<span class="brandlg"><img src="${esc(iconUrl(name, extra))}" alt="" loading="lazy" decoding="async" onerror="this.parentNode.remove()"></span>`;
 }
+const iconUrl = (name, extra) => '/api/icon?name=' + encodeURIComponent(name||'')
+  + (extra ? '&ref=' + encodeURIComponent(extra) : '');
 // Off when the operator turns the icon pack off in Settings; flipped by
 // renderHealth() from /api/health, so the very first paint of a fresh page
 // uses whatever the last one knew rather than flashing icons on and off.
@@ -8539,10 +8541,17 @@ function lpIconSvg(id){
 // ~70 well-known self-hosted apps; else a monogram on the name's stable colour.
 function lpFace(it){
   if(it.icon) return {html:lpIconSvg(it.icon), bg:colorFor(it.name)};
-  const lg=svcLogo(it.container||it.name, it.name);
+  const lg=svcLogo(it.container||it.name, it.name, true);
   if(lg) return {html:lg, bg:'var(--inset)', plain:true};
+  // No bundled mark. Draw the monogram, and lay the hub's icon over it if there
+  // is one — the tile is never blank while that resolves, and never empty if it
+  // turns out there is no icon for this name.
   const mono=(it.name||'?').replace(/[^\p{L}\p{N}]/gu,'').slice(0,2).toUpperCase() || '?';
-  return {html:esc(mono), bg:colorFor(it.name)};
+  const over = ICON_PACK
+    ? `<img class="lp-over" src="${esc(iconUrl(it.container||it.name, it.name))}" alt="" loading="lazy" decoding="async"
+         onerror="this.remove()" onload="lpOver(this)">`
+    : '';
+  return {html:`<span class="lp-mono">${esc(mono)}</span>`+over, bg:colorFor(it.name)};
 }
 // The status dot. A pin that names a container follows that container's real
 // state — on the hub from /api/health, on a remote from its own probe payload.
@@ -8564,6 +8573,13 @@ function lpStatus(it){
   if(c.state!=='running') return {cls:'crit', t:esc(c.status_text||c.state||'')};
   if(c.status && c.status!=='ok') return {cls:'warn', t:esc(c.status_text||c.status)};
   return {cls:'', t:esc(c.status_text||'running')};
+}
+// A fetched logo arrived for a tile that was showing its monogram: hide the
+// monogram and drop the tile's colour, so it reads like any other logo tile.
+function lpOver(img){
+  const ic = img.parentNode; if(!ic) return;
+  const mono = ic.querySelector('.lp-mono'); if(mono) mono.style.display='none';
+  ic.style.background='var(--inset)';
 }
 async function lpLoad(){
   try{ const j=await(await fetch('/api/shortcuts')).json(); LP_ITEMS=j.shortcuts||[]; }
