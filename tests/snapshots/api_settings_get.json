@@ -31,6 +31,7 @@
     "gpu_vram_alert_pct": "95",
     "gpu_vram_sustain_s": "300",
     "home_shortcuts": "",
+    "icon_pack": "1",
     "kwh_price": "",
     "kwh_price_night": "",
     "mlflow_token_set": false,
