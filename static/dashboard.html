@@ -2091,6 +2091,12 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
   <p class="cap" data-i18n-html="models.section_cap">One panel per model <b>server</b>: its VRAM timeline (shared by the models it hosts) plus each model's own peak &amp; average. <b>Runs</b> counts contiguous load sessions over the selected range and how many <b>spilled into system RAM</b> (didn't fully fit VRAM — the Now column shows the live VRAM + RAM split). <b>Used by</b> names the apps whose connections to the server overlapped the model's residency — approximate when several models share one server. A server is shown even while <b>Idle</b> (model unloaded / between requests), so nothing vanishes when VRAM is released. Recognised: Ollama, vLLM, SGLang, llama.cpp, LocalAI, HF TGI/TEI, LoRAX, mistral.rs, Aphrodite, koboldcpp, tabbyAPI, text-generation-webui, LM Studio, xinference, OpenLLM, LiteLLM, GPUStack, Cortex/Jan, Ramalama, Nexa, Triton, Infinity, faster-whisper/Speaches, Whisper ASR webservice/WhisperX, Wyoming (HA voice), OpenedAI-Speech, Stable Diffusion (A1111/Forge/SD.Next), InvokeAI, ComfyUI.</p>
 </section>
 
+<!-- ───────── AI Models Hall of Fame ───────── -->
+<section data-tab="hof" hidden>
+  <div id="hofbody"></div>
+  <p class="cap" data-i18n-html="hof.cap">Every model that has held this host's GPU during the selected range, ranked by total loaded time (residency samples × the sampling interval) — residency, not utilisation: a model sitting idle in VRAM still counts. Hub-local only, since the models table carries no host column. Retention trims the oldest history, so <b>All</b> reaches back only as far as this hub still keeps rows.</p>
+</section>
+
 <!-- ───────── Experiments / Runs ───────── -->
 <section data-tab="experiments" hidden>
   <div class="card" id="runs-card">
@@ -3200,6 +3206,7 @@ const TABS = [
   {id:'security',   label:'Security',   charts:false, zone:'monitoring'},
   {id:'uptime',     label:'Uptime',     charts:false, zone:'monitoring'},
   {id:'models',     label:'AI Models',  charts:false, zone:'ai'},
+  {id:'hof',        label:'🏆 Hall of Fame', charts:false, zone:'ai'},
   {id:'benchmarks', label:'Benchmarks', charts:false, zone:'ai'},
   {id:'experiments',label:'Experiments', charts:false, zone:'ai'},
   {id:'hosts',      label:'Hosts',      charts:false, settings:true, zone:'settings'},
@@ -3651,6 +3658,7 @@ function showTab(id){
   if(id==='security') renderSecurity();
   if(id==='services') renderServicesTab();
   if(id==='models'){ _wireRegistry(); loadRegistry(); }   // on-disk model inventory (load on view; no aggressive poll)
+  if(id==='hof') renderHof();   // its own endpoint (/api/models/hof), not /api/data
   // LLM Benchmark Lab lives in a later <script> block — on a deep link/reload
   // straight into #benchmarks this runs before that block has parsed, so guard
   // the call (the Lab block self-renders when it loads; see its static wiring).
@@ -5397,6 +5405,60 @@ function renderModels(){
     const table=`<table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>`;
     patchParts(card, [header, servingFor(svc,'local'), modelSpark(svc,tot), callersFor(svc), table]);
   });
+}
+// ── AI Models Hall of Fame ───────────────────────────────────────────────────
+// Every model that has held the GPU over the selected range, ranked by how long
+// it stayed resident (Steam most-played, for local LLMs). Reads its own endpoint
+// (/api/models/hof) instead of the shared /api/data, so the range buttons can
+// call straight back into it without a page reload. Hub-local by construction:
+// the `models` table carries no host column.
+async function renderHof(){
+  const el = document.getElementById('hofbody'); if(!el) return;
+  let j = null;
+  try{ j = await (await fetch('/api/models/hof?range='+encodeURIComponent(R))).json(); }catch(e){ j = null; }
+  const list = (j && j.models) || [];
+  if(!list.length){
+    el.innerHTML = '<div class="card"><div class="muted">'
+      + I18N.t('hof.empty','No model server has held the GPU yet — start Ollama and pour yourself a coffee. ☕')
+      + '</div></div>';
+    return;
+  }
+  const total = j.total_loaded_sec || 0;
+  const pct = m => total ? (m.loaded_for_sec / total * 100) : 0;
+  const bar = m => Math.max(2, pct(m)).toFixed(1);
+  const top = list[0], c0 = colorFor(top.server);
+  // #1 gets the hero card; the table ranks the rest (#2 onwards).
+  const workhorse = `<div class="card" style="text-align:center">
+    <div class="muted" style="font-size:11px;letter-spacing:.09em;text-transform:uppercase">${I18N.t('hof.workhorse','Workhorse')}</div>
+    <div style="font-size:26px;font-weight:800;margin:8px 0 4px">🏆 ${copyable(top.model)}</div>
+    <div><span class="dot" style="background:${c0}"></span> ${esc(top.server)}</div>
+    <div style="font-size:22px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums">${fmtDur(top.loaded_for_sec)}</div>
+    <div class="muted" style="font-size:12px">${I18N.tf('hof.workhorse_meta','{pct}% of the loaded time in this range · peak {peak} VRAM',{pct:(top.share_pct||0).toFixed(1),peak:fmtMB(top.peak_vram_mb)})}</div>
+  </div>`;
+  const rest = list.slice(1);
+  const rows = rest.map((m,i)=>{
+    const c = colorFor(m.server);
+    return `<tr>
+      <td class="muted">${i+2}</td>
+      <td><span class="dot" style="background:${c}"></span>${copyable(m.model)}</td>
+      <td>${esc(m.server)}</td>
+      <td style="font-variant-numeric:tabular-nums">${fmtDur(m.loaded_for_sec)}</td>
+      <td class="vbars"><div class="vbar" title="${I18N.tf('hof.share_t','{pct}% of the loaded time in this range',{pct:bar(m)})}"><i style="width:${bar(m)}%;background:${c}"></i></div></td>
+      <td>${fmtMB(m.peak_vram_mb)}</td>
+      <td>${fmtMB(m.avg_vram_mb)}</td>
+      <td class="muted">${relTime(m.last_seen)}</td></tr>`;
+  }).join('');
+  const table = rest.length ? `<div class="card">
+    <h2>${I18N.t('hof.ranked','🏆 Ranked — every other model')}</h2>
+    <table><thead><tr>
+      <th>#</th><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('hof.server','Server')}</th>
+      <th>${I18N.t('hof.loaded','Loaded time')}</th><th>${I18N.t('hof.share','Share')}</th>
+      <th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('hof.last_seen','Last seen')}</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    <p class="cap">${I18N.tf('hof.total','{n} models held the GPU in this range — {total} of loaded time in total.',{n:list.length,total:fmtDur(total)})}</p>
+  </div>` : '';
+  el.innerHTML = workhorse + table;
+  pulseLive();
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
@@ -7389,7 +7451,7 @@ async function deleteHost(name){
 
 // ── Fleet + per-host (Issue #35 slice 2) ─────────────────────────────────────
 const HOST_SCOPED_TABS = new Set(['host','services','gpu']); // tabs that render from any host
-const LOCAL_ONLY_TABS  = new Set(['models','experiments','containers']);  // tabs not yet probed per-host (costs and GPU went per-host)
+const LOCAL_ONLY_TABS  = new Set(['models','hof','experiments','containers']);  // tabs not yet probed per-host (costs and GPU went per-host)
 
 function fmtMBshort(v){
   if(v==null) return '—';
@@ -10375,6 +10437,7 @@ document.addEventListener('lang:changed', ()=>{
   if(TAB==='costs')       safe(()=>renderCosts(true));
   if(TAB==='network')     safe(()=>renderNetwork());
   if(TAB==='security')    safe(()=>renderSecurity());
+  if(TAB==='hof')         safe(()=>renderHof());
   if(TAB==='hosts')       safe(()=>loadHosts());
   if(TAB==='disks')       safe(()=>{ const r=document.getElementById('disksbody'); if(r) r.dataset.sig=''; renderDisksTab(); });
 });
@@ -10388,6 +10451,7 @@ document.querySelectorAll('.rb').forEach(b=>b.onclick=()=>{R=b.dataset.r;localSt
   if(TAB==='experiments') renderExperiments(true);
   if(TAB==='costs') renderCosts(true);
   if(TAB==='gpu') renderGpuTab(true);
+  if(TAB==='hof') renderHof();   // own endpoint, so loadData() above doesn't re-range it
   // A remote's System-tab chart has its own feed, so loadData() above doesn't
   // re-range it — refetch here or the buttons look dead on every host but the hub.
   if(TAB==='host' && CURRENT_HOST!=='local') renderHostChart(true);});

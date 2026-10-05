@@ -1,0 +1,36 @@
+{
+  "models": [
+    {
+      "avg_vram_mb": 38998,
+      "first_seen": 1735689550,
+      "last_seen": 1735689600,
+      "loaded_for_sec": 60,
+      "model": "llama3:70b",
+      "peak_vram_mb": 39000,
+      "server": "ollama",
+      "share_pct": 46.2
+    },
+    {
+      "avg_vram_mb": 21998,
+      "first_seen": 1735689570,
+      "last_seen": 1735689600,
+      "loaded_for_sec": 40,
+      "model": "qwen2.5-coder:32b",
+      "peak_vram_mb": 22000,
+      "server": "ollama",
+      "share_pct": 30.8
+    },
+    {
+      "avg_vram_mb": 7999,
+      "first_seen": 1735689580,
+      "last_seen": 1735689600,
+      "loaded_for_sec": 30,
+      "model": "mistral-nemo:12b",
+      "peak_vram_mb": 8000,
+      "server": "vllm",
+      "share_pct": 23.1
+    }
+  ],
+  "range": "30d",
+  "total_loaded_sec": 130
+}

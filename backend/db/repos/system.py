@@ -165,6 +165,31 @@ def query_model_runs(since: int, gap: int, conn=None) -> list:
     ).fetchall()
 
 
+def min_ts_models(conn=None):
+    """Return the earliest ts in models, or None."""
+    c = conn or connection()
+    return c.execute("SELECT MIN(ts) FROM models").fetchone()[0]
+
+
+def query_model_hof(since: int, interval: int, conn=None) -> list:
+    """Hall-of-Fame leaderboard rows from models since `since`: one row per
+    (service, model), longest-resident first. `models` carries no interval_sec
+    column (unlike samples/power_proc), so loaded time is
+    COUNT(DISTINCT ts) * `interval` — the same rows × SAMPLE_INTERVAL convention
+    the AI Models tab already uses for runs/used-by. A sampling gap therefore
+    undercounts rather than stretches a span, the safer bias for a leaderboard.
+    Returns (service, model, loaded_for_sec, peak_vram_mb, avg_vram_mb,
+    first_seen, last_seen)."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT service,model,COUNT(DISTINCT ts)*? AS loaded_for_sec,"
+        "MAX(vram),AVG(vram),MIN(ts),MAX(ts) "
+        "FROM models WHERE ts>=? AND vram IS NOT NULL "
+        "GROUP BY service,model ORDER BY loaded_for_sec DESC, model ASC",
+        (interval, since)
+    ).fetchall()
+
+
 def query_model_callers(since: int, conn=None) -> list:
     """Attribute callers to *models* by time overlap: a caller↔server connection
     sample counts toward a model when that model was resident on the server at

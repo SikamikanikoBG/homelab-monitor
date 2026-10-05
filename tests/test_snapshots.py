@@ -83,6 +83,29 @@ def _seed_net_samples(n=2):
         app.DB.commit()
 
 
+def _seed_models():
+    """Insert deterministic residency rows into the models table.
+
+    Three models, all inside every range window, with deliberately different
+    row counts so the Hall of Fame order is fixed: loaded_for_sec is
+    rows × app.INTERVAL, so llama3:70b (6 rows) leads qwen2.5-coder:32b (4),
+    which leads mistral-nemo:12b (3). vram ticks down one MB per row so peak
+    and avg differ, and the last idle-looking row carries a RAM spill.
+    """
+    with app.LOCK:
+        rows = []
+        for svc, mdl, n, vram, ram in (
+            ("ollama", "llama3:70b", 6, 39000, 0),
+            ("ollama", "qwen2.5-coder:32b", 4, 22000, 0),
+            ("vllm", "mistral-nemo:12b", 3, 8000, 500),
+        ):
+            for i in range(n):
+                rows.append((FROZEN_TS - i * app.INTERVAL, svc, mdl, vram - i, ram))
+        app.DB.executemany(
+            "INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)", rows)
+        app.DB.commit()
+
+
 def _mock_latest():
     return {
         "ts": FROZEN_TS, "util": 42, "mem_used": 8192, "mem_total": 24576,
@@ -195,6 +218,23 @@ class TestSnapshots(unittest.TestCase):
             r = self.client.get("/api/models")
             data = r.get_json()
         assert_snapshot(self, "api_models", data)
+
+    def test_api_models_hof(self):
+        _seed_models()
+        with frozen_time():
+            r = self.client.get("/api/models/hof?range=30d")
+            data = r.get_json()
+        secs = [m["loaded_for_sec"] for m in data["models"]]
+        self.assertEqual(secs, sorted(secs, reverse=True),
+                         "Hall of Fame must be ordered by loaded_for_sec desc")
+        assert_snapshot(self, "api_models_hof", data)
+
+    def test_api_models_hof_empty(self):
+        with frozen_time():
+            r = self.client.get("/api/models/hof?range=30d")
+            data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        assert_snapshot(self, "api_models_hof_empty", data)
 
     # ─── /api/integration/keys GET ───────────────────────────────────────────
 

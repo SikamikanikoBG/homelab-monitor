@@ -47,6 +47,7 @@ const VIEW_RENDERERS = [
   'renderSecurity',
   'loadHosts',
   'renderDisksTab',
+  'renderHof',
 ];
 
 function build(tab, options = {}) {
@@ -140,6 +141,7 @@ section('active views — only the visible tab takes the locale change');
     ['security', 'renderSecurity', []],
     ['hosts', 'loadHosts', []],
     ['disks', 'renderDisksTab', []],
+    ['hof', 'renderHof', []],
   ];
 
   for (const [tab, renderer, expectedArgs] of cases) {
@@ -181,6 +183,7 @@ section('failure isolation — one stale view cannot block the rest');
     ['renderSecurity', 'security', null],
     ['loadHosts', 'hosts', null],
     ['renderDisksTab', 'disks', null],
+    ['renderHof', 'hof', null],
   ];
 
   for (const [failing, tab, nextCall] of cases) {
