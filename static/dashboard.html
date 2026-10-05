@@ -3062,7 +3062,6 @@ const I18N = {
   dict: {},                 // active non-English strings ({} for English)
   available: [{code:'en', name:'English', nativeName:'English', dir:'ltr'}],
   COVERAGE_MIN: 0.9,        // a locale must translate ≥90% of its keys to appear in the switcher
-  KNOWN: ['zh-CN'],         // non-English locale files to probe (mirror scripts/i18n-sync.py)
   debug: new URLSearchParams(location.search).has('i18n'),
 
   t(key, fallback){
@@ -3088,7 +3087,16 @@ const I18N = {
     return Math.max(0, (keys.length - todo.length) / keys.length);
   },
   async discover(){
-    for(const code of this.KNOWN){
+    // Ask the hub which locale files it actually has (issue #283). This used to
+    // be a hardcoded array, so a locale dropped into locales/ stayed invisible
+    // until someone edited that array to match it. English is inlined and needs
+    // no file, so the server only reports the non-English ones.
+    let codes = [];
+    try{
+      const j = await (await fetch('/api/locales',{cache:'no-cache'})).json();
+      codes = ((j && j.locales) || []).map(l=>l.code).filter(Boolean);
+    }catch(e){ /* older server / offline — English still renders */ }
+    for(const code of codes){
       try{
         const d = await (await fetch('/locales/'+code+'.json',{cache:'no-cache'})).json();
         const meta = d._meta || {}, cov = this._coverage(d);

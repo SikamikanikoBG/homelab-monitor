@@ -462,6 +462,16 @@ class TestSnapshots(unittest.TestCase):
         data = {"status": r.status_code}
         assert_snapshot(self, "locales_notfound", data)
 
+    # ─── GET /api/locales ────────────────────────────────────────────────────
+
+    def test_api_locales(self):
+        # Derived from the locales/ directory, so the baseline pins which files
+        # ship and their coverage — a locale added or a translation regressing
+        # below the switcher bar shows up as a snapshot diff (issue #283).
+        r = self.client.get("/api/locales")
+        data = r.get_json()
+        assert_snapshot(self, "api_locales", data)
+
     # ─── GET /api/mcp-status ─────────────────────────────────────────────────
 
     def test_api_mcp_status(self):

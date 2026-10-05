@@ -339,6 +339,46 @@ def locales(fn):
     return resp
 
 
+@bp.route("/api/locales")
+def api_locales():
+    import app as _app
+    """List the UI translation files actually present on disk (i18n, #283).
+
+    The dashboard used to probe a hardcoded array of locale codes, so a locale
+    dropped into locales/ stayed invisible until someone remembered to edit that
+    array to match. Deriving the list from the directory means a new file shows
+    up on its own. English is inlined in the dashboard (it needs no file), so it
+    is not reported here — the client always has it."""
+    out = []
+    try:
+        names = sorted(os.listdir(_app._LOCALES_DIR))
+    except OSError as e:
+        print(f"api/system api_locales error listing locales: {e}", flush=True)
+        names = []
+    for fn in names:
+        if not fn.endswith(".json") or fn == "en.json":
+            continue
+        try:
+            with open(os.path.join(_app._LOCALES_DIR, fn), encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception as e:
+            print(f"api/system api_locales error reading {fn}: {e}", flush=True)
+            continue
+        if not isinstance(d, dict):
+            continue
+        meta = d.get("_meta") or {}
+        code = fn[:-5]
+        keys = [k for k in d if k != "_meta"]
+        todo = meta.get("untranslated") or []
+        # Same coverage arithmetic the dashboard applies client-side, so the two
+        # agree on which locales clear the switcher bar.
+        cov = round((len(keys) - len(todo)) / len(keys), 4) if keys else 0
+        out.append({"code": code, "name": meta.get("name") or code,
+                    "nativeName": meta.get("nativeName") or code,
+                    "dir": meta.get("dir") or "ltr", "coverage": cov})
+    return jsonify({"locales": out})
+
+
 @bp.route("/api/mcp-status")
 def api_mcp_status():
     import app as _app
