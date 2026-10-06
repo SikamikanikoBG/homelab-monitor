@@ -483,7 +483,8 @@ function Read-Docker {
         if ($state -eq 'running') { $uptime = ("$($d.RunningFor)") -replace ' ago$', '' }
         $conts += [ordered]@{
             id     = $id
-            name   = ("$($d.Names)" -split ',')[0]
+            # probe.py falls back to '?' when Names is absent; keep parity.
+            name   = $(if ("$($d.Names)") { ("$($d.Names)" -split ',')[0] } else { '?' })
             image  = "$($d.Image)"
             state  = $state
             status = "$($d.Status)"
