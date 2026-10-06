@@ -10203,7 +10203,7 @@ function showScopeNotice(sec, tabId){
   // "register a custom AI server for this host" so it isn't a dead end.
   const link = m.link ? `<br><a href="#" data-scope-link="1">${esc(m.link.text)}</a>` : '';
   notice.innerHTML = `<div class="ic">${m.ic}</div>
-    <div><b>${esc(m.title)}</b><br><span class="muted">${m.detail}</span>${link}</div>`;
+    <div><b>${esc(m.title)}</b><br><span class="muted">${esc(m.detail)}</span>${link}</div>`;
   const a = notice.querySelector('[data-scope-link]');
   if(a && m.link) a.onclick = (e)=>{ e.preventDefault(); m.link.action(); };
 }
