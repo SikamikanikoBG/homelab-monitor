@@ -97,13 +97,16 @@ def api_models_hof():
     at the earliest models row (retention may already have pruned older history).
     Always 200, empty list rather than an error.
 
-    loaded_for_sec is COUNT(DISTINCT ts) * SAMPLE_INTERVAL (models rows carry no
-    per-row interval — see system_repo.query_model_hof). share_pct is the share
-    of the summed loaded time and may add up past 100%: several models can sit
-    in VRAM at once. total_loaded_sec covers every model, the list is capped at
-    the top 20."""
+    loaded_for_sec sums the per-row `interval_sec` the collector stored (rows
+    predating that column fall back to SAMPLE_INTERVAL — see
+    system_repo.query_model_hof). share_pct is the share of the summed loaded
+    time and may add up past 100%: several models can sit in VRAM at once.
+    total_loaded_sec covers every model; shown_loaded_sec only the returned top
+    20, which is what the list is capped to."""
     rng = request.args.get("range", "30d")
-    span = _app.RANGES.get(rng, 604800)
+    if rng not in _app.RANGES:
+        rng = "30d"                 # unknown range: echo the key actually used
+    span = _app.RANGES[rng]
     now = int(time.time())
     with _app.LOCK:
         since = (system_repo.min_ts_models(conn=_app.DB) or now) if span is None else now - span
@@ -117,7 +120,10 @@ def api_models_hof():
     total = sum(x["loaded_for_sec"] for x in models)
     for x in models:
         x["share_pct"] = round(100.0 * x["loaded_for_sec"] / total, 1) if total else 0.0
-    return jsonify({"range": rng, "total_loaded_sec": total, "models": models[:20]})
+    shown = models[:20]
+    return jsonify({"range": rng, "total_loaded_sec": total,
+                    "shown_loaded_sec": sum(x["loaded_for_sec"] for x in shown),
+                    "models": shown})
 
 
 @bp.route("/api/ai/now")

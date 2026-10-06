@@ -5413,9 +5413,12 @@ function renderModels(){
 // call straight back into it without a page reload. Hub-local by construction:
 // the `models` table carries no host column.
 async function renderHof(){
+  if(CURRENT_HOST!=='local'){ renderLocalOnlyNotice('hof'); return; }
+  clearLocalOnlyNotice('hof');
   const el = document.getElementById('hofbody'); if(!el) return;
   let j = null;
   try{ j = await (await fetch('/api/models/hof?range='+encodeURIComponent(R))).json(); }catch(e){ j = null; }
+  if(CURRENT_HOST!=='local') return;   // host switched away mid-fetch
   const list = (j && j.models) || [];
   if(!list.length){
     el.innerHTML = '<div class="card"><div class="muted">'
@@ -5425,7 +5428,8 @@ async function renderHof(){
   }
   const total = j.total_loaded_sec || 0;
   const pct = m => total ? (m.loaded_for_sec / total * 100) : 0;
-  const bar = m => Math.max(2, pct(m)).toFixed(1);
+  const bar = m => Math.max(2, pct(m)).toFixed(1);   // geometry: keep a sliver visible
+  const share = m => pct(m).toFixed(1);              // label: the real share, unclamped
   const top = list[0], c0 = colorFor(top.server);
   // #1 gets the hero card; the table ranks the rest (#2 onwards).
   const workhorse = `<div class="card" style="text-align:center">
@@ -5443,7 +5447,7 @@ async function renderHof(){
       <td><span class="dot" style="background:${c}"></span>${copyable(m.model)}</td>
       <td>${esc(m.server)}</td>
       <td style="font-variant-numeric:tabular-nums">${fmtDur(m.loaded_for_sec)}</td>
-      <td class="vbars"><div class="vbar" title="${I18N.tf('hof.share_t','{pct}% of the loaded time in this range',{pct:bar(m)})}"><i style="width:${bar(m)}%;background:${c}"></i></div></td>
+      <td class="vbars"><div class="vbar" title="${I18N.tf('hof.share_t','{pct}% of the loaded time in this range',{pct:share(m)})}"><i style="width:${bar(m)}%;background:${c}"></i></div></td>
       <td>${fmtMB(m.peak_vram_mb)}</td>
       <td>${fmtMB(m.avg_vram_mb)}</td>
       <td class="muted">${relTime(m.last_seen)}</td></tr>`;
@@ -9864,6 +9868,12 @@ function describeMissingCapability(tabId){
       title:`Docker info not yet probed for ${CURRENT_HOST}`,
       detail:'Open the <b>Hosts</b> tab and click <b>Test</b> on this host first.'};
   }
+  if(tabId === 'hof'){
+    // The HOF ranks the hub's own `models` table, which carries no host column.
+    return {ic:'🏆',
+      title:'The Hall of Fame is hub-local',
+      detail:`Residency history comes from the hub's own model samples, which aren't split per host yet — so ${CURRENT_HOST}'s models can't be ranked here. The Local view still has them.`};
+  }
   return {ic:'ℹ️',
     title:`${tabId[0].toUpperCase()+tabId.slice(1)} is local-only for now`,
     detail:'Per-host support lands in the next slice.'};
@@ -10051,6 +10061,13 @@ function renderLocalOnlyNotice(tabId){
   const sec = document.querySelector(`section[data-tab="${tabId}"]`);
   if(!sec) return;
   sec.querySelectorAll(':scope > .card, :scope > .cols').forEach(el => el.style.display='none');
+  if(tabId === 'hof'){
+    // The HOF body is a bare <div>, not a .card/.cols, so the hide-all above
+    // misses it — without this the hub's leaderboard stays painted under a
+    // remote host's name.
+    const hb=document.getElementById('hofbody');
+    if(hb) hb.style.display='none';
+  }
   if(tabId === 'containers'){
     const rc = remoteContainersData();
     if(rc){
@@ -10199,6 +10216,8 @@ function clearLocalOnlyNotice(tabId){
   sec.querySelectorAll(':scope > .card, :scope > .cols').forEach(el => el.style.display='');
   const mb=document.getElementById('modelsbody');
   if(mb && tabId==='models') mb.style.display='';
+  const hb=document.getElementById('hofbody');
+  if(hb && tabId==='hof') hb.style.display='';
 }
 // Re-apply notices on host switch — necessary so that when the user
 // switches from Local→remote while currently *on* a local-only tab, the

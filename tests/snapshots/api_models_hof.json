@@ -32,5 +32,6 @@
     }
   ],
   "range": "30d",
+  "shown_loaded_sec": 130,
   "total_loaded_sec": 130
 }

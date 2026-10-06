@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS gpu_samples_1h(
 CREATE INDEX IF NOT EXISTS idx_gpu_1h_host_ts ON gpu_samples_1h(host, ts);
 CREATE TABLE IF NOT EXISTS net_samples(ts INTEGER, iface TEXT, bytes_in INTEGER, bytes_out INTEGER);
 CREATE TABLE IF NOT EXISTS proc(ts INTEGER, service TEXT, mem REAL);
-CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL, ram REAL);
+CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL, ram REAL, interval_sec INTEGER);
 CREATE INDEX IF NOT EXISTS idx_models_ts ON models(ts);
 CREATE TABLE IF NOT EXISTS edges(ts INTEGER, caller TEXT, server TEXT, conns INTEGER);
 CREATE INDEX IF NOT EXISTS idx_edges_ts ON edges(ts);
@@ -377,7 +377,10 @@ _UPTIME_MIGRATIONS = ("cert_days_remaining INTEGER", "cert_expires_at INTEGER")
 # Per-check opt-in to the public status page (off by default).
 _UPTIME_CHECK_MIGRATIONS = ("public INTEGER NOT NULL DEFAULT 0",)
 # RAM-spill split for loaded models (ollama size - size_vram). NULL = unknown (non-ollama).
-_MODELS_MIGRATIONS = ("ram REAL",)
+# `interval_sec` is the sampling interval this row actually covers, so a leaderboard
+# can sum real residency instead of assuming every sample spans the current interval
+# (rows predating the column stay NULL and fall back to the caller's interval).
+_MODELS_MIGRATIONS = ("ram REAL", "interval_sec INTEGER")
 # Per-card GPU history for every host (the GPU cockpit). `host` turns what was a
 # hub-only table into a fleet-wide one; existing rows are the hub's, so they
 # default to 'local' and stay valid. The rest is the telemetry the cockpit charts:

@@ -173,16 +173,15 @@ def min_ts_models(conn=None):
 
 def query_model_hof(since: int, interval: int, conn=None) -> list:
     """Hall-of-Fame leaderboard rows from models since `since`: one row per
-    (service, model), longest-resident first. `models` carries no interval_sec
-    column (unlike samples/power_proc), so loaded time is
-    COUNT(DISTINCT ts) * `interval` — the same rows × SAMPLE_INTERVAL convention
-    the AI Models tab already uses for runs/used-by. A sampling gap therefore
-    undercounts rather than stretches a span, the safer bias for a leaderboard.
-    Returns (service, model, loaded_for_sec, peak_vram_mb, avg_vram_mb,
-    first_seen, last_seen)."""
+    (service, model), longest-resident first. Loaded time is
+    SUM(interval_sec) — every sample contributes the span it actually covered,
+    so a sampling gap no longer undercounts residency the way
+    COUNT(DISTINCT ts) * `interval` did. Rows written before the interval_sec
+    column existed are NULL and fall back to `interval`. Returns (service,
+    model, loaded_for_sec, peak_vram_mb, avg_vram_mb, first_seen, last_seen)."""
     c = conn or connection()
     return c.execute(
-        "SELECT service,model,COUNT(DISTINCT ts)*? AS loaded_for_sec,"
+        "SELECT service,model,SUM(COALESCE(interval_sec,?)) AS loaded_for_sec,"
         "MAX(vram),AVG(vram),MIN(ts),MAX(ts) "
         "FROM models WHERE ts>=? AND vram IS NOT NULL "
         "GROUP BY service,model ORDER BY loaded_for_sec DESC, model ASC",

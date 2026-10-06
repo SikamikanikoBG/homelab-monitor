@@ -90,7 +90,8 @@ def _seed_models():
     row counts so the Hall of Fame order is fixed: loaded_for_sec is
     rows × app.INTERVAL, so llama3:70b (6 rows) leads qwen2.5-coder:32b (4),
     which leads mistral-nemo:12b (3). vram ticks down one MB per row so peak
-    and avg differ, and the last idle-looking row carries a RAM spill.
+    and avg differ, and the vllm server reports a 500 MB RAM spill on every row
+    it contributes.
     """
     with app.LOCK:
         rows = []
@@ -235,6 +236,36 @@ class TestSnapshots(unittest.TestCase):
             data = r.get_json()
         self.assertEqual(r.status_code, 200)
         assert_snapshot(self, "api_models_hof_empty", data)
+
+    def test_api_models_hof_all_range_reaches_the_earliest_row(self):
+        # `range=all` must resolve through min_ts_models() instead of a fixed
+        # span, so a row older than every window still ranks.
+        _seed_models()
+        with frozen_time():
+            with app.LOCK:
+                app.DB.execute(
+                    "INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)",
+                    (FROZEN_TS - 400 * 86400, "ollama", "ancient:3b", 4000, 0))
+                app.DB.commit()
+            every = self.client.get("/api/models/hof?range=all").get_json()
+            narrow = self.client.get("/api/models/hof?range=30d").get_json()
+        self.assertIn("ancient:3b", [m["model"] for m in every["models"]])
+        self.assertNotIn("ancient:3b", [m["model"] for m in narrow["models"]])
+        self.assertGreater(every["total_loaded_sec"], narrow["total_loaded_sec"])
+
+    def test_api_models_hof_share_pct_divides_the_total(self):
+        _seed_models()
+        with frozen_time():
+            data = self.client.get("/api/models/hof?range=30d").get_json()
+        total = data["total_loaded_sec"]
+        self.assertGreater(total, 0)
+        # shown_loaded_sec is the capped list's own sum, not the grand total.
+        self.assertEqual(data["shown_loaded_sec"],
+                         sum(m["loaded_for_sec"] for m in data["models"]))
+        for m in data["models"]:
+            self.assertAlmostEqual(m["share_pct"],
+                                   round(100.0 * m["loaded_for_sec"] / total, 1), places=1)
+        self.assertAlmostEqual(sum(m["share_pct"] for m in data["models"]), 100.0, places=0)
 
     # ─── /api/integration/keys GET ───────────────────────────────────────────
 
