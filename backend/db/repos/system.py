@@ -174,16 +174,24 @@ def min_ts_models(conn=None):
 def query_model_hof(since: int, interval: int, conn=None) -> list:
     """Hall-of-Fame leaderboard rows from models since `since`: one row per
     (service, model), longest-resident first. Loaded time is
-    SUM(interval_sec) — every sample contributes the span it actually covered,
-    so a sampling gap no longer undercounts residency the way
+    SUM(interval_sec) — every row contributes the cadence recorded when it was
+    written, so changing SAMPLE_INTERVAL no longer reprices history the way
     COUNT(DISTINCT ts) * `interval` did. Rows written before the interval_sec
-    column existed are NULL and fall back to `interval`. Returns (service,
+    column existed are backfilled at migration time (see
+    repos.schema.backfill_interval_columns); any that still carry NULL fall back
+    to `interval`. Duplicate rows for a single (ts, service, model) are collapsed
+    before summing, since the table has no unique constraint. Returns (service,
     model, loaded_for_sec, peak_vram_mb, avg_vram_mb, first_seen, last_seen)."""
     c = conn or connection()
     return c.execute(
-        "SELECT service,model,SUM(COALESCE(interval_sec,?)) AS loaded_for_sec,"
-        "MAX(vram),AVG(vram),MIN(ts),MAX(ts) "
-        "FROM models WHERE ts>=? AND vram IS NOT NULL "
+        # The inner GROUP BY collapses duplicate (ts, service, model) rows: the
+        # table has no unique constraint and the collector inserts blindly, so
+        # a repeat inside one poll would otherwise be billed twice by the SUM.
+        "SELECT service,model,SUM(interval_sec) AS loaded_for_sec,"
+        "MAX(vram),AVG(vram),MIN(ts),MAX(ts) FROM ("
+        "SELECT ts,service,model,MAX(COALESCE(interval_sec,?)) AS interval_sec,"
+        "MAX(vram) AS vram FROM models WHERE ts>=? AND vram IS NOT NULL "
+        "GROUP BY ts,service,model) "
         "GROUP BY service,model ORDER BY loaded_for_sec DESC, model ASC",
         (interval, since)
     ).fetchall()

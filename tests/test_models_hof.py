@@ -63,6 +63,42 @@ class TestModelHofResidency(unittest.TestCase):
         rows = system_repo.query_model_hof(0, 30, conn=db)
         self.assertEqual(rows[0][2], 60)
 
+    def test_duplicate_rows_for_one_tick_are_billed_once(self):
+        # `models` has no unique constraint and the collector inserts blindly, so
+        # a model discovered twice inside a single poll must not double its
+        # residency — the SUM would otherwise bill both rows.
+        db = _db()
+        db.executemany("INSERT INTO models VALUES(?,?,?,?,?,?)",
+                       [(0, "ollama", "dup:7b", 100.0, 0.0, 30),
+                        (0, "ollama", "dup:7b", 100.0, 0.0, 30),
+                        (30, "ollama", "dup:7b", 100.0, 0.0, 30)])
+        db.commit()
+        rows = system_repo.query_model_hof(0, 30, conn=db)
+        self.assertEqual(rows[0][2], 60)
+
+    def test_backfill_interval_columns_covers_models(self):
+        # Pre-migration `models` rows must be stamped once at migration time;
+        # otherwise they keep falling back to whatever interval happens to be
+        # current when the leaderboard is queried.
+        from backend.db.repos import schema as schema_repo
+        db = _db()
+        for ddl in (
+            "CREATE TABLE samples(ts INTEGER, interval_sec INTEGER)",
+            "CREATE TABLE host_samples(ts INTEGER, interval_sec INTEGER)",
+            "CREATE TABLE power_proc(ts INTEGER, interval_sec INTEGER)",
+            "CREATE TABLE samples_1h(cnt INTEGER, power REAL, wsec REAL,"
+            " cpu_power REAL, cpu_wsec REAL, dram_power REAL, dram_wsec REAL)",
+            "CREATE TABLE host_samples_1h(cnt INTEGER, gpu_power REAL, cpu_power REAL,"
+            " dram_power REAL, gpu_wsec REAL, cpu_wsec REAL, dram_wsec REAL)",
+        ):
+            db.execute(ddl)
+        db.executemany("INSERT INTO models VALUES(?,?,?,?,?,?)",
+                       [(t, "ollama", "legacy:7b", 500.0, 0.0, None) for t in (0, 30)])
+        db.commit()
+        schema_repo.backfill_interval_columns(db, 45)
+        # 2 * 45 (backfilled), not 2 * 30 (the query-time interval).
+        self.assertEqual(system_repo.query_model_hof(0, 30, conn=db)[0][2], 90)
+
     def test_vram_null_rows_are_excluded(self):
         db = _db()
         db.executemany("INSERT INTO models VALUES(?,?,?,?,?,?)",

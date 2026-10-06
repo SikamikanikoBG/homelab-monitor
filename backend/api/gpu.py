@@ -121,9 +121,11 @@ def api_models_hof():
     for x in models:
         x["share_pct"] = round(100.0 * x["loaded_for_sec"] / total, 1) if total else 0.0
     shown = models[:20]
+    # model_count is the *untruncated* total so the caption can say "N of M"
+    # instead of pairing a capped list length with an all-models duration.
     return jsonify({"range": rng, "total_loaded_sec": total,
                     "shown_loaded_sec": sum(x["loaded_for_sec"] for x in shown),
-                    "models": shown})
+                    "model_count": len(models), "models": shown})
 
 
 @bp.route("/api/ai/now")

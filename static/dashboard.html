@@ -5459,7 +5459,7 @@ async function renderHof(){
       <th>${I18N.t('hof.loaded','Loaded time')}</th><th>${I18N.t('hof.share','Share')}</th>
       <th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('hof.last_seen','Last seen')}</th>
     </tr></thead><tbody>${rows}</tbody></table>
-    <p class="cap">${I18N.tf('hof.total','{n} models held the GPU in this range — {total} of loaded time in total.',{n:list.length,total:fmtDur(total)})}</p>
+    <p class="cap">${I18N.tf('hof.total','{n} models held the GPU in this range — {total} of loaded time in total.',{n:(j.model_count||list.length),total:fmtDur(total)})}</p>
   </div>` : '';
   el.innerHTML = workhorse + table;
   pulseLive();
