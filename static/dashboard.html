@@ -3077,33 +3077,29 @@ const I18N = {
   },
   saved(){ return localStorage.getItem('hl_lang') || 'en'; },
 
-  // Coverage = fraction of keys actually translated. A scaffold straight from
-  // i18n-sync.py lists still-English keys in _meta.untranslated, so an unfinished
-  // translation reports low coverage and stays hidden (no half-Chinese UI shipped).
-  _coverage(d){
-    const todo = (d._meta && d._meta.untranslated) || [];
-    const keys = Object.keys(d).filter(k => k !== '_meta');
-    if(!keys.length) return 0;
-    return Math.max(0, (keys.length - todo.length) / keys.length);
-  },
   async discover(){
     // Ask the hub which locale files it actually has (issue #283). This used to
     // be a hardcoded array, so a locale dropped into locales/ stayed invisible
     // until someone edited that array to match it. English is inlined and needs
     // no file, so the server only reports the non-English ones.
-    let codes = [];
+    //
+    // The hub already measured each locale's coverage while reading the file, so
+    // take its numbers rather than downloading every locale here to measure them
+    // again: that was a round trip per locale, and it pulled down the unfinished
+    // locales we were about to hide anyway. set() fetches the dictionary on
+    // demand — one request, and only for the locale actually chosen.
+    let metas = [];
     try{
       const j = await (await fetch('/api/locales',{cache:'no-cache'})).json();
-      codes = ((j && j.locales) || []).map(l=>l.code).filter(Boolean);
+      metas = ((j && j.locales) || []).filter(l => l && l.code);
     }catch(e){ /* older server / offline — English still renders */ }
-    for(const code of codes){
-      try{
-        const d = await (await fetch('/locales/'+code+'.json',{cache:'no-cache'})).json();
-        const meta = d._meta || {}, cov = this._coverage(d);
-        if(this.debug || cov >= this.COVERAGE_MIN)
-          this.available.push({code, name:meta.name||code, nativeName:meta.nativeName||code,
-                               dir:meta.dir||'ltr', coverage:cov, _dict:d});
-      }catch(e){ /* missing / malformed locale — skip */ }
+    for(const m of metas){
+      // The bar is applied here, not server-side, on purpose: ?i18n=1 has to
+      // reveal a half-finished locale to whoever is translating it, and the hub
+      // may be an older build that reports every locale regardless.
+      if(!this.debug && !(m.coverage >= this.COVERAGE_MIN)) continue;
+      this.available.push({code:m.code, name:m.name||m.code, nativeName:m.nativeName||m.code,
+                           dir:m.dir||'ltr', coverage:m.coverage});
     }
   },
   async set(code){
