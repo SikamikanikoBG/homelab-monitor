@@ -195,19 +195,65 @@ class TestWindowsDockerInventory(unittest.TestCase):
         self.assertIsNone(data)
         self.assertIn("bad JSON", err)
 
-    def test_ps1_source_wires_the_section_in(self):
-        """CI has no PowerShell, so the script itself can't be executed here —
-        this pins the two edits that make the section reach the payload."""
+    @staticmethod
+    def _ps1_source():
+        """CI has no PowerShell, so the script can only be inspected, not run."""
         path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "probe.ps1")
         with open(path, "r", encoding="utf-8") as f:
-            src = f.read()
+            return f.read()
+
+    def test_ps1_source_wires_the_section_in(self):
+        """CI has no PowerShell, so the script itself can't be executed here —
+        this pins the two edits that make the section reach the payload."""
+        src = self._ps1_source()
         self.assertIn("function Read-Docker", src)
         self.assertIn("Merge (Read-Docker)", src)
         # The bytes helper mirrors probe.py's _MEM_UNITS; a 1024-for-kB slip
         # would silently inflate every reported size by 2.4%.
         self.assertIn("'kb' = 1000", src)
         self.assertIn("'kib' = 1024", src)
+
+    def test_ps1_pins_the_container_name_fallback(self):
+        """`8122551` stopped a blank name from reaching the hub, but nothing
+        covered it — deleting the fallback left CI green. Pin both halves at
+        the source: the helper exists, and the row is built through it rather
+        than the inline `if/else` it replaced."""
+        src = self._ps1_source()
+        self.assertIn("function ConvertTo-ContainerName", src)
+        self.assertIn('name   = ConvertTo-ContainerName "$($d.Names)"', src)
+        self.assertNotIn("-split ',')[0] } else", src)
+        # The fallback itself, in the one place CI can read it.
+        self.assertIn("if (-not $Names) { return '?' }", src)
+
+    def test_blank_container_name_still_renders_a_row(self):
+        """The hub keys Containers rows by name. A name that slips through
+        empty must still render rather than drop the row or raise."""
+        payload = self._probe_payload([
+            {"id": CID1, "name": "?", "image": "old:1",
+             "state": "exited", "status": "Exited (0) 1 second ago",
+             "ports": "", "uptime": "", "restart_policy": "no", "disk_bytes": 0},
+        ], summary={"total": 1, "running": 0, "problems": 0})
+        data, err, _ms, _to = self._metrics(payload)
+        self.assertIsNone(err)
+        dk = data["host"]["docker"]
+        self.assertEqual(dk["containers"][0]["name"], "?")
+        self.assertEqual(dk["summary"]["problems"], 0)
+
+    def test_clean_exit_is_not_a_problem(self):
+        """probe.py counts a problem only for a non-zero exit. "Exited (0)" is
+        a clean stop and must not inflate the problems badge — the reason the
+        Windows rule matches the raw status case-sensitively."""
+        for status, expected in (("Exited (0) 2 hours ago", 0),
+                                 ("Exited (137) 2 hours ago", 1)):
+            with self.subTest(status=status):
+                payload = self._probe_payload([
+                    {"id": CID2, "name": "c", "image": "i:1", "state": "exited",
+                     "status": status, "ports": "", "uptime": "",
+                     "restart_policy": "no", "disk_bytes": 0},
+                ], summary={"total": 1, "running": 0, "problems": expected})
+                data, _e, _ms, _to = self._metrics(payload)
+                self.assertEqual(data["host"]["docker"]["summary"]["problems"], expected)
 
 
 if __name__ == "__main__":

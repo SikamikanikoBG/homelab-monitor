@@ -496,6 +496,16 @@ function Invoke-Docker([string[]]$Arguments, [int]$TimeoutSec) {
     }
 }
 
+# `docker ps --format '{{json .}}'` reports Names as a comma-separated list —
+# the container name plus any --link aliases — and omits the key entirely for
+# containers created before it existed. probe.py takes the first name and falls
+# back to '?', so a container never reaches the hub with an empty name (which
+# would render as a blank row). Keep the two sides in step.
+function ConvertTo-ContainerName([string]$Names) {
+    if (-not $Names) { return '?' }
+    return ($Names -split ',')[0]
+}
+
 function Read-Docker {
     $out = @{}
     # 5 s: the list is the one pass whose failure means "no Docker here", so it
@@ -509,17 +519,18 @@ function Read-Docker {
         $line = "$line".Trim()
         if (-not $line) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
-        $state = "$($d.State)".ToLower()
+        $state = "$($d.State)".ToLowerInvariant()
         $id    = "$($d.ID)"
         if ($id.Length -gt 64) { $id = $id.Substring(0, 64) }
         # RunningFor carries a trailing ' ago'; probe.py strips it. Only a
         # running container has a meaningful uptime — the rest stay empty.
         $uptime = ''
-        if ($state -eq 'running') { $uptime = ("$($d.RunningFor)") -replace ' ago$', '' }
+        # -creplace, not -replace: probe.py's replace(" ago", "") is
+        # case-sensitive and drops every occurrence, not just a trailing one.
+        if ($state -eq 'running') { $uptime = ("$($d.RunningFor)") -creplace ' ago', '' }
         $conts += [ordered]@{
             id     = $id
-            # probe.py falls back to '?' when Names is absent; keep parity.
-            name   = $(if ("$($d.Names)") { ("$($d.Names)" -split ',')[0] } else { '?' })
+            name   = ConvertTo-ContainerName "$($d.Names)"
             image  = "$($d.Image)"
             state  = $state
             status = "$($d.Status)"
@@ -605,10 +616,14 @@ function Read-Docker {
     # Same problem rule as probe.py: unhealthy, restarting, or a non-zero exit.
     $problems = 0
     foreach ($c in $conts) {
-        $st = "$($c.status)".ToLower()
+        # ToLowerInvariant, not ToLower: the latter folds through the thread's
+        # culture, so on tr-TR "RESTARTING" becomes "restartıng" (dotless i).
+        $st = "$($c.status)".ToLowerInvariant()
         if ($st -like '*unhealthy*') { $problems++ }
         elseif ($c.state -eq 'restarting') { $problems++ }
-        elseif ($c.state -eq 'exited' -and $st -notmatch 'exited \(0\)') { $problems++ }
+        # Case-sensitive on the raw status, matching probe.py's `"Exited (0)"
+        # not in status`.
+        elseif ($c.state -eq 'exited' -and "$($c.status)" -cnotmatch 'Exited \(0\)') { $problems++ }
     }
 
     $out['docker'] = @{
