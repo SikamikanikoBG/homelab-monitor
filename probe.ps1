@@ -435,7 +435,9 @@ function Read-Services {
 # ── Docker inventory (Containers tab) ────────────────────────────────────────
 # Mirrors probe.py's read_docker(): `docker ps -a` for the list, one bounded
 # `docker stats` pass for RAM/CPU%, a `docker ps -s` pass for writable-layer
-# disk, and one `docker inspect` for the restart policy. The Docker CLI speaks
+# disk, and one `docker inspect` for the restart policy. Every call goes through
+# Invoke-Docker, so a wedged daemon costs a column rather than the whole payload.
+# The Docker CLI speaks
 # the same `--format '{{json .}}'` contract on Windows as it does on Linux, so
 # the JSON below is the exact shape the hub already renders for a Linux host —
 # no hub-side branching. Docker Desktop's Linux-container mode answers all of
@@ -461,13 +463,46 @@ function ConvertTo-Bytes([string]$v) {
     try { return [int64][math]::Truncate([double]$m.Groups[1].Value * $mult) } catch { return $null }
 }
 
+# Runs the Docker CLI with a wall-clock cap.
+#
+# `& docker` has no timeout of its own, and the hub gives the whole payload only
+# 15 s (`_ssh_with_stdin`) before it discards every section, not just this one.
+# So each call below is bounded, and running past the cap degrades exactly like a
+# non-zero exit: the caller keeps whatever the other passes produced.
+#
+# Returns @{ Ok = $true; Lines = @(...) }, or @{ Ok = $false; Lines = @() } when
+# docker is absent, the daemon refuses, or the call outlives the cap.
+#
+# The two are kept apart deliberately: an empty list is a healthy daemon with no
+# containers, while Ok = $false means "no Docker here". PowerShell treats $null
+# and an empty array as equal, so a bare list could not tell those apart — every
+# empty host would report a missing Docker instead.
+function Invoke-Docker([string[]]$Arguments, [int]$TimeoutSec) {
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath 'docker' -ArgumentList $Arguments -NoNewWindow `
+                           -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch { }
+            return [pscustomobject]@{ Ok = $false; Lines = @() }
+        }
+        if ($p.ExitCode -ne 0) { return [pscustomobject]@{ Ok = $false; Lines = @() } }
+        return [pscustomobject]@{ Ok = $true; Lines = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) }
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Lines = @() }
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Read-Docker {
     $out = @{}
-    $lines = @()
-    try {
-        $lines = @(& docker ps -a --no-trunc --format '{{json .}}' 2>$null)
-        if ($LASTEXITCODE -ne 0) { return $out }
-    } catch { return $out }
+    # 5 s: the list is the one pass whose failure means "no Docker here", so it
+    # gets the tightest cap.
+    $list = Invoke-Docker @('ps', '-a', '--no-trunc', '--format', '{{json .}}') 5
+    if (-not $list.Ok) { return $out }
+    $lines = $list.Lines
 
     $conts = @()
     foreach ($line in $lines) {
@@ -499,7 +534,8 @@ function Read-Docker {
         $ids = @($conts | ForEach-Object { $_.id } | Where-Object { $_ })
         if ($ids.Count -gt 0) {
             $pol = @{}
-            foreach ($ln in @(& docker inspect --format "{{.Id}}`t{{.HostConfig.RestartPolicy.Name}}" @ids 2>$null)) {
+            $inspectArgs = @('inspect', '--format', "{{.Id}}`t{{.HostConfig.RestartPolicy.Name}}") + $ids
+            foreach ($ln in (Invoke-Docker $inspectArgs 8).Lines) {
                 $ln = "$ln"
                 if (-not $ln.Trim()) { continue }
                 $parts = $ln -split "`t", 2
@@ -519,7 +555,7 @@ function Read-Docker {
     # this pass is separate and its failure only costs the Disk column.
     try {
         $sizes = @{}
-        foreach ($ln in @(& docker ps -a -s --no-trunc --format "{{.ID}}`t{{.Size}}" 2>$null)) {
+        foreach ($ln in (Invoke-Docker @('ps', '-a', '-s', '--no-trunc', '--format', "{{.ID}}`t{{.Size}}") 8).Lines) {
             $ln = "$ln"
             if (-not $ln.Trim()) { continue }
             $parts = $ln -split "`t", 2
@@ -536,12 +572,13 @@ function Read-Docker {
 
     $running = @($conts | Where-Object { $_.state -eq 'running' }).Count
 
-    # One stats pass for RAM/CPU%. `docker stats` blocks ~1.5s to sample; a
-    # wedged daemon must not sink the whole probe, so degrade silently.
+    # One stats pass for RAM/CPU%. `docker stats` blocks ~1.5s to sample; the
+    # cap in Invoke-Docker is what keeps a wedged daemon from sinking the whole
+    # probe, so a timeout here degrades silently to a missing RAM column.
     if ($running -gt 0) {
         try {
             $stats = @{}
-            foreach ($ln in @(& docker stats --no-stream --format '{{json .}}' 2>$null)) {
+            foreach ($ln in (Invoke-Docker @('stats', '--no-stream', '--format', '{{json .}}') 8).Lines) {
                 $ln = "$ln".Trim()
                 if (-not $ln) { continue }
                 try { $s = $ln | ConvertFrom-Json } catch { continue }
