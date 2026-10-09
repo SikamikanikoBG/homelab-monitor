@@ -46,6 +46,7 @@ except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
+from flask_compress import Compress
 import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
@@ -127,6 +128,9 @@ OOM_RE       = re.compile(r"(out of memory|cuda error: out of memory|failed to a
 REAL_FS      = {"ext4", "ext3", "xfs", "btrfs", "zfs", "vfat"}
 
 app = Flask(__name__, static_url_path="/static", static_folder="static")
+# Flask serves static assets as streams; the default MIME allowlist compresses
+# those while leaving text/event-stream responses untouched.
+Compress(app)
 
 # Phase 3.4: register API blueprints (in original @app.route declaration order)
 from backend.api.system import bp as _system_bp
