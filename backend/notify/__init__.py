@@ -366,11 +366,51 @@ _GPU_RETIRE_S = 3600
 
 def _notify_gpu_missing(s, rules, now):
     import app as _app
+    errors = _app.fleet_gpu_errors()
     for host, cards, online in _app.fleet_gpu_cards():
         if not online:
             continue          # an offline host is a host alert, not a card alert
         present = {g["idx"] for g in cards if g.get("idx") is not None}
         roster = _GPU_ROSTER.setdefault(host, {})
+        tkey = f"gpu:telemetry:{host}"
+        # ── every card gone at once, or the probe says the tool is broken ──
+        # This is the driver-update case: nvidia-smi dies, the whole list comes
+        # back empty, and per-card "GPU N stopped reporting" ×3 would be three
+        # alerts for one fault that isn't about any card. One host-level alert
+        # that quotes the tool's own error is what a human can act on. Hosts
+        # that never reported a card (no roster, no error) stay silent: a box
+        # without a GPU is not an incident.
+        if not present and (roster or errors.get(host)):
+            last_seen = max(roster.values()) if roster else None
+            if last_seen is not None and now - last_seen > _GPU_RETIRE_S:
+                # Removed on purpose, not failed: stop expecting the cards.
+                _app._clear(tkey)
+                _GPU_SINCE.pop(tkey, None)
+                for idx in list(roster):
+                    _app._clear(f"gpu:missing:{host}:{idx}")
+                    _GPU_SINCE.pop(f"gpu:missing:{host}:{idx}", None)
+                roster.clear()
+                continue
+            # Sustained here too: one poll where nvidia-smi timed out under load
+            # is not a dead driver.
+            if _sustained(tkey, True, 120, now):
+                label = host if host != "local" else _alert_host_label() or "hub"
+                err = errors.get(host)
+                n = len(roster)
+                what = (f"nvidia-smi on {label} answers: {err}" if err
+                        else f"{label} is online and answering, but reports no GPU at all")
+                since = (f" It was reporting {n} card{'s' if n != 1 else ''} until "
+                         f"{(now - last_seen) // 60} min ago." if last_seen else "")
+                _app._emit(s, tkey, "critical", f"🔴 {label}: GPU telemetry lost",
+                           f"{what}.{since} Until it answers again the dashboard shows the "
+                           f"last known numbers, not live ones. A driver/library version "
+                           f"mismatch after a package update (fix: reboot, or reload the "
+                           f"kernel module) and a wedged driver (Xid) look exactly like this.",
+                           rules=rules)
+            continue
+        if tkey in _GPU_SINCE:
+            _app._clear(tkey)                     # the cards are back
+            _GPU_SINCE.pop(tkey, None)
         for idx in present:
             key = f"gpu:missing:{host}:{idx}"
             if idx in roster and roster[idx] < now:

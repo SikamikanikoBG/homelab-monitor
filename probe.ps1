@@ -484,7 +484,10 @@ function Read-OllamaModels {
             model = $name; loaded = $true; vram_mb = $loaded[$name]
         }
     }
-    return ,$out      # unary comma: keep a 0/1-element result an ARRAY through the pipeline
+    # No unary comma here: the call site wraps this in @(...) which already
+    # guarantees an array. `return ,$out` + @() double-wrapped it, so a host
+    # with N models shipped [[N dicts]] and /api/models 500ed on the hub (#292).
+    return $out
 }
 
 # ── Assemble + emit ───────────────────────────────────────────────────────────

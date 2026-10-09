@@ -77,8 +77,14 @@ h1{font-size:22px;margin:0}.ver{color:var(--mut);font-size:12px;border:1px solid
 .mcp-pill.active{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
 .mcp-pill.idle{color:var(--mut)}
 .mcp-pill.down{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
-.pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);animation:p 2s infinite}
-@keyframes p{0%{box-shadow:0 0 0 0 #3fb95066}70%{box-shadow:0 0 0 8px #3fb95000}100%{box-shadow:0 0 0 0 #3fb95000}}
+/* Live-refresh indicator next to the MCP pill: a resting dot that rings once
+   per REAL refresh (pulseLive(), called from wherever each tab's own data
+   actually lands) rather than looping on a fixed timer disconnected from
+   whether anything happened — so its rate always matches however often the
+   tab you're looking at truly updates. */
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);display:inline-block;vertical-align:middle;opacity:.5}
+.pulse.go{animation:p .9s ease-out}
+@keyframes p{0%{box-shadow:0 0 0 0 #3fb95066;opacity:1}70%{box-shadow:0 0 0 8px #3fb95000;opacity:1}100%{box-shadow:0 0 0 0 #3fb95000;opacity:.5}}
 .sub{color:var(--mut);margin:4px 0 14px;font-size:14px}
 h2{font-size:14px;margin:0 0 13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--mut)}
 /* tab nav — add a monitor by adding one TABS entry + one <section>; nothing else changes */
@@ -256,6 +262,10 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .brandlg{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-right:6px;vertical-align:-3px}
 .brandlg svg{width:16px;height:16px;display:block}
 .brandlg.lg-mono{color:var(--tx);opacity:.8}
+/* An icon the hub fetched from the selfh.st set. Same slot as a bundled mark;
+   it simply removes itself if the hub has no icon for that name. */
+.brandlg img{width:16px;height:16px;display:block;object-fit:contain}
+.lp-ic .brandlg img{width:18px;height:18px}
 .mini{display:inline-block;height:8px;border-radius:3px;vertical-align:middle}
 .badge{font-size:11px;border-radius:20px;padding:1px 9px;border:1px solid var(--bd);white-space:nowrap}
 .badge.crit{color:var(--crit);border-color:#f8514955}.badge.warn{color:var(--warn);border-color:#d2992255}
@@ -349,6 +359,21 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .gpu-mini.st-hot{border-color:var(--warn)}
 .gpu-mini.st-gone{border-color:var(--crit);opacity:.72}
 .gpu-mini.st-retired,.gpu-mini.st-stale{opacity:.55}
+/* Telemetry lost: the host answers but its GPU tool doesn't. The card keeps its
+   last-known numbers on screen (they are still the best available facts) but
+   wears the border so nobody reads them as live. */
+.gpu-mini.st-lost{border-color:var(--crit);border-style:dashed}
+.spark-row .sv.lastknown{color:var(--mut);font-style:italic}
+.gpu-mini-now .lastknown{color:var(--crit);font-weight:600}
+/* The "light" on every host surface: a blinking dot next to the host name
+   whenever a sensor the host had has gone dark. CSS-only, so the reduced-motion
+   kill switch (docs/animations.md) covers it like every other animation. */
+.telelight{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--crit);
+  margin-left:5px;flex:none;box-shadow:0 0 0 0 var(--crit);animation:telepulse 1.6s ease-out infinite}
+@keyframes telepulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--crit) 55%,transparent)}
+  100%{box-shadow:0 0 0 7px transparent}}
+.mc-b-tele{ background:transparent; color:var(--crit); border-color:var(--crit); border-style:dashed }
+.kpi .v.lastknown{color:var(--mut)}
 .gpu-mini-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .gpu-mini-h b{font-size:13px}
 .gpu-mini-h .nm{font-size:12px;color:var(--mut);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -393,11 +418,29 @@ th{color:var(--mut);font-weight:600;font-size:12px}.dot{display:inline-block;wid
 .ports{display:inline-flex;flex-wrap:wrap;gap:4px}
 .portpill{font-size:11px;padding:1px 7px;border:1px solid var(--bd);border-radius:9px;color:var(--mut);text-decoration:none;line-height:1.6;background:var(--inset);white-space:nowrap;transition:color .2s,border-color .2s,background .2s}
 .portpill:hover{border-color:var(--accent);color:var(--accent);background:#d2992211}
-/* hide non-essential columns on narrow screens so the table doesn't horiz-scroll */
+/* Narrow screens drop the two columns you can live without (image, disk) —
+   but NEVER the controls. Start/stop/restart/logs/pin is the reason to open
+   this tab on a phone in the first place; hiding them there made the mobile
+   dashboard read-only for no reason. They stack into two rows instead. */
 @media(max-width:1100px){
   th[data-col="image"],td[data-col="image"],
-  th[data-col="disk"], td[data-col="disk"],
-  th[data-col="ctl"], td[data-col="ctl"]  { display:none }
+  th[data-col="disk"], td[data-col="disk"]  { display:none }
+}
+@media(max-width:760px){
+  td[data-col="ctl"] .ctlbtns{ flex-wrap:nowrap }
+  td[data-col="ctl"] .ctl-policy{ margin-top:4px }
+  td[data-col="ctl"] .ctl-policy select{ max-width:110px }
+  .ctrow td{ padding-top:9px; padding-bottom:9px }       /* thumb-sized rows */
+  .btn-mini{ min-height:28px; min-width:28px }
+  /* The table scrolls sideways on a phone, so the two columns you need to
+     keep your bearings ride along: the container's name on the left, its
+     controls on the right. Scrolling to reach a restart button is how the
+     mobile view stopped being usable in the first place. */
+  .ctrow td:first-child, thead th:first-child{ position:sticky; left:0; z-index:2;
+    background:var(--card); box-shadow:6px 0 8px -7px rgba(0,0,0,.45) }
+  td[data-col="ctl"], th[data-col="ctl"]{ position:sticky; right:0; z-index:2;
+    background:var(--card); box-shadow:-6px 0 8px -7px rgba(0,0,0,.45) }
+  .cttot td{ background:var(--inset) }
 }
 /* update-available badge (header) + modal */
 .upd{display:none;align-items:center;gap:5px;font-size:12px;color:var(--info);text-decoration:none;border:1px solid #58a6ff55;border-radius:20px;padding:2px 10px;background:#58a6ff11;cursor:pointer;font:inherit}
@@ -630,7 +673,12 @@ tr.cttot td{border-top:2px solid var(--bd);border-bottom:0;padding-top:9px;font-
 /* ═══════════ rev 6 migration — Portainer-style shell + enterprise restyle (additive; overrides win by source order) ═══════════ */
 body{background:var(--canvas)}
 .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
-.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7}
+.side{background:var(--sb);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:7;
+  /* The nav list is the only thing in here that may scroll. Without the clip
+     (and the min-height:0 on the list below), a tall nav on a short screen
+     pushed the whole PAGE past the viewport — the Overview fitted the fold
+     and the window scrolled anyway, because of the sidebar. */
+  overflow:hidden}
 /* visual hierarchy: nav surfaces distinct from content */
 .main{min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 .sbrand{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;padding:14px 15px 12px;border-bottom:1px solid var(--bd)}
@@ -639,7 +687,7 @@ body{background:var(--canvas)}
 .sbrand-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
 .sbrand .logo{font-size:17px;flex:none}.sbrand .nm{font-size:14px;font-weight:600;white-space:nowrap}
 .sbrand .ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mut);background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:2px 8px;line-height:1.4}
-.navlist{flex:1 1 auto;overflow:auto;padding:8px}
+.navlist{flex:1 1 auto;min-height:0;overflow:auto;padding:8px;scrollbar-width:thin}
 .navgroup{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:12px 9px 5px;font-weight:600}
 .nrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer}
 .nrow:hover{background:var(--hover);color:var(--tx)}
@@ -681,6 +729,51 @@ body{background:var(--canvas)}
 .hpill.on{border-color:var(--mut);background:var(--sel);color:var(--tx)}
 .hpill .pdot{width:7px;height:7px;border-radius:2px}
 .hpill.add{font-family:inherit}
+/* ── Global search (top bar, every tab) ─────────────────────────────────────
+   One box that does two things: filters the rows of whatever tab you are on
+   as you type, and lists matches from the whole fleet (containers, services,
+   hosts, models, pinned apps, pages) so a hit on another tab is one Enter away. */
+.gsearch{position:relative;margin-left:auto;flex:0 1 340px;min-width:200px}
+.gsearch .gs-box{display:flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 9px;border:1px solid var(--bd);border-radius:8px;background:var(--inset);transition:border-color .12s, box-shadow .12s}
+.gsearch .gs-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
+.gsearch .gs-ic{width:14px;height:14px;color:var(--mut);flex:none}
+/* The box IS the .gs-box; the input inside it must draw nothing of its own.
+   The global input floor further down (input:not([type=checkbox])… , 0-4-1) is
+   later in the sheet and outranks any class selector here, so it would give the
+   field its own inset background, border and 7px padding — a second, taller box
+   drawn inside this one. The id wins that outright. */
+#gs-in{flex:1 1 auto;min-width:0;width:auto;height:100%;border:0!important;background:none!important;
+  color:var(--tx);font:inherit;font-size:12.5px;outline:none;box-shadow:none!important;padding:0;border-radius:0}
+#gs-in:hover,#gs-in:focus,#gs-in:focus-visible{border:0!important;background:none!important;box-shadow:none!important;outline:none}
+#gs-in::placeholder{color:var(--mut)}
+#gs-in::-webkit-search-cancel-button,#gs-in::-webkit-search-decoration{-webkit-appearance:none;display:none}
+.gsearch kbd{font-family:var(--mono);font-size:10px;color:var(--mut);border:1px solid var(--bd);border-radius:4px;padding:0 5px;line-height:16px;background:var(--card)}
+.gsearch .gs-box:focus-within kbd{display:none}
+.gsearch .gs-count{font-family:var(--mono);font-size:10.5px;color:var(--accent);white-space:nowrap}
+.gsearch .gs-x{border:0;background:none;color:var(--mut);cursor:pointer;font-size:15px;line-height:1;padding:0 2px;display:none}
+.gsearch.has-q .gs-x{display:inline-block}.gsearch .gs-x:hover{color:var(--tx)}
+.gs-pop{position:absolute;top:calc(100% + 6px);right:0;width:min(520px, calc(100vw - 32px));max-height:min(60vh, 520px);overflow:auto;background:var(--card);border:1px solid var(--bd);border-radius:10px;box-shadow:0 12px 32px #0000004d, 0 1px 2px #00000033;padding:6px;z-index:40}
+.gs-pop[hidden]{display:none}
+.gs-grp{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);padding:8px 8px 3px}
+.gs-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;cursor:pointer;color:var(--tx);font-size:12.5px}
+.gs-row:hover,.gs-row.on{background:var(--hover)}
+.gs-row.on{box-shadow:inset 2px 0 0 var(--accent)}
+.gs-row .hic{width:15px;height:15px;color:var(--mut);flex:none}
+.gs-row .gs-dot{width:7px;height:7px;border-radius:2px;flex:none;background:var(--mut)}
+.gs-row .gs-dot.ok{background:var(--ok)}.gs-row .gs-dot.warn{background:var(--warn)}.gs-row .gs-dot.crit{background:var(--crit)}
+.gs-row .gs-nm{font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;max-width:62%}
+.gs-row .gs-nm mark{background:none;color:var(--accent);font-weight:700}
+.gs-row .gs-sub{color:var(--mut);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 0;min-width:0}
+.gs-row .gs-host{font-family:var(--mono);font-size:10px;color:var(--mut);border:1px solid var(--bd);border-radius:4px;padding:0 5px;line-height:16px;flex:none}
+.gs-row .gs-go{color:var(--mut);font-size:11px;flex:none;opacity:0}.gs-row.on .gs-go{opacity:1}
+.gs-empty{padding:14px 10px;color:var(--mut);font-size:12px;text-align:center}
+.gs-foot{display:flex;gap:12px;padding:6px 8px 2px;border-top:1px solid var(--bd);margin-top:4px;color:var(--mut);font-size:10.5px}
+.gs-foot kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--bd);border-radius:4px;padding:0 4px;background:var(--inset)}
+/* rows the filter hid, and the row a result jumped to */
+.gs-hide{display:none!important}
+@keyframes gsflash{0%{box-shadow:inset 3px 0 0 var(--accent);background:color-mix(in srgb, var(--accent) 18%, transparent)}100%{box-shadow:inset 3px 0 0 transparent;background:transparent}}
+.gs-flash td,.gs-flash{animation:gsflash 1.8s ease-out}
+@media (max-width:760px){.gsearch{flex:1 1 100%;margin-left:0;order:9}}
 /* range relocate into the top bar as a flat segmented control */
 #controls{margin:0;padding:0;border:0;background:none}
 #controls .ranges{gap:0;border:1px solid var(--bd);border-radius:6px;overflow:hidden;display:inline-flex;align-items:center}
@@ -689,7 +782,6 @@ body{background:var(--canvas)}
 .rb.on{background:var(--sel);border-color:var(--bd);color:var(--tx)}
 #controls .spacer{display:none}#controls .tg{margin-left:8px;font-size:12px}
 .live{margin-left:auto;font-family:var(--mono);font-size:12px}
-.pulse{width:8px;height:8px;border-radius:2px;animation:none}
 .upd{border-radius:9px;background:var(--inset);border-color:var(--bd);color:var(--accent)}
 /* app-update badge: same amber CTA look as the Star button, so the chrome is cohesive */
 #updbadge.upd{background:linear-gradient(180deg,#e6b948,#d29922);border:1px solid var(--accent);color:#1a1100;font-weight:600;box-shadow:0 1px 1px #0000001f}
@@ -1012,6 +1104,114 @@ h2 .hic{ opacity:.9 }
 .mc-grid2{ display:grid; grid-template-columns:320px minmax(0,1fr) 360px; gap:16px; align-items:start }
 .mc-chartpanel{ margin-bottom:16px }
 .mc-chartbox{ position:relative; height:208px; padding:4px 16px 16px }
+/* ── Launchpad: the pinned apps on the Overview ─────────────────────────── */
+.mc-lp .btn-mini{ text-transform:none; letter-spacing:0 }
+.lp-accent{ border-color:var(--accent)!important; color:var(--accent)!important }
+.lp-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(74px,1fr)); gap:6px }
+.lp-group{ grid-column:1/-1; display:flex; align-items:center; gap:8px; font-size:9px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--mut); margin:3px 0 0 }
+.lp-group:after{ content:""; flex:1; height:1px; background:var(--bd) }
+.lp-tile{ position:relative; display:flex; flex-direction:column; align-items:center; gap:5px; padding:9px 5px 7px;
+  border:1px solid var(--bd); border-radius:10px; background:var(--card); color:var(--tx); text-decoration:none;
+  transition:transform .12s ease, border-color .15s ease }
+.lp-tile:hover{ transform:translateY(-1px); border-color:var(--mut) }
+.lp-tile:focus-visible{ outline:2px solid var(--info); outline-offset:2px }
+.lp-ic{ width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#fff;
+  font-family:var(--mono); font-weight:700; font-size:12px; flex:none }
+.lp-ic svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round }
+.lp-ic .brandlg{ margin:0; width:18px; height:18px }
+.lp-ic .lp-over{ width:18px; height:18px; object-fit:contain; display:block }
+.lp-ic .brandlg svg{ width:18px; height:18px; stroke:none }
+.lp-nm{ font-size:10.5px; font-weight:600; line-height:1.15; text-align:center; max-width:100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.lp-dot{ position:absolute; top:6px; right:6px; width:6px; height:6px; border-radius:50%; background:var(--ok) }
+.lp-dot.warn{ background:var(--warn) } .lp-dot.crit{ background:var(--crit) } .lp-dot.off{ background:var(--mut); opacity:.55 }
+.lp-x{ position:absolute; top:2px; left:3px; border:0; background:none; color:var(--mut); font-size:14px;
+  line-height:1; cursor:pointer; padding:1px 4px; display:none }
+.lp-x:hover{ color:var(--crit) }
+body.lp-editing .lp-x{ display:block }
+body.lp-editing .lp-tile{ cursor:grab }
+.lp-tile.lp-drag{ opacity:.45 } .lp-tile.lp-over{ border-color:var(--accent) }
+.lp-add{ border-style:dashed; justify-content:center; color:var(--mut); background:transparent }
+.lp-add .lp-ic{ background:transparent; border:1px dashed var(--bd); color:var(--mut); font-size:16px }
+.lp-empty{ grid-column:1/-1; font-size:12px; color:var(--mut); padding:6px 2px }
+/* the pin form */
+.lp-form{ display:grid; grid-template-columns:120px 1fr; gap:10px 12px; align-items:center; font-size:13px }
+.lp-form label{ color:var(--mut) }
+.lp-form .field{ width:100% }
+.lp-icons{ display:flex; flex-wrap:wrap; gap:6px }
+.lp-icons button{ width:32px; height:32px; border:1px solid var(--bd); border-radius:9px; background:var(--inset);
+  color:var(--tx); display:grid; place-items:center; cursor:pointer; padding:0 }
+.lp-icons button svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.lp-icons button.sel{ border-color:var(--accent); color:var(--accent) }
+/* pin action on a container row */
+.ct-pin{ color:var(--mut) } .ct-pin.on{ color:var(--accent) }
+/* ── MCP pill → popover ─────────────────────────────────────────────────── */
+.mcp-pop{ position:fixed; z-index:60; width:min(420px,92vw); background:var(--card); border:1px solid var(--bd);
+  border-radius:12px; box-shadow:var(--mc-shadow); padding:13px 15px; font-size:12px; color:var(--tx) }
+.mcp-pop[hidden]{ display:none }
+.mcp-pop h4{ margin:0 0 6px; font-size:13px }
+.mcp-pop .row{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap }
+/* ── Display (kiosk) mode ───────────────────────────────────────────────── */
+/* Everything that is not the stage goes away — by structure, so a later
+   layout change can't quietly leave a stray bar on the wall screen. */
+body.display > *:not(#dp-stage){ display:none!important }
+body.display{ overflow:hidden; background:var(--bg) }
+body.display #dp-stage{ position:fixed; inset:0; display:grid!important; grid-template-rows:auto 1fr;
+  gap:10px; padding:14px 18px; overflow:hidden }
+#dp-bar{ display:flex; align-items:center; gap:14px; font-size:13px; color:var(--mut) }
+#dp-title b{ color:var(--tx) }
+#dp-clock{ margin-left:auto; font-family:var(--mono); font-size:26px; font-weight:700;
+  letter-spacing:-.02em; color:var(--tx); font-variant-numeric:tabular-nums }
+#dp-fit{ min-width:0; min-height:0 }
+body.display.dp-idle{ cursor:none }
+body.display.dp-idle .dp-exit{ opacity:0 }
+.dp-exit{ transition:opacity .3s }
+/* In display mode the cockpit is one glanceable board: the widgets the user
+   left on, side by side, nothing scrolling out of sight. */
+/* Fill the screen, both ways: the grid takes the leftover height and every
+   panel stretches into its share of it, so a wall display is a full board
+   rather than a letterboxed one. */
+body.display #dp-fit{ display:flex; flex-direction:column }
+body.display #mc-cockpit{ display:flex; flex-direction:column; gap:12px; flex:1; min-height:0 }
+body.display #mc-cockpit .mc-grid{ grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch;
+  flex:1; min-height:0 }
+body.display #mc-cockpit .mc-col{ min-height:0 }
+body.display #mc-cockpit .mc-col > .mc-panel{ flex:1; min-height:0 }
+body.display #mc-cockpit .mc-panel{ display:flex; flex-direction:column }
+body.display #mc-cockpit .mc-fleet,
+body.display #mc-cockpit .mc-feed,
+body.display #mc-cockpit .mc-lead,
+body.display #mc-cockpit .lp-grid{ flex:1; min-height:0; align-content:start }
+/* The launchpad is a row of icons on a wall, not a column of them. */
+body.display #lp-panel{ flex:0 0 auto }
+body.display #mc-cockpit .mc-engine{ flex:1; align-content:center }
+/* Spread the rows into the height the wall gives them, instead of stacking
+   them at the top of a tall panel with dead space underneath. */
+body.display #mc-cockpit .mc-fleet{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-feed{ justify-content:space-evenly }
+body.display #mc-cockpit .mc-lead{ display:flex; flex-direction:column; justify-content:space-evenly }
+body.display #mc-cockpit .mc-burn{ flex:1; align-content:center }
+body.display #mc-cockpit [data-dp-off]{ display:none!important }
+body.display #mc-cockpit .mc-feed{ max-height:none }
+/* A wall screen is read, not operated: the launchpad's own edit controls go,
+   and its tiles get denser so the pins fill the width instead of floating in
+   a third of it. */
+body.display #lp-panel .btn-mini, body.display .lp-add{ display:none }
+body.display .lp-grid{ grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:6px }
+#dp-stage{ display:none }
+.dp-widgets{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 }
+.dp-widgets label{ display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--bd);
+  border-radius:8px; padding:5px 10px; cursor:pointer }
+.dp-widgets input{ accent-color:var(--accent) }
+.dp-exit{ border:1px solid var(--bd); border-radius:7px; background:var(--card); color:var(--mut); cursor:pointer;
+  font:inherit; font-size:11px; padding:2px 9px }
+.dp-screens{ display:flex; gap:10px; margin:10px 0 }
+.dp-scr{ flex:1; border:1px solid var(--bd); border-radius:9px; padding:9px; text-align:center; cursor:pointer;
+  font-family:var(--mono); font-size:11px; color:var(--mut) }
+.dp-scr.sel{ border-color:var(--accent); color:var(--tx) }
+.dp-scr .shape{ height:42px; border:1px solid var(--bd); border-radius:5px; background:var(--inset); margin-bottom:6px }
+.dp-scr.sel .shape{ background:var(--warnbg) }
 /* customizable widget board */
 .mc-boardbar{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
 .mc-custbtn,.mc-resetbtn{ font:inherit; font-size:11px; font-weight:600; color:var(--mut); background:var(--card); border:1px solid var(--bd); border-radius:9px; padding:5px 11px; cursor:pointer }
@@ -1128,6 +1328,49 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-mb-fill{ height:100%; border-radius:4px }
 .mc-host-spark{ margin-bottom:6px }
 .mc-host-foot{ display:flex; align-items:center; gap:10px; font-size:10px; color:var(--mut); font-family:var(--mono) }
+/* Tight rail: same information, less of it per host — the OS line and the
+   cores/temp/uptime footer go, the micro-bars stay, because "how hard is that
+   box working" is the reason the rail exists. Turned on by the fit pass when a
+   fleet is taller than the fold, never by hand. */
+body.mc-tight .mc-fleet{ gap:7px; padding:3px 10px 10px }
+body.mc-tight .mc-host{ padding:8px 10px }
+body.mc-tight .mc-host-top{ margin-bottom:5px }
+body.mc-tight .mc-host-os,
+body.mc-tight .mc-host-foot{ display:none }
+body.mc-tight .mc-microbars{ margin-bottom:0 }
+/* Tier two of the fit: when trimming lists and tightening the rail still
+   leaves the board taller than the fold, the centre column gives up its
+   ceremony — the gauges and the burn figure are decorative at that size, the
+   numbers inside them are not. */
+body.mc-tight .mc-panel{ padding-bottom:4px }
+body.mc-tight .mc-tg-ring{ max-width:88px }
+body.mc-tight .mc-engine.mc-tri{ gap:10px }
+body.mc-tight .mc-tg-num{ font-size:22px }
+body.mc-tight .mc-tg-pct{ font-size:12px }
+body.mc-tight .mc-engine{ padding:4px 14px 8px }
+body.mc-tight .mc-tg-label{ font-size:10px }
+body.mc-tight .mc-tg-sub{ font-size:9px; min-height:0 }
+body.mc-tight .mc-burn-num{ font-size:34px }
+body.mc-tight .mc-burn{ padding-top:2px }
+body.mc-tight .mc-bstat{ padding:5px 8px }
+body.mc-tight .mc-ph{ padding-bottom:4px }
+body.mc-tight .mc-burn{ padding-bottom:4px }
+body.mc-tight .mc-lp .lp-grid{ gap:5px }
+body.mc-tight .mc-lp .lp-tile{ padding:7px 5px 6px }
+body.mc-tight .mc-lp .lp-ic{ width:26px; height:26px; border-radius:8px }
+body.mc-tight .mc-lp .lp-ic svg{ width:15px; height:15px }
+/* The fit's last-resort scale pays for itself with a negative bottom margin on
+   the cockpit. That margin has to stay INSIDE the tab section, or it collapses
+   straight out of it and the page keeps the unscaled height — which is exactly
+   what happened on a 1280x720 screen: the board shrank and the window scrolled
+   anyway. flow-root makes the section contain it. The :not([hidden]) guard
+   matters: an author display beats the hidden attribute (see .nav[hidden]),
+   and without it the cockpit painted on top of every other tab. */
+section[data-tab="overview"]:not([hidden]){ display:flow-root }
+/* "and N more" — the honest end of any list the fold cut short. */
+.mc-more-row{ display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
+  font-size:11px; color:var(--mut); font-family:var(--mono); padding:5px 2px 0 }
+.mc-more-row:hover{ color:var(--accent) }
 .mc-host-foot .mc-sp{ margin-left:auto }
 .mc-off-msg{ font-size:11px; color:var(--crit); font-family:var(--mono); display:flex; align-items:center; gap:6px }
 
@@ -1244,7 +1487,11 @@ body.mc-customizing .mc-whide:hover{ color:var(--crit); border-color:var(--crit)
 .mc-host.mc-focus{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
 .mc-host-open{ background:none; border:0; color:var(--mut); cursor:pointer; font-size:12px; padding:0 2px; margin-left:4px; line-height:1; flex:none }
 .mc-host-open:hover{ color:var(--accent) }
-.mc-fleet{ max-height:560px; overflow-y:auto }
+/* The fleet rail used to scroll inside a 560px box, which cut the last host
+   card in half — a card that doesn't show what is in it is worse than one row
+   fewer. Nothing on the Overview clips now; the fit pass below decides how
+   much each list shows instead. */
+.mc-fleet{ max-height:none; overflow:visible }
 
 /* collapsed full fleet table */
 .mc-details{ margin:16px 0 }
@@ -1536,7 +1783,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <header><h1><img class="brandlogo" src="/static/logo.svg" alt="" width="26" height="26"> HomeLab Monitor</h1><span class="ver" id="ver">v…</span>
 <button type="button" class="upd" id="updbadge" data-i18n-attr="title:header.update_title" title="A newer release is available — click for details">⬆ <span id="updlatest">v…</span> <span data-i18n="header.update_available">available</span></button>
 <button type="button" class="upd osupd" id="osupdbadge" title="One or more machines have OS/kernel updates pending — click for details">⬆ <span id="osupdtext">updates</span></button>
-<span class="live"><span id="mcppill" class="mcp-pill" hidden>MCP</span><span class="pulse"></span><span id="lastup">connecting…</span></span></header>
+<span class="live"><button type="button" id="mcppill" class="mcp-pill" hidden></button><span class="pulse" data-i18n-attr="title:header.pulse_title" title="Live — rings once on every real refresh of the tab you're viewing"></span><span id="lastup">connecting…</span></span></header>
 <p class="sub">One small container for your home lab — GPU &amp; local-AI, Docker containers, systemd services and host health, all on one page. Everything is discovered automatically; nothing is hardcoded.</p>
 
 <div class="topnav">
@@ -1557,6 +1804,9 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <span class="spacer"></span><label class="tg"><input type="checkbox" id="auto" checked> <span data-i18n="range.autorefresh">auto-refresh</span></label>
 </div>
 <span class="ctrl-spring"></span>
+<button class="sharebtn" id="dispbtn" type="button" data-i18n-attr="title:dp.button_title" title="Full-screen wall display — fits the screen, no scrolling. Esc to leave.">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+  <span data-i18n="dp.button">Display</span></button>
 <div class="sharewrap" id="sharewrap">
   <button class="sharebtn" id="sharebtn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-attr="title:share.button_title" title="Snapshot or share this view">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16a3 3 0 0 0-2.3 1.1l-6.8-3.9a3 3 0 0 0 0-2.4l6.8-3.9A3 3 0 1 0 15 4l-.1.5-6.8 3.9a3 3 0 1 0 0 5.2l6.8 3.9.1.5A3 3 0 1 0 18 16z"/></svg>
@@ -1583,14 +1833,31 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <!-- Degraded-setup banner: shown on any tab when a requirement isn't met. -->
 <div class="diagbanner" id="diagbanner" hidden></div>
 
+<!-- Launchpad / display-mode dialog (one box, contents built per use). -->
+<div class="umodal" id="lpmodal"><div class="box">
+  <div class="hd"><b></b><button class="x" type="button" title="Close">×</button></div>
+  <div class="bd"></div>
+</div></div>
+<!-- Display mode's own stage: the cockpit is MOVED in here (not cloned), so it
+     keeps its live bindings and there is never a second copy to repaint. -->
+<div id="dp-stage">
+  <div id="dp-bar"><span id="dp-title"></span>
+    <button class="dp-exit" type="button" id="dp-exitbtn">Esc · exit display</button>
+    <span id="dp-clock"></span></div>
+  <div id="dp-fit"></div>
+</div>
+
 <!-- ───────── Overview = Mission Control ───────── -->
 <section data-tab="overview">
-  <!-- Mission Control cockpit leads (live data); the full fleet table moves into
-       a collapsed <details> below it; AI band, MCP and Setup keep their cards. -->
+  <!-- The Overview is deliberately short: the apps you open (Launchpad), the
+       fleet, what it costs, how hard it is working, and what needs attention.
+       Everything else has its own tab — a number that is one click away does
+       not need to be on the front page too. Setup & requirements moved to
+       System; the MCP card lives behind the MCP pill in the header. -->
 
-  <!-- Mission Control cockpit (renderMissionControl) — concept-a 3-column command
-       center: FLEET rail · BURN+ENGINE+HISTORY · INSIGHT FEED + COST. Every element
-       is filled by id by paintMissionControl(); structure is static. -->
+  <!-- Mission Control cockpit (renderMissionControl) — LAUNCHPAD · FLEET ·
+       BURN+ENGINE · INSIGHT FEED + COST. Every element is filled by id by
+       paintMissionControl(); structure is static. -->
   <div id="mc-cockpit">
     <!-- fleet-wide rollup bar leads the cockpit (full width) -->
     <div class="mc-fleetbar" id="mc-fleetbar"></div>
@@ -1598,7 +1865,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
     <div class="mc-grid">
       <!-- ───── LEFT: fleet rail — every host at a glance ───── -->
       <div class="mc-col">
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-fleet">
           <div class="mc-ph"><span class="mc-hic" id="mc-ic-fleet"></span><h3 data-i18n="mc.fleet">Fleet</h3><span class="mc-tag" id="mc-fleet-tag" style="margin-left:auto">—</span></div>
           <div class="mc-fleet" id="mc-fleet"></div>
         </div>
@@ -1606,8 +1873,20 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 
       <!-- ───── CENTER: burn rate · engine gauge · compute history ───── -->
       <div class="mc-col">
+        <!-- Launchpad — the apps you actually open. First in the centre
+             column, above the money: the Overview's homepage half reads
+             before its monitoring half. -->
+        <div class="mc-panel mc-lp" id="lp-panel">
+          <div class="mc-ph"><span class="mc-hic" id="mc-ic-lp"></span><h3 data-i18n="lp.title">Launchpad</h3>
+            <span class="mc-tag" id="lp-tag" style="margin-left:auto"></span>
+            <button type="button" class="btn-mini" id="lp-edit" data-i18n="lp.edit">Edit</button>
+            <button type="button" class="btn-mini lp-accent" id="lp-add" data-i18n="lp.add">+ Pin</button>
+          </div>
+          <div class="lp-grid" id="lp-grid"></div>
+        </div>
+
         <!-- burn rate (the money) -->
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-burn">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-burn"></span><h3 id="mc-burn-title" data-i18n="mc.burn">Burn Rate</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" id="mc-burn-scope" title="Power metering runs on the hub">hub</span><span class="mc-tag" id="mc-burn-src" style="margin-left:auto"></span></div>
           <div class="mc-burn">
             <div class="mc-burn-hero">
@@ -1624,7 +1903,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
         </div>
 
         <!-- engine: three gauges — GPU · CPU · RAM for the focused host -->
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-engine">
           <div class="mc-ph mc-engine-ph" id="mc-engine-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-engine"></span><h3 id="mc-engine-title" data-i18n="mc.engine">The Lab's Engine</h3><span class="mc-goto-arrow">›</span><span class="mc-ehost"><span class="mc-showing" data-i18n="mc.showing">Showing</span> <span id="mc-engine-role" class="mc-erole"></span><span id="mc-engine-host"></span></span><div class="mc-modeseg mc-triseg" id="mc-triseg" style="margin-left:auto"><button data-m="host" type="button" data-i18n="mc.mode_host">This host</button><button data-m="fleet" type="button" data-i18n="mc.mode_fleet">Whole fleet</button></div></div>
           <div class="mc-engine mc-tri">
             <div class="mc-tg">
@@ -1663,78 +1942,22 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
           </div>
         </div>
 
-        <!-- compute history (adaptive: GPU util/power/temp, or CPU/RAM/load) -->
-        <div class="mc-panel mc-chartpanel" id="mc-chartpanel">
-          <div class="mc-ph" data-goto="gpu"><span class="mc-hic" id="mc-ic-chart"></span><h3 id="mc-chart-title" data-i18n="mc.compute">Compute history</h3><span class="mc-goto-arrow">›</span><span class="mc-scope">hub</span><span class="mc-tag" id="mc-chart-tag" style="margin-left:auto"></span></div>
-          <div class="mc-chartbox"><canvas id="mc-chart"></canvas></div>
-        </div>
       </div>
 
       <!-- ───── RIGHT: insight feed · cost leaderboard ───── -->
       <div class="mc-col">
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-feed">
           <div class="mc-ph"><span class="mc-hic" id="mc-ic-feed"></span><h3 data-i18n="mc.feed">Event &amp; Insight Feed</h3><span class="mc-tag" id="mc-ins-tag" style="margin-left:auto"></span></div>
           <div class="mc-feed" id="mc-feed"></div>
         </div>
-        <div class="mc-panel">
+        <div class="mc-panel" id="mc-w-cost">
           <div class="mc-ph" data-goto="costs"><span class="mc-hic" id="mc-ic-cost"></span><h3 id="mc-cost-title" data-i18n="mc.cost">What's Costing You</h3><span class="mc-goto-arrow">›</span><span class="mc-scope" title="Cost attribution runs on the hub">hub</span><span class="mc-tag" id="mc-cost-tag" style="margin-left:auto"></span></div>
           <div class="mc-lead" id="mc-lead"></div>
         </div>
       </div>
     </div>
 
-    <!-- ───── BOTTOM STRIP: containers · services · diagnostics ───── -->
-    <div class="mc-strip">
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h" data-goto="containers"><span class="mc-hic" id="mc-ic-containers"></span><span data-i18n="mc.containers">Containers</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-big2"><span class="mc-n" id="mc-c-run">0</span><span class="mc-of">/ <span id="mc-c-tot">0</span></span><span class="mc-pill" id="mc-c-pill">—</span></div>
-        <div style="font-size:10px;color:var(--mut);margin-top:8px;font-family:var(--mono)" id="mc-c-prob">—</div>
-      </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h" data-goto="services"><span class="mc-hic" id="mc-ic-services"></span><span data-i18n="mc.services">Services</span><span class="mc-goto-arrow">›</span><span class="mc-scope" style="margin-left:auto">hub</span></div>
-        <div class="mc-svc-line"><span class="mc-n" style="font-size:32px;font-weight:700;font-family:var(--mono)" id="mc-s-run">0</span><span class="mc-of" style="font-family:var(--mono)" data-i18n="mc.running">running</span></div>
-        <div class="mc-failed-note" id="mc-failed-note">
-          <span class="mc-pill" id="mc-s-pill"></span> <span id="mc-s-hint"></span>
-          <div class="mc-tip" id="mc-fail-tip"></div>
-        </div>
-      </div>
-      <div class="mc-panel mc-scard">
-        <div class="mc-scard-h"><span class="mc-hic" id="mc-ic-diag"></span><span data-i18n="mc.diagnostics">Diagnostics</span> <span style="margin-left:auto;font-size:10px;font-family:var(--mono)" id="mc-diag-summary"></span></div>
-        <div class="mc-diag-grid" id="mc-diag"></div>
-      </div>
-    </div>
   </div>
-
-  <!-- The fleet rail (left column) is the canonical fleet view — the old detailed
-       table was a duplicate and has been removed. -->
-  <details class="mc-details" id="mc-more">
-    <summary data-i18n="mc.more">AI workload · MCP · setup &amp; requirements</summary>
-  <div class="card" id="ai-band" hidden>
-    <h2 style="display:flex;align-items:center;gap:8px">🧠 AI workload <span class="muted" id="ai-band-sub" style="font-size:12px;font-weight:400;text-transform:none"></span></h2>
-    <div id="ai-band-throttle" class="ins crit" style="display:none;margin:8px 0"></div>
-    <div class="grid" id="ai-band-kpis"></div>
-    <p class="cap" id="ai-band-cap"></p>
-  </div>
-  <div class="card" id="mcpcard">
-    <h2 data-i18n="mcp.title">AI agent (MCP)</h2>
-    <div class="fleet-meta" data-i18n-html="mcp.card_desc">A read-only <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run. <span id="mcpstatus"></span></div>
-    <div id="mcpconn" style="margin-top:10px" hidden>
-      <div class="muted" data-i18n="mcp.connect_hint">Connect with the Claude CLI (then ask it about your fleet):</div>
-      <pre class="cmd" id="mcpcmd">claude mcp add --transport http homelab …</pre>
-      <div class="row">
-        <button class="btn" type="button" id="mcpcopy" data-i18n="btn.copy_command">📋 Copy command</button>
-        <a class="btn" id="mcpdocs" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener" data-i18n="mcp.docs">MCP docs →</a>
-      </div>
-    </div>
-  </div>
-  <div class="card" id="diagcard" hidden>
-    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
-    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
-    <div style="overflow-x:auto">
-      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
-    </div>
-  </div>
-  </details>
 </section>
 
 <!-- ───────── GPU ───────── -->
@@ -2443,6 +2666,22 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <input type="checkbox" id="al_reduced_motion">
             <span data-i18n-html="general.reduced_motion_label"><b>Reduced motion</b> — turn off gauge animations, gauges just show the current value.</span>
           </label>
+          <label style="display:flex;align-items:center;gap:9px;margin:4px 0">
+            <input type="checkbox" id="al_icon_pack">
+            <span data-i18n-html="general.icon_pack_label"><b>App icons</b> — give containers and services their real logos, from the ~2,900-icon <a href="https://selfh.st/icons/" target="_blank" rel="noopener">selfh.st</a> set.</span>
+          </label>
+          <p class="cap" id="iconpack_cap" style="margin:2px 0 0 27px" data-i18n-html="general.icon_pack_cap" data-i18n-def="The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.">The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.</p>
+        </div>
+        <div>
+          <div class="flabel" data-i18n="general.fast_interval_label" data-i18n-def="Live refresh interval">Live refresh interval</div>
+          <select id="al_fast_interval_s" class="field" style="max-width:160px">
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+            <option value="3">3 s</option>
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+          </select>
+          <p class="cap" style="margin-top:4px" data-i18n-html="general.fast_interval_cap" data-i18n-def="How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.">How often the GPU tab and the Overview cockpit's live numbers refresh for this hub. Lower is snappier but reads the GPU/CPU a bit more often; it never goes faster than the sample interval allows. Remote hosts are polled over SSH at the sample interval (SAMPLE_INTERVAL, 10s by default), each on its own clock — a slow host never delays the others.</p>
         </div>
         <div>
           <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.ai_servers_title" data-i18n-def="🧠 Custom AI servers">🧠 Custom AI servers</div>
@@ -2559,6 +2798,13 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
     <div class="grid" id="hostkpis"></div>
     <div id="disks" style="margin-top:14px"></div>
     <div id="sysinfo" style="margin-top:16px"></div>
+  </div>
+  <div class="card" id="diagcard" hidden>
+    <h2 data-i18n="diag.title">🩺 Setup &amp; requirements</h2>
+    <div class="fleet-meta" data-i18n="diag.fleet_meta">What the monitor can see on this hub, and how to enable anything that's missing. The dashboard keeps running even when optional pieces aren't mounted — no GPU required.</div>
+    <div style="overflow-x:auto">
+      <table class="sectbl" style="margin-top:10px"><thead><tr><th data-i18n="col.requirement">Requirement</th><th data-i18n="col.status">Status</th><th data-i18n="col.detail">Detail</th></tr></thead><tbody id="diagbody"></tbody></table>
+    </div>
   </div>
   <div class="card" id="topproc-card" hidden><h2 data-i18n="host.topproc_title">🧠 Top processes</h2>
     <div class="topproc-grid" id="topproc"></div>
@@ -2709,9 +2955,6 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
   </div>
 </section>
 
-<p class="cap" data-i18n-html="footer.about">Self-hosted &amp; open source • single container • no Prometheus/Grafana required • history downsampled on read.
-GPU services attributed via <code>/proc/&lt;pid&gt;/cgroup</code> + the Docker API.
-<br>Ideas welcome — see <a href="https://github.com/SikamikanikoBG/homelab-monitor/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md</a> · issues &amp; PRs always open.</p>
 </div></main></div>
 
 <!-- ───────── Update-available modal ───────── -->
@@ -3169,12 +3412,39 @@ function _lgNorm(s){ return (' '+(s||'')).toLowerCase()
   .replace(/\b(docker\.io|ghcr\.io|lscr\.io|linuxserver\.io|quay\.io|gcr\.io|mcr\.microsoft\.com|registry\.[a-z0-9.-]+)\//g,' '); }
 // Returns a brand-logo chip (HTML) for a service/container, or '' if unrecognised.
 // `extra` is the container image (or a service description) used as a fallback haystack.
-function svcLogo(name, extra){
+function svcLogo(name, extra, bundledOnly){
   const hay=_lgNorm((name||'')+' '+(extra||''));
   for(const pair of SVC_LOGO_MATCH){ if(hay.indexOf(pair[0])>=0){ const lg=SVC_LOGOS[pair[1]];
     if(lg){ const fill=lg.m?'currentColor':lg.c;
       return `<span class="brandlg${lg.m?' lg-mono':''}" title="${esc(pair[1])}"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="${fill}" d="${lg.d}"></path></svg></span>`; } } }
-  return '';
+  // No bundled mark: ask the hub. It resolves the name against the selfh.st
+  // catalogue and serves the SVG from its own cache — the browser never talks
+  // to the icon CDN. Unknown name => 404 => the <img> quietly removes itself,
+  // leaving exactly the blank we'd have shown anyway.
+  if(!ICON_PACK || bundledOnly) return '';
+  return `<span class="brandlg"><img src="${esc(iconUrl(name, extra))}" alt="" loading="lazy" decoding="async" onerror="this.parentNode.remove()"></span>`;
+}
+const iconUrl = (name, extra) => '/api/icon?name=' + encodeURIComponent(name||'')
+  + (extra ? '&ref=' + encodeURIComponent(extra) : '');
+// Off when the operator turns the icon pack off in Settings; flipped by
+// renderHealth() from /api/health, so the very first paint of a fresh page
+// uses whatever the last one knew rather than flashing icons on and off.
+let ICON_PACK = localStorage.getItem('hl_iconpack') !== '0';
+function setIconPack(on){
+  on = !!on;
+  if(on === ICON_PACK) return;
+  ICON_PACK = on; localStorage.setItem('hl_iconpack', on ? '1' : '0');
+}
+// The Settings caption tells you what the hub actually holds — "2,914 known,
+// 37 cached here" is the honest version of "app icons: on".
+async function loadIconStats(){
+  const cap = document.getElementById('iconpack_cap'); if(!cap) return;
+  let j; try{ j = await(await fetch('/api/icons/status')).json(); }catch(e){ return; }
+  const base = cap.getAttribute('data-i18n-def') || cap.textContent;
+  cap.innerHTML = base + (j && j.known
+    ? ' <b>' + I18N.tf('general.icon_pack_stats', '{known} icons known, {cached} cached on this hub.',
+        {known: j.known.toLocaleString(), cached: (j.cached||0).toLocaleString()}) + '</b>'
+    : '');
 }
 function applyIcons(scope){
   (scope||document).querySelectorAll('h2,.card-sub,.logo,.subtab,.mc-ph h3,.mc-hero-ph h3,.mc-scard-h').forEach(el=>{
@@ -3310,6 +3580,7 @@ function mountShell(){
   const upd = document.getElementById('updbadge'); if(upd) tb.appendChild(upd);
   const osupd = document.getElementById('osupdbadge'); if(osupd) tb.appendChild(osupd);
   const live = document.querySelector('header .live'); if(live) tb.appendChild(live);
+  tb.insertAdjacentHTML('beforeend', gsMarkup());   // global search, last so it right-aligns
   const foot = document.getElementById('foot');
   foot.insertAdjacentHTML('beforeend',
     '<div class="footrow">'
@@ -3369,7 +3640,7 @@ function showTab(id){
     if(CURRENT_HOST==='local') clearLocalOnlyNotice(id);
     else renderLocalOnlyNotice(id);
   }
-  if(id==='overview'){ renderFleet(); renderAiBand(); renderMissionControl(); }
+  if(id==='overview'){ renderFleet(); renderMissionControl(); }
   if(id==='gpu')      renderGpuTab(true);
   if(id==='experiments') renderExperiments(true);
   if(id==='costs') renderCosts(true);
@@ -3399,9 +3670,41 @@ function fmtMcpAge(sec){
   if(sec < 3600) return I18N.tf('time.ago_m','{n}m ago',{n:Math.floor(sec / 60)});
   return I18N.tf('time.ago_h','{n}h ago',{n:Math.floor(sec / 3600)});
 }
+// Rings the header's live dot once — called from wherever the tab currently on
+// screen actually finished refreshing (see the call sites: paintMissionControl,
+// renderGpuTab/paintLiveCharts' gpu branch, renderNetwork/renderSecurity/
+// renderDiskIo, renderHostTab/buildCharts, renderModels/paintRemoteModels,
+// renderExperiments/renderCosts/renderBenchmarks). Never on a fixed timer of
+// its own, so its rate is always however often the visible tab truly updates —
+// a remote host's GPU tab pinging every ~15-60s and the Overview cockpit
+// pinging every couple of seconds are both telling the truth.
+function pulseLive(){
+  const el = document.querySelector('.live .pulse');
+  if(!el) return;
+  el.classList.remove('go');
+  void el.offsetWidth;   // force reflow so re-adding the class restarts the animation
+  el.classList.add('go');
+}
+// Most call sites now poll faster than their data actually changes (network/
+// security/host(remote)/containers/services/diskio/costs/experiments all ride
+// a shared 5s timer whose real-world cadence is the ~10s SSH/sampler poll
+// behind them — see the GPU tab's own version of this same gap). Pulsing on
+// every poll would have rung the dot every 5s regardless of whether anything
+// moved, exactly the "poll, not refresh" mistake already fixed once for the
+// GPU tab. `key` scopes the last-seen signature per tab so they never compare
+// against each other's data.
+const _PULSE_SIG = {};
+function pulseIfChanged(key, sig){
+  let s; try{ s = JSON.stringify(sig); }catch(e){ s = String(sig); }
+  if(_PULSE_SIG[key] === s) return;
+  _PULSE_SIG[key] = s;
+  pulseLive();
+}
 function renderMcpPill(s){
   const el = document.getElementById('mcppill');
   if(!el) return;
+  if(!el.__wired){ el.__wired=true; el.onclick=toggleMcpPopover;
+    el.setAttribute('aria-label', I18N.t('mcp.pill_aria','AI agent (MCP) — how to connect')); }
   if(!s || !s.enabled || s.state === 'off'){ el.hidden = true; return; }
   el.hidden = false;
   const labels = {active: I18N.t('mcp.active','MCP active'), idle: I18N.t('mcp.idle','MCP idle'), down: I18N.t('mcp.down','MCP down')};
@@ -3413,6 +3716,47 @@ function renderMcpPill(s){
   if(s.active_requests > 0) tip.push(I18N.tf('mcp.active_requests','Active requests: {n}',{n:s.active_requests}));
   if(s.port) tip.push(I18N.tf('mcp.port','Port {n}',{n:s.port}));
   el.title = tip.join(' · ');
+}
+// What the header's MCP pill opens: the "there is an AI agent door into this
+// homelab" card, which used to sit in a collapsed <details> at the bottom of
+// the Overview where nobody found it. Same content, one click from the status
+// it already advertises.
+let MCP_INFO = {};
+function mcpPopover(){
+  let el=document.getElementById('mcp-pop');
+  if(!el){
+    el=document.createElement('div'); el.id='mcp-pop'; el.className='mcp-pop'; el.hidden=true;
+    document.body.appendChild(el);
+    document.addEventListener('click', e=>{
+      if(el.hidden) return;
+      if(e.target.closest('#mcp-pop') || e.target.closest('#mcppill')) return;
+      el.hidden=true;
+    });
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape') el.hidden=true; });
+  }
+  return el;
+}
+function toggleMcpPopover(){
+  const el=mcpPopover(), pill=document.getElementById('mcppill');
+  if(!el.hidden){ el.hidden=true; return; }
+  const host=location.hostname||'YOUR-HUB';
+  const ep=`http://${host}:${MCP_INFO.port||9810}/mcp`;
+  const off = MCP_INFO.enabled === false;
+  el.innerHTML = `<h4>${I18N.t('mcp.title','AI agent (MCP)')}</h4>
+    <div class="muted">${I18N.t('mcp.card_desc','A read-only MCP server is built in, so Claude — or any MCP client — can connect and explore this homelab with full dashboard parity, right down to what each model and container costs to run.')}</div>
+    <div style="margin-top:8px">${off
+      ? I18N.t('mcp.disabled_html','<span class="badge warn">Disabled</span> — set <code>ENABLE_MCP=1</code> to turn it on.')
+      : I18N.tf('mcp.enabled_html','<span class="badge ok">Enabled</span> — serving on <code>{ep}</code>.',{ep:esc(ep)})}</div>
+    ${off ? '' : `<pre class="cmd" style="margin-top:9px;font-size:12px">claude mcp add --transport http homelab ${esc(ep)}</pre>
+    <div class="row"><button class="btn-mini" type="button" id="mcp-pop-copy">${I18N.t('btn.copy_command','📋 Copy command')}</button>
+      <a class="btn-mini" href="https://sikamikanikobg.github.io/homelab-monitor/mcp/" target="_blank" rel="noopener">${I18N.t('mcp.docs','MCP docs →')}</a></div>`}`;
+  el.hidden=false;
+  const r=pill.getBoundingClientRect();
+  el.style.top=(r.bottom+8)+'px';
+  el.style.left=Math.max(8, Math.min(window.innerWidth-el.offsetWidth-8, r.right-el.offsetWidth))+'px';
+  const cp=document.getElementById('mcp-pop-copy');
+  if(cp) cp.onclick=async()=>{ const ok=await copyText(`claude mcp add --transport http homelab ${ep}`);
+    cp.textContent = ok ? I18N.t('btn.copied','✓ Copied') : I18N.t('btn.copy_failed','⚠️ Copy failed'); };
 }
 async function loadHealth(){
   try{ HH = await(await fetch('/api/health')).json(); }catch(e){ return; }
@@ -3560,7 +3904,6 @@ function paintLive(){
 
   // AI models — expandable rows + per-model VRAM timeline (see renderModels)
   renderModels();
-  renderAiBand();   // overview hero refreshes when new /api/data lands (guarded to that tab)
   if(TAB==='overview') renderMissionControl();   // cockpit binds D (insights, host, models)
 
   // Host KPIs + disks — only when local is the active host. Otherwise
@@ -3671,7 +4014,7 @@ function renderGpuSpill(n){
 // what makes a monitoring tool untrustworthy.
 let GPUC = null;               // last /api/gpu/history payload
 let GPUC_ATTR = null;          // last /api/gpu/attribution payload
-let GPUC_HOST = null, GPUC_RANGE = null, GPUC_INFLIGHT = null;
+let GPUC_HOST = null, GPUC_RANGE = null, GPUC_INFLIGHT = null, GPUC_SIG = null;
 // Live-tail bookkeeping (bucket start + how many samples are folded into it).
 // Declared up here, not next to the merge code far below, so the loaders that
 // reset it can never run against a name that isn't initialised yet.
@@ -3688,7 +4031,7 @@ const GPU_METRICS = {
   fan:     {key:'fan',     label:()=>I18N.t('gpu.m_fan','Fan'),     unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
   power:   {key:'power',   label:()=>I18N.t('gpu.m_power','Power'), unit:'W',   max:null, fmt:v=>Math.round(v)+'W'},
   mem_util:{key:'mem_util',label:()=>I18N.t('gpu.m_membw','Mem-BW'),unit:'%',   max:100, fmt:v=>Math.round(v)+'%'},
-  clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+'M'},
+  clk_sm:  {key:'clk_sm',  label:()=>I18N.t('gpu.m_clock','Clock'), unit:'MHz', max:null, fmt:v=>Math.round(v)+' MHz'},
   tflops:  {key:'tflops',  label:()=>I18N.t('gpu.m_tflops','TFLOPS'),unit:'TFLOPS',max:null, fmt:v=>fmtTF(v)},
 };
 // TFLOPS spans four orders of magnitude across a fleet — an idle Pascal Quadro
@@ -3704,7 +4047,7 @@ function fmtTF(v){
 // down a column rather than by reading each label. TFLOPS sits under util
 // because they answer the same question at two different resolutions: util says
 // the card is busy, TFLOPS says how much arithmetic that busyness is worth.
-const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power'];
+const GPU_SPARK_ROWS = ['util','tflops','vram','temp','fan','power','clk_sm'];
 
 const gpuTint = v => v>85?'var(--crit)':v>60?'var(--warn)':'var(--ok)';
 // Per-card line colour for the by-metric view. Stable by index so a card keeps
@@ -3800,6 +4143,9 @@ function gpuStatusPill(card){
     // The host isn't reporting cards at all right now (offline, or the hub has
     // just restarted and hasn't polled yet). We don't know — say so.
     stale:    ['',             I18N.t('gpu.st_stale','NO LIVE DATA')],
+    // The host is answering but its GPU tool isn't — a broken driver, a card
+    // off the bus. Loud on purpose: the numbers around it are frozen.
+    lost:     ['mc-pill-crit', I18N.t('gpu.st_lost','NO TELEMETRY')],
   }[card.status] || ['', card.status];
   return `<span class="mc-pill ${S[0]}">${S[1]}</span>`;
 }
@@ -3834,6 +4180,10 @@ function gpuMiniCardBody(card, d, ranges){
     }
     if(m==='temp'){ cls = last>=d.hot_c ? 'bad' : last>=d.hot_c-8 ? 'warn' : ''; }
     if(m==='fan' && last>=95) cls = 'warn';
+    // No live reading behind this number: it is the last sample the host ever
+    // sent, not what the card is doing now. Colouring it red for "hot" would
+    // be a claim about the present made from the past.
+    if(card.status==='lost'){ cls = 'lastknown'; }
     const color = m==='temp' ? gpuTint(last>=d.hot_c?100:last>=d.hot_c-8?70:10)
                 : m==='util' ? gpuTint(last) : 'var(--ok)';
     // TFLOPS sits directly under UTIL, and the pair invites exactly one wrong
@@ -3844,7 +4194,7 @@ function gpuMiniCardBody(card, d, ranges){
       ? ` title="${esc(I18N.t('gpu.m_tflops_t','Peak FP32 at the clock this card is running right now — a ceiling, not work done. A card can hold a high clock while sitting at 0% utilisation.'))}"` : '';
     return `<div class="spark-row"${rowT}><span class="sl">${def.label()}</span>
       ${sparkSvg(vals2, {min:r.min, max:r.max, color, bands: m==='temp'||m==='util' ? spans : []})}
-      <span class="sv ${cls}">${disp}</span></div>`;
+      <span class="sv ${cls}"${card.status==='lost'?` title="${esc(I18N.t('gpu.lastknown_t','Last known value — the host is not reporting this card right now.'))}"`:''}>${disp}</span></div>`;
   }).join('');
 
   // Which services sit on THIS card — the piece even the hub never had.
@@ -3872,7 +4222,9 @@ function gpuMiniCardBody(card, d, ranges){
          clk:K.boost_mhz, cores:K.cores.toLocaleString()}))}">${fmtTF(K.fp32)}F</span>` : '';
 
   return `<div class="gpu-mini-h"><b>GPU ${card.idx}</b><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span>${peak}${gpuStatusPill(card)}</div>
-    <div class="gpu-mini-now">${stats || (card.status==='retired' && card.last_seen
+    <div class="gpu-mini-now">${stats || (card.status==='lost'
+        ? `<span class="lastknown">${I18N.tf('gpu.lost_now','telemetry lost · last reported {t}',{t:relTime(card.last_seen)})}</span>`
+        : card.status==='retired' && card.last_seen
         ? I18N.tf('gpu.last_seen','last reported {t}',{t:relTime(card.last_seen)})
         : I18N.t('gpu.no_live','no live reading'))}</div>
     ${rows}${attrib}`;
@@ -3919,6 +4271,18 @@ function updateGpuCardsLive(d){
   return painted > 0;
 }
 
+// A fetch with no response can hang indefinitely — a background tab the
+// browser suspended and later woke up, a dropped connection it never resets —
+// and with nothing to time it out, whatever "fetch in flight" guard is
+// waiting on it never clears. renderGpuTab() below is exactly that: a remote
+// host's tab that looked frozen until a hard reload wiped GPUC_INFLIGHT back
+// to null was this fetch never settling, not the data going stale. 15s is
+// generous for a same-LAN request; it exists only to bound the worst case.
+function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), ms||15000);
+  return fetch(url, {signal: ctrl.signal}).finally(()=>clearTimeout(timer));
+}
 // Fetch + paint the whole GPU tab for whichever host is selected.
 // Guarded against the late-paint bug the AI Models tab had: a fetch may resolve
 // after the user has moved on, and this tab must never show one host's cards
@@ -3939,8 +4303,8 @@ async function renderGpuTab(force){
   try{
     const q = `?host=${encodeURIComponent(host)}&range=${encodeURIComponent(range)}`;
     [hist, attr] = await Promise.all([
-      fetch('/api/gpu/history'+q).then(r=>r.json()),
-      fetch('/api/gpu/attribution'+q).then(r=>r.json()),
+      fetchWithTimeout('/api/gpu/history'+q).then(r=>r.json()),
+      fetchWithTimeout('/api/gpu/attribution'+q).then(r=>r.json()),
     ]);
   }catch(e){ return; }                       // keep the last good paint
   finally{ if(GPUC_INFLIGHT === host+'|'+range) GPUC_INFLIGHT = null; }
@@ -3948,6 +4312,14 @@ async function renderGpuTab(force){
   GPUC = hist; GPUC_ATTR = attr; GPUC_HOST = host; GPUC_RANGE = range;
   GPU_TAIL={b:null,n:0};   // fresh authoritative series: start folding again from it
   paintGpuTab(false);
+  // Only pulse when the "now" numbers actually moved — not the bucket label
+  // alone, which can sit unchanged for a whole bucket while its average
+  // quietly updates underneath (the exact reason renderMcChart's own repaint
+  // signature includes values, not just labels). A poll that lands between two
+  // real server-side samples is real work, but not a real refresh, and this
+  // dot promised to ring only for the latter.
+  const sig = JSON.stringify(hist.now_pooled||null)+'|'+((hist.labels||[]).length);
+  if(sig !== GPUC_SIG){ GPUC_SIG = sig; pulseLive(); }
 }
 
 function paintGpuTab(loading){
@@ -3977,11 +4349,17 @@ function paintGpuTab(loading){
   // are different situations and get different words. Conflating them is how a
   // monitoring tool tells its first small lie.
   if(!d.has_gpu){
+    // A box that has no GPU and a box whose GPU tool is broken are different
+    // findings, and only one of them should worry anyone.
+    const T = d.telemetry;
     if(title) title.innerHTML = `${sic('gpu')} `
-      + esc(I18N.tf('gpu.none_title','No GPU detected on {host}',{host:d.host}));
+      + esc(T ? I18N.tf('gpu.tele_title','GPU telemetry unavailable on {host}',{host:d.host})
+              : I18N.tf('gpu.none_title','No GPU detected on {host}',{host:d.host}));
     document.getElementById('gpukpis').innerHTML = '';
     const cap = document.getElementById('gpu-pooled-cap');
-    if(cap) cap.textContent = I18N.t('gpu.none_cap','The probe found no NVIDIA card (via nvidia-smi) and no AMD or Intel GPU on this host.');
+    if(cap) cap.textContent = T && T.error
+      ? T.error
+      : I18N.t('gpu.none_cap','The probe found no NVIDIA card (via nvidia-smi) and no AMD or Intel GPU on this host.');
     [perCard, combCard, nowCard].forEach(c=>{ if(c) c.hidden = true; });
     renderGpuAlertStrip(d); renderGpuHealth(d);
     return;
@@ -3999,7 +4377,10 @@ function paintGpuTab(loading){
 
   const pcap = document.getElementById('gpu-pooled-cap');
   if(pcap){
-    pcap.textContent = d.online
+    const T = d.telemetry;
+    pcap.textContent = (T && T.lost)
+      ? I18N.tf('gpu.pooled_cap_lost','Host online but not reporting its GPUs — every number here is the last known value, from {t}',{t:relTime(T.lost_since||d.at)})
+      : d.online
       ? I18N.tf('gpu.pooled_cap','Live · updated {t} · history every {i}s',{t:relTime(d.at), i:d.interval})
       : I18N.tf('gpu.pooled_cap_off','Host offline — showing the last snapshot from {t}',{t:relTime(d.at)});
   }
@@ -4021,6 +4402,16 @@ function paintGpuTab(loading){
 function renderGpuKpis(d){
   const box = document.getElementById('gpukpis');
   if(!box || !d || !d.has_gpu) return;
+  // No pooled "now" block means no card reported this poll. Zeros here would
+  // read as "GPU idle at 0 °C" — a confident wrong answer. Dashes say "unknown".
+  if(!d.now_pooled){
+    const T = d.telemetry || {};
+    const why = T.lost ? I18N.t('gpu.k_lost','telemetry lost') : I18N.t('gpu.k_nolive','no live data');
+    box.innerHTML = [I18N.t('gpu.util_kpi','GPU util'), I18N.t('gpu.vram_in_use','VRAM in use'),
+                     I18N.t('gpu.k_power','Power'), I18N.t('gpu.k_temp','Hottest card')].map(l=>
+      `<div class="kpi"><div class="v lastknown">—</div><div class="l">${l}</div><div class="s">${why}</div></div>`).join('');
+    return;
+  }
   const p = d.now_pooled || {};
   const C = d.combined || {};
   const memPct = p.mem_total ? Math.round(p.mem_used/p.mem_total*100) : 0;
@@ -4326,6 +4717,22 @@ const gpuStallBar = d => Math.max(60, (d.hot_c || 84) - 10);
 function renderGpuAlertStrip(d){
   const box = document.getElementById('gpu-alerts'); if(!box) return;
   const items = [];
+  // The host answers, its GPUs don't. Above every per-card item because it
+  // explains all of them at once, and worded from the tool's own error so the
+  // fix is obvious ("Driver/library version mismatch" → reboot / reload the
+  // module). This is the strip that was missing the day a driver auto-update
+  // froze a whole box's numbers without a single red pixel.
+  const T = d.telemetry;
+  if(T && (T.lost || T.error)){
+    const bits = [];
+    if(T.error) bits.push(esc(T.error));
+    else bits.push(I18N.t('gpu.al_tele_generic','The host is online and answering the probe, but the probe found no GPU. On an NVIDIA box that usually means nvidia-smi is broken (a driver/library version mismatch after a package update) or the cards fell off the bus (Xid).'));
+    if(T.lost_since) bits.push(I18N.tf('gpu.al_tele_since','Last good reading {t}.',{t:relTime(T.lost_since)}));
+    bits.push(I18N.t('gpu.al_tele_frozen','Every number on this tab is the last known value, not a live one.'));
+    items.push({lvl:'crit', ic:'xcircle',
+      t: I18N.tf('gpu.al_tele','GPU telemetry lost on {host}',{host:esc(d.host)}),
+      d: bits.join(' ')});
+  }
   (d.cards||[]).forEach(c=>{
     const now = c.now || {};
     const h = c.health || {};
@@ -4643,6 +5050,7 @@ async function renderCosts(force){
       y:{stacked:true,min:0,grid:{color:cv('--free')},ticks:{color:cv('--mut'),callback:v=>v+' W'}}},
     plugins:{legend:{labels:{color:cv('--tx'),boxWidth:12}}}},plugins:[areaBg]});
   renderCostsTable();
+  if(TAB==='costs') pulseLive();
 }
 function renderCostsTable(){
   const j=COSTS_DATA; if(!j) return;
@@ -4721,8 +5129,12 @@ function renderRegistry(j){
   // totals are fleet-wide and would contradict a host-scoped list.
   const tBytes=all.reduce((a,m)=>a+(m.size_bytes||0),0);
   const tLoaded=all.filter(m=>m.loaded).length;
-  if(sum) sum.textContent=I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
-    {n:all.length, gb:fmtBytes(tBytes).replace(' GB',''), loaded:tLoaded});
+  // Only ollama reports on-disk sizes; a list of vLLM/whisper entries has none,
+  // and "0,00 GB on disk" there was a lie in the locale's decimal separator.
+  if(sum) sum.textContent = tBytes>0
+    ? I18N.tf('registry.summary','{n} models · {gb} GB on disk · {loaded} loaded',
+        {n:all.length, gb:fmtBytes(tBytes).replace(' GB',''), loaded:tLoaded})
+    : I18N.tf('registry.summary_nosize','{n} models · {loaded} loaded',{n:all.length, loaded:tLoaded});
   const q=(document.getElementById('registry-filter')||{}).value||'';
   const needle=q.trim().toLowerCase();
   const models=needle
@@ -4855,10 +5267,45 @@ function modelComputeCell(K, m){
     {base:base, kind:kind, where:where, shared:shared}))}">${fmtTF(base)}F</span>`;
 }
 
+// A user-registered server that isn't answering, as one honest row. Before
+// this a custom server whose probe came back empty simply vanished from the
+// tab — indistinguishable from "never registered" — which is what made the
+// custom-servers feature feel broken: register, Test passes, then nothing.
+function customServerNotice(host){
+  const down=((D&&D.now&&D.now.custom_servers)||[]).filter(s=>(s.host||'local')===host && !s.reachable);
+  if(!down.length) return '';
+  return down.map(s=>`<div class="ins warning" style="margin:0 0 10px"><div class="ic">${sic('alert')}</div><div>
+    <div class="t">${esc(s.name)} — ${I18N.t('models.custom_down','not answering')}</div>
+    <div class="d">${I18N.tf('models.custom_down_d','Registered as {p} at {t}. Nothing answered the probe on the last sample — the server is down, the port moved, or it has no models to list. Check it in Settings → General → Custom AI servers.',{p:esc(s.provider||'?'),t:esc(s.target||'')})}</div></div></div>`).join('');
+}
+// Patch a server card in place: the card is a fixed set of parts (header,
+// serving chips, VRAM timeline, callers, table) and each part only repaints
+// when its own markup changed. Rebuilding the whole panel's innerHTML on every
+// 5s poll — as this did — dropped hover tooltips, text selection and the scroll
+// anchor every time a tok/s figure ticked, which is the "jumping" the tab was
+// known for.
+function patchParts(el, parts){
+  if(el.children.length!==parts.length || el._nparts!==parts.length){
+    el.innerHTML=parts.map(()=>'<div class="mpart"></div>').join('');
+    el._nparts=parts.length;
+  }
+  parts.forEach((h,i)=>setHTML(el.children[i], h));
+}
 function renderModels(){
   if(!D) return;
+  // The AI-tab fast poll (below) calls this every 5s regardless of whether the
+  // throttled server-side re-probe actually returned anything new.
+  if(TAB==='models') pulseIfChanged('models', [D.now.models, D.now.serving]);
   const tot=D.mem_total;
-  const live=D.now.models||[], sums=D.model_summary||[];
+  // This panel is the HUB's: rows stamped for a remote fleet host (a custom
+  // server the hub probes on that box's behalf) belong on that box's card,
+  // not here. Rows without a host (older payloads) are the hub's.
+  const live=(D.now.models||[]).filter(m=>(m.host||'local')==='local');
+  const liveSvcs=new Set(live.map(m=>m.service));
+  const remoteSvcs=new Set((D.now.models||[]).filter(m=>(m.host||'local')!=='local').map(m=>m.service));
+  // model_summary is DB history keyed by service only; keep a service's
+  // history rows unless it is currently known to belong to a remote host.
+  const sums=(D.model_summary||[]).filter(m=>liveSvcs.has(m.service) || !remoteSvcs.has(m.service));
   const svcSum={}; (D.summary||[]).forEach(s=>svcSum[s.service]=s);
   const curOf={}, ramOf={}, ctxOf={}; live.forEach(m=>{const k=m.model+'|'+m.service; curOf[k]=m.vram; ramOf[k]=m.ram; ctxOf[k]=m.ctx_now;});
   // Group models under their server. Per-model peak/avg ARE distinct (model_summary);
@@ -4870,13 +5317,36 @@ function renderModels(){
     runs:m.runs||0,spilled:m.runs_spilled||0,peakRam:m.peak_ram||0,usedBy:m.used_by||[]});});
   live.forEach(m=>{const arr=bySvc[m.service]=bySvc[m.service]||[]; if(!arr.some(x=>x.model===m.model)) arr.push({model:m.model,peak:null,avg:null,vram:m.vram,ram:m.ram,ctxNow:m.ctx_now,runs:0,spilled:0,peakRam:0,usedBy:[]});});
   const host=document.getElementById('modelsbody'); if(!host) return;
-  const services=Object.keys(bySvc);
-  if(!services.length){ setHTML(host, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>'); return; }
+  // Stable order: by name. The fast poll rebuilds D.now.models in whatever
+  // order the probes answered, and Object.keys() followed it — cards swapped
+  // places between polls.
+  const services=Object.keys(bySvc).sort((a,b)=>a.localeCompare(b));
+  let notice=host.querySelector(':scope > .custom-notice');
+  if(!notice){ notice=document.createElement('div'); notice.className='custom-notice'; host.prepend(notice); }
+  setHTML(notice, customServerNotice('local'));
+  if(!services.length){
+    let empty=host.querySelector(':scope > .models-empty');
+    if(!empty){ empty=document.createElement('div'); empty.className='models-empty'; host.appendChild(empty); }
+    setHTML(empty, '<div class="card"><div class="muted">'+I18N.t('models.empty','No recognised AI model server is running. Start one (Ollama, vLLM, faster-whisper, Stable Diffusion, …) and it will appear here.')+'</div></div>');
+    host.querySelectorAll(':scope > .card[data-svc]').forEach(el=>el.remove());
+    return;
+  }
+  const emptyEl=host.querySelector(':scope > .models-empty'); if(emptyEl) emptyEl.remove();
   const maxV=Math.max(tot||1, ...sums.map(m=>m.peak||0));
-  setHTML(host, services.map(svc=>{
+  // One card element per service, keyed by data-svc, kept in sorted order;
+  // stale services drop out, new ones slot in, and the rest are patched.
+  const want=new Set(services);
+  host.querySelectorAll(':scope > .card[data-svc]').forEach(el=>{ if(!want.has(el.dataset.svc)) el.remove(); });
+  let prev=notice;
+  services.forEach(svc=>{
+    let card=host.querySelector(':scope > .card[data-svc="'+CSS.escape(svc)+'"]');
+    if(!card){ card=document.createElement('div'); card.className='card'; card.dataset.svc=svc; }
+    if(prev.nextElementSibling!==card) prev.after(card);
+    prev=card;
     const ss=svcSum[svc]||{}, c=colorFor(svc);
     const svcK=serverCompute(svc);
-    const models=bySvc[svc].slice().sort((a,b)=>(b.peak||0)-(a.peak||0));
+    // Peak desc, then name — a null-peak tie used to reorder rows between polls.
+    const models=bySvc[svc].slice().sort((a,b)=>((b.peak||0)-(a.peak||0)) || a.model.localeCompare(b.model));
     const rows=models.map(m=>{
       const pW=m.peak!=null?Math.max(2,m.peak/maxV*100):0, aW=m.avg!=null?Math.max(2,m.avg/maxV*100):0;
       const spillingNow=m.vram!=null&&(m.ram||0)>0;
@@ -4914,8 +5384,7 @@ function renderModels(){
         <td class="vbars"><div class="vbar" title="peak ${m.peak!=null?fmtMB(m.peak):'—'}"><i style="width:${pW}%;background:${c}"></i></div>
           <div class="vbar" title="avg ${m.avg!=null?fmtMB(m.avg):'—'}"><i style="width:${aW}%;background:${c};opacity:.5"></i></div></td></tr>`;
     }).join('');
-    return `<div class="card">
-      <h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
+    const header=`<h2 style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--tx)">
         <span class="dot" style="background:${c}"></span>${esc(svc)}
         <span class="pill" style="margin-left:auto;text-transform:none">${I18N.tf('models.server_meta','resident {resident} · server peak {peak}',{resident:(ss.present!=null?ss.present+'%':'—'),peak:(ss.peak!=null?fmtMB(ss.peak):'—')})}</span>
         ${svcK?`<span class="pill" style="text-transform:none" title="${esc(I18N.tf('models.server_tf_t',
@@ -4924,13 +5393,10 @@ function renderModels(){
            which:svcK.attributed?I18N.tf('models.server_tf_which',' ({list})',{list:'GPU '+svcK.cards.join(', ')})
                                 :I18N.t('models.server_tf_all',' (every card in this box — the host cannot attribute VRAM per card)'),
            f32:svcK.fp32, f16:svcK.fp16!=null?I18N.tf('models.server_tf16',' / {v} TFLOPS FP16 tensor',{v:svcK.fp16}):''}))}">${
-          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>
-      ${servingFor(svc)}
-      ${modelSpark(svc,tot)}
-      ${callersFor(svc)}
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>
-    </div>`;
-  }).join(''));
+          I18N.tf('models.server_tf','compute {v}',{v:fmtTF(svcK.fp16!=null?svcK.fp16:svcK.fp32).replace(' T',' TFLOPS')})}</span>`:''}</h2>`;
+    const table=`<table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>`;
+    patchParts(card, [header, servingFor(svc,'local'), modelSpark(svc,tot), callersFor(svc), table]);
+  });
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
@@ -5082,13 +5548,13 @@ function renderDiskIo(){
   }).join('');
   body.innerHTML = attrHtml + `<div class="dio-grid">${cards}</div>`
     + `<p class="cap" style="margin-top:12px">${I18N.t('diskio.footnote','Spikes are z-scored against each device’s own recent baseline and appear in the Insight Feed.')}</p>`;
+  if(TAB==='diskio') pulseIfChanged('diskio', dio);
 }
 
 function renderHealth(){
   if(!HH) return;
   setVer(HH.version);
   renderTopProcs();   // mini-htop card refreshes on every health poll (issue #32)
-  renderAiBand();     // overview AI band uses fresh GPU/throttle data from /api/health
   if(TAB==='overview') renderMissionControl();   // cockpit binds HH (gpu, docker, systemd, diagnostics)
   if(TAB==='experiments') renderExperiments(false);   // throttled live refresh of training cards
   if(TAB==='costs') renderCosts(false);               // throttled live refresh of the costs page
@@ -5144,23 +5610,7 @@ function renderHealth(){
     }).join('');
     if(dcard) dcard.hidden = false;
   }
-  // Built-in MCP server: tell the user it's there and how to connect.
-  const mcp = HH.mcp || {};
-  const mcard = document.getElementById('mcpcard');
-  if(mcard){
-    const host = location.hostname || 'YOUR-HUB';
-    const ep = `http://${host}:${mcp.port||9810}/mcp`;
-    const st = document.getElementById('mcpstatus'), conn = document.getElementById('mcpconn');
-    if(mcp.enabled === false){
-      if(st) st.innerHTML = I18N.t('mcp.disabled_html','<span class="badge warn">Disabled</span> — set <code>ENABLE_MCP=1</code> to turn it on.');
-      if(conn) conn.hidden = true;
-    } else {
-      if(st) st.innerHTML = I18N.tf('mcp.enabled_html','<span class="badge ok">Enabled</span> — serving on <code>{ep}</code>.',{ep:esc(ep)});
-      const cmd = document.getElementById('mcpcmd');
-      if(cmd) cmd.textContent = `claude mcp add --transport http homelab ${ep}`;
-      if(conn) conn.hidden = false;
-    }
-  }
+  MCP_INFO = HH.mcp || {};      // the popover behind the header's MCP pill reads this
   const overall = (diag.summary||{}).overall;
   const banner = document.getElementById('diagbanner');
   if(banner){
@@ -5170,7 +5620,7 @@ function renderHealth(){
       banner.innerHTML = _lead + ` `
         + `<a href="#" id="diaggo">${I18N.t('diag.banner_link','See Setup &amp; requirements')}</a><button class="x" id="diagx" title="${I18N.t('common.dismiss','Dismiss')}">×</button>`;
       banner.hidden = false;
-      document.getElementById('diaggo').onclick = e=>{e.preventDefault(); showTab('overview');
+      document.getElementById('diaggo').onclick = e=>{e.preventDefault(); showTab('host');
         const dc=document.getElementById('diagcard'); if(dc) dc.scrollIntoView({behavior:'smooth'});};
       document.getElementById('diagx').onclick = ()=>{ DIAG_DISMISSED=true; banner.hidden=true; };
     } else {
@@ -5180,7 +5630,10 @@ function renderHealth(){
 
   // Hide GPU-specific tabs when the hub has no GPU, so a GPU-less box doesn't show
   // empty "0% VRAM" panels. (GPU is hub-local; remotes keep their own scope.)
-  const gpuPresent = !!(HH.now && HH.now.gpu && HH.now.gpu.available);
+  // A hub whose GPU tool just broke is NOT a GPU-less box: hiding the tab
+  // then would bury the one screen that says so — exactly how a driver
+  // auto-update made a working 3-card box read as "no GPU" for a day.
+  const gpuPresent = !!(HH.now && HH.now.gpu && (HH.now.gpu.available || teleLost({gpu_telemetry:HH.now.gpu.telemetry})));
   ['gpu','models'].forEach(id=>document.querySelectorAll(`[data-t="${id}"]`)
     .forEach(el=>{ el.style.display = gpuPresent ? '' : 'none'; }));
   // If we landed on a GPU-only tab (persisted hl_tab / #gpu) on a GPU-less host,
@@ -5230,6 +5683,7 @@ function renderHealth(){
         <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
         <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
         <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+        <button type="button" class="btn-mini ct-pin${lpIsPinned(c.name,'local')?' on':''}" data-pin="1" title="${lpIsPinned(c.name,'local')?I18N.t('lp.pinned','On the Overview launchpad'):I18N.t('lp.pin_this','Pin to the Overview launchpad')}">${lpIsPinned(c.name,'local')?'★':'☆'}</button>
       </div>
       <div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
         ${RESTART_POLICIES.map(p=>`<option value="${p}" ${rp===p?'selected':''}>${p}</option>`).join('')}
@@ -5258,10 +5712,17 @@ function renderHealth(){
   // also open the log drawer.
   document.getElementById('cttbl').onclick = e => {
     if(e.target.closest('.copybtn')) return;
+    const pinBtn = e.target.closest('.ct-pin');
+    if(pinBtn){ e.stopPropagation();
+      const tr = pinBtn.closest('.ctrow');
+      const c = (((HH&&HH.docker)||{}).containers||[]).find(x=>x.name===tr.dataset.ct) || {};
+      lpPinContainer(tr.dataset.ct, c.ports, 'local');
+      return;
+    }
     const actBtn = e.target.closest('.ct-act');
     if(actBtn){ e.stopPropagation();
       const tr = actBtn.closest('.ctrow');
-      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1');
+      containerAction(tr.dataset.ct, actBtn.dataset.act, tr.dataset.self === '1', 'local');
       return;
     }
     if(e.target.closest('.ctl-policy')) return;
@@ -5273,11 +5734,15 @@ function renderHealth(){
     if(!confirm(`Change restart policy for "${tr.dataset.ct}" to "${sel.value}"?`)){
       loadHealth(); return; // revert the select to server state
     }
-    setContainerRestartPolicy(tr.dataset.ct, sel.value);
+    setContainerRestartPolicy(tr.dataset.ct, sel.value, 'local');
   };
+  if(TAB==='containers') pulseIfChanged('containers', dk);
 
   // Services — local-only branch; when remote, renderServicesTab() drives it.
-  if(CURRENT_HOST === 'local') renderServicesBlock(HH.systemd);
+  if(CURRENT_HOST === 'local'){
+    renderServicesBlock(HH.systemd);
+    if(TAB==='services') pulseIfChanged('services', HH.systemd);
+  }
 }
 
 // Renders a systemd block into #svcbody. Same shape for local and remote so
@@ -5921,6 +6386,19 @@ async function loadAlerts(){
   document.getElementById('al_retention_days').value = s.retention_days||'180';
   document.getElementById('al_reduced_motion').checked = s.reduced_motion==='1';
   applyReducedMotion(s.reduced_motion==='1');
+  document.getElementById('al_icon_pack').checked = s.icon_pack!=='0';
+  setIconPack(s.icon_pack!=='0');
+  loadIconStats();
+  // The dropdown only lists common choices; a box whose FAST_INTERVAL env var
+  // picked something else needs that value present as an option too, or
+  // .value silently falls back to "" and the next autosave (any field, not
+  // just this one) would overwrite the deployment's real setting with '2'.
+  { const fi=document.getElementById('al_fast_interval_s'), fiVal=String(s.fast_interval_s||'2');
+    if(fi && !Array.from(fi.options).some(o=>o.value===fiVal)){
+      const opt=document.createElement('option'); opt.value=fiVal; opt.textContent=fiVal+' s'; fi.appendChild(opt);
+    }
+    if(fi) fi.value=fiVal;
+  }
   // Custom AI servers — the server is authoritative; only seed the draft once
   // (first load) so a user mid-typing isn't clobbered by a save-triggered reload.
   loadAiProviders();
@@ -6090,6 +6568,8 @@ function collectSettingsBody(){
     gpu_missing_alerts:     document.getElementById('al_gpu_missing').checked ? '1' : '0',
     retention_days:   (v=>{const n=parseInt(v,10);return v.trim()===''?'180':String(isNaN(n)?180:Math.max(1,n));})(document.getElementById('al_retention_days').value),
     reduced_motion:   document.getElementById('al_reduced_motion').checked ? '1' : '0',
+    icon_pack:        document.getElementById('al_icon_pack').checked ? '1' : '0',
+    fast_interval_s:  (v=>{const n=parseInt(v,10);return String(isNaN(n)?2:Math.max(1,Math.min(30,n)));})(document.getElementById('al_fast_interval_s').value),
     // Omitted (not sent) until the draft is seeded from the server — an
     // autosave racing the first load would otherwise POST an empty list and
     // wipe a server the user hasn't even seen yet.
@@ -6180,7 +6660,7 @@ const AUTOSAVE_IDS=['al_enabled','al_ntfy_topic','al_ntfy_server','al_telegram_c
   'al_email_user','al_email_pass','al_discord','al_slack','al_webhook','al_minlevel','al_disk',
   'al_kwh','al_currency','al_kwh_night','al_night_start','al_night_end','al_idle_w','al_mlflow_uri',
   'al_mlflow_token','al_country','al_brief_enabled','al_brief_time','al_brief_channel','al_brief_theme',
-  'al_public_status_enabled','al_retention_days','al_reduced_motion'];
+  'al_public_status_enabled','al_retention_days','al_reduced_motion','al_icon_pack','al_fast_interval_s'];
 function wireAutoSave(){
   const rmChk=document.getElementById('al_reduced_motion');
   if(rmChk) rmChk.addEventListener('change', () => applyReducedMotion(rmChk.checked));
@@ -6951,7 +7431,22 @@ function statusOfFleetRow(r){
   const summary = (r.last_check && r.last_check.summary) || {};
   if(summary.overall==='warn') return 'warn';
   if(summary.overall==='fail') return 'offline';
+  // A host that answers but has lost a sensor it used to have (its GPUs, via a
+  // broken nvidia-smi) is not "online" in the sense a human means: the numbers
+  // it shows are frozen. Amber here is what turns the host pill, the fleet
+  // table and the Overview tile amber at once.
+  if(teleLost(r)) return 'warn';
   return 'online';
+}
+// The fleet row's GPU-telemetry verdict (from /api/fleet), or null. Kept as one
+// helper so every surface asks the same question.
+function teleLost(r){ return !!(r && r.gpu_telemetry && r.gpu_telemetry.ok===false); }
+function teleTitle(r){
+  const T = r && r.gpu_telemetry; if(!T) return '';
+  return T.error || I18N.t('fleet.tele_lost_t','GPU telemetry lost — the host answers but reports no GPU');
+}
+function teleLight(r){
+  return teleLost(r) ? `<span class="telelight" title="${esc(teleTitle(r))}" aria-label="${esc(I18N.t('fleet.tele_lost','GPU telemetry lost'))}"></span>` : '';
 }
 
 async function loadFleet(){
@@ -6990,8 +7485,8 @@ function renderHostBar(){
     const dot = h.is_local ? 'ok' : statusOfFleetRow(h)==='online' ? 'ok' :
                 statusOfFleetRow(h)==='warn' ? 'warn' : 'fail';
     const label = h.is_local ? (h.label || I18N.t('host.local','Local')) : h.name;
-    return `<button class="hpill ${h.name===CURRENT_HOST?'on':''}" data-h="${esc(h.name)}">
-      <span class="pdot ${dot}"></span><span>${esc(label)}</span></button>`;
+    return `<button class="hpill ${h.name===CURRENT_HOST?'on':''}" data-h="${esc(h.name)}"${teleLost(h)?` title="${esc(teleTitle(h))}"`:''}>
+      <span class="pdot ${dot}"></span><span>${esc(label)}</span>${teleLight(h)}</button>`;
   }).join('') + `<button class="hpill add" id="hpill_add" title="${I18N.t('hostbar.manage','Manage hosts')}">${I18N.t('hostbar.add','+ Add host')}</button>`;
   bar.querySelectorAll('.hpill[data-h]').forEach(b => b.onclick = () => setHost(b.dataset.h));
   document.getElementById('hpill_add').onclick = () => showTab('hosts');
@@ -7017,66 +7512,6 @@ function refreshCurrentTab(){
   if(TAB === 'gpu')       { renderGpuTab(true); return; }   // host-scoped: refetch for the new host
   if(TAB === 'disks')     { renderDisksTab(); return; }     // host-scoped since remotes are scannable
   if(LOCAL_ONLY_TABS.has(TAB)) renderLocalOnlyNotice(TAB);
-}
-
-// ── AI workload band (Overview hero) ─────────────────────────────────────────
-// At-a-glance cockpit strip for the hub's AI work: loaded models + VRAM committed,
-// GPU util + mem-bandwidth, live throughput (tok/s) and efficiency (tokens/Joule),
-// today's GPU energy cost, and a throttle banner. Sources already on the page:
-// HH.now.gpu(+extra), D.now.models / D.now.serving, plus a throttled /api/cost fetch.
-let AI_COST=null, AI_COST_AT=0;
-async function refreshAiCost(){
-  if(Date.now()-AI_COST_AT < 30000 && AI_COST!==null) return;
-  AI_COST_AT=Date.now();
-  try{ AI_COST = await (await fetch('/api/cost?range=24h')).json(); }catch(e){ AI_COST=null; }
-}
-function renderAiBand(){
-  const card=document.getElementById('ai-band'); if(!card) return;
-  if(TAB!=='overview') return;
-  const g=(HH&&HH.now&&HH.now.gpu)||{}, x=g.extra||{};
-  const models=(D&&D.now&&D.now.models)||[], serving=(D&&D.now&&D.now.serving)||[];
-  const loaded=models.filter(m=>m.vram!=null);
-  const hasGpu=!!g.available, hasAI=loaded.length>0 || serving.length>0;
-  if(!hasGpu && !hasAI){ card.hidden=true; return; }
-  card.hidden=false;
-  refreshAiCost().then(()=>paintAiBand(g,x,loaded,serving));
-  paintAiBand(g,x,loaded,serving);
-}
-function paintAiBand(g,x,loaded,serving){
-  const sub=document.getElementById('ai-band-sub');
-  if(sub) sub.textContent = serving.length ? I18N.t('aiband.sub_serving','· live serving telemetry active') : (loaded.length?I18N.t('aiband.sub_resident','· models resident'):'');
-  // throttle banner mirrors the GPU tab so it's visible from the landing page
-  const tb=document.getElementById('ai-band-throttle');
-  if(tb){ if(x.throttled && (x.throttle||[]).length){ tb.style.display='flex';
-      tb.innerHTML=`<div class="ic" style="color:var(--crit)">${sic('flame')}</div><div><div class="t">${I18N.tf('aiband.throttle_t','GPU throttling — {reason}',{reason:(x.throttle||[]).map(esc).join(', ')})}</div><div class="d">${I18N.t('aiband.throttle_d','Real throughput is below what the util % implies.')}</div></div>`;
-    } else tb.style.display='none'; }
-  const tokS=serving.reduce((a,s)=>a+(s.tok_per_s||0),0);
-  const running=serving.reduce((a,s)=>a+(s.running||0),0);
-  const waiting=serving.reduce((a,s)=>a+(s.waiting||0),0);
-  const vramCommit=loaded.reduce((a,m)=>a+(m.vram||0),0);
-  const memTot=g.mem_total||0, memUsed=g.mem_used||0, power=Math.round(g.power||0);
-  const cur=(AI_COST&&AI_COST.currency)||'$';
-  const tiles=[];
-  tiles.push({v:String(loaded.length), l:I18N.t('aiband.models_loaded','Models loaded'), s:vramCommit?fmtMB(vramCommit)+' VRAM':''});
-  if(g.available){
-    tiles.push({v:Math.round(g.util||0)+'%', l:I18N.t('gpu.util_kpi','GPU util'), s:(x.mem_util!=null?I18N.tf('aiband.membw','mem-BW {n}%',{n:Math.round(x.mem_util)}):'')});
-    tiles.push({v:fmtMB(memUsed), l:I18N.t('gpu.vram_in_use','VRAM in use'), s:memTot?I18N.tf('aiband.free','{v} free',{v:fmtMB(Math.max(0,memTot-memUsed))}):''});
-    tiles.push({v:power+' W', l:I18N.t('aiband.gpu_power','GPU power'), s:x.power_limit?I18N.tf('aiband.of_cap','{n}% of cap',{n:Math.round(power/x.power_limit*100)}):''});
-  }
-  if(serving.length){
-    tiles.push({v:tokS?tokS.toFixed(0):'0', l:I18N.t('aiband.tok_sec','Tokens / sec'), s:(running||waiting)?I18N.tf('aiband.run_queue','{running} running · {waiting} queued',{running,waiting}):I18N.t('aiband.idle','idle')});
-    if(tokS>0 && power>0) tiles.push({v:(tokS/power).toFixed(1), l:I18N.t('aiband.tok_joule','Tokens / Joule'), s:I18N.tf('aiband.efficiency','efficiency @ {n} W',{n:power})});
-  }
-  if(AI_COST && AI_COST.enabled){
-    tiles.push({v:cur+(AI_COST.cost&&AI_COST.cost.today!=null?AI_COST.cost.today.toFixed(2):'0.00'), l:I18N.t('aiband.cost_today','GPU cost today'),
-                s:(AI_COST.kwh&&AI_COST.kwh.today!=null?AI_COST.kwh.today.toFixed(2)+' kWh':'')});
-  }
-  document.getElementById('ai-band-kpis').innerHTML = tiles.map(t=>
-    `<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
-  const cap=document.getElementById('ai-band-cap');
-  if(cap) cap.textContent = g.available
-    ? I18N.t('aiband.cap_gpu','Live snapshot of this hub’s GPU + model servers. Tokens/sec and efficiency come from vLLM/TGI /metrics when present.')
-    : I18N.t('aiband.cap_nogpu','No GPU detected on the hub — showing model servers only.');
 }
 
 // ── Runs (pushed from notebooks / MLflow) — the primary Experiments view ──────
@@ -7245,6 +7680,7 @@ async function renderExperiments(force){
       <td>${fmtMB(s.peak_vram)}</td><td>${s.avg_power} W</td><td>${s.energy_kwh.toFixed(3)} kWh</td>
       <td>${j.price>0?cur+s.cost.toFixed(2):'—'}</td></tr>`).join('')
     : I18N.tf('exp.sess_empty','<tr><td class="muted" colspan="7">No GPU activity above {n}% util in this range yet.</td></tr>',{n:(j.active_pct||20)});
+  if(TAB==='experiments') pulseLive();
 }
 
 function renderFleet(){
@@ -7272,6 +7708,8 @@ function renderFleet(){
     const gpu = g
       ? `<span class="pct">${g.util||0}%</span>` +
         `<span class="abs">${fmtMBshort(g.mem_used)} / ${fmtMBshort(g.mem_total)} VRAM</span>`
+      : teleLost(r)
+      ? `<span class="stale" title="${esc(teleTitle(r))}">${teleLight(r)} ${I18N.t('fleet.tele_lost','GPU telemetry lost')}</span>`
       : '<span class="muted">—</span>';
     // Load 1m: number + denominator
     const load = h.load1==null
@@ -7329,8 +7767,8 @@ function renderFleet(){
 // The cockpit at the top of the Overview, wired to LIVE data (D / HH / FLEET +
 // a throttled /api/costs fetch). Null-safe: each of D/HH/FLEET/MC_COST may be
 // undefined on the first paint. Only does work when TAB==='overview'. The four
-// legacy Overview cards (#fleet_tbl, #ai-band, #mcpcard, #diagcard) are untouched
-// and keep being driven by renderFleet()/renderAiBand()/renderHealth().
+// It is the whole Overview now — the old legacy cards below it (AI band, MCP,
+// Setup & requirements) moved out to the MCP pill and the System tab.
 // True when either the OS-level "prefers-reduced-motion" is set or the user
 // opted into the "Reduced motion" setting — either source turns gauges into
 // plain value displays. applyReducedMotion() re-derives this whenever the
@@ -7355,7 +7793,6 @@ let MC_COST=null, MC_COST_AT=0;
 let MC_HEROMODE=(function(){ try{ return localStorage.getItem('hl_mc_hero')||'host'; }catch(e){ return 'host'; } })();
 // Three-gauge engine scope: 'host' (the focused box) or 'fleet' (whole homelab aggregate).
 let MC_TRIMODE=(function(){ try{ return localStorage.getItem('hl_mc_trimode')||'host'; }catch(e){ return 'host'; } })();
-let MC_CHART_SIG='';
 async function refreshMcCost(){
   if(Date.now()-MC_COST_AT < 30000 && MC_COST!==null) return;
   MC_COST_AT=Date.now();
@@ -7385,7 +7822,8 @@ function mcSparkline(data, w, h, color){
 function renderMissionControl(){
   if(typeof TAB!=='undefined' && TAB!=='overview') return;
   if(!document.getElementById('mc-cockpit')) return;
-  mcInitBoard();                            // one-time: wire drag-board + apply saved layout
+  mcInitGoto();                             // one-time: panel header → its detail tab
+  lpInit();                                 // one-time: wire the Launchpad
   mcInitCockpitIcons();                     // one-time: swap cockpit icons to the app's SVG family
   mcInitTriToggle();                        // one-time: wire the engine This-host / Whole-fleet toggle
   refreshMcCost().then(()=>{ if(TAB==='overview') paintMissionControl(); });
@@ -7395,6 +7833,7 @@ function paintMissionControl(){
   if(typeof TAB!=='undefined' && TAB!=='overview') return;
   const $ = id => document.getElementById(id);
   if(!$('mc-cockpit')) return;
+  pulseLive();
   const g  = (HH&&HH.now&&HH.now.gpu) || {};
   const gx = g.extra || {};
   const host = (D&&D.now&&D.now.host) || (HH&&HH.now&&HH.now.host) || {};
@@ -7405,12 +7844,12 @@ function paintMissionControl(){
 
   mcPaintFleetBar($);
   mcPaintTri($);
-  renderMcChart($);
   mcPaintBurn($, cost, machine, measured, cur, g, host);
   mcPaintLeaderboard($, cost, machine, measured, cur);
   mcPaintFeed($);
   mcPaintFleet($);
-  mcPaintStrip($);
+  lpPaint();
+  if(!_mcFitting) mcScheduleFit();
 }
 
 // Gauge ticks (built once, reused on every paint).
@@ -7463,7 +7902,8 @@ function mcPaintTriFleet($){
   const gUtil=gN?Math.round(gUtilSum/gN):0, gPw=Math.round(gPow), pg=$('mc-pct-gpu');
   if(gN){ if(pg)pg.style.visibility='visible'; mcCountUp($('mc-g-gpu'),gUtil,900,0); mcSetTriArc('mc-arc-gpu',gUtil,mcTriColor(gUtil,'var(--accent)'));
     $('mc-sub-gpu').innerHTML=esc(fmtMB(gUsed)+' / '+fmtMB(gTot)+' · '+gN+' GPU'+(gN===1?'':'s'))+(gPw?`<span class="mc-tg-pwr">${gPw} W</span>`:''); }
-  else { $('mc-g-gpu').textContent='—'; if(pg)pg.style.visibility='hidden'; mcSetTriArc('mc-arc-gpu',0,'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU'); }
+  else { $('mc-g-gpu').textContent='—'; if(pg)pg.style.visibility='hidden'; mcSetTriArc('mc-arc-gpu',0,'var(--bd)');
+    $('mc-sub-gpu').textContent=rows.some(r=>teleLost(r)) ? I18N.t('mc.gpu_lost','telemetry lost') : I18N.t('mc.no_gpu','no GPU'); }
   // CPU — average util, summed cores
   let cpuSum=0,cpuN=0,coresT=0;
   rows.forEach(r=>{ const h=r.host||{}; cpuSum+=Math.round(h.cpu||0); cpuN++; coresT+=h.cores||0; });
@@ -7524,7 +7964,8 @@ function mcPaintTri($){
       + (pw?`<span class="mc-tg-pwr">${pw} W</span>`:'');
   } else {
     $('mc-g-gpu').textContent='—'; if(pg) pg.style.visibility='hidden';
-    mcSetTriArc('mc-arc-gpu', 0, 'var(--bd)'); $('mc-sub-gpu').textContent=I18N.t('mc.no_gpu','no GPU');
+    mcSetTriArc('mc-arc-gpu', 0, 'var(--bd)');
+    $('mc-sub-gpu').textContent=teleLost(fh) ? I18N.t('mc.gpu_lost','telemetry lost') : I18N.t('mc.no_gpu','no GPU');
   }
   // CPU
   const cpu=Math.round(host.cpu||0), cores=host.cores||0, load1=host.load1||0;
@@ -7643,8 +8084,16 @@ function mcPaintEngine($, g, gx, host){
     headroom = I18N.tf('mc.head_sys','<b>{free} RAM free</b> — load {l}{cores}.',{free:fmtMB(freeMb),l:load1.toFixed(2),cores:cores?(' across '+cores+' cores'):''});
     headroomBad = ramPct>=90;
   }
-  mcSetIc('mc-ic-engine', g.available?'🎮':'🖥');
-  { const ph=$('mc-engine-ph'); if(ph) ph.setAttribute('data-goto', g.available?'gpu':'host'); }
+  const gLost = teleLost({gpu_telemetry:g.telemetry});
+  if(gLost){
+    // The engine falls back to CPU/RAM numbers (the GPU has none), but the
+    // panel must not read as "this box has no GPU": keep the GPU link, and put
+    // the loss where the eye lands.
+    headroom = `<b>${I18N.t('mc.head_gpu_lost','GPU telemetry lost')}</b> — ${esc((g.telemetry&&g.telemetry.error)||I18N.t('fleet.tele_lost_t','GPU telemetry lost — the host answers but reports no GPU'))}`;
+    headroomBad = true;
+  }
+  mcSetIc('mc-ic-engine', (g.available||gLost)?'🎮':'🖥');
+  { const ph=$('mc-engine-ph'); if(ph) ph.setAttribute('data-goto', (g.available||gLost)?'gpu':'host'); }
   mcSetGaugeLegend(arcLabel, big, ringLabel, ringPct);
   $('mc-engine-tag').textContent=tag;
   $('mc-gauge-sub').textContent=sub;
@@ -7686,8 +8135,7 @@ function mcSetGaugeLegend(arcLabel, arcVal, ringLabel, ringVal){
 function mcInitCockpitIcons(){
   const ck=document.getElementById('mc-cockpit'); if(!ck || ck.__ic) return; ck.__ic=true;
   mcSetIc('mc-ic-fleet','🖥'); mcSetIc('mc-ic-feed','🔔'); mcSetIc('mc-ic-cost','🧾');
-  mcSetIc('mc-ic-burn','💰'); mcSetIc('mc-ic-chart','📊'); mcSetIc('mc-ic-engine','🎮');
-  mcSetIc('mc-ic-containers','📦'); mcSetIc('mc-ic-services','🧩'); mcSetIc('mc-ic-diag','🩺');
+  mcSetIc('mc-ic-burn','💰'); mcSetIc('mc-ic-engine','🎮'); mcSetIc('mc-ic-lp','🧩');
 }
 // ── Hero compute-mode helpers (This host / Fleet GPU united / Fleet CPU united) ──
 function mcRenderModeSeg($, mode, fleetHasGpu){
@@ -7778,49 +8226,6 @@ function mcBuildFleetCPU(){
     headroom:I18N.tf('mc.head_fcpu','<b>{free} RAM free</b> across {n} hosts.',{free:fmtMB(Math.max(0,totalT-usedT)),n}), headroomBad:ramPct>=90, red:false,
     breakdown:list.map(x=>({label:x.host,sub:x.cores+'c',pct:x.cpu,right:fmtMBshort(x.used)+' / '+fmtMBshort(x.total),color:x.cpu>=80?'var(--crit)':x.cpu>=50?'var(--accent)':'var(--ok)'})) };
 }
-// Adaptive compute-history chart with legend (Chart.js, already vendored).
-// Hub-scoped; GPU util/power/temp when a GPU is present (and not in Fleet-CPU
-// mode), else CPU%/RAM%/load. Rebuilds only when new samples / range / mode land.
-function renderMcChart(){
-  const panel=document.getElementById('mc-chartpanel'); if(!panel) return;
-  const cvs=document.getElementById('mc-chart');
-  const t=(D&&D.total)||null;
-  const haveData = !!(typeof Chart!=='undefined' && cvs && D && D.labels && D.labels.length>1 && t);
-  if(!haveData){ panel.style.display='none'; return; }
-  panel.style.display='';
-  const hasGpu=!!(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.available);
-  const useGpu=(MC_HEROMODE!=='fcpu') && hasGpu && (t.util&&t.util.length);
-  const rng=(typeof R!=='undefined'&&R)||'6h';
-  // The signature has to include the values, not just the bucket labels. The
-  // newest bucket keeps being re-averaged (and, between polls, updated from the
-  // live stream) under a label that does not change until the bucket closes —
-  // a label-only signature held this chart still for a whole bucket at a time
-  // while every tile around it moved.
-  const tl=a=>{ const v=(a&&a.length)?a[a.length-1]:null; return v==null?'-':(+v).toFixed(2); };
-  const sig=(useGpu?'g':'c')+'_'+D.labels.length+'_'+(D.labels[D.labels.length-1]||0)+'_'+rng+'_'+(document.documentElement.getAttribute('data-theme')||'')
-    +'_'+(useGpu ? tl(t.util)+tl(t.power)+tl(t.temp) : tl(t.cpu)+tl(t.ram_used)+tl(t.load1));
-  const titleEl=document.getElementById('mc-chart-title'), tagEl=document.getElementById('mc-chart-tag');
-  if(titleEl) titleEl.textContent = useGpu ? I18N.t('mc.chart_gpu','GPU · util, power & temp') : I18N.t('mc.chart_cpu','CPU, RAM & load');
-  if(tagEl) tagEl.textContent = I18N.tf('mc.last_range','last {r}',{r:rng});
-  if(sig===MC_CHART_SIG) return;   // nothing new → keep the existing chart (and its legend toggles)
-  MC_CHART_SIG=sig;
-  const labels=fmtLabels(D.labels);
-  let datasets;
-  if(useGpu){
-    datasets=[
-      {label:I18N.t('mc.ch_util','GPU util %'),data:t.util,borderColor:'#4dabf7',backgroundColor:'#4dabf733',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_power','Power W'),data:t.power,borderColor:'#ff922b',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y1'},
-      {label:I18N.t('mc.ch_temp','Temp °C'),data:t.temp,borderColor:'#f783ac',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
-  } else {
-    const ramPct=(t.ram_used||[]).map((u,i)=>(t.ram_total&&t.ram_total[i])?Math.round(u/t.ram_total[i]*100):0);
-    datasets=[
-      {label:I18N.t('mc.ch_cpu','CPU %'),data:t.cpu,borderColor:'#3fb950',backgroundColor:'#3fb95033',fill:true,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_ram','RAM %'),data:ramPct,borderColor:'#a371f7',borderWidth:1.5,pointRadius:0,tension:.3,yAxisID:'y'},
-      {label:I18N.t('mc.ch_load','Load'),data:t.load1,borderColor:'#e3b341',borderWidth:1,pointRadius:0,tension:.3,yAxisID:'y1'}];
-  }
-  try{ const o=dualOpts(labels,100); o.animation=false; mk('mc-chart',{type:'line',data:{labels,datasets},options:o,plugins:[areaBg]}); }
-  catch(e){ panel.style.display='none'; }
-}
 function mcPaintBurn($, cost, machine, measured, cur, g, host){
   const nowW = machine.now_w || {};
   const c = machine.cost || {};
@@ -7897,8 +8302,9 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   const lead=$('mc-lead');
   const metered = cost.enabled!==false && (measured.indexOf('gpu')>=0 || measured.indexOf('cpu')>=0);
   let rows;
+  const capL=Math.max(2, MC_FIT.lead);
   if(metered && (cost.breakdown||[]).length){
-    const bd = cost.breakdown.slice(0,6);
+    const bd = cost.breakdown.slice(0, capL);
     const sum = bd.reduce((a,r)=>a+(r.cost||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.cost','What\'s Costing You');
     $('mc-cost-tag').textContent=I18N.tf('mc.this_week','this week · {v} {cur}',{v:(machine.cost&&machine.cost.d7!=null?machine.cost.d7:sum).toFixed(2),cur});
@@ -7911,7 +8317,7 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   } else {
     // Not metered → Heaviest Containers · by RAM
     const cs=((HH&&HH.docker&&HH.docker.containers)||[]).filter(c=>c.mem_bytes>0)
-            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0,6);
+            .slice().sort((a,b)=>(b.mem_bytes||0)-(a.mem_bytes||0)).slice(0, capL);
     const sum=cs.reduce((a,c)=>a+(c.mem_bytes||0),0) || 1;
     $('mc-cost-title').textContent=I18N.t('mc.heaviest','Heaviest Containers · by RAM');
     $('mc-cost-tag').textContent=I18N.tf('mc.n_containers','{n} containers',{n:cs.length});
@@ -7925,7 +8331,10 @@ function mcPaintLeaderboard($, cost, machine, measured, cur){
   lead.innerHTML = rows.map(r=>`<div class="mc-lrow">
     <div class="mc-lrow-top"><span class="mc-lrow-name">${esc(r.name)}<span class="mc-kk">${esc(r.kind)}</span></span><span class="mc-lrow-cost">${esc(r.cost)}</span></div>
     <div class="mc-lbar-track"><div class="mc-lbar-fill" style="width:${Math.min(100,Math.max(0,r.share))}%"></div></div>
-    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('');
+    <div class="mc-lrow-meta"><span>${esc(r.metaL)}</span><span>${esc(r.metaR)}</span></div></div>`).join('')
+    + (rows.length >= capL ? `<button type="button" class="mc-more-row" data-more="costs">${I18N.t('mc.see_all_costs','See the full breakdown →')}</button>` : '');
+  const ml=lead.querySelector('[data-more]');
+  if(ml) ml.onclick=()=>showTab('costs');
 }
 function mcAttentionCount(){
   // total fleet/workload issues — drives the single fleet-bar rollup (detail lives in the feed)
@@ -7936,6 +8345,7 @@ function mcAttentionCount(){
   const dk=(HH&&HH.docker)||{}; if((dk.containers||[]).some(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'))) n++;
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
   if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) n++;
+  n+=hosts.filter(h=>teleLost(h)).length;
   return n;
 }
 function mcDeriveInsights(skipAllGood){
@@ -7946,6 +8356,11 @@ function mcDeriveInsights(skipAllGood){
   if(off.length) out.push({level:'critical',title:I18N.tf('mc.di_offline','{n} host(s) offline',{n:off.length}),detail:off.map(h=>esc(h.label||h.name)).join(', ')});
   hosts.forEach(h=>{ const d=((h.host&&h.host.disks)||[]).find(d=>d.pct>=90);
     if(d) out.push({level:'warning',title:I18N.tf('mc.di_disk','{h} disk {m} at {p}%',{h:esc(h.label||h.name),m:esc(d.mount),p:d.pct}),detail:I18N.t('mc.di_disk_d','Worth a clean-up before writes start failing.')}); });
+  // A host answering without its GPUs. Critical, and named: the whole point
+  // is that nobody has to notice a temperature that stopped moving.
+  hosts.filter(h=>teleLost(h)).forEach(h=>out.push({level:'critical',
+    title:I18N.tf('mc.di_tele','GPU telemetry lost on {h}',{h:esc(h.label||h.name)}),
+    detail:esc(teleTitle(h))}));
   const gx=(HH&&HH.now&&HH.now.gpu&&HH.now.gpu.extra)||{};
   if((HH&&HH.now&&HH.now.gpu&&HH.now.gpu.temp||0)>=84 || (gx.throttle||[]).some(r=>/therm|temp|hot|hw[\s_]?slow/i.test(r))) out.push({level:'critical',title:I18N.t('mc.di_throttle','GPU thermal throttling'),detail:(gx.throttle||[]).join(', ')||I18N.t('mc.di_throttle_d','Clocks reduced by heat — check cooling.')});
   const dk=(HH&&HH.docker)||{}; const probs=(dk.containers||[]).filter(c=>(c.state&&c.state!=='running')||(c.status&&c.status!=='ok'));
@@ -7965,61 +8380,524 @@ function mcPaintFeed($){
   ins.sort((a,b)=>(order[a.level]==null?2:order[a.level])-(order[b.level]==null?2:order[b.level]));
   if(!ins.length) ins=[{level:'ok',title:I18N.t('mc.di_allgood','All good'),detail:I18N.t('mc.di_allgood_d','No issues detected right now.')}];
   const icon={crit:'✕',warn:'◐',ok:'✓',info:'ℹ'};
-  feed.innerHTML = ins.slice(0,7).map(i=>{
+  const capF=Math.max(2, MC_FIT.feed);
+  const restF=Math.max(0, ins.length-capF);
+  feed.innerHTML = ins.slice(0,capF).map(i=>{
     const lv=MC_LVL[i.level]||'info';
     return `<div class="mc-ins" style="--lv:${MC_AC[lv]}">
       <div class="mc-ins-ic">${icon[lv]||'•'}</div>
       <div><div class="mc-ins-t">${esc(i.title)}</div><div class="mc-ins-d">${esc(i.detail)}</div></div></div>`;
-  }).join('');
+  }).join('') + (restF ? `<button type="button" class="mc-more-row" data-more="uptime">+ ${I18N.tf('mc.n_more','{n} more',{n:restF})}</button>` : '');
+  const mf=feed.querySelector('[data-more]');
+  if(mf) mf.onclick=()=>showTab('uptime');
   $('mc-ins-tag').textContent=I18N.tf('mc.n_active','{n} active',{n:ins.length});
 }
-// ── Customizable widget board: drag-reorder + hide/show + reset, persisted ──────
-const MC_BOARD_KEY='hl_mc_layout';
-const MC_W_NAMES={insights:'Insights',cost:'Cost',containers:'Containers',services:'Services',diagnostics:'Diagnostics'};
-const MC_W_DEFAULT=['insights','cost','containers','services','diagnostics'];  // fleet promoted to the hero
-function mcBoardState(){ try{ return JSON.parse(localStorage.getItem(MC_BOARD_KEY))||{}; }catch(e){ return {}; } }
-function mcSaveBoard(st){ try{ localStorage.setItem(MC_BOARD_KEY, JSON.stringify(st)); }catch(e){} }
-function mcCurrentOrder(){ return Array.from(document.querySelectorAll('#mc-board .mc-widget')).map(el=>el.dataset.w); }
-function mcRenderHiddenTray(){
-  const tray=document.getElementById('mc-hiddentray'); if(!tray) return;
-  const hidden=(mcBoardState().hidden)||[];
-  tray.innerHTML=hidden.map(w=>`<span class="mc-hchip" data-w="${w}">+ ${esc(MC_W_NAMES[w]||w)}</span>`).join('');
-  tray.querySelectorAll('.mc-hchip').forEach(c=>c.onclick=()=>{ const st=mcBoardState(); st.hidden=(st.hidden||[]).filter(x=>x!==c.dataset.w); mcSaveBoard(st); mcApplyBoard(); });
+// ── Fit the Overview to the fold ─────────────────────────────────────────────
+// The Overview is a front page: what it says should be readable in one glance,
+// without scrolling and without a panel quietly cutting a card in half (which
+// is what the fleet rail's 560px scroll box did).
+//
+// It fits by showing FEWER ROWS, not smaller ones. Shrinking the type is how a
+// dashboard becomes unreadable at exactly the moment it has the most to say,
+// and clipping a list is a lie about what is in it. So: measure how far the
+// cockpit overruns the fold, trim the two lists that can lose rows without
+// losing meaning (the feed, the cost leaderboard — each says how many it left
+// out and links to its tab), and if the fleet rail alone is still too tall,
+// switch it to the tight tile. Below a usable minimum it stops and lets the
+// page scroll; a 20-host fleet is genuinely taller than a laptop screen, and
+// pretending otherwise would be the same lie in a new place.
+const MC_FIT = {feed: 7, lead: 6, pins: 99, tight: false};
+const MC_FIT_MIN = {feed: 3, lead: 3, pins: 5};
+const MC_FIT_SCALE_MIN = 0.78;   // below this the type stops being readable
+let _mcFitting = false;
+function mcFitToFold(budget){
+  const ck = document.getElementById('mc-cockpit');
+  if(!ck || _mcFitting || TAB !== 'overview' || !ck.offsetParent) return;
+  if(DP_ON && budget == null) return;            // display mode passes its own budget
+  // Space between the top of the cockpit and the bottom of the window, less the
+  // footer note that should stay visible under it.
+  ck.style.transform = ''; ck.style.width = ''; ck.style.marginBottom = '';   // measure at natural size
+  // How much height the cockpit may occupy. Derived from the page's own
+  // overflow rather than from a guess at what sits above and below it: every
+  // margin, every ancestor's padding and anything that lands under it are
+  // then accounted for exactly, and "fits the fold" means the window does not
+  // scroll — not "fits except for forty pixels of padding".
+  const natural0 = ck.getBoundingClientRect().height;
+  const over0 = document.documentElement.scrollHeight - window.innerHeight;
+  const avail = budget != null ? budget : (natural0 - Math.max(0, over0));
+  if(avail < 260) return;                       // a phone: let it scroll, honestly
+  const over = () => ck.getBoundingClientRect().height - avail;
+  if(over() <= 0 && !MC_FIT.tight && MC_FIT.feed === 7 && MC_FIT.lead === 6) return;
+
+  _mcFitting = true;
+  try{
+    // Grow back first, so a resized-larger window undoes earlier trimming.
+    MC_FIT.feed = 7; MC_FIT.lead = 6; MC_FIT.pins = 99;
+    if(MC_FIT.tight){ MC_FIT.tight = false; document.body.classList.remove('mc-tight'); }
+    paintMissionControl();
+    // Then trim, one row at a time, re-measuring after each pass. Bounded by
+    // the minimums, so this terminates.
+    let guard = 40;
+    while(over() > 0 && guard-- > 0){
+      const feed = document.getElementById('mc-feed');
+      const lead = document.getElementById('mc-lead');
+      const tallest = (feed && feed.scrollHeight) >= (lead && lead.scrollHeight) ? 'feed' : 'lead';
+      if(MC_FIT[tallest] > MC_FIT_MIN[tallest]) MC_FIT[tallest]--;
+      else if(MC_FIT.feed > MC_FIT_MIN.feed) MC_FIT.feed--;
+      else if(MC_FIT.lead > MC_FIT_MIN.lead) MC_FIT.lead--;
+      else if(!MC_FIT.tight){ MC_FIT.tight = true; document.body.classList.add('mc-tight'); }
+      // The pins go last and never below five: the launchpad is the half of
+      // this page the fold is FOR, so it is the last thing to give ground —
+      // and what it folds away says how many and comes back on one click.
+      else if(!LP_SHOW_ALL && MC_FIT.pins > MC_FIT_MIN.pins){
+        MC_FIT.pins = Math.max(MC_FIT_MIN.pins, Math.min(MC_FIT.pins, LP_ITEMS.length) - 1);
+      }
+      else break;                                // nothing left to give
+      paintMissionControl();
+    }
+    // Last resort, after every row that could go has gone: shrink the board
+    // itself, but only a little. A 4% squeeze nobody notices is worth it to
+    // keep the page on one screen; a 40% one would just be an unreadable
+    // dashboard, so below MC_FIT_SCALE_MIN it stops and lets the page scroll.
+    const ck2 = document.getElementById('mc-cockpit');
+    ck2.style.transform = ''; ck2.style.width = ''; ck2.style.marginBottom = '';
+    const natural = DP_ON ? 0 : ck2.getBoundingClientRect().height;
+    // Only on a screen wide enough for the three-column board. A phone stacks
+    // the columns into one long page — shrinking that to 82% would make it
+    // unreadable AND still scroll, which is the worst of both.
+    if(natural > avail && window.innerWidth >= 900){
+      const s = Math.max(MC_FIT_SCALE_MIN, avail / natural);
+      if(s < 0.999){
+        ck2.style.transformOrigin = 'top left';
+        ck2.style.transform = `scale(${s.toFixed(3)})`;
+        ck2.style.width = `${(100 / s).toFixed(3)}%`;     // keep it full-bleed after the scale
+        // A transform doesn't change layout size: without this the page still
+        // reserves the unscaled height and still scrolls, which is exactly the
+        // bug this whole pass exists to kill.
+        ck2.style.marginBottom = `${Math.round(-natural * (1 - s))}px`;
+      }
+    }
+  } finally { _mcFitting = false; }
 }
-function mcApplyBoard(){
-  const board=document.getElementById('mc-board'); if(!board) return;
-  const st=mcBoardState();
-  (st.order||[]).forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); });
-  const hidden=new Set(st.hidden||[]);
-  board.querySelectorAll('.mc-widget').forEach(el=>{ el.hidden=hidden.has(el.dataset.w); });
-  mcRenderHiddenTray();
+let _mcFitT = null;
+function mcScheduleFit(){
+  clearTimeout(_mcFitT);
+  _mcFitT = setTimeout(mcFitToFold, 120);        // after the paint that triggered it
 }
-function mcInitBoard(){
-  const board=document.getElementById('mc-board'); if(!board || board.__mcInit) return; board.__mcInit=true;
-  mcApplyBoard();
-  // tap a panel header → its detail tab (ignored while customizing or on interactive children)
+addEventListener('resize', mcScheduleFit);
+
+// Tapping a panel header jumps to that panel's own tab (data-goto).
+
+// ── Launchpad: the apps you pin on the Overview ──────────────────────────────
+// The Overview is two things at once — a monitor and the homepage you open the
+// browser on. This is the homepage half: shortcuts to the containers, services
+// and URLs you actually use, with a real status dot rather than a decorative
+// one (a tile pinned from a container follows that container's state).
+//
+// The pins live on the SERVER (the home_shortcuts setting, /api/shortcuts), not
+// in localStorage: pin it on the laptop and it is there on the phone and on the
+// wall screen. Only the "which widgets in display mode" choice is per-browser.
+let LP_ITEMS = [];
+let LP_LOADED = false;
+let LP_SHOW_ALL = false;   // set by the "+N" tile: never fold the pins away again
+// Icons are the app's own stroke family (same set the headings use), so a tile
+// never looks like a sticker pasted on the dashboard. A pin with no icon gets
+// the brand logo when we recognise the app, else a monogram in a stable colour.
+const LP_ICONS = {
+  app:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  media:'<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/>',
+  music:'<path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>',
+  film:'<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 9h5M2 15h5M17 9h5M17 15h5"/>',
+  photo:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  game:'<rect x="3" y="7" width="18" height="12" rx="3"/><path d="M8 11v4M6 13h4M15 12h.01M18 15h.01"/>',
+  chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/>',
+  cloud:'<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.2 10.3 3.5 3.5 0 0 0 7 19z"/>',
+  code:'<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
+  terminal:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M13 15h5"/>',
+  database:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+  chart:'<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 5-6"/>',
+  shield:'<path d="M12 22s8-3.5 8-9V5l-8-3-8 3v8c0 5.5 8 9 8 9z"/>',
+  home:'<path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+  network:'<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M5 16v-2h14v2"/>',
+  printer:'<path d="M6 9V2h12v7"/><rect x="2" y="9" width="20" height="8" rx="2"/><path d="M6 14h12v8H6z"/>',
+  camera:'<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+  ai:'<path d="M12 5a3 3 0 1 0-5.997.142 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.142 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>',
+  tools:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  calendar:'<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>',
+  notes:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+  money:'<circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/>',
+  cart:'<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 7H6"/>',
+  heart:'<path d="M20.8 5.6a5.5 5.5 0 0 0-7.8 0L12 6.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 22l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/>',
+  globe:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+};
+function lpIconSvg(id){
+  const d=LP_ICONS[id]; if(!d) return '';
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+}
+// The tile face: an explicit icon wins; else the brand logo we already ship for
+// ~70 well-known self-hosted apps; else a monogram on the name's stable colour.
+function lpFace(it){
+  if(it.icon) return {html:lpIconSvg(it.icon), bg:colorFor(it.name)};
+  const lg=svcLogo(it.container||it.name, it.name, true);
+  if(lg) return {html:lg, bg:'var(--inset)', plain:true};
+  // No bundled mark. Draw the monogram, and lay the hub's icon over it if there
+  // is one — the tile is never blank while that resolves, and never empty if it
+  // turns out there is no icon for this name.
+  const mono=(it.name||'?').replace(/[^\p{L}\p{N}]/gu,'').slice(0,2).toUpperCase() || '?';
+  const over = ICON_PACK
+    ? `<img class="lp-over" src="${esc(iconUrl(it.container||it.name, it.name))}" alt="" loading="lazy" decoding="async"
+         onerror="this.remove()" onload="lpOver(this)">`
+    : '';
+  return {html:`<span class="lp-mono">${esc(mono)}</span>`+over, bg:colorFor(it.name)};
+}
+// The status dot. A pin that names a container follows that container's real
+// state — on the hub from /api/health, on a remote from its own probe payload.
+// A pin that names no container gets no dot: a green light we cannot actually
+// verify is worse than none.
+function lpStatus(it){
+  if(!it.container) return null;
+  const hostName=it.host||'local';
+  let list=null;
+  if(hostName==='local') list=((HH&&HH.docker)||{}).containers;
+  else{
+    const h=(FLEET&&(FLEET.hosts||[]).find(x=>x.name===hostName));
+    if(h && !h.is_local && !h.online) return {cls:'off', t:I18N.tf('lp.host_offline','{h} is offline',{h:hostName})};
+    list=((h&&h.host&&h.host.docker)||{}).containers;
+  }
+  if(!list) return null;
+  const c=list.find(x=>x.name===it.container);
+  if(!c) return {cls:'off', t:I18N.tf('lp.ct_missing','No container named {n} on {h}',{n:it.container,h:hostName})};
+  if(c.state!=='running') return {cls:'crit', t:esc(c.status_text||c.state||'')};
+  if(c.status && c.status!=='ok') return {cls:'warn', t:esc(c.status_text||c.status)};
+  return {cls:'', t:esc(c.status_text||'running')};
+}
+// A fetched logo arrived for a tile that was showing its monogram: hide the
+// monogram and drop the tile's colour, so it reads like any other logo tile.
+function lpOver(img){
+  const ic = img.parentNode; if(!ic) return;
+  const mono = ic.querySelector('.lp-mono'); if(mono) mono.style.display='none';
+  ic.style.background='var(--inset)';
+}
+async function lpLoad(){
+  try{ const j=await(await fetch('/api/shortcuts')).json(); LP_ITEMS=j.shortcuts||[]; }
+  catch(e){ LP_ITEMS=[]; }
+  LP_LOADED=true;
+  lpPaint();
+}
+async function lpSave(){
+  let j;
+  try{ j=await(await fetch('/api/shortcuts',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({shortcuts:LP_ITEMS})})).json(); }
+  catch(e){ return I18N.t('lp.err_network','Could not reach the server.'); }
+  if(j && j.ok===false) return j.error||I18N.t('lp.err_save','Could not save.');
+  LP_ITEMS=j.shortcuts||LP_ITEMS;
+  lpPaint();
+  if(typeof renderHealth==='function' && TAB==='containers') renderHealth();   // refresh the row's Pin state
+  return null;
+}
+function lpPaint(){
+  const grid=document.getElementById('lp-grid'); if(!grid) return;
+  const tag=document.getElementById('lp-tag');
+  if(tag) tag.textContent = LP_ITEMS.length
+    ? I18N.tf('lp.n_pinned','{n} pinned',{n:LP_ITEMS.length}) : '';
+  if(!LP_LOADED){ return; }
+  if(!LP_ITEMS.length){
+    setHTML(grid, `<div class="lp-empty">${I18N.t('lp.empty','Nothing pinned yet. Pin the apps you open every day — from a container row on the Containers tab, or with + Pin for anything with a URL.')}</div>`);
+    return;
+  }
+  // Grouped, groups in first-seen order, ungrouped first — the order the user
+  // dragged them into, not an alphabetical reshuffle behind their back.
+  // On a short screen the fit pass caps how many tiles are drawn (see
+  // mcFitToFold); the rest are one "+N" tile away, and asking for them once
+  // pins the full grid open for the session.
+  const cap = LP_SHOW_ALL ? LP_ITEMS.length : Math.max(3, MC_FIT.pins);
+  const shown = LP_ITEMS.slice(0, cap);
+  const hidden = LP_ITEMS.length - shown.length;
+  const groups=[]; const byGroup=new Map();
+  shown.forEach((it,i)=>{
+    const g=it.group||'';
+    if(!byGroup.has(g)){ byGroup.set(g,[]); groups.push(g); }
+    byGroup.get(g).push({it,i});
+  });
+  const named=groups.filter(g=>g).length>0;
+  let html='';
+  groups.forEach(g=>{
+    if(g || (named && !g)) html+=`<div class="lp-group">${esc(g||I18N.t('lp.ungrouped','Pinned'))}</div>`;
+    html+=byGroup.get(g).map(({it,i})=>{
+      const f=lpFace(it), st=lpStatus(it);
+      // The URL is the tooltip, not a second line: at this size the name is
+      // all that fits, and the tile's whole job is to be recognised at a glance.
+      const tip=[it.url, st?st.t:''].filter(Boolean).join(' · ');
+      return `<a class="lp-tile" href="${esc(it.url)}" target="_blank" rel="noopener" data-i="${i}" title="${esc(tip)}">
+        <button type="button" class="lp-x" data-rm="${i}" title="${I18N.t('lp.unpin','Unpin')}">×</button>
+        ${st?`<span class="lp-dot ${st.cls}"></span>`:''}
+        <span class="lp-ic" style="background:${f.plain?'var(--inset)':f.bg};${f.plain?'border:1px solid var(--bd)':''}">${f.html}</span>
+        <span class="lp-nm">${esc(it.name)}</span></a>`;
+    }).join('');
+  });
+  html+= hidden
+    ? `<a class="lp-tile lp-add" href="#" id="lp-showall" title="${I18N.t('lp.show_all_t','Show every pin (the screen is short, so some were folded away)')}"><span class="lp-ic">+${hidden}</span><span class="lp-nm">${I18N.t('lp.more','more')}</span></a>`
+    : `<a class="lp-tile lp-add" href="#" id="lp-addtile" title="${I18N.t('lp.add_tile','Pin an app')}"><span class="lp-ic">+</span><span class="lp-nm">${I18N.t('lp.pin','Pin')}</span></a>`;
+  setHTML(grid, html);
+  const sa=document.getElementById('lp-showall');
+  if(sa) sa.onclick=e=>{ e.preventDefault(); LP_SHOW_ALL=true; lpPaint(); };
+  grid.querySelectorAll('[data-rm]').forEach(btn=>btn.onclick=e=>{
+    e.preventDefault(); e.stopPropagation();
+    LP_ITEMS.splice(+btn.dataset.rm,1); lpSave();
+  });
+  const at=document.getElementById('lp-addtile');
+  if(at) at.onclick=e=>{ e.preventDefault(); lpOpenForm(null); };
+  // While editing, a tile is an edit handle rather than a link — otherwise a
+  // pin could be unpinned but never corrected.
+  grid.querySelectorAll('.lp-tile:not(.lp-add)').forEach(el=>el.onclick=e=>{
+    if(!document.body.classList.contains('lp-editing')) return;
+    e.preventDefault(); lpOpenForm(null, +el.dataset.i);
+  });
+  lpWireDrag(grid);
+}
+// Drag to reorder, only while editing — a tile is a link the rest of the time
+// and must stay clickable with no modifier.
+function lpWireDrag(grid){
+  grid.querySelectorAll('.lp-tile:not(.lp-add)').forEach(el=>{
+    el.draggable = document.body.classList.contains('lp-editing');
+    el.ondragstart=e=>{ e.dataTransfer.effectAllowed='move'; el.classList.add('lp-drag');
+      try{ e.dataTransfer.setData('text/plain', el.dataset.i); }catch(_){} };
+    el.ondragend=()=>{ el.classList.remove('lp-drag'); grid.querySelectorAll('.lp-over').forEach(x=>x.classList.remove('lp-over')); };
+    el.ondragover=e=>{ if(!document.body.classList.contains('lp-editing')) return; e.preventDefault(); el.classList.add('lp-over'); };
+    el.ondragleave=()=>el.classList.remove('lp-over');
+    el.ondrop=e=>{
+      e.preventDefault(); el.classList.remove('lp-over');
+      const from=+e.dataTransfer.getData('text/plain'), to=+el.dataset.i;
+      if(isNaN(from)||isNaN(to)||from===to) return;
+      const moved=LP_ITEMS.splice(from,1)[0];
+      // A tile dropped on a tile in another group joins that group — the
+      // group label is a property of the pin, so moving it has to say so.
+      moved.group=LP_ITEMS[to>from?to-1:to] ? (LP_ITEMS[to>from?to-1:to].group||'') : moved.group;
+      LP_ITEMS.splice(to>from?to-1:to, 0, moved);
+      lpSave();
+    };
+  });
+}
+// ── The pin form ─────────────────────────────────────────────────────────────
+let LP_EDIT=null;      // index being edited, or null for a new pin
+function lpOpenForm(prefill, index){
+  LP_EDIT = (index==null) ? null : index;
+  const it = prefill || (index!=null ? LP_ITEMS[index] : null) || {name:'',url:'',icon:'',group:'',host:'',container:''};
+  const hosts=[['', I18N.t('lp.host_hub','This hub')]]
+    .concat(((FLEET&&FLEET.hosts)||[]).filter(h=>!h.is_local).map(h=>[h.name, h.label||h.name]));
+  const m=document.getElementById('lpmodal');
+  m.querySelector('.hd b').textContent = index!=null
+    ? I18N.t('lp.edit_title','Edit shortcut') : I18N.t('lp.add_title','Pin to Home');
+  m.querySelector('.bd').innerHTML = `
+    <div class="lp-form">
+      <label for="lp_f_name">${I18N.t('lp.f_name','Name')}</label>
+      <input class="field" id="lp_f_name" maxlength="40" value="${esc(it.name)}" placeholder="Immich">
+      <label for="lp_f_url">${I18N.t('lp.f_url','Opens')}</label>
+      <input class="field" id="lp_f_url" maxlength="500" value="${esc(it.url)}" placeholder="http://hub:2283">
+      <label for="lp_f_group">${I18N.t('lp.f_group','Group')}</label>
+      <input class="field" id="lp_f_group" maxlength="24" value="${esc(it.group||'')}" placeholder="${I18N.t('lp.f_group_ph','Media, AI, Admin… (optional)')}"
+        list="lp_groups">
+      <datalist id="lp_groups">${[...new Set(LP_ITEMS.map(x=>x.group).filter(Boolean))].map(g=>`<option value="${esc(g)}">`).join('')}</datalist>
+      <label for="lp_f_host">${I18N.t('lp.f_host','Runs on')}</label>
+      <select class="field" id="lp_f_host">${hosts.map(([v,l])=>`<option value="${esc(v)}" ${v===(it.host||'')?'selected':''}>${esc(l)}</option>`).join('')}</select>
+      <label for="lp_f_ct">${I18N.t('lp.f_container','Status from')}</label>
+      <input class="field" id="lp_f_ct" maxlength="120" value="${esc(it.container||'')}" placeholder="${I18N.t('lp.f_container_ph','container name (optional) — the tile\'s dot follows it')}">
+      <label>${I18N.t('lp.f_icon','Icon')}</label>
+      <div class="lp-icons" id="lp_f_icons">
+        <button type="button" data-ic="" class="${it.icon?'':'sel'}" title="${I18N.t('lp.icon_auto','Automatic — the app\'s logo, else its initials')}">A</button>
+        ${Object.keys(LP_ICONS).map(k=>`<button type="button" data-ic="${k}" class="${it.icon===k?'sel':''}" title="${k}">${lpIconSvg(k)}</button>`).join('')}
+      </div>
+    </div>
+    <div class="ins warning" id="lp_f_err" style="display:none;margin-top:12px"></div>
+    <div class="row"><button class="btn" type="button" id="lp_f_save">${index!=null?I18N.t('btn.save','Save'):I18N.t('lp.pin','Pin')}</button>
+      <button class="btn" type="button" id="lp_f_cancel">${I18N.t('btn.cancel','Cancel')}</button></div>`;
+  m.classList.add('show');
+  let icon=it.icon||'';
+  m.querySelectorAll('#lp_f_icons button').forEach(btn=>btn.onclick=()=>{
+    icon=btn.dataset.ic;
+    m.querySelectorAll('#lp_f_icons button').forEach(x=>x.classList.toggle('sel', x===btn));
+  });
+  const close=()=>m.classList.remove('show');
+  m.querySelector('.hd .x').onclick=close;
+  document.getElementById('lp_f_cancel').onclick=close;
+  document.getElementById('lp_f_name').focus();
+  document.getElementById('lp_f_save').onclick=async()=>{
+    const g=id=>document.getElementById(id).value.trim();
+    const entry={name:g('lp_f_name'), url:g('lp_f_url'), icon, group:g('lp_f_group'),
+                 host:g('lp_f_host'), container:g('lp_f_ct')};
+    const err=document.getElementById('lp_f_err');
+    if(!entry.name || !/^https?:\/\//i.test(entry.url)){
+      err.textContent=I18N.t('lp.err_fields','A shortcut needs a name and a http:// or https:// address.');
+      err.style.display=''; return;
+    }
+    if(LP_EDIT!=null) LP_ITEMS[LP_EDIT]=entry; else LP_ITEMS.push(entry);
+    const e2=await lpSave();
+    if(e2){ if(LP_EDIT==null) LP_ITEMS.pop(); err.textContent=e2; err.style.display=''; return; }
+    close();
+  };
+}
+// "Pin" on a container row: everything the form needs is already on the row.
+function lpPinContainer(name, ports, hostName){
+  const port=(ports||[])[0];
+  const h=(hostName&&hostName!=='local')?hostName:'';
+  const target=h || location.hostname;
+  lpOpenForm({name:name.replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).slice(0,40),
+              url: port?`${location.protocol}//${target}:${port}`:'', icon:'', group:'',
+              host:h, container:name});
+}
+function lpIsPinned(name, hostName){
+  const h=(hostName&&hostName!=='local')?hostName:'';
+  return LP_ITEMS.some(it=>it.container===name && (it.host||'')===h);
+}
+function lpInit(){
+  const panel=document.getElementById('lp-panel'); if(!panel || panel.__init) return; panel.__init=true;
+  document.getElementById('lp-add').onclick=()=>lpOpenForm(null);
+  const eb=document.getElementById('lp-edit');
+  eb.onclick=()=>{
+    const on=document.body.classList.toggle('lp-editing');
+    eb.textContent = on ? I18N.t('lp.done','Done') : I18N.t('lp.edit','Edit');
+    eb.classList.toggle('lp-accent', on);
+    lpWireDrag(document.getElementById('lp-grid'));
+  };
+  if(!LP_LOADED) lpLoad();
+}
+
+// ── Display mode: the dashboard as a wall screen ─────────────────────────────
+// Everything but the cockpit goes away, and the cockpit is scaled — one CSS
+// transform on the whole board — so it fits the screen exactly, with no
+// scrollbar and no per-widget responsive rewrite. `?display=1` opens straight
+// into it, which is all a dedicated kiosk box (a Pi, an old laptop running
+// Chromium --kiosk) needs.
+let DP_ON=false, DP_IDLE=null;
+// Which panels the wall screen shows. Per-browser (this is a property of the
+// screen in the hallway, not of the homelab), and the pins themselves stay
+// server-side like everywhere else.
+const DP_WIDGETS=[['lp-panel','Launchpad'],['mc-w-fleet','Fleet'],['mc-w-burn','Burn rate'],
+                  ['mc-w-engine','Engine'],['mc-w-feed','Event feed'],['mc-w-cost','Costs']];
+const DP_KEY='hl_display_widgets';
+function dpShown(){
+  try{ const v=JSON.parse(localStorage.getItem(DP_KEY)); if(Array.isArray(v)) return new Set(v); }catch(e){}
+  return new Set(['lp-panel','mc-w-fleet','mc-w-burn','mc-w-engine','mc-w-feed']);   // costs off: a long list reads badly across a room
+}
+function dpApplyWidgets(){
+  const on=dpShown();
+  DP_WIDGETS.forEach(([id])=>{
+    const el=document.getElementById(id); if(!el) return;
+    if(on.has(id)) el.removeAttribute('data-dp-off'); else el.setAttribute('data-dp-off','1');
+  });
+}
+function dpFit(){
+  if(!DP_ON) return;
+  const fit=document.getElementById('dp-fit'), stage=document.getElementById('dp-stage');
+  if(!fit||!stage) return;
+  // The board is fluid in display mode — it fills the stage's width, and its
+  // panels stretch into the leftover height (see body.display in the CSS), so
+  // nothing is scaled and nothing is letterboxed. The only thing left to do is
+  // trim the lists when even a stretched board would overflow: the same
+  // content-level fit the Overview uses, measured against the stage.
+  const avail = stage.clientHeight - document.getElementById('dp-bar').offsetHeight - 22;
+  fit.style.height = avail + 'px';
+  mcFitToFold(avail);
+}
+function dpClock(){
+  const c=document.getElementById('dp-clock');
+  if(c) c.textContent=new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+function dpEnter(){
+  if(DP_ON) return;
+  DP_ON=true;
+  showTab('overview');                       // paint the cockpit before it moves
+  const stage=document.getElementById('dp-stage');
+  document.body.appendChild(stage);          // must be a body child for the hide-everything-else rule
+  document.body.classList.add('display');
+  const ck0 = document.getElementById('mc-cockpit');
+  ck0.style.transform = ''; ck0.style.width = ''; ck0.style.marginBottom = '';   // the stage does its own fitting
+  document.getElementById('dp-fit').appendChild(ck0);
+  dpApplyWidgets();
+  const t=document.getElementById('dp-title');
+  if(t) t.innerHTML=`<b>${esc(document.title.replace(/ ?[—·].*$/,''))}</b>`;
+  dpClock(); dpFit();
+  clearInterval(dpEnter._t); dpEnter._t=setInterval(()=>{ dpClock(); dpFit(); }, 20000);
+  addEventListener('resize', dpFit);
+  const idle=()=>{ document.body.classList.remove('dp-idle');
+    clearTimeout(DP_IDLE); DP_IDLE=setTimeout(()=>document.body.classList.add('dp-idle'), 5000); };
+  addEventListener('mousemove', idle); idle();
+}
+function dpExit(){
+  if(!DP_ON) return;
+  DP_ON=false;
+  clearInterval(dpEnter._t); clearTimeout(DP_IDLE);
+  removeEventListener('resize', dpFit);
+  document.body.classList.remove('display','dp-idle');
   const ck=document.getElementById('mc-cockpit');
-  if(ck) ck.addEventListener('click', e=>{
-    if(document.body.classList.contains('mc-customizing')) return;
-    if(e.target.closest('button,a,select,input,.mc-modeseg,.mc-host,.mc-fb-chip,.mc-hchip,.mc-whide,.mc-wgrip')) return;
+  ck.style.height='';
+  ck.querySelectorAll('[data-dp-off]').forEach(el=>el.removeAttribute('data-dp-off'));
+  document.getElementById('lp-panel').removeAttribute('data-dp-off');
+  document.querySelector('section[data-tab="overview"]').prepend(ck);
+  document.getElementById('dp-fit').style.transform='';
+  document.getElementById('dp-stage').style.display='none';
+  if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  const u=new URL(location.href); u.searchParams.delete('display'); history.replaceState(null,'',u);
+  paintMissionControl();
+}
+// Which screen. Chromium's window-management API can enumerate them and open
+// full-screen on the one you pick; every other browser gets the current screen
+// (and the honest sentence that says so).
+async function dpOpenPicker(){
+  let screens=null;
+  try{
+    if(window.getScreenDetails){
+      const d=await window.getScreenDetails();
+      screens=d.screens.map((s,i)=>({i, label:s.label||`Screen ${i+1}`, w:s.width, h:s.height, primary:s.isPrimary, ref:s}));
+    }
+  }catch(e){ screens=null; }
+  const m=document.getElementById('lpmodal');
+  m.querySelector('.hd b').textContent=I18N.t('dp.title','Display mode');
+  let pick = screens ? Math.max(0, screens.findIndex(s=>!s.primary)) : 0;
+  const on=dpShown();
+  const draw=()=>{
+    m.querySelector('.bd').innerHTML=`
+      ${screens && screens.length>1 ? `<div class="muted">${I18N.t('dp.pick','Which screen should the wall display use?')}</div>
+      <div class="dp-screens">${screens.map((s,i)=>`<div class="dp-scr ${i===pick?'sel':''}" data-s="${i}">
+        <div class="shape"></div>${esc(s.label)}<br>${s.w}×${s.h}${s.primary?' · '+I18N.t('dp.primary','primary'):''}</div>`).join('')}</div>`
+      : `<div class="muted">${I18N.t('dp.one_screen','Opens full-screen on this screen. To use a second monitor, drag this window there first — only Chromium-based browsers can be told which screen to use.')}</div>`}
+      <div style="margin-top:12px;font-size:12px;color:var(--mut)">${I18N.t('dp.widgets','What to show')}</div>
+      <div class="dp-widgets">${DP_WIDGETS.map(([id,label])=>`<label><input type="checkbox" data-w="${id}" ${on.has(id)?'checked':''}> ${esc(I18N.t('dp.w_'+id, label))}</label>`).join('')}</div>
+      <div class="muted" style="font-size:11px">${I18N.t('dp.hint','Scaled to fit the screen exactly — no scrolling. Esc leaves, and /?display=1 opens straight into it (what a dedicated kiosk box wants).')}</div>
+      <div class="row"><button class="btn" type="button" id="dp_go">${I18N.t('dp.open','Open display')}</button>
+        <button class="btn" type="button" id="dp_cancel">${I18N.t('btn.cancel','Cancel')}</button></div>`;
+    m.querySelectorAll('.dp-scr').forEach(el=>el.onclick=()=>{ pick=+el.dataset.s; draw(); });
+    m.querySelectorAll('.dp-widgets input').forEach(cb=>cb.onchange=()=>{
+      if(cb.checked) on.add(cb.dataset.w); else on.delete(cb.dataset.w);
+      try{ localStorage.setItem(DP_KEY, JSON.stringify([...on])); }catch(e){}
+    });
+    m.querySelector('.hd .x').onclick=()=>m.classList.remove('show');
+    document.getElementById('dp_cancel').onclick=()=>m.classList.remove('show');
+    document.getElementById('dp_go').onclick=()=>{ m.classList.remove('show');
+      dpStart(screens && screens.length>1 ? screens[pick].ref : null); };
+  };
+  draw();
+  m.classList.add('show');
+}
+function dpStart(screen){
+  dpEnter();
+  const opts = screen ? {screen} : undefined;
+  const el=document.documentElement;
+  try{ el.requestFullscreen(opts).catch(()=>{}); }catch(e){ try{ el.requestFullscreen(); }catch(_){} }
+  setTimeout(dpFit, 300);
+}
+addEventListener('keydown', e=>{ if(e.key==='Escape' && DP_ON) dpExit(); });
+document.addEventListener('fullscreenchange', ()=>{ if(!document.fullscreenElement && DP_ON) dpExit(); });
+function mcInitGoto(){
+  const ck=document.getElementById('mc-cockpit'); if(!ck || ck.__goto) return; ck.__goto=true;
+  ck.addEventListener('click', e=>{
+    if(e.target.closest('button,a,select,input,.mc-modeseg,.mc-host,.mc-fb-chip,.lp-tile')) return;
     const h=e.target.closest('[data-goto]'); if(!h) return;
     const t=h.getAttribute('data-goto'); if(t && typeof showTab==='function') showTab(t);
   });
-  let dragEl=null;
-  board.querySelectorAll('.mc-widget').forEach(el=>{
-    el.setAttribute('draggable','false');
-    const hb=el.querySelector('.mc-whide');
-    if(hb) hb.onclick=(e)=>{ e.stopPropagation(); const st=mcBoardState(); st.hidden=Array.from(new Set([...(st.hidden||[]), el.dataset.w])); mcSaveBoard(st); mcApplyBoard(); };
-    el.addEventListener('dragstart',e=>{ if(!document.body.classList.contains('mc-customizing')){ e.preventDefault(); return; } dragEl=el; el.classList.add('mc-drag'); e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',el.dataset.w); }catch(_){} });
-    el.addEventListener('dragend',()=>{ if(dragEl) dragEl.classList.remove('mc-drag'); board.querySelectorAll('.mc-over').forEach(x=>x.classList.remove('mc-over')); dragEl=null; const st=mcBoardState(); st.order=mcCurrentOrder(); mcSaveBoard(st); });
-    el.addEventListener('dragover',e=>{ if(!dragEl||dragEl===el) return; e.preventDefault(); const r=el.getBoundingClientRect(); const after=(e.clientY-r.top)/r.height>0.5; board.querySelectorAll('.mc-over').forEach(x=>{ if(x!==el) x.classList.remove('mc-over'); }); el.classList.add('mc-over'); if(after) el.after(dragEl); else el.before(dragEl); });
-    el.addEventListener('dragleave',()=>el.classList.remove('mc-over'));
-  });
-  const btn=document.getElementById('mc-custbtn'), hint=document.getElementById('mc-boardhint'), reset=document.getElementById('mc-resetbtn');
-  if(btn) btn.onclick=()=>{ const on=document.body.classList.toggle('mc-customizing'); btn.classList.toggle('on',on); if(hint) hint.hidden=!on; if(reset) reset.hidden=!on;
-    btn.textContent = on ? I18N.t('mc.done','✓ Done') : I18N.t('mc.customize','⠿ Customize layout');
-    board.querySelectorAll('.mc-widget').forEach(el=>el.setAttribute('draggable', on?'true':'false')); };
-  if(reset) reset.onclick=()=>{ mcSaveBoard({}); MC_W_DEFAULT.forEach(w=>{ const el=board.querySelector('.mc-widget[data-w="'+w+'"]'); if(el) board.appendChild(el); }); board.querySelectorAll('.mc-widget').forEach(el=>el.hidden=false); mcRenderHiddenTray(); };
 }
 function mcPaintFleetBar($){
   const bar=$('mc-fleetbar'); if(!bar) return;
@@ -8087,6 +8965,7 @@ function mcPaintFleet($){
     const worstDisk=((hh.disks||[]).find(d=>d.pct>=90));
     if(worstDisk) badges.push(`<span class="mc-host-badge mc-b-warn">disk ${worstDisk.pct}%</span>`);
     if(hh.gpu) badges.push(`<span class="mc-host-badge mc-b-gpu">GPU</span>`);
+    if(teleLost(h)) badges.push(`<span class="mc-host-badge mc-b-tele" title="${esc(teleTitle(h))}">${teleLight(h)} ${I18N.t('mc.tele_lost','GPU LOST')}</span>`);
     const cpuC=cpu>=80?'var(--crit)':cpu>=50?'var(--warn)':'var(--ok)';
     const ramC=ramPct>=80?'var(--crit)':ramPct>=65?'var(--warn)':'var(--info)';
     const diskPct=Math.max(...(((hh.disks)||[]).map(d=>d.pct||0)),0);
@@ -8110,55 +8989,6 @@ function mcPaintFleet($){
     const ob=el.querySelector('.mc-host-open');
     if(ob) ob.onclick=(e)=>{ e.stopPropagation(); setHost(el.dataset.h); showTab('host'); };
   });
-}
-// systemd units whose failure is benign (KDE crash relays / coredump processors).
-function mcIsBenignUnit(name){ return /^(drkonqi|systemd-coredump)/i.test(name||''); }
-function mcPaintStrip($){
-  // Containers
-  const dk=(HH&&HH.docker)||{};
-  const ctl=dk.containers||[];
-  const ds=dk.summary||{};
-  const running = dk.available ? (ds.running!=null?ds.running:ctl.filter(c=>c.state==='running').length) : 0;
-  const total   = dk.available ? (ds.total!=null?ds.total:ctl.length) : 0;
-  const probs = ctl.filter(c=>(c.state && c.state!=='running') || (c.status && c.status!=='ok'));
-  $('mc-c-run').textContent=running; $('mc-c-tot').textContent=total;
-  const cp=$('mc-c-pill');
-  if(!dk.available){ cp.className='mc-pill mc-pill-warn'; cp.textContent=I18N.t('mc.docker_off','DOCKER OFF'); $('mc-c-prob').textContent=esc(dk.reason||''); }
-  else if(probs.length){ cp.className='mc-pill mc-pill-crit'; cp.textContent=probs.length+' '+I18N.t('mc.problems','PROBLEMS');
-    $('mc-c-prob').innerHTML=probs.slice(0,4).map(p=>`<span style="color:var(--crit)">●</span> <b style="color:var(--tx)">${esc(p.name)}</b> ${esc(p.status_text||p.state||'')}`).join('<br>');
-  } else { cp.className='mc-pill mc-pill-ok'; cp.textContent=I18N.t('mc.all_healthy','ALL HEALTHY'); $('mc-c-prob').textContent=I18N.t('mc.zero_problems','0 problems'); }
-
-  // Services
-  const sd=(HH&&HH.systemd)||{};
-  const ss=sd.summary||{};
-  const svcs=sd.services||[];
-  const failed = svcs.filter(s=>s.status==='crit');
-  const failedN = ss.failed!=null ? ss.failed : failed.length;
-  $('mc-s-run').textContent = ss.running!=null?ss.running:'—';
-  const sp=$('mc-s-pill'), tip=$('mc-fail-tip'), hint=$('mc-s-hint');
-  if(!sd.available){ sp.className='mc-pill mc-pill-warn'; sp.textContent=I18N.t('mc.svc_off','OFF'); hint.textContent='— '+I18N.t('mc.svc_off_hint','monitoring off'); tip.innerHTML=''; }
-  else if(failedN===0){ sp.className='mc-pill mc-pill-ok'; sp.textContent='0 '+I18N.t('mc.failed','FAILED'); hint.textContent='— '+I18N.t('mc.all_clean','all clean'); tip.innerHTML=''; }
-  else {
-    const benign = failed.length>0 && failed.every(s=>mcIsBenignUnit(s.name));
-    if(benign){ sp.className='mc-pill mc-pill-warn'; sp.textContent=failedN+' '+I18N.t('mc.failed_lc','failed'); hint.textContent='— '+I18N.t('mc.harmless','harmless, hover for why');
-      tip.innerHTML='<h4 style="color:var(--ok)">✓ '+I18N.tf('mc.all_benign','All {n} are benign',{n:failedN})+'</h4>'+failed.map(s=>`<div class="mc-fitem"><b>${esc(s.name)}</b>${s.desc?' · '+esc(s.desc):''}</div>`).join('');
-    } else { sp.className='mc-pill mc-pill-crit'; sp.textContent=failedN+' '+I18N.t('mc.failed','FAILED'); hint.textContent='— '+I18N.t('mc.needs_attn','needs attention');
-      tip.innerHTML='<h4 style="color:var(--crit)">✕ '+I18N.tf('mc.real_failures','{n} real failure(s)',{n:failedN})+'</h4>'+(failed.length?failed:[{name:I18N.t('mc.see_services','See the Services tab'),desc:''}]).map(s=>`<div class="mc-fitem"><b>${esc(s.name)}</b>${s.desc?' · '+esc(s.desc):''}</div>`).join('');
-    }
-  }
-
-  // Diagnostics
-  const diag=(HH&&HH.diagnostics)||{};
-  const checks=diag.checks||[];
-  const okN=checks.filter(c=>c.status==='ok').length;
-  $('mc-diag-summary').innerHTML = checks.length
-    ? `<span style="color:${checks.some(c=>c.status==='fail')?'var(--crit)':'var(--ok)'}">${okN} / ${checks.length} ${I18N.t('mc.green','green')}</span>` : '';
-  $('mc-diag').innerHTML = checks.map(c=>{
-    const cls={ok:'mc-ok',info:'mc-info',warn:'mc-warn',fail:'mc-fail'}[c.status]||'mc-info';
-    // GPU row label is vendor-aware from the backend (see diagnostics table above).
-    const lbl = c.id==='nvidia' ? c.label : I18N.t('diag.lbl.'+c.id, c.label);
-    return `<div class="mc-diag"><span class="mc-dd ${cls}"></span><div><b>${esc(lbl)}</b><div class="mc-dsub">${esc(c.detail||'')}</div></div></div>`;
-  }).join('') || '<div style="font-size:11px;color:var(--mut)">'+I18N.t('mc.no_checks','No checks reported.')+'</div>';
 }
 
 async function loadHostData(name){
@@ -8427,6 +9257,7 @@ async function renderHostTab(){
     if(D) renderData();
     renderRamTree();
     renderHostChart();   // clears any remote's "no history yet" note
+    pulseLive();
     return;
   }
   // Blank the per-host cards for the duration of the fetch. HOST_DATA still
@@ -8462,6 +9293,7 @@ async function renderHostTab(){
   renderRamTree();
   renderTopProcs();      // now that HOST_DATA is this host's
   renderHostChart();
+  pulseIfChanged('host-'+CURRENT_HOST, h);
 }
 
 // ── System-tab history chart, for whichever host is selected ─────────────────
@@ -8758,6 +9590,7 @@ async function renderNetwork(){
      <div tabindex="0" role="region" aria-label="${I18N.t('net.sub_listen','Listening sockets')}" style="max-height:340px;overflow:auto;border:1px solid var(--bd);border-radius:9px;margin-top:6px">
        <table class="ntbl" style="margin-top:0"><thead><tr><th>${I18N.t('col.proto','Proto')}</th><th>${I18N.t('col.bind','Bind')}</th><th>${I18N.t('col.port','Port')}</th><th>${I18N.t('col.process','Process')}</th><th>${I18N.t('col.exposure','Exposure')}</th></tr></thead><tbody>${lrows}</tbody></table>
      </div>`;
+  pulseIfChanged('network-'+CURRENT_HOST, net);
 }
 
 // Security verdict word shown in the status badge (reusing the app's .badge).
@@ -8863,6 +9696,7 @@ async function renderSecurity(){
        <td class="muted">${i.detail}</td></tr>`).join('');
   el.innerHTML = summary +
     `<table class="sectbl" style="margin-top:14px"><thead><tr><th>${I18N.t('col.check','Check')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.detail','Detail')}</th></tr></thead><tbody>${body}</tbody></table>`;
+  pulseIfChanged('security-'+CURRENT_HOST, sec);
 }
 
 function hostCapability(hostName, capId){
@@ -9000,7 +9834,11 @@ function _rctBadge(c){
                                                    : ['warn', I18N.t('rct.exited','EXITED')];
   return ['info', esc(st.toUpperCase()||'?')];
 }
+// Controls are a property of the HUB (ENABLE_CONTROLS), not of the host being
+// shown: the hub is what runs the docker command, locally or over SSH.
+let RCT_CONTROLS = true;
 function renderRemoteContainers(sec, rc){
+  RCT_CONTROLS = ((HH && HH.docker) || {}).controls_enabled !== false;
   let box = sec.querySelector('.remote-ct');
   if(!box){
     box = document.createElement('div');
@@ -9023,7 +9861,18 @@ function renderRemoteContainers(sec, rc){
     const vb = c.vram_mb!=null ? c.vram_mb*1048576 : null;
     if(vb!=null){ tVram+=vb; anyVram=true; }
     if(c.disk_bytes!=null){ tDisk+=c.disk_bytes; anyDisk=true; }
-    return `<tr class="ctrow"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
+    const rp = c.restart_policy || '';
+    const ctl = RCT_CONTROLS ? `
+      <div class="ctlbtns">
+        <button type="button" class="btn-mini ct-act" data-act="start" ${c.state==='running'?'disabled':''} title="${I18N.t('ct.start','Start')}">▶</button>
+        <button type="button" class="btn-mini danger ct-act" data-act="stop" ${c.state!=='running'?'disabled':''} title="${I18N.t('ct.stop','Stop')}">⏸</button>
+        <button type="button" class="btn-mini ct-act" data-act="restart" title="${I18N.t('ct.restart','Restart')}">↻</button>
+        <button type="button" class="btn-mini ct-pin${lpIsPinned(c.name,CURRENT_HOST)?' on':''}" data-pin="1" title="${lpIsPinned(c.name,CURRENT_HOST)?I18N.t('lp.pinned','On the Overview launchpad'):I18N.t('lp.pin_this','Pin to the Overview launchpad')}">${lpIsPinned(c.name,CURRENT_HOST)?'★':'☆'}</button>
+      </div>
+      ${rp?`<div class="ctl-policy"><select class="field ct-policy" title="${I18N.t('ct.restart_policy','Restart policy')}">
+        ${['no','unless-stopped','on-failure','always'].map(pol=>`<option value="${pol}" ${rp===pol?'selected':''}>${pol}</option>`).join('')}
+      </select></div>`:''}` : `<span class="ctl-locked">🔒</span>`;
+    return `<tr class="ctrow" data-ct="${esc(c.name)}" title="${I18N.t('ct.click_logs','Click to tail logs')}"><td><span class="sdot" style="background:${SC[lvl]||SC.info}"></span>${svcLogo(c.name,c.image)}${copyable(c.name)}</td>
       <td><span class="badge ${lvl}">${label}</span></td>
       <td data-col="image" class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.image)}">${esc(c.image)}</td>
       <td class="muted">${ports}</td>
@@ -9032,23 +9881,60 @@ function renderRemoteContainers(sec, rc){
       <td class="muted">${vb!=null ? fmtBytes(vb) : '—'}</td>
       <td data-col="disk" class="muted">${c.disk_bytes!=null ? fmtBytes(c.disk_bytes) : '—'}</td>
       <td class="muted">${c.cpu_pct!=null ? c.cpu_pct.toFixed(1)+'%' : '—'}</td>
-      <td class="muted">${esc(c.status||'')}</td></tr>`;
-  }).join('') || `<tr><td colspan="10" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
+      <td class="muted">${esc(c.status||'')}</td>
+      <td data-col="ctl">${ctl}</td></tr>`;
+  }).join('') || `<tr><td colspan="11" class="muted">${I18N.t('rct.none','No containers on this host.')}</td></tr>`;
   const totals = rc.containers.length ? `<tr class="cttot">
       <td><b>${I18N.t('ct.total','Total')}</b> <span class="muted">${I18N.tf('ct.running','{n} running',{n:s.running||0})}</span></td>
       <td></td><td data-col="image"></td><td></td><td></td>
       <td><b>${fmtBytes(tRam)}</b></td>
       <td><b>${anyVram?fmtBytes(tVram):'—'}</b></td>
       <td data-col="disk"><b>${anyDisk?fmtBytes(tDisk):'—'}</b></td>
-      <td></td><td></td></tr>` : '';
+      <td></td><td></td><td data-col="ctl"></td></tr>` : '';
   const stale = rc.online ? '' : ` · <span style="color:var(--warn)">${I18N.t('rgpu.stale','host offline — showing last snapshot')}</span>`;
   box.innerHTML =
     `<div class="card"><h2>📦 ${I18N.tf('rct.title','Containers on {host}',{host:esc(CURRENT_HOST)})}</h2>
       <div class="grid">${kpis}</div>
-      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
-      <p class="cap">${I18N.tf('rct.cap','Read-only inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${I18N.t('rct.cap2','Logs and start/stop controls are hub-only for now.')}</p>
+      <table style="margin-top:12px"><thead><tr><th>${I18N.t('col.container','Container')}</th><th>${I18N.t('col.state','State')}</th><th data-col="image">${I18N.t('col.image','Image')}</th><th>${I18N.t('col.ports','Ports')}</th><th>${I18N.t('col.uptime','Uptime')}</th><th>${I18N.t('col.ram','RAM')}</th><th>${I18N.t('col.vram','VRAM')}</th><th data-col="disk">${I18N.t('col.disk','Disk')}</th><th>${I18N.t('col.cpu','CPU')}</th><th>${I18N.t('col.status','Status')}</th><th data-col="ctl">${I18N.t('col.controls','Controls')}</th></tr></thead><tbody>${rows}${totals}</tbody></table>
+      <p class="cap">${I18N.tf('rct.cap2','Inventory from the host\'s docker CLI · updated {t}',{t:relTime(rc.at)})}${stale} · ${RCT_CONTROLS
+        ? I18N.t('rct.cap_ctl','Start/stop/restart, the restart policy and the logs all run over the same SSH connection the probe uses — the remote user needs docker access. Logs are a refreshing tail, not a live follow.')
+        : I18N.t('rct.cap_noctl','Controls are disabled on this hub (ENABLE_CONTROLS=0).')}</p>
     </div>`;
   applyIcons(box);
+  const host = CURRENT_HOST;
+  const tbl = box.querySelector('table');
+  if(tbl){
+    tbl.onclick = e => {
+      if(e.target.closest('.copybtn')) return;
+      const tr = e.target.closest('.ctrow'); if(!tr || !tr.dataset.ct) return;
+      const pinBtn = e.target.closest('.ct-pin');
+      if(pinBtn){ e.stopPropagation();
+        const c = (rc.containers||[]).find(x=>x.name===tr.dataset.ct) || {};
+        // The remote probe reports ports as a string ("0.0.0.0:8080->80/tcp"),
+        // not the hub's array — pull the published ports out of it so the pin
+        // form pre-fills the same way it does on the hub.
+        const ports = String(c.ports||'').split(',').map(s=>s.trim())
+          .map(s=>{ const m=s.match(/:(\d+)->/); return m?+m[1]:null; }).filter(Boolean);
+        lpPinContainer(tr.dataset.ct, ports, host);
+        return;
+      }
+      const actBtn = e.target.closest('.ct-act');
+      if(actBtn){ e.stopPropagation(); containerAction(tr.dataset.ct, actBtn.dataset.act, false, host); return; }
+      if(e.target.closest('.ctl-policy')) return;
+      openLogDrawer(tr.dataset.ct, host);
+    };
+    tbl.onchange = e => {
+      const sel = e.target.closest('.ct-policy'); if(!sel) return;
+      const tr = sel.closest('.ctrow');
+      if(!confirm(`Change restart policy for "${tr.dataset.ct}" on ${host} to "${sel.value}"?`)){
+        loadHostData(host).then(()=>renderLocalOnlyNotice('containers')); return;
+      }
+      setContainerRestartPolicy(tr.dataset.ct, sel.value, host);
+    };
+  }
+  // Not the whole rc — rc.at is this poll's own timestamp, always different,
+  // which would defeat the point of checking for a real change at all.
+  if(TAB==='containers') pulseIfChanged('containers-'+CURRENT_HOST, [rc.containers, rc.summary]);
 }
 
 // ── Per-host AI Models (remote hosts) ────────────────────────────────────────
@@ -9135,9 +10021,10 @@ function paintRemoteModels(sec, host, mine){
   // Guard against a late paint: the fetch may resolve after the user has moved
   // on, and the panel must never show one host's models under another's name.
   if(host !== CURRENT_HOST) return;
+  pulseIfChanged('models-'+host, mine);
 
   const old=sec.querySelector('.remote-models');
-  if(!mine.length){
+  if(!mine.length && !customServerNotice(host)){
     // Resolved and genuinely empty. Call showScopeNotice directly — going back
     // through renderLocalOnlyNotice would re-enter this function via
     // maybeRenderRemoteModels (the cache is warm by now) and recurse.
@@ -9162,10 +10049,21 @@ function paintRemoteModels(sec, host, mine){
   const g=hostGpu(host)||{};
   const cap=g.mem_total||0;
   const committed=loadedM.reduce((a,m)=>a+(m.vram_mb||0),0);
+  // A remote vLLM/llama.cpp reports no per-model VRAM (only ollama does), and
+  // the hub's nvidia-smi can't see a process on another box — so "committed"
+  // read 0 MB under a server visibly holding 60 GB. When nothing attributes
+  // but something is loaded, show what the box's own GPU sampler reports in
+  // use instead, labelled as such.
+  const inUse=g.mem_used||0;
+  const vramTile = committed>0 || !loadedM.length
+    ? {v:fmtMB(committed), l:I18N.t('rmod.vram_committed','VRAM committed'),
+       s:cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(committed/cap*100)})+' · '+fmtMB(cap):''}
+    : {v:fmtMB(inUse), l:I18N.t('rmod.vram_in_use','VRAM in use on host'),
+       s:(cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(inUse/cap*100)})+' · '+fmtMB(cap):'')
+         +' · '+I18N.t('rmod.vram_unattributed','not attributable per model from here')};
   const kpis=[
     {v:String(loadedM.length), l:I18N.t('rmod.loaded','Loaded now'), s:I18N.tf('rmod.of_installed','of {n} installed',{n:mine.length})},
-    {v:fmtMB(committed), l:I18N.t('rmod.vram_committed','VRAM committed'),
-     s:cap?I18N.tf('gpu.pct_full','{n}% full',{n:Math.round(committed/cap*100)})+' · '+fmtMB(cap):''},
+    vramTile,
   ].map(t=>`<div class="kpi"><div class="v">${t.v}</div><div class="l">${t.l}</div><div class="s">${t.s||''}</div></div>`).join('');
   // Live serving telemetry (tokens/sec, running/queued, KV-cache, TTFT) for
   // whichever of this box's servers expose a Prometheus /metrics endpoint —
@@ -9180,11 +10078,21 @@ function paintRemoteModels(sec, host, mine){
   const rows = loadedM.map(m=>{
     const pct=cap?Math.round((m.vram_mb||0)/cap*100):0;
     const det=[m.param_size, m.quant].filter(Boolean).join(' · ');
+    // No VRAM figure but confirmed serving: say so, rather than a dash next to
+    // an empty bar that reads as "loaded nothing".
+    const vram = m.vram_mb!=null ? fmtMB(m.vram_mb)
+      : `<span class="badge ok" title="${I18N.t('rmod.serving_t','Confirmed live by the server itself (/metrics or its model list); the VRAM it holds is not reported per model by this server type.')}">${I18N.t('rmod.serving','serving')}</span>`;
+    const bar = m.vram_mb!=null ? `<span class="mini" style="width:${Math.max(2,pct)}%;background:${tint(pct)}"></span>` : `<span class="muted">${esc(m.service||'')}</span>`;
     return `<tr><td><span class="dot" style="background:${colorFor(m.name)}"></span>${copyable(m.name)}${det?` <span class="muted">${esc(det)}</span>`:''}</td>
-      <td>${m.vram_mb!=null?fmtMB(m.vram_mb):'—'}</td>
-      <td style="width:42%"><span class="mini" style="width:${Math.max(2,pct)}%;background:${tint(pct)}"></span></td></tr>`;
+      <td>${vram}</td>
+      <td style="width:42%">${bar}</td></tr>`;
   }).join('') || `<tr><td class="muted" colspan="3">${I18N.t('rmod.none','Nothing loaded right now — the installed models below are idle.')}</td></tr>`;
-  box.innerHTML =
+  // setHTML, not a bare innerHTML assignment: this paints on every fleet
+  // poll, and rebuilding an unchanged card dropped hover/tooltips and re-made
+  // the Add button under the cursor mid-click.
+  const wasHtml = box._sig;
+  setHTML(box,
+    customServerNotice(host) +
     `<div class="card"><div style="display:flex;align-items:center;gap:10px">
         <h2 style="margin:0">🧠 ${I18N.tf('rmod.title','AI models on {host}',{host:esc(host)})}</h2>
         <button type="button" class="btn-mini rmod-add" style="margin-left:auto"
@@ -9194,9 +10102,11 @@ function paintRemoteModels(sec, host, mine){
       ${serving}
       <table style="margin-top:12px"><tbody>${rows}</tbody></table>
       <p class="cap">${I18N.t('rmod.cap','Read on the host itself: ollama\'s resident set with live VRAM, plus any other recognised AI server answering on its standard port and any custom server registered for this host. The per-model VRAM timeline stays hub-only for now.')}</p>
-    </div>`;
-  box.querySelector('.rmod-add').onclick=()=>openAiServerForHost(host);
-  applyIcons(box);
+    </div>`);
+  if(box._sig!==wasHtml){
+    box.querySelector('.rmod-add').onclick=()=>openAiServerForHost(host);
+    applyIcons(box);
+  }
 }
 
 // The scope notice — "this tab has nothing for the selected host, and here is
@@ -9238,9 +10148,202 @@ function refreshLocalOnlyNotices(){
   });
 }
 
+// ── Global search ─────────────────────────────────────────────────────────────
+// Lives in the top bar on every tab. Two behaviours from one box:
+//   1. live filter — every table row (and Launchpad tile) on the current tab
+//      that doesn't match the query is hidden, with an "n / m" tally;
+//   2. fleet-wide results — a popover of matching containers, services, hosts,
+//      models, pinned apps and pages across ALL hosts; Enter/click jumps to the
+//      right host + tab, keeps the filter on, and flashes the row.
+// Shortcuts: "/" or Ctrl/Cmd+K focuses, ↑↓ pick, Enter opens, Esc closes/clears.
+let GS_Q = '', GS_RES = [], GS_SEL = 0, GS_RAF = 0;
+const GS_KIND = {
+  container:{ icon:'📦', tab:'containers', label:()=>I18N.t('search.kind.container','Containers') },
+  service:  { icon:'🧩', tab:'services',   label:()=>I18N.t('search.kind.service','Services') },
+  host:     { icon:'🖥', tab:'hosts',      label:()=>I18N.t('search.kind.host','Hosts') },
+  model:    { icon:'🧠', tab:'models',     label:()=>I18N.t('search.kind.model','AI models') },
+  app:      { icon:'🌐', tab:'overview',   label:()=>I18N.t('search.kind.app','Launchpad') },
+  page:     { icon:'📋', tab:null,         label:()=>I18N.t('search.kind.page','Pages') },
+};
+function gsMarkup(){
+  return `<div class="gsearch" id="gsearch"><div class="gs-box">`
+    + `<svg class="gs-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`
+    + `<input id="gs-in" type="search" autocomplete="off" spellcheck="false" placeholder="${I18N.t('search.placeholder','Search containers, services, hosts…')}" data-i18n-attr="placeholder:search.placeholder;aria-label:search.placeholder" aria-label="${I18N.t('search.placeholder','Search containers, services, hosts…')}">`
+    + `<span class="gs-count" id="gs-count"></span><kbd>/</kbd>`
+    + `<button type="button" class="gs-x" id="gs-x" title="${I18N.t('search.clear','Clear')}" data-i18n-attr="title:search.clear">×</button>`
+    + `</div><div class="gs-pop" id="gs-pop" hidden role="listbox"></div></div>`;
+}
+// Everything searchable, rebuilt per keystroke from the payloads already in
+// memory (HH / FLEET / D / LP_ITEMS) — no extra fetches, always as fresh as
+// the tab itself.
+function gsIndex(){
+  const out = [];
+  const ctStatus = c => (c.state && c.state!=='running') ? 'crit' : (c.status && c.status!=='ok') ? 'warn' : 'ok';
+  const addDocker = (dk, host) => ((dk&&dk.containers)||[]).forEach(c => out.push({
+    kind:'container', name:c.name, host, status:ctStatus(c),
+    sub:[c.image, c.status_text||c.state, typeof c.ports==='string'?c.ports:''].filter(Boolean).join(' · '),
+    text:[c.name, c.image, c.state, c.status_text, c.ports].filter(Boolean).join(' ') }));
+  const addSystemd = (sd, host) => ((sd&&sd.services)||[]).forEach(s => out.push({
+    kind:'service', name:s.name, host, status:s.status||'ok',
+    sub:[s.active, s.desc].filter(Boolean).join(' · '),
+    text:[s.name, s.desc, s.active, s.sub].filter(Boolean).join(' ') }));
+  if(HH){ addDocker(HH.docker, 'local'); addSystemd(HH.systemd, 'local'); }
+  ((FLEET&&FLEET.hosts)||[]).forEach(h => {
+    const st = h.is_local ? 'ok' : statusOfFleetRow(h)==='online' ? 'ok' : statusOfFleetRow(h)==='warn' ? 'warn' : 'crit';
+    out.push({ kind:'host', name:h.name, host:null, status:st,
+      sub:[h.is_local ? I18N.t('host.local','Local') : h.ssh_target, (h.host&&h.host.os&&h.host.os.label)||''].filter(Boolean).join(' · '),
+      text:[h.name, h.label, h.ssh_target, h.host&&h.host.hostname].filter(Boolean).join(' ') });
+    if(!h.is_local && h.host){ addDocker(h.host.docker, h.name); addSystemd(h.host.systemd, h.name); }
+  });
+  ((D&&D.now&&D.now.models)||[]).forEach(m => out.push({
+    kind:'model', name:m.model||m.name||'', host:m.host||'local', status:'ok',
+    sub:[m.service, m.vram?fmtMB(m.vram):''].filter(Boolean).join(' · '),
+    text:[m.model, m.name, m.service].filter(Boolean).join(' ') }));
+  (LP_ITEMS||[]).forEach(it => out.push({
+    kind:'app', name:it.name, host:it.host||'local', url:it.url, status:(lpStatus(it)||{}).cls || 'ok',
+    sub:[it.group, it.url].filter(Boolean).join(' · '),
+    text:[it.name, it.url, it.container, it.group].filter(Boolean).join(' ') }));
+  TABS.forEach(t => {
+    const btn = document.querySelector(`.nrow[data-t="${t.id}"]`);
+    if(btn && btn.style.display==='none') return;      // GPU-less box hides gpu/models
+    out.push({ kind:'page', name:I18N.t('nav.'+t.id, t.label), tab:t.id, host:null, status:null,
+      sub:I18N.t('nav.group.'+(t.zone||'monitoring'), t.zone||'monitoring'), text:t.label+' '+t.id });
+  });
+  return out;
+}
+// Scoring: whole-name prefix > word-start > substring in the name > substring
+// anywhere else > in-order subsequence of the name (so "imsv" finds immich_server).
+function gsScore(e, q){
+  const n = (e.name||'').toLowerCase(), t = (e.text||'').toLowerCase();
+  if(n===q) return 100;
+  if(n.startsWith(q)) return 80;
+  if(new RegExp('(^|[^a-z0-9])'+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).test(n)) return 60;
+  if(n.includes(q)) return 40;
+  if(t.includes(q)) return 20;
+  let i = 0; for(const ch of n){ if(ch===q[i]) i++; if(i===q.length) return 8; }
+  return 0;
+}
+function gsMark(name, q){
+  const i = name.toLowerCase().indexOf(q);
+  if(i<0) return esc(name);
+  return esc(name.slice(0,i)) + '<mark>' + esc(name.slice(i,i+q.length)) + '</mark>' + esc(name.slice(i+q.length));
+}
+function gsSearch(q){
+  q = q.trim().toLowerCase(); if(!q) return [];
+  const words = q.split(/\s+/);
+  return gsIndex().map(e => {
+      // every word must land somewhere; the first word decides the rank
+      const ok = words.every(w => gsScore(e, w) > 0); if(!ok) return null;
+      return Object.assign({score: gsScore(e, words[0]) - (e.kind==='page' ? 5 : 0)}, e);
+    }).filter(Boolean).sort((a,b)=>b.score-a.score || a.name.localeCompare(b.name)).slice(0, 30);
+}
+function gsRenderPop(){
+  const pop = document.getElementById('gs-pop'); if(!pop) return;
+  const q = GS_Q.trim().toLowerCase();
+  if(!q){ pop.hidden = true; pop.innerHTML=''; return; }
+  if(!GS_RES.length){
+    pop.innerHTML = `<div class="gs-empty">${I18N.tf('search.none','No matches for “{q}” anywhere in the fleet',{q:esc(GS_Q.trim())})}</div>`;
+    pop.hidden = false; return;
+  }
+  let html = '', last = null;
+  GS_RES.forEach((e, i) => {
+    if(e.kind!==last){ html += `<div class="gs-grp">${GS_KIND[e.kind].label()}</div>`; last = e.kind; }
+    const hostTag = e.host && e.host!=='local' ? `<span class="gs-host">${esc(e.host)}</span>` : '';
+    html += `<div class="gs-row${i===GS_SEL?' on':''}" data-i="${i}" role="option" aria-selected="${i===GS_SEL}">`
+      + svgIc(ICONS[GS_KIND[e.kind].icon]||'')
+      + (e.status ? `<span class="gs-dot ${e.status}"></span>` : '')
+      + `<span class="gs-nm">${gsMark(e.name, q.split(/\s+/)[0])}</span>`
+      + `<span class="gs-sub">${esc(e.sub||'')}</span>${hostTag}<span class="gs-go">↵</span></div>`;
+  });
+  html += `<div class="gs-foot"><span><kbd>↑</kbd><kbd>↓</kbd> ${I18N.t('search.hint_pick','pick')}</span><span><kbd>↵</kbd> ${I18N.t('search.hint_open','open')}</span><span><kbd>esc</kbd> ${I18N.t('search.hint_close','close')}</span></div>`;
+  pop.innerHTML = html; pop.hidden = false;
+  const on = pop.querySelector('.gs-row.on'); if(on) on.scrollIntoView({block:'nearest'});
+}
+// Filter the visible tab: table rows (never the header/footer/totals) and the
+// Launchpad tiles. Class toggles only, so the re-render observer below doesn't
+// see its own work.
+function gsApplyFilter(){
+  const q = GS_Q.trim().toLowerCase(), words = q ? q.split(/\s+/) : [];
+  const sec = document.querySelector(`section[data-tab="${TAB}"]`);
+  let shown = 0, total = 0;
+  if(sec){
+    const rows = sec.querySelectorAll('table tbody tr:not(.cttot):not(.gs-keep), .lp-tile[data-i]');
+    rows.forEach(r => {
+      if(r.querySelector('td[colspan]') && r.children.length===1) return;   // "no rows" placeholder
+      total++;
+      const t = r.textContent.toLowerCase();
+      const hit = !q || words.every(w => t.includes(w));
+      r.classList.toggle('gs-hide', !hit);
+      if(hit) shown++;
+    });
+  }
+  const c = document.getElementById('gs-count');
+  if(c) c.textContent = q && total ? `${shown} / ${total}` : '';
+  const box = document.getElementById('gsearch'); if(box) box.classList.toggle('has-q', !!q);
+}
+function gsSetQuery(v){
+  GS_Q = v; GS_RES = gsSearch(v); GS_SEL = 0;
+  gsRenderPop(); gsApplyFilter();
+}
+function gsClear(){ const i = document.getElementById('gs-in'); if(i) i.value=''; gsSetQuery(''); }
+function gsFlash(sel){
+  // after the jump the tab may still be rendering — poll briefly for the row
+  let tries = 0;
+  const tick = () => {
+    const el = document.querySelector(sel);
+    if(el){ el.classList.remove('gs-hide'); el.classList.add('gs-flash'); el.scrollIntoView({behavior:'smooth', block:'center'});
+      setTimeout(()=>el.classList.remove('gs-flash'), 1900); return; }
+    if(++tries < 20) setTimeout(tick, 150);
+  };
+  tick();
+}
+function gsOpen(e){
+  if(!e) return;
+  const pop = document.getElementById('gs-pop'); if(pop) pop.hidden = true;
+  if(e.kind==='page'){ gsClear(); showTab(e.tab); return; }
+  if(e.kind==='app' && e.url){ window.open(e.url, '_blank', 'noopener'); return; }
+  if(e.kind==='host'){ showTab('hosts'); gsFlash(`.hostrow[data-h="${CSS.escape(e.name)}"]`); return; }
+  if(e.host && e.host!==CURRENT_HOST && (e.kind==='container'||e.kind==='service')) setHost(e.host);
+  showTab(GS_KIND[e.kind].tab);
+  if(e.kind==='container') gsFlash(`section[data-tab="containers"] tr[data-ct="${CSS.escape(e.name)}"]`);
+  if(e.kind==='service')   gsFlash(`section[data-tab="services"] tr[data-svc="${CSS.escape(e.name)}"]`);
+}
+function gsInit(){
+  const inp = document.getElementById('gs-in'), pop = document.getElementById('gs-pop'), box = document.getElementById('gsearch');
+  if(!inp || !pop) return;
+  inp.addEventListener('input', () => gsSetQuery(inp.value));
+  inp.addEventListener('focus', () => { if(GS_Q.trim()) gsRenderPop(); });
+  inp.addEventListener('keydown', e => {
+    if(e.key==='ArrowDown'){ e.preventDefault(); if(GS_RES.length){ GS_SEL=(GS_SEL+1)%GS_RES.length; gsRenderPop(); } }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); if(GS_RES.length){ GS_SEL=(GS_SEL-1+GS_RES.length)%GS_RES.length; gsRenderPop(); } }
+    else if(e.key==='Enter'){ e.preventDefault(); gsOpen(GS_RES[GS_SEL]); }
+    else if(e.key==='Escape'){ e.preventDefault(); if(!pop.hidden){ pop.hidden = true; } else { gsClear(); inp.blur(); } }
+  });
+  pop.addEventListener('mousedown', e => e.preventDefault());   // keep the input focused
+  pop.addEventListener('click', e => { const r = e.target.closest('.gs-row'); if(r) gsOpen(GS_RES[+r.dataset.i]); });
+  document.getElementById('gs-x').addEventListener('click', () => { gsClear(); inp.focus(); });
+  document.addEventListener('click', e => { if(!box.contains(e.target)) pop.hidden = true; });
+  document.addEventListener('keydown', e => {
+    const tag = (e.target.tagName||'').toLowerCase();
+    const typing = tag==='input' || tag==='textarea' || tag==='select' || e.target.isContentEditable;
+    if(((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k') || (!typing && e.key==='/' && !e.ctrlKey && !e.metaKey && !e.altKey)){
+      e.preventDefault(); inp.focus(); inp.select();
+    }
+  });
+  // Tabs re-render their tables on every poll; re-apply the filter whenever
+  // the content changes (coalesced to one pass per frame). Attribute changes
+  // are deliberately not observed — our own class toggles must not loop.
+  new MutationObserver(() => { if(!GS_Q.trim() || GS_RAF) return;
+    GS_RAF = requestAnimationFrame(() => { GS_RAF = 0; gsApplyFilter(); }); })
+    .observe(document.querySelector('.content'), {childList:true, subtree:true});
+  const _showTab = showTab;
+  showTab = function(id){ _showTab(id); if(GS_Q.trim()) requestAnimationFrame(gsApplyFilter); };
+}
+
 // ── Wire-up ───────────────────────────────────────────────────────────────────
 mountShell();
 buildNav();
+gsInit();
 I18N.captureDefaults();  // record English (incl. heading emoji) before applyIcons strips it
 applyIcons();        // swap heading emoji for the SVG icon family (static markup + brand logo)
 initTheme();
@@ -9696,12 +10799,6 @@ document.getElementById('key_copy').onclick = async () => {
   b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
   setTimeout(()=>{b.textContent=t;}, 1800);
 };
-document.getElementById('mcpcopy').onclick = async () => {
-  const b=document.getElementById('mcpcopy'), t=b.textContent;
-  const ok = await copyText(document.getElementById('mcpcmd').textContent);
-  b.textContent = ok ? '✓ Copied' : '⚠️ Copy failed — select and Ctrl+C';
-  setTimeout(()=>{b.textContent=t;}, 1800);
-};
 document.getElementById('key_showraw').onclick = () => {
   const el = document.getElementById('pubkey'), b = document.getElementById('key_showraw');
   const show = el.style.display==='none';
@@ -9726,6 +10823,20 @@ loadData(); loadHealth(); loadFleet();
 // Pick up the reduced-motion preference before the Settings tab is ever
 // opened — otherwise gauges would animate on first paint regardless of it.
 (async () => { try{ const j=await(await fetch('/api/settings')).json(); applyReducedMotion(j&&j.settings&&j.settings.reduced_motion==='1'); }catch(e){} })();
+// The launchpad's pins are needed before the Overview paints (and by the
+// Containers tab, for the star on each row), so they load at boot rather than
+// on first view of the cockpit.
+lpLoad();
+(function wireDisplayMode(){
+  const btn=document.getElementById('dispbtn');
+  if(btn) btn.onclick=dpOpenPicker;
+  const ex=document.getElementById('dp-exitbtn');
+  if(ex) ex.onclick=dpExit;
+  // ?display=1 — what a dedicated kiosk box opens. No fullscreen request here:
+  // a browser only grants that from a user gesture, and Chromium --kiosk is
+  // already full-screen.
+  try{ if(new URL(location.href).searchParams.get('display')==='1'){ showTab('overview'); setTimeout(dpEnter, 400); } }catch(e){}
+})();
 
 // ── Live values over SSE, history on a timer ─────────────────────────────────
 // Two cadences instead of one. `/api/stream` pushes the live values the moment
@@ -9904,12 +11015,16 @@ function paintLiveCharts(){
     // two seconds instead of sitting still. mergeGpuTail() scopes itself the same
     // way. Keeping the check in this function means the branch is correct on its
     // own, whatever buildCharts() does or doesn't guard.
-    if(TAB==='host'){ if(CURRENT_HOST==='local') buildCharts(); return; }   // overview repaints via renderMissionControl()
+    if(TAB==='host'){ if(CURRENT_HOST==='local'){ buildCharts(); pulseLive(); } return; }   // overview repaints via renderMissionControl()
     if(TAB==='gpu' && GPUC && GPUC.has_gpu){
       if(GPU_VIEW!=='card') renderGpuMetricChart(GPUC);
       else                  updateGpuCardsLive(GPUC);   // in place: never rebuild the grid under the pointer
       renderGpuCombined(GPUC);
       renderGpuKpis(GPUC);
+      // mergeGpuTail() above only actually merges anything for the local host
+      // (a remote's cards never move between its own ~15-60s history fetches),
+      // so only pulse when this repaint reflects a genuinely fresher number.
+      if(CURRENT_HOST==='local' && GPUC.host==='local') pulseLive();
     }
   }catch(e){ console.error('live chart repaint failed', e); }
 }
@@ -10058,6 +11173,37 @@ setInterval(async()=>{
   }catch(e){}
   AI_NOW_BUSY=false;
 },5000);
+// GPU-tab dedicated poll. The generic history timer (scheduleHistory) throttles
+// to the visible chart's bucket size, clamped to [15s,60s] — sensible for a
+// long-range chart, but a remote host's GPU numbers are already refreshed
+// server-side every INTERVAL (10s default) by host_poller() over SSH, the same
+// round-trip every other per-host panel rides. Waiting up to 60s to ask again
+// was pure added lag on top of data that had been sitting there fresher for
+// most of that wait. The local host doesn't need this (its numbers already
+// move every fast-lane tick via mergeGpuTail), but polling it too is harmless —
+// renderGpuTab() already no-ops a redundant fetch via GPUC_INFLIGHT. This does
+// NOT make a remote host's own data arrive faster than its SSH poll cadence;
+// it only closes the gap between that cadence and how often the browser asked.
+setInterval(()=>{
+  if(TAB!=='gpu' || document.hidden || !document.getElementById('auto').checked) return;
+  renderGpuTab(false);
+},5000);
+// Same gap, same fix, for every other tab riding refreshHistory()'s cadence for
+// something that isn't actually a chart. /api/health reflects the hub's own
+// sampler state (~INTERVAL, 10s) and a remote host's network/security/host data
+// comes from the same SSH-polled cache the GPU tab does — neither has anything
+// to do with the currently-viewed chart's bucket size, so neither should wait
+// on it. loadHealth() already gates its own per-tab work internally (services,
+// diskio, experiments, costs, benchmarks); network/security/host(remote) render
+// themselves directly. The local Host tab is skipped — it already rides the
+// fast lane's live-tail merge, same as local GPU.
+setInterval(()=>{
+  if(document.hidden || !document.getElementById('auto').checked) return;
+  if(TAB==='network'){ renderNetwork(); return; }
+  if(TAB==='security'){ renderSecurity(); return; }
+  if(TAB==='host' && CURRENT_HOST!=='local'){ renderHostTab(); return; }
+  if(['containers','services','diskio','experiments','costs','benchmarks'].includes(TAB)) loadHealth();
+},5000);
 // Treemaps lay out in pixels, so re-render them on resize (debounced).
 let _tmRz; window.addEventListener('resize',()=>{ clearTimeout(_tmRz); _tmRz=setTimeout(()=>{
   if(TAB==='host') renderRamTree();
@@ -10105,43 +11251,59 @@ function burstSparkles(){
     if(!wasStarred) burstSparkles();   // reward the first click only
   });
 })();
-// ── Container controls (opt-in, ENABLE_CONTROLS) — local host only, the
-//    Containers tab has no remote inventory yet. ───────────────────────────────
-async function containerAction(name, action, isSelf){
+// ── Container controls (opt-in, ENABLE_CONTROLS) ─────────────────────────────
+// Host-aware: the hub goes through the Docker socket, a registered host through
+// SSH + `docker` (same plumbing the remote service controls already use). A
+// remote box's Containers tab therefore has every control the hub's does.
+async function containerAction(name, action, isSelf, host){
+  host = host || 'local';
   const verb = {start:'Start', stop:'Stop', restart:'Restart'}[action] || action;
   const msg = isSelf
     ? `${verb} ${name} — this is the container running this dashboard. ${action==='stop'?"You'll lose the UI until it's started again.":'The page may go briefly unreachable while it restarts.'} Continue?`
-    : `${verb} container '${name}'?`;
+    : `${verb} container '${name}'${host!=='local'?` on ${host}`:''}?`;
   if(!confirm(msg)) return;
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/action`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action, host})})).json();
   } catch(e){ toast('critical', `${verb} failed: ${e}`); return; }
   if(j.ok) toast('ok', `${verb === 'Restart' ? 'Restarted' : verb === 'Start' ? 'Started' : 'Stopped'} ${name}.`);
   else toast('critical', j.error || `${verb} failed.`);
-  await loadHealth();
+  await afterContainerChange(host);
 }
 
-async function setContainerRestartPolicy(name, policy){
+async function setContainerRestartPolicy(name, policy, host){
+  host = host || 'local';
   let j; try{
     j = await(await fetch(`/api/containers/${encodeURIComponent(name)}/restart-policy`,
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy})})).json();
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({policy, host})})).json();
   } catch(e){ toast('critical', `Could not change restart policy: ${e}`); return; }
   if(j.ok) toast('ok', `${name} will now restart: ${policy}.`);
   else toast('critical', j.error || 'Could not change restart policy.');
-  await loadHealth();
+  await afterContainerChange(host);
+}
+// After an action: the hub re-reads its own Docker list (instant), a remote is
+// re-probed so the row's new state lands now rather than up to a poll later.
+async function afterContainerChange(host){
+  if(!host || host==='local'){ await loadHealth(); return; }
+  // /test is the fleet's own "probe this host now" endpoint (it runs
+  // probe_host and stores the result), which is exactly what is needed here.
+  try{ await fetch('/api/hosts/'+encodeURIComponent(host)+'/test', {method:'POST'}); }catch(e){}
+  await loadFleet();
+  await loadHostData(host);
+  if(TAB==='containers') renderLocalOnlyNotice('containers');
 }
 
 // ── Container logs side drawer (issue #28) ───────────────────────────────────
-let LOG_ES=null, LOG_NAME=null;
-function openLogDrawer(name){
-  LOG_NAME=name;
-  document.getElementById('logdrawer-name').textContent=name;
+let LOG_ES=null, LOG_NAME=null, LOG_HOST='local', LOG_POLL=null;
+function openLogDrawer(name, host){
+  LOG_NAME=name; LOG_HOST=host||'local';
+  document.getElementById('logdrawer-name').textContent = LOG_HOST==='local' ? name : name+' · '+LOG_HOST;
   document.getElementById('logdrawer-follow').checked=true;
   document.getElementById('logdrawer').hidden=false;
   startLogStream(name, true);
 }
-function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; } }
+function stopLogStream(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES=null; }
+  if(LOG_POLL){ clearTimeout(LOG_POLL); LOG_POLL=null; } }
 function closeLogDrawer(){ stopLogStream(); document.getElementById('logdrawer').hidden=true; LOG_NAME=null; }
 function startLogStream(name, follow){
   stopLogStream();
@@ -10149,10 +11311,26 @@ function startLogStream(name, follow){
   body.textContent=''; status.textContent = follow ? 'streaming live…' : 'last 200 lines';
   let atBottom=true;
   body.onscroll=()=>{ atBottom = body.scrollTop+body.clientHeight >= body.scrollHeight-30; };
-  const es=new EventSource('/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0));
+  const remote = LOG_HOST && LOG_HOST!=='local';
+  if(remote) status.textContent = follow
+    ? I18N.tf('logs.remote_follow','last 200 lines from {h} · refreshing every 5s',{h:LOG_HOST})
+    : I18N.tf('logs.remote_snap','last 200 lines from {h}',{h:LOG_HOST});
+  const url='/api/containers/'+encodeURIComponent(name)+'/logs?tail=200&follow='+(follow?1:0)
+    + (remote?'&host='+encodeURIComponent(LOG_HOST):'');
+  const es=new EventSource(url);
   LOG_ES=es;
   es.onmessage=ev=>{ body.textContent += (body.textContent?'\n':'')+ev.data; if(atBottom) body.scrollTop=body.scrollHeight; };
-  es.addEventListener('end', ()=>{ status.textContent='— end of logs —'; stopLogStream(); });
+  es.addEventListener('end', ()=>{
+    stopLogStream();
+    // A remote host has no live follow (an SSH `docker logs -f` would hold a
+    // process open per viewer), so re-read the tail on a timer instead — and
+    // say that is what is happening.
+    if(remote && follow && !document.getElementById('logdrawer').hidden){
+      LOG_POLL=setTimeout(()=>{ if(LOG_NAME) startLogStream(LOG_NAME, true); }, 5000);
+      return;
+    }
+    status.textContent='— end of logs —';
+  });
   es.addEventListener('srverror', ev=>{ status.textContent='error: '+(ev.data||'could not read logs'); stopLogStream(); });
   es.onerror=()=>{ if(LOG_ES!==es) return; status.textContent = follow ? 'connection lost — retrying…' : 'stream closed'; };
 }
@@ -10277,6 +11455,7 @@ async function renderBenchmarks(force){
   BENCH_AT=Date.now();
   await loadBenchTargets();
   await loadBenchList();
+  if(TAB==='benchmarks') pulseLive();
 }
 
 async function loadBenchTargets(){

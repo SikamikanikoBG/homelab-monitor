@@ -99,6 +99,29 @@ and a container/service that isn't controllable for one of the reasons above
 simply doesn't pretend otherwise — you'll see the real error (from Docker,
 systemd, or the remote shell) rather than a generic failure.
 
+## App icons
+
+Containers and services show their real logo. The dashboard bundles ~65 brand
+marks; anything it doesn't recognise is looked up in the
+[selfh.st icon set](https://selfh.st/icons/) (~2,900 icons).
+
+**Your browser never talks to the icon CDN.** It asks this hub for
+`/api/icon?name=...`; the hub resolves the name, fetches that one SVG the first
+time anyone asks for it, and serves every later request from
+`<data dir>/icons` — the same `./data` volume as the history database, so the
+icons survive a rebuild and keep working with no internet. A name nothing
+matches simply shows no icon, and the hub remembers that so it doesn't ask again
+for a day.
+
+Turn it off in **Settings → General → App icons** (setting `icon_pack`). Off,
+only the bundled marks are used and the hub makes no icon requests at all.
+Icons it already cached keep working either way.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/icon?name=<container\|unit>&ref=<image\|description>` | The SVG for that name, or `404`. |
+| `GET /api/icons/status` | How many icons the catalogue knows and how many this hub holds. |
+
 ## Alerts (configured in the UI)
 
 Open the **Alerts** tab and fill in any channel:

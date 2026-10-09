@@ -575,6 +575,38 @@ def _nvidia_enrich(cards):
             break
 
 
+def _nvidia_failure():
+    """Why nvidia-smi answered nothing, on a box that evidently HAS an NVIDIA
+    stack — None when there is simply no NVIDIA driver here at all.
+
+    "No GPU" and "the GPU tool is broken" are different facts, and reporting
+    both as an empty card list is how a driver auto-update went unnoticed for a
+    day: the userspace libraries moved, the kernel module did not, nvidia-smi
+    died with "Driver/library version mismatch", and the dashboard quietly
+    showed the last numbers it had. The kernel driver leaves /proc/driver/nvidia
+    and /dev/nvidiactl behind even when nvidia-smi can no longer talk to it, so
+    those are the tell. The message is the tool's own first line — the thing
+    the human would see if they ran it by hand."""
+    have_bin = bool(_which("nvidia-smi"))
+    have_drv = (os.path.exists("/proc/driver/nvidia") or os.path.exists("/dev/nvidiactl")
+                or bool(glob.glob("/dev/nvidia[0-9]*")))
+    if not have_bin and not have_drv:
+        return None
+    if not have_bin:
+        return "NVIDIA kernel driver is loaded but nvidia-smi is not installed (or not on PATH)"
+    try:
+        r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=3)
+    except subprocess.TimeoutExpired:
+        return "nvidia-smi timed out after 3 s (wedged driver / card off the bus?)"
+    except Exception as e:
+        return "nvidia-smi could not be run: %s" % e
+    if r.returncode == 0 and r.stdout.strip():
+        return None
+    text = (r.stderr or b"").decode("utf-8", "replace") + "\n" + (r.stdout or b"").decode("utf-8", "replace")
+    line = next((l.strip() for l in text.splitlines() if l.strip()), "") or "no output"
+    return "nvidia-smi failed (exit %s): %s" % (r.returncode, line[:200])
+
+
 def _nvidia_cards():
     """Every NVIDIA GPU via nvidia-smi as [{idx,name,util,mem_used,mem_total,
     power,temp,fan?,...}], [] if no driver / no GPU. Same query and field order as
@@ -825,7 +857,8 @@ def read_docker(gpu_procs=None):
     each pid's cgroup, mirroring what the hub does locally. {} when docker is
     absent or the SSH user can't reach the socket — the Hosts-tab capability
     check explains which of the two it is. Read-only by design: the probe never
-    starts, stops or inspects beyond `ps`/`stats`."""
+    starts or stops anything — it reads `ps`, `stats` and one `inspect` for the
+    restart policy."""
     try:
         r = subprocess.run(["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"],
                            capture_output=True, timeout=5)
@@ -849,6 +882,28 @@ def read_docker(gpu_procs=None):
                 "ports":  d.get("Ports") or "",
                 "uptime": (d.get("RunningFor") or "").replace(" ago", "") if state == "running" else "",
             })
+        # Restart policy, one `docker inspect` for the whole list (not one per
+        # container): the per-host Containers tab shows and sets it exactly as
+        # the hub's does, and without it the remote table's policy control has
+        # nothing to show. A failure here costs only that column.
+        try:
+            ids = [c["id"] for c in conts if c["id"]]
+            if ids:
+                r4 = subprocess.run(["docker", "inspect", "--format",
+                                     "{{.Id}}	{{.HostConfig.RestartPolicy.Name}}"] + ids,
+                                    capture_output=True, timeout=8)
+                if r4.returncode == 0:
+                    pol = {}
+                    for line in r4.stdout.decode("utf-8", "replace").splitlines():
+                        cid, _, name = line.partition("	")
+                        cid, name = cid.strip()[:64], name.strip()
+                        if cid and name:
+                            pol[cid] = name
+                    for c in conts:
+                        if c["id"] in pol:
+                            c["restart_policy"] = pol[c["id"]]
+        except (OSError, subprocess.SubprocessError):
+            pass
         # Writable-layer disk per container ("2.5MB (virtual 1.2GB)" → rw part).
         # Sizes make the daemon walk layers, so this pass is separate and its
         # failure only costs the Disk column.
@@ -934,14 +989,20 @@ def read_gpu():
     pooled the same way the hub pools its local cards: VRAM + power summed,
     util averaged, temp = hottest card. `gpu_procs` is the nvidia-smi
     compute-apps list. {} on a host with neither vendor — the GPU panel is
-    simply hidden."""
+    simply hidden. {"gpu_error": why} when an NVIDIA stack exists but its tool
+    can't answer (driver/library mismatch after an update, wedged driver, tool
+    missing) — see _nvidia_failure()."""
     nv, amd = _nvidia_cards(), _amd_gpu_sysfs()
     base = (max(g["idx"] for g in nv) + 1) if nv else 0
     for i, g in enumerate(amd):
         g["idx"] = base + i
     gpus = nv + amd
     if not gpus:
-        return {}
+        # No cards from either vendor. Before saying "no GPU", ask whether an
+        # NVIDIA stack is present but broken — the hub turns that into a
+        # telemetry-lost indicator + alert instead of a silently frozen panel.
+        err = _nvidia_failure()
+        return {"gpu_error": err} if err else {}
     agg = {
         "count":     len(gpus),
         "name":      gpus[0]["name"],
