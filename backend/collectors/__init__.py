@@ -492,8 +492,9 @@ def sample_once():
             _app.DB.executemany(
                 "INSERT INTO power_proc(ts,kind,name,watts,interval_sec) VALUES(?,?,?,?,?)",
                 [(*row, _app.INTERVAL) for row in pp_rows])
-        _app.DB.executemany("INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)",
-                            [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx, _h in models if vram is not None])
+        _app.DB.executemany("INSERT INTO models(ts,service,model,vram,ram,interval_sec) VALUES(?,?,?,?,?,?)",
+                            [(ts, svc, mdl, vram, ram, _app.INTERVAL)
+                             for svc, mdl, vram, ram, _ctx, _h in models if vram is not None])
         _app.DB.executemany("INSERT INTO edges VALUES(?,?,?,?)",
                             [(ts, caller, server, n) for (caller, server), n in edges.items()])
         # Per-card history for the hub's own cards, stored under host='local' so
