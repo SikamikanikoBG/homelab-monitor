@@ -48,6 +48,79 @@ function Read-CpuMemUptime {
     return $out
 }
 
+# ── Top processes (Windows parity with probe.py's read_cpu_and_procs) ────────
+function Read-TopProcesses {
+    # Two Get-Process samples ~0.4 s apart. CPU% is the TotalProcessorTime
+    # delta over the window — percent of one core, the same definition
+    # probe.py uses, so the card means the same thing on both OSes.
+    # Emits read_cpu_and_procs' JSON contract; returns @{} (card hidden)
+    # when the counters are unavailable.
+    try {
+        $ncpu = 1
+        try {
+            $n = [int](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).NumberOfLogicalProcessors
+            if ($n -gt 0) { $ncpu = $n }
+        } catch {}
+        $s1 = @{}
+        foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+            try {
+                $st = $null
+                try { $st = $p.StartTime } catch {}
+                $s1[[int]$p.Id] = @("$($p.ProcessName)", $p.TotalProcessorTime.Ticks, [int64]$p.WorkingSet64, $st)
+            } catch {}
+        }
+        Start-Sleep -Milliseconds 400
+        $s2 = @{}
+        foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+            try {
+                $st = $null
+                try { $st = $p.StartTime } catch {}
+                $s2[[int]$p.Id] = @("$($p.ProcessName)", $p.TotalProcessorTime.Ticks, [int64]$p.WorkingSet64, $st)
+            } catch {}
+        }
+        if ($s2.Count -eq 0) { return @{} }
+        $agg = @{}
+        foreach ($id in $s2.Keys) {
+            if (-not $s1.ContainsKey($id)) { continue }
+            $a = $s1[$id]
+            $b = $s2[$id]
+            # A pid reused between samples has no baseline: its start time
+            # differs, so charge it nothing rather than a bogus delta.
+            if ($a[3] -and $b[3] -and ($a[3] -ne $b[3])) { continue }
+            $dt = $b[1] - $a[1]
+            if ($dt -lt 0) { $dt = 0 }
+            $cpuPct = [math]::Round(100.0 * ($dt / 10000000.0) / 0.4, 1)
+            $name = $b[0]
+            if (-not $agg.ContainsKey($name)) { $agg[$name] = @{ cpu = 0.0; mem_mb = 0; count = 0 } }
+            $agg[$name].cpu += $cpuPct
+            $agg[$name].mem_mb += [int][math]::Round($b[2] / 1MB)
+            $agg[$name].count += 1
+        }
+        if ($agg.Count -eq 0) { return @{} }
+        $rows = foreach ($name in $agg.Keys) {
+            [ordered]@{
+                name    = $name
+                cpu_pct = [math]::Round($agg[$name].cpu, 1)
+                mem_mb  = [int]$agg[$name].mem_mb
+                count   = [int]$agg[$name].count
+            }
+        }
+        # Tie-break on the other metric, mirroring probe.py: an idle box
+        # would otherwise surface zero-RSS kernel tasks at the top.
+        $byCpu = @($rows | Sort-Object @{ e = { $_.cpu_pct }; Descending = $true }, @{ e = { $_.mem_mb }; Descending = $true } | Select-Object -First 10)
+        $byMem = @($rows | Sort-Object @{ e = { $_.mem_mb }; Descending = $true }, @{ e = { $_.cpu_pct }; Descending = $true } | Select-Object -First 10)
+        return @{
+            processes = [ordered]@{
+                by_cpu   = $byCpu
+                by_mem   = $byMem
+                ncpu     = $ncpu
+                io       = @{ available = $false }
+                window_s = 0.4
+            }
+        }
+    } catch { return @{} }
+}
+
 # ── CPU temperature (best-effort; usually needs vendor WMI / admin) ────────────
 function Read-Temp {
     try {
@@ -697,6 +770,7 @@ function Read-OllamaModels {
 $merged = @{}
 function Merge($h) { if ($h) { foreach ($k in $h.Keys) { $merged[$k] = $h[$k] } } }
 Merge (Read-CpuMemUptime)
+Merge (Read-TopProcesses)
 Merge (Read-Temp)
 Merge (Read-Gpu)
 $oshw = Read-OsHw
