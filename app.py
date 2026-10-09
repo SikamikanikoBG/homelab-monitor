@@ -548,8 +548,13 @@ def fleet_payload():
     """Compact per-host summary rows for the All-hosts table: local first, then
     registered hosts in the order they were added. Served by /api/fleet and
     pushed on the SSE `fleet` event — one builder, so poll and push can't drift."""
+    local_host = enrich_os_upgrade(_local_now_snapshot())
+    local_gpus = list((local_host or {}).get("gpus") or [])
+    local_containers = ((local_host or {}).get("docker") or {}).get("containers") or []
     rows = [{"name": "local", "label": socket.gethostname() + " (this hub)",
-             "ssh_target": None, "host": enrich_os_upgrade(_local_now_snapshot()),
+             "ssh_target": None, "host": local_host,
+             "gpus": local_gpus,
+             "containers": list(local_containers),
              "at": int(time.time()), "online": True, "is_local": True,
              "last_check": {"summary": {"overall": "ok"}},
              # Verdict on whether this host's GPUs are actually being watched —
@@ -560,11 +565,14 @@ def fleet_payload():
         for h in hosts:
             entry = HOST_DATA.get(h["name"]) or {}
             data  = entry.get("data") or {}
+            host = enrich_os_upgrade(data.get("host")) if data else None
             rows.append({
                 "name": h["name"],
                 "label": h["name"],
                 "ssh_target": h["ssh_target"],
-                "host": enrich_os_upgrade(data.get("host")) if data else None,
+                "host": host,
+                "gpus": list((host or {}).get("gpus") or []),
+                "containers": list(((host or {}).get("docker") or {}).get("containers") or []),
                 "at": entry.get("at"),
                 "online": _host_is_online(entry),
                 "is_local": False,
@@ -3868,6 +3876,15 @@ def _local_now_snapshot():
     for k in ("os", "hw", "net", "sec"):
         if H.get(k):
             out[k] = H[k]
+    # Fleet probes keep per-card GPUs and Docker inventory in the host block.
+    # Mirror that shape locally so /api/fleet can expose the same assets for
+    # the hub and for remotes without inventing a second local-only contract.
+    # The hub's own inventory is HEALTH["docker"] (collect_docker) — LATEST["host"]
+    # never carries it — so read it from there.
+    out["gpus"] = list((LATEST or {}).get("gpus") or [])
+    docker = (HEALTH or {}).get("docker")
+    if docker is not None:
+        out["docker"] = docker
     # RAPL power — top-level in LATEST (not inside host), so pull explicitly.
     # Mirrors the shape probe.py emits for remotes (cpu_power/dram_power in host).
     for k in ("cpu_power", "dram_power"):

@@ -2,7 +2,9 @@
   "hosts": [
     {
       "at": 1735689600,
+      "containers": [],
       "gpu_telemetry": null,
+      "gpus": [],
       "host": {
         "cpu": 30,
         "hostname": "testhost"
