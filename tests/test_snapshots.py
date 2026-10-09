@@ -32,7 +32,7 @@ VERSION_SENTINEL = "<VERSION>"
 
 def _clean_db():
     with app.LOCK:
-        for tbl in ("samples", "samples_1m", "samples_1h", "net_samples", "net_samples_1m", "net_samples_1h",
+        for tbl in ("samples", "samples_1h", "net_samples", "net_samples_1h",
                     "proc", "models", "edges", "events", "disk_io_samples",
                     "runs", "run_metrics", "api_keys", "hosts",
                     "uptime_checks", "uptime_results", "maintenance_windows",
@@ -56,17 +56,17 @@ def _seed_samples(n=3):
         for i in range(n):
             ts = FROZEN_TS + (i + 1) * app.INTERVAL
             app.DB.execute(
-                "INSERT INTO samples(ts,util,mem_used,mem_total,power,temp,cpu,ram_used,ram_total,load1,ctemp) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (ts, 40 + i, 8000, 24576, 120 + i * 10, 65, 30 + i, 16000, 32000, 1.5, 55)
+                "INSERT INTO samples(ts,util,mem_used,mem_total,power,temp,cpu,ram_used,ram_total,load1,ctemp,interval_sec) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ts, 40 + i, 8000, 24576, 120 + i * 10, 65, 30 + i, 16000, 32000, 1.5, 55, app.INTERVAL)
             )
         app.DB.commit()
         app.DB.executescript("""
             INSERT OR IGNORE INTO samples_1h(ts,util,mem_used,mem_total,power,temp,
-                cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt)
+                cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt,wsec)
             SELECT (ts/3600)*3600, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp),
                 AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp),
-                AVG(cpu_power), AVG(dram_power), COUNT(*)
+                AVG(cpu_power), AVG(dram_power), COUNT(*), SUM(COALESCE(power,0)*interval_sec)
             FROM samples GROUP BY (ts/3600)*3600;
         """)
         app.DB.commit()

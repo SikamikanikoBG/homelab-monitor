@@ -443,9 +443,10 @@ def get_entity_cost(name, kind="", range="7d"):
 
 
 def get_experiments(range="7d", status=""):
-    """Tracked training/eval runs (the Experiments tab), each priced with the real
-    GPU energy it burned. Optionally filter by `status` (running / finished /
-    failed / killed).
+    """Tracked training/eval runs (the Experiments tab), each with the GPU energy
+    the whole box drew over the run's window — NOT attributed per run, so
+    concurrent runs each report the same shared figure. Optionally filter by
+    `status` (running / finished / failed / killed).
 
     Returns one row per run: `id`, `name`, `source` (sdk/mlflow/…), `status`,
     `started_at`/`ended_at`/`duration`, `host`, `params`, `tags`,
@@ -476,8 +477,8 @@ def get_experiment(run_id):
     Returns its logged-metric series (`metrics`: per-key steps/ts/values — the
     loss curve, and a `tokens_per_sec` series too if the script logged one — see
     `get_experiments`), the GPU `resource` time-series (`power_w`/`util_pct` over
-    the run), and the priced energy it burned (`energy_kwh`, `cost`, `avg_w`,
-    `peak_util`). An unknown id surfaces as an HTTP 404 error.
+    the run), and the whole-box energy drawn over that window (`energy_kwh`,
+    `cost`, `avg_w`, `peak_util`) — not attributed to this run alone. An unknown id surfaces as an HTTP 404 error.
     """
     return _get("/api/runs/" + urllib.parse.quote(str(run_id)))
 

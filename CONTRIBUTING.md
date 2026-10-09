@@ -92,6 +92,15 @@ That's the whole pattern. The same shape applies to "add a model-server probe"
 (append to `PROBES` in `app.py`) and "add an alert channel" (extend the alert
 dispatcher).
 
+### Snapshot tests for new endpoints
+
+If your change adds or renames a JSON endpoint, add (or update) a snapshot
+test using `tests/snapshot_helper.py`'s `assert_snapshot`. A missing baseline
+is **not** created automatically — the test will fail on purpose, telling you
+to run `UPDATE_SNAPSHOTS=1 pytest` to write it deliberately. Do that, then
+**read the generated file in `tests/snapshots/`** before committing it, so a
+reviewed baseline — not an accidental one — is what ships.
+
 ## Extending the multi-host probe
 
 Since 0.8, the hub can monitor *other* boxes too. To extend what's collected

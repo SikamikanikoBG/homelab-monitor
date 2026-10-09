@@ -46,6 +46,7 @@ except ImportError:
     fcntl = None
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
+from flask_compress import Compress
 import db_backup
 try:
     from prometheus_client import (Gauge, generate_latest, CONTENT_TYPE_LATEST,
@@ -127,6 +128,9 @@ OOM_RE       = re.compile(r"(out of memory|cuda error: out of memory|failed to a
 REAL_FS      = {"ext4", "ext3", "xfs", "btrfs", "zfs", "vfat"}
 
 app = Flask(__name__, static_url_path="/static", static_folder="static")
+# Flask serves static assets as streams; the default MIME allowlist compresses
+# those while leaving text/event-stream responses untouched.
+Compress(app)
 
 # Phase 3.4: register API blueprints (in original @app.route declaration order)
 from backend.api.system import bp as _system_bp
@@ -295,23 +299,7 @@ CREATE TABLE IF NOT EXISTS maintenance_windows(
   kind TEXT NOT NULL DEFAULT '*', pattern TEXT NOT NULL DEFAULT '*',
   start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
   recurrence TEXT, note TEXT, created_at INTEGER NOT NULL);
--- Phase 1.2a: per-minute and per-hour rollup tables (additive; raw tables unchanged)
-CREATE TABLE IF NOT EXISTS samples_1m (
-  ts        INTEGER PRIMARY KEY,
-  util      REAL,
-  mem_used  REAL,
-  mem_total REAL,
-  power     REAL,
-  temp      REAL,
-  cnt       INTEGER DEFAULT 1,
-  cpu       REAL,
-  ram_used  REAL,
-  ram_total REAL,
-  load1     REAL,
-  ctemp     REAL,
-  cpu_power REAL,
-  dram_power REAL
-);
+-- Phase 1.2a: per-hour rollup table (additive; raw tables unchanged)
 CREATE TABLE IF NOT EXISTS samples_1h (
   ts        INTEGER PRIMARY KEY,
   util      REAL,
@@ -328,21 +316,13 @@ CREATE TABLE IF NOT EXISTS samples_1h (
   cpu_power REAL,
   dram_power REAL
 );
-CREATE TABLE IF NOT EXISTS net_samples_1m (
-  ts        INTEGER PRIMARY KEY,
-  bytes_in  REAL,
-  bytes_out REAL,
-  cnt       INTEGER DEFAULT 1
-);
 CREATE TABLE IF NOT EXISTS net_samples_1h (
   ts        INTEGER PRIMARY KEY,
   bytes_in  REAL,
   bytes_out REAL,
   cnt       INTEGER DEFAULT 1
 );
-CREATE INDEX IF NOT EXISTS idx_samples_1m_ts     ON samples_1m(ts);
 CREATE INDEX IF NOT EXISTS idx_samples_1h_ts     ON samples_1h(ts);
-CREATE INDEX IF NOT EXISTS idx_net_samples_1m_ts ON net_samples_1m(ts);
 CREATE INDEX IF NOT EXISTS idx_net_samples_1h_ts ON net_samples_1h(ts);
 -- Per-host time-series (multi-host slice): one raw row per successful host poll
 -- plus an hourly rollup keyed (ts, host) — the same raw/1h split the hub uses
@@ -388,8 +368,11 @@ CREATE INDEX IF NOT EXISTS idx_bench_points_run ON bench_points(run_id);
 CREATE INDEX IF NOT EXISTS idx_bench_runs_model ON bench_runs(model, created_at);
 """
 # cpu_power/dram_power: measured CPU package / DRAM watts via RAPL (#costs). NULL when unavailable.
+# interval_sec: the SAMPLE_INTERVAL active when this row was written. Cost/energy
+# reads used to multiply by the CURRENT global INTERVAL instead, so changing
+# SAMPLE_INTERVAL silently repriced every historical row (#01 cost-interval-not-stored).
 _SAMPLE_MIGRATIONS = ("cpu REAL", "ram_used REAL", "ram_total REAL", "load1 REAL", "ctemp REAL",
-                      "cpu_power REAL", "dram_power REAL")
+                      "cpu_power REAL", "dram_power REAL", "interval_sec INTEGER")
 # Per-host adaptive poll-timeout state (issue #99); added to the hosts table.
 _HOST_MIGRATIONS = ("poll_timeout INTEGER", "poll_fails INTEGER DEFAULT 0", "poll_calibrated_at INTEGER")
 # Which API key pushed a run (for per-key attribution); added to the runs table.
@@ -415,9 +398,26 @@ _PROC_MIGRATIONS = ("host TEXT NOT NULL DEFAULT 'local'",)
 # GPU temperature per host: host_samples has always pooled GPU util/VRAM/power
 # but silently dropped temperature, so a remote's thermal history simply didn't
 # exist. Both the raw table and the rollup gain it.
+# interval_sec / wsec: same fix as _SAMPLE_MIGRATIONS above, for the per-host and
+# power_proc raw tables and both hourly rollups. Rollups get a watt-second
+# ACCUMULATOR (a running SUM, not an average) so each row's own energy contribution
+# is baked in at write time -- reading SUM(wsec) is then immune to a later
+# SAMPLE_INTERVAL change, unlike the old AVG(power)*cnt*INTERVAL. host_samples_1h
+# has three power columns (gpu/cpu/dram), so it gets three wsec accumulators.
+# samples_1h also has three power columns (power/cpu_power/dram_power), so it
+# gets a matching cpu_wsec/dram_wsec pair alongside its existing wsec (which
+# covers the pooled GPU `power` column).
 _COLUMN_MIGRATIONS = (("host_samples", "gpu_temp REAL"),
                       ("host_samples_1h", "gpu_temp REAL"),
-                      ("gpu_samples_1h", "fan_cnt INTEGER DEFAULT 0"))
+                      ("gpu_samples_1h", "fan_cnt INTEGER DEFAULT 0"),
+                      ("host_samples", "interval_sec INTEGER"),
+                      ("power_proc", "interval_sec INTEGER"),
+                      ("samples_1h", "wsec REAL"),
+                      ("samples_1h", "cpu_wsec REAL"),
+                      ("samples_1h", "dram_wsec REAL"),
+                      ("host_samples_1h", "gpu_wsec REAL"),
+                      ("host_samples_1h", "cpu_wsec REAL"),
+                      ("host_samples_1h", "dram_wsec REAL"))
 # Indexes that cover columns added by the migrations above. They cannot live in
 # _DB_SCHEMA: executescript runs BEFORE the ALTERs, so on an existing database
 # the column wouldn't exist yet and the whole script would fail.
@@ -441,6 +441,7 @@ from backend.db.repos.schema import (
     open_db_connection as _open_db_connection,
     apply_schema_migrations as _apply_schema_migrations_impl,
     record_baseline_if_needed as _record_baseline_if_needed,
+    backfill_interval_columns as _backfill_interval_columns,
 )
 
 _EDGE_STATE_MIGRATION = """
@@ -469,19 +470,10 @@ def _apply_schema_migrations(conn):
 def _backfill_rollups(conn):
     """Populate rollup tables from existing raw data (idempotent: INSERT OR IGNORE)."""
     conn.executescript("""
-        INSERT OR IGNORE INTO samples_1m(ts,util,mem_used,mem_total,power,temp,cnt,cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power)
-        SELECT (ts/60)*60, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp), COUNT(*),
-               AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp), AVG(cpu_power), AVG(dram_power)
-        FROM samples GROUP BY (ts/60)*60;
-
         INSERT OR IGNORE INTO samples_1h(ts,util,mem_used,mem_total,power,temp,cnt,cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power)
         SELECT (ts/3600)*3600, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp), COUNT(*),
                AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp), AVG(cpu_power), AVG(dram_power)
         FROM samples GROUP BY (ts/3600)*3600;
-
-        INSERT OR IGNORE INTO net_samples_1m(ts,bytes_in,bytes_out,cnt)
-        SELECT (ts/60)*60, AVG(bytes_in), AVG(bytes_out), COUNT(*)
-        FROM net_samples GROUP BY (ts/60)*60;
 
         INSERT OR IGNORE INTO net_samples_1h(ts,bytes_in,bytes_out,cnt)
         SELECT (ts/3600)*3600, AVG(bytes_in), AVG(bytes_out), COUNT(*)
@@ -500,6 +492,7 @@ def reopen_db():
     DB = _open_db_connection(DB_PATH)
     _apply_schema_migrations(DB)
     _backfill_rollups(DB)
+    _backfill_interval_columns(DB, INTERVAL)
     DB_EPHEMERAL = False
 
 # Open the history DB, but never let a missing/unwritable /data mount kill the
@@ -517,6 +510,7 @@ except sqlite3.OperationalError as e:
     DB_EPHEMERAL = True
 _apply_schema_migrations(DB)
 _backfill_rollups(DB)
+_backfill_interval_columns(DB, INTERVAL)
 
 LATEST = {"ts": 0, "util": 0, "mem_used": 0, "mem_total": 24576, "power": 0, "temp": 0,
           "cpu_power": None, "dram_power": None,
@@ -3460,34 +3454,44 @@ def collect_devtools(gpu_pids):
 
 _ACTIVE_UTIL = 20    # GPU util % at/above which a sample counts as a "busy" session sample
 
-def _gpu_sessions(rows, interval, active_util=_ACTIVE_UTIL, max_gap=3, min_len=2, price=0.0):
+def _gpu_sessions(rows, fallback_interval, active_util=_ACTIVE_UTIL, max_gap=3, min_len=2, price=0.0):
     """Reconstruct contiguous GPU-busy sessions from sample rows. `rows`: ascending
-    (ts, util, power, mem_used). A session is a run of samples with util>=active_util,
-    tolerating up to `max_gap` idle samples. Returns sessions newest-first with
-    duration, peak util/VRAM, average power, energy (kWh) and money."""
-    kwh_per = interval / 3_600_000.0
+    (ts, util, power, mem_used, interval_sec). A session is a run of samples with
+    util>=active_util, tolerating up to `max_gap` idle samples. Returns sessions
+    newest-first with duration, peak util/VRAM, average power, energy (kWh) and
+    money.
+
+    Energy is accumulated per-row using that row's OWN interval_sec, not one
+    multiplier for the whole session — a session spanning a SAMPLE_INTERVAL
+    change must price each half at the cadence it was actually sampled at.
+    `fallback_interval` only covers legacy rows with a NULL interval_sec (the
+    backfill migration should prevent this in practice; defensive belt-and-
+    suspenders, same as the `(power or 0)` NULL handling elsewhere)."""
     sessions, cur, gap = [], None, 0
 
     def close():
         nonlocal cur
         if cur and cur["n"] >= min_len:
-            energy = cur["sum_power"] * kwh_per
             sessions.append({
                 "start": cur["start"], "end": cur["end"],
-                "duration": cur["end"] - cur["start"] + interval,
+                "duration": cur["end"] - cur["start"] + cur["last_interval"],
                 "peak_util": round(cur["peak_util"]), "peak_vram": round(cur["peak_vram"]),
                 "avg_power": round(cur["sum_power"] / cur["n"]),
-                "energy_kwh": round(energy, 4), "cost": round(energy * price, 4)})
+                "energy_kwh": round(cur["energy_kwh"], 4), "cost": round(cur["energy_kwh"] * price, 4)})
         cur = None
 
-    for ts, util, power, mem in rows:
+    for ts, util, power, mem, interval_sec in rows:
+        row_interval = interval_sec or fallback_interval
         if (util or 0) >= active_util:
             if cur is None:
-                cur = {"start": ts, "end": ts, "peak_util": 0, "peak_vram": 0, "sum_power": 0.0, "n": 0}
+                cur = {"start": ts, "end": ts, "peak_util": 0, "peak_vram": 0,
+                       "sum_power": 0.0, "energy_kwh": 0.0, "n": 0, "last_interval": row_interval}
             cur["end"] = ts
+            cur["last_interval"] = row_interval
             cur["peak_util"] = max(cur["peak_util"], util or 0)
             cur["peak_vram"] = max(cur["peak_vram"], mem or 0)
             cur["sum_power"] += (power or 0)
+            cur["energy_kwh"] += (power or 0) * row_interval / 3_600_000.0
             cur["n"] += 1
             gap = 0
         elif cur is not None:
@@ -4132,8 +4136,12 @@ def _record_host_sample(name, hostd):
     ts = int(time.time())
     try:
         with LOCK:
+            # Priced at the hub's own INTERVAL: the hub polls the remote on its own
+            # cadence, not the remote's sampler cadence. Same precedent as
+            # gpu_samples_repo.record's interval=INTERVAL just below, for the same
+            # host-ingest call.
             _hs_repo.record(
-                DB, ts, name,
+                DB, ts, name, INTERVAL,
                 cpu=hostd.get("cpu"), ram_used=hostd.get("ram_used"),
                 ram_total=hostd.get("ram_total"), load1=hostd.get("load1"),
                 ctemp=hostd.get("ctemp"),
@@ -7008,6 +7016,11 @@ def _public_settings():
 _DISK_SCAN, _DISK_SCAN_LOCK = {}, threading.Lock()
 _DISK_SCAN_TTL = 900   # reuse a completed scan for 15 min
 _DISK_SCAN_TIMEOUT = 600
+# Minimum time between two rescans of the same (host, path) — rescan=1 skips
+# the normal TTL reuse by design, but it must still bottom out at one scan at
+# a time and a floor between them, or it's an unbounded resource-exhaustion
+# knob for anything that can reach this endpoint.
+_DISK_SCAN_RESCAN_COOLDOWN = 30
 # Two levels at once (folder + its sub-folders) so the treemap can nest. du
 # recurses fully whatever --max-depth says, so asking for depth 2 costs the same
 # as depth 1 and only prints more. --one-file-system keeps a scan of / from

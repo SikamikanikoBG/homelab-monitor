@@ -44,7 +44,7 @@ One page, every box, the questions you actually have. The classics are all here 
 
 ![The Costs page — per-component and per-process power & money](docs/screenshots/costs.png)
 
-**Your training runs, priced.** Push a run from Jupyter, Colab or Kaggle with a one-file client (or mirror it from MLflow), and it comes back with the loss curve *and* the real GPU energy it burned, on the same timeline. Create, name, expire and revoke API keys yourself.
+**Your training runs, priced.** Push a run from Jupyter, Colab or Kaggle with a one-file client (or mirror it from MLflow), and it comes back with the loss curve *and* the GPU energy the box drew over the run window, on the same timeline. That window figure is the whole card's draw, not a per-run measurement — GPUs do not meter per process. Create, name, expire and revoke API keys yourself.
 
 ![A run pushed from a notebook — its loss curve and the GPU power it actually used](docs/screenshots/experiment-detail.png)
 
@@ -108,7 +108,7 @@ The hub stitches `nvidia-smi` (plus AMD GPUs via the in-kernel `amdgpu` sysfs in
 
 **Your homelab is now legible to AI agents — point a client at one URL and it can see every host, container, GPU and disk. Read-only, no extra setup.**
 
-HomeLab Monitor isn't just a dashboard for *you* anymore; it's context for your AI agent too. A **read-only [MCP](https://modelcontextprotocol.io) server is built into the same container** (served on `:9810`) — so Claude, Claude Code, or any MCP client connects in one line and explores your whole lab through **19 named tools**, with the same coverage you see on the dashboard: hosts, containers, systemd services, GPU **and who's driving it**, per-process RAM, AI model servers, installed models, costs, experiment runs, model benchmarks, disk treemaps, history and alerts.
+HomeLab Monitor isn't just a dashboard for *you* anymore; it's context for your AI agent too. A **read-only [MCP](https://modelcontextprotocol.io) server is built into the same container** (served on `:9810`) — so Claude, Claude Code, or any MCP client connects in one line and explores your whole lab through **20 named tools**, with the same coverage you see on the dashboard: hosts, containers, systemd services, GPU **and who's driving it**, per-process RAM, AI model servers, installed models, costs, experiment runs, model benchmarks, disk treemaps, history and alerts.
 
 <p align="center"><img src="docs/mcp-agents.svg" alt="HomeLab Monitor connects over MCP to AI agents and MCP clients — Claude, ChatGPT, agents on local Ollama models, or any MCP client; read-only, both directions are question and answer" width="720"></p>
 

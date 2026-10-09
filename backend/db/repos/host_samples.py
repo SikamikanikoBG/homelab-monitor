@@ -17,23 +17,36 @@ _UPSERT_SET = ",\n".join(
 )
 
 
-def record(conn, ts: int, host: str, **fields):
+def record(conn, ts: int, host: str, interval_sec: int, **fields):
     """Insert one raw poll row and fold it into the hourly rollup. conn is
     required — the caller holds app.LOCK. Unknown fields are ignored; missing
     fields store NULL so absent sensors (no GPU, unreadable RAPL) never read
-    as zero watts."""
+    as zero watts.
+
+    interval_sec is required: the SAMPLE_INTERVAL active for THIS poll, stored
+    on the raw row and folded into three watt-second accumulators on the
+    rollup (gpu_wsec/cpu_wsec/dram_wsec) so a later interval change can't
+    reprice history (see samples.rollup_now for the same pattern on the hub's
+    own samples_1h)."""
     vals = tuple(fields.get(c) for c in _COLS)
     conn.execute(
-        f"INSERT OR REPLACE INTO host_samples(ts,host,{','.join(_COLS)}) "
-        f"VALUES(?,?{',?' * len(_COLS)})",
-        (ts, host) + vals
+        f"INSERT OR REPLACE INTO host_samples(ts,host,{','.join(_COLS)},interval_sec) "
+        f"VALUES(?,?{',?' * len(_COLS)},?)",
+        (ts, host) + vals + (interval_sec,)
     )
     h = (ts // 3600) * 3600
+    gpu_wsec = (fields.get("gpu_power") or 0) * interval_sec
+    cpu_wsec = (fields.get("cpu_power") or 0) * interval_sec
+    dram_wsec = (fields.get("dram_power") or 0) * interval_sec
     conn.execute(
-        f"INSERT INTO host_samples_1h(ts,host,{','.join(_COLS)},cnt) "
-        f"VALUES(?,?{',?' * len(_COLS)},1) "
-        f"ON CONFLICT(ts,host) DO UPDATE SET\n{_UPSERT_SET},\ncnt=cnt+1",
-        (h, host) + vals
+        f"INSERT INTO host_samples_1h(ts,host,{','.join(_COLS)},cnt,gpu_wsec,cpu_wsec,dram_wsec) "
+        f"VALUES(?,?{',?' * len(_COLS)},1,?,?,?) "
+        f"ON CONFLICT(ts,host) DO UPDATE SET\n{_UPSERT_SET},\n"
+        f"gpu_wsec=COALESCE(gpu_wsec,0)+excluded.gpu_wsec,\n"
+        f"cpu_wsec=COALESCE(cpu_wsec,0)+excluded.cpu_wsec,\n"
+        f"dram_wsec=COALESCE(dram_wsec,0)+excluded.dram_wsec,\n"
+        f"cnt=cnt+1",
+        (h, host) + vals + (gpu_wsec, cpu_wsec, dram_wsec)
     )
 
 
@@ -121,11 +134,35 @@ def full_since(host: str, ts: int, conn=None) -> list:
     ).fetchall()
 
 
+def wsec_full_since(host: str, ts: int, conn=None) -> list:
+    """(ts, gpu_wsec, cpu_wsec, dram_wsec, cnt) since ts.
+
+    Same rows as full_since, but the already-interval-correct watt-second sums
+    instead of the AVG(power) that needs multiplying by a (possibly stale)
+    global interval."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT ts,gpu_wsec,cpu_wsec,dram_wsec,cnt "
+        "FROM host_samples_1h WHERE host=? AND ts>=?",
+        (host, ts)
+    ).fetchall()
+
+
 def total_w_since(host: str, ts: int, conn=None) -> list:
     """(ts, total_watts, cnt) since ts — GPU + CPU + DRAM pooled."""
     c = conn or connection()
     return c.execute(
         "SELECT ts, COALESCE(gpu_power,0)+COALESCE(cpu_power,0)+COALESCE(dram_power,0) w, cnt "
+        "FROM host_samples_1h WHERE host=? AND ts>=?",
+        (host, ts)
+    ).fetchall()
+
+
+def total_wsec_since(host: str, ts: int, conn=None) -> list:
+    """(ts, total_wsec) since ts — GPU + CPU + DRAM watt-second sums pooled."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT ts, COALESCE(gpu_wsec,0)+COALESCE(cpu_wsec,0)+COALESCE(dram_wsec,0) wsec "
         "FROM host_samples_1h WHERE host=? AND ts>=?",
         (host, ts)
     ).fetchall()

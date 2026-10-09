@@ -17,13 +17,22 @@ FROZEN_DT = _dt.datetime(2025, 1, 1, 0, 0, 0)
 
 
 def assert_snapshot(test_case, name: str, data: dict):
-    """Compare `data` against tests/snapshots/<name>.json. Create if missing."""
+    """Compare `data` against tests/snapshots/<name>.json.
+
+    A missing baseline FAILS the test — it is never created as a side effect,
+    because an auto-created baseline is one nobody reviewed. Run
+    UPDATE_SNAPSHOTS=1 pytest to create or rebaseline deliberately.
+    """
     path = SNAP_DIR / f"{name}.json"
     serialized = json.dumps(data, indent=2, sort_keys=True, default=str)
-    if os.environ.get("UPDATE_SNAPSHOTS") or not path.exists():
-        path.write_text(serialized)
+    if os.environ.get("UPDATE_SNAPSHOTS"):
+        path.write_text(serialized + "\n")
         return
-    expected = json.loads(path.read_text())
+    if not path.exists():
+        test_case.fail(
+            f"Snapshot missing for {name}. Run UPDATE_SNAPSHOTS=1 pytest to create it deliberately."
+        )
+    expected = json.loads(path.read_text())  # json.loads ignores trailing whitespace
     test_case.assertEqual(
         serialized,
         json.dumps(expected, indent=2, sort_keys=True, default=str),

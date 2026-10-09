@@ -17,11 +17,11 @@ def _samples_db():
     db = sqlite3.connect(":memory:")
     db.execute(
         "CREATE TABLE samples(ts INTEGER PRIMARY KEY, util REAL, "
-        "mem_used REAL, mem_total REAL, power REAL, temp REAL)"
+        "mem_used REAL, mem_total REAL, power REAL, temp REAL, interval_sec INTEGER)"
     )
     db.execute(
         "CREATE TABLE samples_1h(ts INTEGER PRIMARY KEY, util REAL, "
-        "mem_used REAL, mem_total REAL, power REAL, temp REAL, cnt INTEGER)"
+        "mem_used REAL, mem_total REAL, power REAL, temp REAL, cnt INTEGER, wsec REAL)"
     )
     db.commit()
     return db
@@ -63,32 +63,32 @@ class TestSamplesRepo(unittest.TestCase):
         self.assertEqual(samples.latest_n(10, conn=self.db), [])
 
     def test_insert_and_latest_n(self):
-        samples.insert(1000, 50.0, 4000, 8000, 200.0, 60.0, conn=self.db)
+        samples.insert(1000, 50.0, 4000, 8000, 200.0, 60.0, 10, conn=self.db)
         rows = samples.latest_n(10, conn=self.db)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 1000)
 
     def test_latest_n_limit(self):
         for i in range(5):
-            samples.insert(i * 1000, float(i), 0, 0, 0, 0, conn=self.db)
+            samples.insert(i * 1000, float(i), 0, 0, 0, 0, 10, conn=self.db)
         rows = samples.latest_n(3, conn=self.db)
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0][0], 4000)  # DESC order
 
     def test_since_returns_range(self):
-        samples.insert(1000, 50.0, 4000, 8000, 200.0, 60.0, conn=self.db)
-        samples.insert(2000, 60.0, 5000, 8000, 250.0, 65.0, conn=self.db)
+        samples.insert(1000, 50.0, 4000, 8000, 200.0, 60.0, 10, conn=self.db)
+        samples.insert(2000, 60.0, 5000, 8000, 250.0, 65.0, 10, conn=self.db)
         rows = samples.since(1500, conn=self.db)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 2000)
 
     def test_since_inclusive(self):
-        samples.insert(1000, 50.0, 0, 0, 0, 0, conn=self.db)
+        samples.insert(1000, 50.0, 0, 0, 0, 0, 10, conn=self.db)
         rows = samples.since(1000, conn=self.db)
         self.assertEqual(len(rows), 1)
 
     def test_since_empty_when_all_before(self):
-        samples.insert(500, 50.0, 0, 0, 0, 0, conn=self.db)
+        samples.insert(500, 50.0, 0, 0, 0, 0, 10, conn=self.db)
         rows = samples.since(1000, conn=self.db)
         self.assertEqual(rows, [])
 

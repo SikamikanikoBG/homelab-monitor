@@ -79,6 +79,21 @@ def apply_schema_migrations(conn, schema_sql, sample_migrations, host_migrations
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
+    # samples_1m / net_samples_1m were write-only (nothing ever read them) and
+    # absent from the retention purge, so they grew forever on existing DBs.
+    # CREATE TABLE IF NOT EXISTS no longer creates them, but that alone leaves
+    # them orphaned on every pre-existing database — drop them explicitly.
+    # DROP returns the pages to SQLite's freelist for reuse by later writes;
+    # the file itself does not shrink without a VACUUM, which we don't run
+    # because it rewrites the whole database under an exclusive lock.
+    for stmt in ("DROP INDEX IF EXISTS idx_samples_1m_ts",
+                 "DROP INDEX IF EXISTS idx_net_samples_1m_ts",
+                 "DROP TABLE IF EXISTS samples_1m",
+                 "DROP TABLE IF EXISTS net_samples_1m"):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     # Migrate legacy single-instance api_key setting -> api_keys table.
     try:
         row = conn.execute("SELECT value FROM settings WHERE key='api_key'").fetchone()
@@ -95,6 +110,36 @@ def apply_schema_migrations(conn, schema_sql, sample_migrations, host_migrations
         pass
     conn.commit()
     record_baseline_if_needed(conn)
+
+
+def backfill_interval_columns(conn, current_interval):
+    """One-time default for rows written before interval_sec/wsec existed.
+
+    Pre-existing rows carry no record of the cadence they were sampled at, so
+    the accepted best-effort default is the INTERVAL in effect right now, at
+    migration time. Idempotent via the `IS NULL` guards: rows already backfilled
+    (or written post-migration, which always set these columns) are untouched.
+    """
+    conn.execute("UPDATE samples SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
+    conn.execute("UPDATE host_samples SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
+    conn.execute("UPDATE power_proc SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
+    conn.execute(
+        "UPDATE samples_1h SET wsec=COALESCE(power,0)*cnt*? WHERE wsec IS NULL",
+        (current_interval,))
+    conn.execute(
+        "UPDATE samples_1h SET "
+        "cpu_wsec=COALESCE(cpu_power,0)*cnt*?, "
+        "dram_wsec=COALESCE(dram_power,0)*cnt*? "
+        "WHERE cpu_wsec IS NULL",
+        (current_interval, current_interval))
+    conn.execute(
+        "UPDATE host_samples_1h SET "
+        "gpu_wsec=COALESCE(gpu_power,0)*cnt*?, "
+        "cpu_wsec=COALESCE(cpu_power,0)*cnt*?, "
+        "dram_wsec=COALESCE(dram_power,0)*cnt*? "
+        "WHERE gpu_wsec IS NULL",
+        (current_interval, current_interval, current_interval))
+    conn.commit()
 
 
 def record_baseline_if_needed(conn):

@@ -1,7 +1,8 @@
 """homelab_run.py — tiny client for HomeLab Monitor's run-tracking API.
 
 Push training/session metadata + metrics to your self-hosted HomeLab Monitor and
-pull it back, with real GPU energy/cost attached by the hub. Stdlib-only (urllib);
+pull it back, with the whole-box GPU energy/cost over the run window attached
+by the hub (not a per-run measurement — GPUs do not meter per process). Stdlib-only (urllib);
 uses `requests` automatically if it's installed. Copy this one file anywhere — or
 download it from your hub at  http://<hub>:9800/static/homelab_run.py
 

@@ -11,8 +11,11 @@ bp = Blueprint('costs', __name__)
 def api_cost():
     import app as _app
     """Power → kWh → money (#25), now tariff-aware. Integrates the GPU `power`
-    samples we already collect; each sample stands for _app.INTERVAL seconds, so
-    energy(kWh) = sum(power_W) * _app.INTERVAL / 3_600_000.
+    samples we already collect. Energy comes from samples_1h.wsec, a watt-second
+    accumulator each rollup upsert grows using the interval that was ACTUALLY
+    active when that sample was written (backend/db/repos/samples.py:rollup_now),
+    so energy(kWh) = SUM(wsec) / 3_600_000 stays correct however many times
+    SAMPLE_INTERVAL changes afterward -- no per-row multiply by a global here.
 
     Single mode (default): cost = energy * kwh_price — byte-for-byte the original
     behaviour. Dual mode: each sample is billed at the night price inside the
@@ -40,23 +43,22 @@ def api_cost():
     rng = request.args.get("range", "7d")
     span = _app.RANGES.get(rng, 604800)
     now = int(time.time())
-    kwh_per_wsample = _app.INTERVAL / 3_600_000.0   # one power sample -> kWh
 
     with _app.LOCK:
         def avg_w(since):
             return round(costs_repo.avg_power_since(since, conn=_app.DB) or 0)
         def total_kwh(since):
-            tot = costs_repo.sum_power_cnt_since(since, conn=_app.DB) or 0
-            return tot * kwh_per_wsample
+            tot = costs_repo.sum_wsec_since(since, conn=_app.DB) or 0
+            return tot / 3_600_000.0
         def split_kwh(since):
-            """One pass over (ts,power,cnt) >= since -> (day_kwh, night_kwh)."""
-            day_w = night_w = 0.0
-            for ts, p, c in costs_repo.samples_1h_power_cnt_since(since, conn=_app.DB):
+            """One pass over (ts,wsec,cnt) >= since -> (day_kwh, night_kwh)."""
+            day_wsec = night_wsec = 0.0
+            for ts, wsec, c in costs_repo.samples_1h_wsec_cnt_since(since, conn=_app.DB):
                 if is_night(ts):
-                    night_w += (p or 0) * (c or 1)
+                    night_wsec += (wsec or 0)
                 else:
-                    day_w += (p or 0) * (c or 1)
-            return day_w * kwh_per_wsample, night_w * kwh_per_wsample
+                    day_wsec += (wsec or 0)
+            return day_wsec / 3_600_000.0, night_wsec / 3_600_000.0
 
         lt = time.localtime(now)
         midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
@@ -79,17 +81,17 @@ def api_cost():
         labels, cost_cum, running = [], [], 0.0
         if mode == "dual":                            # stream + classify per bucket (one pass)
             acc = {}
-            for ts, p, c in costs_repo.samples_1h_power_cnt_since_ordered(since, conn=_app.DB):
+            for ts, wsec, c in costs_repo.samples_1h_wsec_cnt_since_ordered(since, conn=_app.DB):
                 b = (ts // bk) * bk
                 price = night_price if is_night(ts) else day_price
-                acc[b] = acc.get(b, 0.0) + (p or 0) * (c or 1) * kwh_per_wsample * price
+                acc[b] = acc.get(b, 0.0) + (wsec or 0) / 3_600_000.0 * price
             for b in sorted(acc):
                 running += acc[b]
                 labels.append(int(b)); cost_cum.append(round(running, 4))
         else:                                         # single: cheap SQL-bucketed path
-            rows = costs_repo.samples_1h_bucketed_power(since, bk, conn=_app.DB)
-            for b, p in rows:
-                running += (p or 0) * kwh_per_wsample * day_price
+            rows = costs_repo.samples_1h_bucketed_wsec(since, bk, conn=_app.DB)
+            for b, wsec in rows:
+                running += (wsec or 0) / 3_600_000.0 * day_price
                 labels.append(int(b)); cost_cum.append(round(running, 4))
 
     return jsonify({
@@ -105,30 +107,34 @@ def api_cost():
     })
 
 
-def _host_machine(_app, ctx, host, since, now, kwh_per):
+def _host_machine(_app, ctx, host, since, now):
     """One remote host's machine dict over [since, now]: energy per component,
     tariff-aware cost windows, live wattage from the poller snapshot, and which
     sources are actually measured. No bucketed series — the single-host route
-    adds those when it needs a chart. Caller must NOT hold LOCK."""
+    adds those when it needs a chart. Caller must NOT hold LOCK.
+
+    Energy comes from host_samples_1h's gpu_wsec/cpu_wsec/dram_wsec -- watt-second
+    accumulators baked in at write time with THAT poll's own interval (see
+    host_samples.record) -- so no interval multiplier is needed here at all."""
     from backend.db.repos import host_samples as hs_repo
     comp_kwh = {"gpu": 0.0, "cpu": 0.0, "dram": 0.0}
     have = {"gpu": False, "cpu": False, "dram": False}
     cost_range = 0.0
     with _app.LOCK:
         for ts, p, cp, dp, cnt_ in hs_repo.full_since(host, since, conn=_app.DB):
-            price = _app._price_at(ctx, ts)
-            n = cnt_ or 1
             if p is not None:  have["gpu"] = True
             if cp is not None: have["cpu"] = True
             if dp is not None: have["dram"] = True
-            comp_kwh["gpu"] += (p or 0) * n * kwh_per
-            comp_kwh["cpu"] += (cp or 0) * n * kwh_per
-            comp_kwh["dram"] += (dp or 0) * n * kwh_per
-            cost_range += ((p or 0) + (cp or 0) + (dp or 0)) * n * kwh_per * price
+        for ts, gws, cws, dws, cnt_ in hs_repo.wsec_full_since(host, since, conn=_app.DB):
+            price = _app._price_at(ctx, ts)
+            comp_kwh["gpu"] += (gws or 0) / 3_600_000.0
+            comp_kwh["cpu"] += (cws or 0) / 3_600_000.0
+            comp_kwh["dram"] += (dws or 0) / 3_600_000.0
+            cost_range += ((gws or 0) + (cws or 0) + (dws or 0)) / 3_600_000.0 * price
         def win_cost(start):
             tot = 0.0
-            for ts, w, cnt_ in hs_repo.total_w_since(host, start, conn=_app.DB):
-                tot += (w or 0) * (cnt_ or 1) * kwh_per * _app._price_at(ctx, ts)
+            for ts, wsec in hs_repo.total_wsec_since(host, start, conn=_app.DB):
+                tot += (wsec or 0) / 3_600_000.0 * _app._price_at(ctx, ts)
             return round(tot, 2)
         lt = time.localtime(now)
         midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
@@ -163,12 +169,11 @@ def _api_costs_host(_app, host):
     rng = request.args.get("range", "7d")
     span = _app.RANGES.get(rng, 604800)
     now = int(time.time())
-    kwh_per = _app.INTERVAL / 3_600_000.0
     with _app.LOCK:
         since = (hs_repo.min_ts_1h(host, conn=_app.DB) or now) if span is None else now - span
         bk = max(_app.INTERVAL, round(max(1, now - since) / _app.MAX_POINTS))
         comp = hs_repo.comp_bucketed(host, since, bk, conn=_app.DB)
-    machine = _host_machine(_app, ctx, host, since, now, kwh_per)
+    machine = _host_machine(_app, ctx, host, since, now)
     have_gpu, have_cpu, have_dram = ("gpu" in machine["measured"], "cpu" in machine["measured"],
                                     "dram" in machine["measured"])
     labels = [int(r[0]) for r in comp]
@@ -205,41 +210,48 @@ def api_costs():
     rng = request.args.get("range", "7d")
     span = _app.RANGES.get(rng, 604800)
     now = int(time.time())
-    kwh_per = _app.INTERVAL / 3_600_000.0
     with _app.LOCK:
         since = (costs_repo.min_ts_samples_1h(conn=_app.DB) or now) if span is None else now - span
         bk = max(_app.INTERVAL, round(max(1, now - since) / _app.MAX_POINTS))
         comp = costs_repo.samples_1h_comp_bucketed(since, bk, conn=_app.DB)
-        # component energy + cost over the range (tariff-aware, one streaming pass)
+        # component energy + cost over the range (tariff-aware, one streaming pass).
+        # wsec/cpu_wsec/dram_wsec are each column's own accumulator -- already
+        # interval-correct -- so all three components are history-proof here, no
+        # AVG*cnt*INTERVAL rescale needed for any of them (matches host_samples_1h's
+        # three-component shape).
         comp_kwh = {"gpu": 0.0, "cpu": 0.0, "dram": 0.0}
         cost_range = 0.0
-        nticks = 0
-        for ts, p, cp, dp, cnt_ in costs_repo.samples_1h_full_since(since, conn=_app.DB):
-            nticks += cnt_ or 1
+        for ts, p, cp, dp, cnt_, wsec, cpu_wsec, dram_wsec in costs_repo.samples_1h_full_since(since, conn=_app.DB):
             price = _app._price_at(ctx, ts)
-            n = cnt_ or 1
-            tot = ((p or 0) + (cp or 0) + (dp or 0)) * n
-            comp_kwh["gpu"] += (p or 0) * n * kwh_per
-            comp_kwh["cpu"] += (cp or 0) * n * kwh_per
-            comp_kwh["dram"] += (dp or 0) * n * kwh_per
-            cost_range += tot * kwh_per * price
-        # today/d7/d30 total-cost windows (machine total watts, tariff-aware)
+            gpu_kwh = (wsec or 0) / 3_600_000.0
+            cpu_kwh = (cpu_wsec or 0) / 3_600_000.0
+            dram_kwh = (dram_wsec or 0) / 3_600_000.0
+            comp_kwh["gpu"] += gpu_kwh
+            comp_kwh["cpu"] += cpu_kwh
+            comp_kwh["dram"] += dram_kwh
+            cost_range += (gpu_kwh + cpu_kwh + dram_kwh) * price
+        # today/d7/d30 total-cost windows (machine total watts, tariff-aware).
+        # wsec pools the WHOLE machine's draw (GPU+CPU+DRAM, see rollup_now), so
+        # this window total is fully history-proof, unlike comp_kwh's cpu/dram legs.
         def win_cost(start):
             tot = 0.0
-            for ts, w, cnt_ in costs_repo.samples_1h_total_w_since(start, conn=_app.DB):
-                tot += (w or 0) * (cnt_ or 1) * kwh_per * _app._price_at(ctx, ts)
+            for ts, wsec in costs_repo.samples_1h_total_wsec_since(start, conn=_app.DB):
+                tot += (wsec or 0) / 3_600_000.0 * _app._price_at(ctx, ts)
             return round(tot, 2)
         lt = time.localtime(now)
         midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
         cost_win = {"today": win_cost(midnight), "d7": win_cost(now - 604800), "d30": win_cost(now - 2592000)}
-        # ranked per-entity breakdown from power_proc (tariff-aware day/night split)
+        # ranked per-entity breakdown from power_proc (tariff-aware day/night split).
+        # Each row now carries its OWN interval_sec, so accumulate wsec directly
+        # instead of raw watts needing a later global multiply.
         acc = {}
-        for ts, kind, name, watts in costs_repo.power_proc_since(since, conn=_app.DB):
+        for ts, kind, name, watts, interval_sec in costs_repo.power_proc_since(since, conn=_app.DB):
             a = acc.setdefault((kind, name), [0.0, 0.0])
+            wsec = watts * (interval_sec or _app.INTERVAL)
             if ctx["mode"] == "dual" and ctx["is_night"](ts):
-                a[1] += watts
+                a[1] += wsec
             else:
-                a[0] += watts
+                a[0] += wsec
     hours = max(1e-9, (now - since) / 3600.0)
     idle_w = ctx["idle_w"]
     labels = [int(r[0]) for r in comp]
@@ -254,11 +266,15 @@ def api_costs():
     if idle_w:
         series["other"] = [round(idle_w)] * len(labels)
     breakdown = []
-    for (kind, name), (dayw, nightw) in acc.items():
-        energy = (dayw + nightw) * kwh_per
-        cost = (dayw * ctx["day"] + nightw * (ctx["night"] if ctx["night"] is not None else ctx["day"])) * kwh_per
+    for (kind, name), (day_wsec, night_wsec) in acc.items():
+        day_kwh, night_kwh = day_wsec / 3_600_000.0, night_wsec / 3_600_000.0
+        energy = day_kwh + night_kwh
+        cost = day_kwh * ctx["day"] + night_kwh * (ctx["night"] if ctx["night"] is not None else ctx["day"])
+        # avg_w over the whole range: total watt-seconds back out over wall-clock
+        # seconds in [since, now] -- interval-correct, no per-tick averaging needed.
         breakdown.append({"kind": kind, "name": name, "energy_kwh": round(energy, 4),
-                          "cost": round(cost, 4), "avg_w": round((dayw + nightw) / max(1, nticks))})
+                          "cost": round(cost, 4),
+                          "avg_w": round((day_wsec + night_wsec) / 3600.0 / max(1e-9, hours))})
     breakdown.sort(key=lambda x: -x["energy_kwh"])
     now_gpu = round(_app.LATEST.get("power") or 0)
     now_cpu = round(_app.LATEST.get("cpu_power") or 0) if _app.LATEST.get("cpu_power") is not None else None
@@ -278,7 +294,7 @@ def api_costs():
         # watt source are skipped — the fleet total only sums real numbers.
         for h in _app.list_hosts():
             try:
-                hm = _host_machine(_app, ctx, h["name"], since, now, kwh_per)
+                hm = _host_machine(_app, ctx, h["name"], since, now)
                 if hm["measured"]:
                     machines.append(hm)
             except Exception as e:
@@ -444,7 +460,6 @@ def api_costs_entity():
     rng = request.args.get("range", "7d")
     span = _app.RANGES.get(rng, 604800)
     now = int(time.time())
-    kwh_per = _app.INTERVAL / 3_600_000.0
     with _app.LOCK:
         since = (costs_repo.min_ts_power_proc(conn=_app.DB) or now) if span is None else now - span
         bk = max(_app.INTERVAL, round(max(1, now - since) / _app.MAX_POINTS))
@@ -455,10 +470,15 @@ def api_costs_entity():
             vram_peak = costs_repo.max_vram_for_service(name, since, conn=_app.DB)
     labels, watts, cost_cum, running, energy = [], [], [], 0.0, 0.0
     peak = 0.0
-    for b, avgw, maxw in rows:
+    # power_proc_entity now returns (bucket, wsec_sum, max_watts, avg_watts): the
+    # wsec sum already bakes in each row's own interval_sec, so energy for the
+    # bucket is a straight SUM(watts*interval_sec)/3.6e6 -- no bk/_app.INTERVAL
+    # rescale needed (that rescale used to assume every row in a bucket was
+    # sampled at the CURRENT global interval, which is exactly this bug).
+    for b, wsec, maxw, avgw in rows:
         labels.append(int(b)); watts.append(round(avgw or 0))
         peak = max(peak, maxw or 0)
-        e = (avgw or 0) * kwh_per * (bk / _app.INTERVAL)   # energy this bucket (avg W over bk seconds)
+        e = (wsec or 0) / 3_600_000.0
         energy += e
         running += e * _app._price_at(ctx, int(b))
         cost_cum.append(round(running, 4))

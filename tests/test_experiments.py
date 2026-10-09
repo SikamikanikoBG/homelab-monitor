@@ -77,8 +77,8 @@ class TestCollectTraining(unittest.TestCase):
 
 class TestGpuSessions(unittest.TestCase):
     def test_single_session_metrics(self):
-        rows = [(100, 50, 200, 8000), (110, 60, 210, 8100), (120, 55, 205, 8050),
-                (130, 5, 50, 100), (140, 3, 40, 90)]
+        rows = [(100, 50, 200, 8000, 10), (110, 60, 210, 8100, 10), (120, 55, 205, 8050, 10),
+                (130, 5, 50, 100, 10), (140, 3, 40, 90, 10)]
         s = app._gpu_sessions(rows, 10, active_util=20, max_gap=1, min_len=2, price=0.5)
         self.assertEqual(len(s), 1)
         sess = s[0]
@@ -93,21 +93,21 @@ class TestGpuSessions(unittest.TestCase):
 
     def test_gap_splits_sessions(self):
         # two bursts separated by 2 idle samples; max_gap=1 -> two sessions
-        rows = [(100, 50, 100, 1), (110, 50, 100, 1),
-                (120, 0, 0, 0), (130, 0, 0, 0),
-                (140, 50, 100, 1), (150, 50, 100, 1)]
+        rows = [(100, 50, 100, 1, 10), (110, 50, 100, 1, 10),
+                (120, 0, 0, 0, 10), (130, 0, 0, 0, 10),
+                (140, 50, 100, 1, 10), (150, 50, 100, 1, 10)]
         s = app._gpu_sessions(rows, 10, active_util=20, max_gap=1, min_len=2)
         self.assertEqual(len(s), 2)
 
     def test_gap_within_tolerance_merges(self):
-        rows = [(100, 50, 100, 1), (110, 50, 100, 1),
-                (120, 0, 0, 0),
-                (130, 50, 100, 1), (140, 50, 100, 1)]
+        rows = [(100, 50, 100, 1, 10), (110, 50, 100, 1, 10),
+                (120, 0, 0, 0, 10),
+                (130, 50, 100, 1, 10), (140, 50, 100, 1, 10)]
         s = app._gpu_sessions(rows, 10, active_util=20, max_gap=2, min_len=2)
         self.assertEqual(len(s), 1)                            # single idle tolerated
 
     def test_min_len_drops_blips(self):
-        rows = [(100, 90, 300, 9000), (110, 1, 0, 0)]
+        rows = [(100, 90, 300, 9000, 10), (110, 1, 0, 0, 10)]
         s = app._gpu_sessions(rows, 10, active_util=20, max_gap=1, min_len=2)
         self.assertEqual(s, [])                                # one-sample blip ignored
 

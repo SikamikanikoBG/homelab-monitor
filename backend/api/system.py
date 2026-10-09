@@ -525,6 +525,15 @@ def api_disk_scan():
                 return jsonify({"path": path, "host": host, **ent})
             if ent["state"] == "error" and time.time() - ent["at"] < 20:
                 return jsonify({"path": path, "host": host, **ent})
+        # rescan=1 still can't jump the queue: a scan already running for this
+        # key stays the only one running, and a just-finished scan can't be
+        # re-triggered inside its own cooldown — otherwise rescan is a way to
+        # spawn an unbounded number of concurrent scans with no rate limit.
+        if ent and rescan:
+            if ent["state"] == "scanning":
+                return jsonify({"path": path, "host": host, "state": "scanning"})
+            if ent["state"] == "done" and time.time() - ent["at"] < _app._DISK_SCAN_RESCAN_COOLDOWN:
+                return jsonify({"path": path, "host": host, **ent})
         _app._DISK_SCAN[key] = {"state": "scanning", "at": int(time.time())}
 
     if is_local:

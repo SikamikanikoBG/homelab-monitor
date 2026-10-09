@@ -2095,7 +2095,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <section data-tab="experiments" hidden>
   <div class="card" id="runs-card">
     <h2 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🧪 Runs
-      <span class="muted" style="font-size:12px;font-weight:400;text-transform:none" data-i18n="exp.runs_sub">— pushed from your notebooks &amp; MLflow, priced with real GPU energy</span>
+      <span class="muted" style="font-size:12px;font-weight:400;text-transform:none" data-i18n="exp.runs_sub">— pushed from your notebooks &amp; MLflow, with whole-box GPU energy for the run window</span>
       <select id="runs-status" style="margin-left:auto;padding:4px 8px;font-size:12px">
         <option value="" data-i18n="opt.runs_all">all status</option><option value="running">running</option>
         <option value="finished">finished</option><option value="failed">failed</option><option value="killed">killed</option>
@@ -2582,7 +2582,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 
     <!-- ── Integrations sub-page ── -->
     <div id="set-pane-integrations" hidden>
-      <p class="cap" style="margin:2px 0 12px" data-i18n="intg.intro">Push run/session data from Jupyter, Colab or Kaggle (or mirror MLflow) — each run comes back priced with the real GPU energy it used. Writes need the API key; the dashboard reads are open on your LAN.</p>
+      <p class="cap" style="margin:2px 0 12px" data-i18n="intg.intro">Push run/session data from Jupyter, Colab or Kaggle (or mirror MLflow) — each run comes back with the GPU energy the whole box drew while it ran — not a per-run measurement, since GPUs do not meter per process. Writes need the API key; the dashboard reads are open on your LAN.</p>
 
       <div class="card-sub" style="font-weight:600" data-i18n="intg.api_keys">🔑 API keys</div>
       <div class="cap" style="margin:4px 0" data-i18n="intg.keys_cap">Create one key per machine/notebook so you can track and revoke each independently. Keys are stored hashed — the secret is shown once, at creation.</div>
@@ -7599,7 +7599,7 @@ async function openRun(id){
         y:{position:'left',min:0,grid:{color:cv('--free')},ticks:{color:cv('--mut'),callback:v=>v+' W'}},
         y1:{position:'right',min:0,max:100,grid:{display:false},ticks:{color:cv('--mut'),callback:v=>v+'%'}}},
       plugins:{legend:{labels:{color:cv('--tx'),boxWidth:12}}}}});
-  let costCap=I18N.tf('exp.run_cost_cap','This run used {kwh} kWh and cost {cost} in GPU energy over its window · peak util {util}% · avg {avg} W.',{kwh:(j.energy_kwh||0).toFixed(3),cost:cur+(j.cost||0).toFixed(2),util:j.peak_util,avg:j.avg_w});
+  let costCap=I18N.tf('exp.run_cost_cap','The whole box drew {kwh} kWh ({cost}) in GPU energy over this run\'s window · peak util {util}% · avg {avg} W.',{kwh:(j.energy_kwh||0).toFixed(3),cost:cur+(j.cost||0).toFixed(2),util:j.peak_util,avg:j.avg_w});
   const tokKey=keys.find(k=>TOK_METRIC_KEYS.includes(k));
   if(tokKey){
     const vals=(j.metrics[tokKey].values||[]).filter(v=>v!=null);

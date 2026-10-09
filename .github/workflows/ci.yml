@@ -20,6 +20,12 @@ on:
   push:
     branches: [next]
   workflow_dispatch:
+  schedule:
+    # arm64 job below only: emulated pytest+node under QEMU is far slower than
+    # the native amd64 smoke job, so it runs on its own nightly cadence rather
+    # than gating every push to `next` (same pattern as star-history.yml /
+    # stats.yml). workflow_dispatch above still allows an on-demand run.
+    - cron: '13 3 * * *'        # daily at 03:13 UTC
 
 permissions:
   contents: read
@@ -31,6 +37,7 @@ jobs:
   # changed observable API behavior — either fix the regression or explicitly
   # rebaseline with UPDATE_SNAPSHOTS=1.
   snapshot:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +57,7 @@ jobs:
         run: python -m pytest tests/test_snapshots.py -q
 
   smoke:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +128,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-qemu-action@v4
+
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -138,12 +148,39 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
-          # amd64-only keeps the per-merge build fast; the deploy target (ardi) is
-          # x86_64. Add linux/arm64 here (and setup-qemu-action above) if you ever
-          # run `:next` on an arm host.
-          platforms: linux/amd64
+          # multi-arch so arm breakage on :next surfaces before a release, not
+          # during one — see refactor-prep/06.no-arm-test-coverage.md. The
+          # deploy target (ardi) is still x86_64; Watchtower there just pulls
+          # its own arch's layer from the manifest list.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ── arm64 coverage (nightly) ────────────────────────────────────────────────────
+  # release.yml ships linux/arm64 images, but nothing in the test suite ever ran on
+  # arm (refactor-prep/06.no-arm-test-coverage.md). QEMU-emulated pytest+node is far
+  # slower than the native smoke job, so this runs on its own nightly cadence
+  # (see the `schedule:` trigger above) rather than gating every push to `next`.
+  # workflow_dispatch allows an on-demand run too.
+  arm64:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v4
+
+      - name: Run the suite under QEMU arm64 emulation
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD":/repo -w /repo \
+            python:3.12-slim bash -c "
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y -qq nodejs >/dev/null
+              pip install -q -r requirements.txt pytest
+              python -m pytest tests/ -q
+              for f in tests/js/test_*.js; do node \"\$f\"; done
+            "

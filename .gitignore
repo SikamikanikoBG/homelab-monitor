@@ -17,3 +17,6 @@ __pycache__/
 # this copy fresh on each build; not checked in).
 site/
 website/screenshots/
+
+# Local scratch: phase-1 bug write-ups, not for the repo
+refactor-prep/
