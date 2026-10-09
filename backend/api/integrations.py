@@ -1,6 +1,7 @@
 """backend/api/integrations.py — integrations routes (Phase 3.4)."""
 from flask import Blueprint, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
 import logging
+import shlex
 
 from backend.db.repos import notify as notify_repo
 from backend.notify import dispatch_alert, _dispatch_to_channels
@@ -10,11 +11,37 @@ _log = logging.getLogger(__name__)
 bp = Blueprint('integrations', __name__)
 
 
+def _remote_log_stream(host, name, tail):
+    """One shot of a remote container's logs, framed as SSE so the browser's
+    log drawer reads a remote host exactly like the hub.
+
+    `docker logs --follow` over SSH would hold an ssh process (and a worker
+    thread) open per viewer for as long as the drawer is open, so a remote
+    host is polled by the client instead — it re-requests every few seconds.
+    The stream says so in its last event rather than leaving the drawer
+    looking live when it is not."""
+    import app as _app
+    cmd = "docker logs --tail %d --timestamps %s 2>&1" % (tail, shlex.quote(name))
+    res = _app.run_on_host(host, cmd)
+    if res is None:
+        yield "event: error\ndata: no such host\n\n"
+        return
+    if not res.get("ok") and not (res.get("stdout") or "").strip():
+        err = (res.get("stderr") or "").strip() or "docker logs failed on %s" % host
+        yield "event: error\ndata: %s\n\n" % err.replace("\n", " ")[:300]
+        return
+    for line in (res.get("stdout") or "").splitlines():
+        yield "data: %s\n\n" % line
+    yield "event: end\ndata: snapshot\n\n"
+
+
 @bp.route("/api/containers/<name>/logs")
 def api_container_logs(name):
     import app as _app
     """Last `tail` log lines for a container; with follow=1, streams new lines as
-    SSE. Read-only — `docker logs` needs no extra socket permissions."""
+    SSE. Read-only — `docker logs` needs no extra socket permissions.
+    With `host=<fleet name>`, reads that host's container over SSH instead
+    (a snapshot per request — see _remote_log_stream)."""
     if not _app._CT_NAME_RE.match(name or ""):
         return jsonify({"error": "invalid container name"}), 400
     try:
@@ -22,6 +49,11 @@ def api_container_logs(name):
     except (TypeError, ValueError):
         tail = 200
     follow = request.args.get("follow") == "1"
+    host = (request.args.get("host") or "local").strip()
+    if host and host != "local":
+        return Response(_remote_log_stream(host, name, tail),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     return Response(_app._docker_log_stream(name, tail, follow),
                     mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
@@ -48,20 +80,44 @@ def _docker_err_message(raw):
         return "unknown Docker error"
 
 
+def _remote_docker(host, args):
+    """Run one `docker <args>` on a registered host over SSH and return the
+    endpoint's own {ok, error} shape. Every value interpolated into the command
+    is shell-quoted by the caller, and the container name is validated against
+    _CT_NAME_RE before it gets here."""
+    import app as _app
+    res = _app.run_on_host(host, "docker " + args)
+    if res is None:
+        return jsonify({"ok": False, "error": "no such host"}), 404
+    if res.get("ok"):
+        return jsonify({"ok": True})
+    err = ((res.get("stderr") or "") + " " + (res.get("stdout") or "")).strip()
+    if "no such container" in err.lower():
+        return jsonify({"ok": False, "error": "No such container on %s." % host}), 404
+    if "permission denied" in err.lower() or "docker daemon" in err.lower():
+        err += ("  (the SSH user on %s needs to be in the docker group — the same "
+                "access the host probe already uses to list containers)" % host)
+    return jsonify({"ok": False, "error": err[:300] or "docker failed on %s" % host}), 400
+
+
 @bp.route("/api/containers/<name>/action", methods=["POST"])
 def api_container_action(name):
-    """Start/stop/restart a container on the *local* host only — the Containers
-    tab has no remote inventory yet (see website/multi-host.md), so there's
-    nothing to control on a remote host. Gated by ENABLE_CONTROLS."""
+    """Start/stop/restart a container — on the hub through the Docker socket,
+    or on a registered host with `host` in the body (SSH + `docker`, the same
+    plumbing the remote service controls use). Gated by ENABLE_CONTROLS."""
     import urllib.parse
     import app as _app
     if not _app.ENABLE_CONTROLS:
         return jsonify({"ok": False, "error": "Container controls are disabled (ENABLE_CONTROLS=0). Unset it, or drop docker-compose.readonly.yml, to enable them (see website/configuration.md)."}), 403
     if not _app._CT_NAME_RE.match(name or ""):
         return jsonify({"ok": False, "error": "invalid container name"}), 400
-    action = ((request.get_json(silent=True) or {}).get("action") or "").strip()
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or "").strip()
+    host = (body.get("host") or "local").strip()
     if action not in _CONTAINER_ACTIONS:
         return jsonify({"ok": False, "error": "action must be one of: %s" % ", ".join(_CONTAINER_ACTIONS)}), 400
+    if host and host != "local":
+        return _remote_docker(host, "%s -- %s" % (action, shlex.quote(name)))
     try:
         code, raw = _app._docker_req("POST", "/containers/%s/%s" % (urllib.parse.quote(name), action))
     except Exception as e:
@@ -79,16 +135,21 @@ def api_container_action(name):
 
 @bp.route("/api/containers/<name>/restart-policy", methods=["POST"])
 def api_container_restart_policy(name):
-    """Change a container's restart policy (local host only — see api_container_action)."""
+    """Change a container's restart policy — hub via the Docker socket, a
+    registered host via `host` in the body (SSH + `docker update`)."""
     import urllib.parse
     import app as _app
     if not _app.ENABLE_CONTROLS:
         return jsonify({"ok": False, "error": "Container controls are disabled (ENABLE_CONTROLS=0). Unset it, or drop docker-compose.readonly.yml, to enable them (see website/configuration.md)."}), 403
     if not _app._CT_NAME_RE.match(name or ""):
         return jsonify({"ok": False, "error": "invalid container name"}), 400
-    policy = ((request.get_json(silent=True) or {}).get("policy") or "").strip()
+    body = request.get_json(silent=True) or {}
+    policy = (body.get("policy") or "").strip()
+    host = (body.get("host") or "local").strip()
     if policy not in _RESTART_POLICIES:
         return jsonify({"ok": False, "error": "policy must be one of: %s" % ", ".join(_RESTART_POLICIES)}), 400
+    if host and host != "local":
+        return _remote_docker(host, "update --restart=%s -- %s" % (shlex.quote(policy), shlex.quote(name)))
     try:
         code, raw = _app._docker_req("POST", "/containers/%s/update" % urllib.parse.quote(name),
                                       body={"RestartPolicy": {"Name": policy}})

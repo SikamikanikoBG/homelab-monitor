@@ -40,7 +40,11 @@ class TestAiModelsNow(unittest.TestCase):
         self.assertNotIn("stale:8b", by)                    # replaced by the live view
         self.assertEqual(by["fresh:30b"],
                          {"service": "ollama", "model": "fresh:30b",
-                          "vram": 15000, "ram": 5000, "ctx_now": 65536})
+                          "vram": 15000, "ram": 5000, "ctx_now": 65536,
+                          # the fleet host the server was registered for, so a
+                          # custom server on a remote box doesn't paint itself
+                          # onto the hub's own AI Models panel
+                          "host": "local"})
         self.assertEqual(by["Whisper ASR webservice"]["vram"], 588)   # kept from LATEST
 
     def test_second_call_within_ttl_served_from_cache(self):
@@ -68,7 +72,7 @@ class TestAiModelsNow(unittest.TestCase):
         by = {m["model"]: m for m in models}
         self.assertEqual(by["pulled:8b"],
                          {"service": "ollama", "model": "pulled:8b",
-                          "vram": None, "ram": None, "ctx_now": None})
+                          "vram": None, "ram": None, "ctx_now": None, "host": "local"})
 
 
 class TestApiAiNow(unittest.TestCase):
