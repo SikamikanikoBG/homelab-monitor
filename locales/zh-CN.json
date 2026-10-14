@@ -6,6 +6,7 @@
     "dir": "ltr",
     "untranslated": [
       "nav.group.ai",
+      "nav.gpu",
       "brand.name",
       "col.cpu",
       "col.ram",
@@ -30,7 +31,7 @@
       "gpu.m_tflops",
       "gpu.on_card"
     ],
-    "coverage": 0.882
+    "coverage": 0.9708
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -401,7 +402,7 @@
   "models.server_tf_all": "（本机全部显卡 —— 该主机无法按卡归属显存）",
   "models.server_tf16": " / {v} TFLOPS FP16 张量",
   "models.tf_fp16": "FP16 张量",
-  "models.tf_fp32": "FP32张量",
+  "models.tf_fp32": "FP32 算力",
   "models.tf_of": "／共 {v}",
   "models.tf_shared": "与同一服务上加载的其他模型共享 —— 这是硬件上限，不是分配给单个模型的额度。",
   "models.tf_t": "{base} TFLOPS {kind} —— {where} 的额定峰值，该模型完全常驻其上。这是取自显卡规格的上限，不是实际完成工作量的测量值。{shared}",
@@ -858,7 +859,7 @@
   "gpu.lastknown_t": "最后已知值 —— 当前主机没有报告此显卡状态。",
   "gpu.lost_now": "遥测丢失 · 最后报告时间 {t}",
   "gpu.tele_title": "{host} 上的 GPU 遥测不可用",
-  "gpu.pooled_cap_lost": "H主机在线，但未报告 GPU 信息 —— 此处所有数值均为 {t} 时的最后已知值。",
+  "gpu.pooled_cap_lost": "主机在线，但未报告 GPU 信息 —— 此处所有数值均为 {t} 时的最后已知值。",
   "gpu.k_lost": "遥测丢失",
   "gpu.k_nolive": "无实时数据",
   "gpu.al_tele": "{host} 上的 GPU 遥测丢失",
