@@ -92,6 +92,14 @@ jobs:
       - name: Dashboard locale re-render behaviour
         run: node tests/js/test_locale_rerender.js
 
+      # locales/*.json are kept in lock-step with locales/en.json by
+      # scripts/i18n-sync.py. Run its --check mode so a PR that adds a key to
+      # en.json without syncing the translations fails here instead of drifting
+      # silently until a translator notices (issue #283). Pure stdlib, so it
+      # needs no extra install.
+      - name: Locale files are in sync with en.json
+        run: python scripts/i18n-sync.py --check
+
       # Same lift-and-run technique, for the AI Models tab's TFLOPS arithmetic.
       # The live fleet can't cover it: the hub has one card and one fully-
       # resident model, so the multi-card and RAM-spill branches only ever get
