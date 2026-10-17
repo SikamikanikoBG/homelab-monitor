@@ -41,7 +41,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       tagged: ${{ steps.tag.outputs.tagged }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
