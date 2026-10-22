@@ -123,6 +123,12 @@ def backfill_interval_columns(conn, current_interval):
     conn.execute("UPDATE samples SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
     conn.execute("UPDATE host_samples SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
     conn.execute("UPDATE power_proc SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
+    # `models` is backfilled too: without it the pre-migration rows keep a NULL
+    # interval and `SUM(COALESCE(interval_sec, ?))` falls back to the interval in
+    # effect at *query* time, so changing SAMPLE_INTERVAL would rescale all of
+    # their history and reshuffle the leaderboard — the very defect the column
+    # was added to fix.
+    conn.execute("UPDATE models SET interval_sec=? WHERE interval_sec IS NULL", (current_interval,))
     conn.execute(
         "UPDATE samples_1h SET wsec=COALESCE(power,0)*cnt*? WHERE wsec IS NULL",
         (current_interval,))
