@@ -174,3 +174,41 @@ class UnknownHostCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no host called nosuch", text)
         self.assertNotIn("Off", text)
+
+
+class StopCase(unittest.TestCase):
+    """#5: Stop must not wait for the model's first byte."""
+
+    @classmethod
+    def setUpClass(cls):
+        import agent_stub_server as stub
+        cls.srv, cls.url = stub.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def test_5_stop_during_a_slow_first_byte(self):
+        import threading
+        from backend.agent.providers.base import ChatRequest, ProviderError
+        from backend.agent.providers.openai_compat import OpenAICompatAdapter
+        ev = threading.Event()
+        threading.Timer(0.3, ev.set).start()
+        t0 = time.monotonic()
+        with self.assertRaises(ProviderError) as cm:
+            OpenAICompatAdapter(self.url + "/slow/5/v1", preset={}).chat(
+                ChatRequest(model="stub-agent", system="", messages=[{"role": "user", "content": "x"}]), cancel=ev)
+        self.assertEqual(cm.exception.kind, "cancelled")
+        self.assertLess(time.monotonic() - t0, 2)
+
+    def test_5_normal_end_does_not_cancel_the_run(self):
+        import threading
+        import agent_stub_server as stub
+        from backend.agent.providers.base import ChatRequest
+        from backend.agent.providers.openai_compat import OpenAICompatAdapter
+        stub.set_script([{"text": "hello"}])
+        ev = threading.Event()
+        r = OpenAICompatAdapter(self.url + "/v1", preset={}).chat(
+            ChatRequest(model="stub-agent", system="", messages=[{"role": "user", "content": "x"}]), cancel=ev)
+        self.assertEqual(r.text, "hello")
+        self.assertFalse(ev.is_set())

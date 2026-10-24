@@ -26,7 +26,7 @@ const AG_SCHEDULES = [['0 3 * * *', 'Daily · 03:00'], ['0 8 * * *', 'Daily · 0
 const AG = {
   status: null, view: 'chat', convs: [], convId: null, detail: null, providers: [], models: [], discovered: [],
   presets: [], approvals: [], tasks: [], templates: [], policy: null, runs: [], runSel: null, runDetail: null,
-  streaming: {}, chipOpen: {}, widgetOpen: false, widgetConv: null, pollTimer: null, refetchTimer: null,
+  streaming: {}, chipOpen: {}, stopping: {}, widgetOpen: false, widgetConv: null, pollTimer: null, refetchTimer: null,
   lastEvent: 0, filters: {}, policyHost: null, autoView: 'templates', settings: null, listOpen: false,
 };
 
@@ -185,6 +185,7 @@ async function agBoot() {
   setInterval(agHeartbeat, 1500);
   const want = (typeof INITIAL_TAB !== 'undefined') ? INITIAL_TAB : '';
   if (String(want).startsWith('agent')) agOpenFromHash('#' + want);
+  else if (agDeepLink('#' + want) && agDeepLink('#' + want).host) agFollowLink('#' + want);
   else if (TAB === 'agent') agRender();
 }
 
@@ -209,7 +210,11 @@ function agPaintBadge() {
   if (tb) { tb.textContent = String(n); tb.hidden = !n; }
 }
 
-function agOnHash() { if (location.hash.startsWith('#agent')) agOpenFromHash(location.hash); }
+function agOnHash() {
+  if (location.hash.startsWith('#agent')) { agOpenFromHash(location.hash); return; }
+  const l = agDeepLink(location.hash);
+  if (l && l.host) agFollowLink(location.hash);          // #containers?host=lab1 typed or pasted (#7)
+}
 
 function agOpenFromHash(hash) {
   const parts = String(hash).replace(/^#/, '').split('/');
@@ -398,7 +403,9 @@ function agRenderChat(view) {
     (tasks.length ? '<div class="ag-h" style="margin:10px 0 4px">' + agEsc(agT('agent.auto_runs', 'Automation runs')) + '</div>' +
       tasks.map(c => '<button class="ag-conv' + (c.id === AG.convId ? ' on' : '') + '" data-cid="' + agEsc(c.id) + '">' + agEsc(c.title || '') + '<small>' + agEsc(agWhen(c.updated_at)) + ' · ' + agEsc(c.last_status || '') + '</small></button>').join('') : '') +
     '</div>' +
-    '<div class="ag-chatcol"><div class="ag-msgs" id="ag-msgs" aria-live="polite"></div>' + agComposer('ag', hasModel) + '</div>' +
+    '<div class="ag-chatcol"><div class="ag-phonebar"><button class="ag-btn sm" id="ag-list">' + agEsc(agT('agent.chats', '☰ Chats')) + '</button>' +
+    '<button class="ag-btn sm pri" id="ag-new2">' + agEsc(agT('agent.new_chat', '+ New chat')) + '</button></div>' +
+    '<div class="ag-msgs" id="ag-msgs" aria-live="polite"></div>' + agComposer('ag', hasModel) + '</div>' +
     '<div class="ag-rail"><div><div class="ag-h">' + agEsc(agT('agent.pending', 'Pending approvals')) + (pend.length ? ' <span class="ag-badge">' + pend.length + '</span>' : '') + '</div>' +
     (pend.length ? pend.slice(0, 6).map(a => agApprovalCard(a, true)).join('') : '<p class="ag-mut">' + agEsc(agT('agent.none', 'None')) + '</p>') + '</div>' +
     '<div><div class="ag-h">' + agEsc(agT('agent.fleet_access', 'Fleet access')) + '</div><div class="ag-mini">' +
@@ -407,7 +414,10 @@ function agRenderChat(view) {
     '<div><div class="ag-h">' + agEsc(agT('agent.next_runs', 'Next runs')) + '</div><div class="ag-mini">' +
     (nextRuns.length ? nextRuns.map(t => '<div class="r">' + agEsc(t.name) + '<span class="ag-sp"></span><span class="ag-mono ag-mut">' + agEsc(agWhen(t.next_fire)) + '</span></div>').join('') : '<span class="ag-mut">' + agEsc(agT('agent.none', 'None')) + '</span>') +
     '</div></div></div></div>';
-  view.querySelector('#ag-new').onclick = async () => { AG.convId = null; AG.detail = null; AG.listOpen = false; agRender(true); };
+  const fresh = async () => { AG.convId = null; AG.detail = null; AG.listOpen = false; agRender(true); };
+  view.querySelector('#ag-new').onclick = fresh;
+  view.querySelector('#ag-new2').onclick = fresh;
+  view.querySelector('#ag-list').onclick = () => { AG.listOpen = true; agRender(true); };
   view.querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => { AG.convId = b.dataset.cid; AG.listOpen = false; await agLoadConv(AG.convId); agRender(true); });
   agWireApprovalButtons(view);
   agPaintMessages(view.querySelector('#ag-msgs'), AG.detail, hasModel);
@@ -423,7 +433,8 @@ function agModePill(mode) {
 function agComposer(prefix, hasModel) {
   return '<div class="ag-composer"><div style="display:grid;gap:6px;flex:1;min-width:0">' +
     '<select class="ag-modelsel" id="' + prefix + '-model" aria-label="' + agEsc(agT('agent.model', 'Model')) + '">' + agModelOptions(agDefaultModel()) + '</select>' +
-    '<textarea id="' + prefix + '-ta" rows="2" aria-label="' + agEsc(agT('agent.message', 'Message')) + '" placeholder="' + agEsc(agT('agent.ask_ph', 'Ask about your homelab…')) + '"' + (hasModel ? '' : ' disabled') + '></textarea></div>' +
+    '<textarea id="' + prefix + '-ta" rows="2" aria-label="' + agEsc(agT('agent.message', 'Message')) + '" placeholder="' + agEsc(agT('agent.ask_ph', 'Ask about your homelab…')) + '"' + (hasModel ? '' : ' disabled') + '></textarea>' +
+    '<div class="ag-err" id="' + prefix + '-err" role="alert"></div></div>' +
     '<div style="display:grid;gap:6px"><button class="ag-btn" id="' + prefix + '-stop" hidden>' + agEsc(agT('agent.stop', 'Stop')) + '</button>' +
     '<button class="ag-btn pri" id="' + prefix + '-send"' + (hasModel ? '' : ' disabled') + '>' + agEsc(agT('agent.send', 'Send')) + '</button></div></div>';
 }
@@ -447,7 +458,22 @@ function agWireComposer(root, prefix, getConv, setConv, getContext) {
   const stop = root.querySelector('#' + prefix + '-stop'), sel = root.querySelector('#' + prefix + '-model');
   const detail = prefix === 'ag' ? AG.detail : AG.widgetDetail;
   const active = agActiveRun(detail) || (detail && detail.runs && detail.runs.find(r => r.status === 'waiting_approval'));
-  if (stop) { stop.hidden = !active; stop.onclick = async () => { if (active) { await agApi('/api/agent/runs/' + active.id + '/cancel', 'POST', {}); agScheduleRefetch({ conv: true, status: true }); } }; }
+  const err = root.querySelector('#' + prefix + '-err');
+  const say = msg => { if (err) err.textContent = msg || ''; else if (msg) agToast('critical', msg); };
+  if (stop) {
+    const stopping = active && AG.stopping[active.id];
+    stop.hidden = !active;
+    stop.disabled = !!stopping;
+    stop.textContent = stopping ? agT('agent.stopping', 'Stopping…') : agT('agent.stop', 'Stop');
+    stop.onclick = async () => {
+      if (!active) return;
+      AG.stopping[active.id] = true;
+      stop.disabled = true; stop.textContent = agT('agent.stopping', 'Stopping…');
+      const r = await agApi('/api/agent/runs/' + active.id + '/cancel', 'POST', {});
+      if (!r.ok) say(r.body.message || r.body.error || agT('agent.failed', 'Something went wrong.'));
+      agScheduleRefetch({ conv: true, status: true });
+    };
+  }
   if (!send) return;
   const go = async () => {
     const text = (ta.value || '').trim();
@@ -456,14 +482,15 @@ function agWireComposer(root, prefix, getConv, setConv, getContext) {
     let cid = getConv();
     if (!cid) {
       const c = await agApi('/api/agent/conversations', 'POST', {});
-      if (!c.ok) { send.disabled = false; agToast('critical', c.body.message || 'Failed'); return; }
+      if (!c.ok) { send.disabled = false; say(c.body.message || agT('agent.failed', 'Something went wrong.')); return; }
       cid = c.body.id; setConv(cid);
     }
     const [pid, model] = String((sel && sel.value) || '').split('|');
     const r = await agApi('/api/agent/conversations/' + encodeURIComponent(cid) + '/messages', 'POST',
       { text, provider_id: pid || undefined, model: model || undefined, context: getContext() });
     send.disabled = false;
-    if (!r.ok) { agToast('critical', r.body.message || r.body.error || 'Failed'); return; }
+    if (!r.ok) { say(r.body.message || r.body.error || agT('agent.failed', 'Something went wrong.')); return; }
+    say('');
     ta.value = '';
     AG.lastEvent = 0;
     if (prefix === 'ag') { await agLoadConvs(); await agLoadConv(cid); agRender(true); } else { await agLoadWidgetConv(); agRenderWidget(); }
@@ -1064,7 +1091,7 @@ function agSyncFab() {
 
 async function agOpenWidget() {
   AG.widgetOpen = true;
-  await agLoadModelChoices();
+  await Promise.all([agLoadModelChoices(), agLoadConvs()]);
   if (AG.widgetConv) await agLoadWidgetConv();
   agRenderWidget();
   const ta = document.querySelector('#agw-ta'); if (ta) ta.focus();
@@ -1099,9 +1126,14 @@ function agRenderWidget() {
     '<span class="ag-sp"></span><button class="ag-btn sm" id="agw-new" title="' + agEsc(agT('agent.new_chat', '+ New chat')) + '">+</button>' +
     '<button class="ag-btn sm" id="agw-open">' + agEsc(agT('agent.open_in_agent', 'Open in Agent')) + '</button>' +
     '<button class="ag-btn sm" id="agw-close" aria-label="' + agEsc(agT('agent.close', 'Close')) + '">✕</button></div>' +
+    '<div class="ag-ph" style="padding-top:0;border-bottom:0"><select class="ag-modelsel" id="agw-hist" aria-label="' + agEsc(agT('agent.recent', 'Recent chats')) + '">' +
+    '<option value="">' + agEsc(agT('agent.recent', 'Recent chats')) + '</option>' +
+    AG.convs.filter(c => c.origin === 'chat').slice(0, 20).map(c => '<option value="' + agEsc(c.id) + '"' + (c.id === AG.widgetConv ? ' selected' : '') + '>' +
+      agEsc((c.title || agT('agent.untitled', 'New chat')).slice(0, 60)) + '</option>').join('') + '</select></div>' +
     '<div class="ag-msgs" id="agw-msgs" aria-live="polite"></div>' + agComposer('agw', hasModel);
   agPaintMessages(panel.querySelector('#agw-msgs'), AG.widgetDetail, hasModel);
   panel.querySelector('#agw-close').onclick = agCloseWidget;
+  panel.querySelector('#agw-hist').onchange = async e => { AG.widgetConv = e.target.value || null; await agLoadWidgetConv(); agRenderWidget(); };
   panel.querySelector('#agw-new').onclick = () => { AG.widgetConv = null; AG.widgetDetail = null; agRenderWidget(); };
   panel.querySelector('#agw-open').onclick = () => { AG.convId = AG.widgetConv; AG.view = 'chat'; agCloseWidget(); showTab('agent'); };
   agWireComposer(panel, 'agw', () => AG.widgetConv, id => { AG.widgetConv = id; }, agContext);

@@ -172,4 +172,23 @@ check('agent.js builds no HTML from template literals', () => {
   assert.ok(!SRC.includes('${'));
 });
 
+check('alpha #7: a typed #tab?host= link switches host and tab', () => {
+  const c2 = { console, String, RegExp, location: { hash: '#containers?host=lab1' }, calls: [] };
+  vm.createContext(c2);
+  vm.runInContext([takeConst('AG_TABS'), take('agDeepLink'), take('agOnHash'),
+    'function agOpenFromHash(h){ calls.push(["agent", h]); }', 'function agFollowLink(h){ calls.push(["follow", h]); }'].join('\n'), c2);
+  c2.agOnHash();
+  assert.deepStrictEqual(plain(c2.calls), [['follow', '#containers?host=lab1']]);
+});
+
+check('alpha #2/#6: phone chat bar, recent chats in the widget, an inline error line', () => {
+  assert.ok(SRC.includes('id="ag-list"') && SRC.includes('id="ag-new2"'));
+  assert.ok(SRC.includes('-err" role="alert"'));
+  assert.ok(SRC.includes('id="agw-hist"'));
+});
+
+check('alpha #5: Stop shows a stopping state', () => {
+  assert.ok(SRC.includes("agT('agent.stopping', 'Stopping…')"));
+});
+
 console.log('\n' + n + ' agent UI checks passed');

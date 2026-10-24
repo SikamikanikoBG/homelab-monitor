@@ -10,6 +10,7 @@ GET for JSON, the error mapping, retries, and the Stop button.
   reading thread then gets a `cancelled` error.
 """
 import json
+import queue
 import socket
 import threading
 import time
@@ -46,6 +47,10 @@ class Call:
 
     def abort(self):
         self.cancel.set()
+        self.close()
+
+    def close(self):
+        """Close the live response without cancelling the run."""
         with self._lock:
             r = self._resp
         if r is not None:
@@ -135,42 +140,73 @@ def _with_retries(fn, cancel, sleep=time.sleep):
 
 
 def stream_lines(url, payload, headers, call, timeout=180, secret=None):
-    """POST JSON and yield decoded, non-empty lines (SSE or NDJSON)."""
+    """POST JSON and yield decoded, non-empty lines (SSE or NDJSON).
+
+    The connection and the reads run on a helper thread that hands lines over
+    a queue; this side polls the queue every 0.2 s and checks the Stop event, so
+    Stop takes effect at once even while the model is still thinking about its
+    first byte (alpha #5). A stopped helper is abandoned: its socket is closed
+    and whatever it still receives is thrown away."""
     data = json.dumps(payload).encode("utf-8")
     hdrs = dict({"Content-Type": "application/json", "Accept": "text/event-stream, application/x-ndjson, application/json",
                  "User-Agent": "homelab-monitor-agent"}, **(headers or {}))
+    q = queue.Queue()
+    done = threading.Event()
 
     def connect():
         return _open(urllib.request.Request(url, data=data, headers=hdrs, method="POST"), timeout, secret)
 
-    resp = _with_retries(connect, call.cancel)
-    call.attach(resp)
-    total = 0
+    def reader():
+        resp = None
+        try:
+            resp = _with_retries(connect, call.cancel)
+            call.attach(resp)
+            total = 0
+            while not done.is_set():
+                try:
+                    raw = resp.readline()
+                except socket.timeout:
+                    raise ProviderError("timeout", "the stream stalled for %ss" % timeout)
+                except (ValueError, OSError, AttributeError) as e:
+                    raise ProviderError("cancelled" if call.cancel.is_set() else "protocol", "stream broke: %s" % e)
+                if not raw:
+                    break
+                total += len(raw)
+                if total > MAX_STREAM_BYTES:
+                    raise ProviderError("protocol", "answer larger than %d MB" % (MAX_STREAM_BYTES // (1024 * 1024)))
+                line = raw.decode("utf-8", "replace").strip()
+                if line:
+                    q.put(("line", line))
+            q.put(("end", None))
+        except ProviderError as e:
+            q.put(("err", e))
+        except Exception as e:                       # anything else the socket throws: report, don't kill the thread silently
+            q.put(("err", ProviderError("cancelled" if call.cancel.is_set() else "protocol", str(e)[:200])))
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception as e:
+                    print("agent http: close: %s" % e, flush=True)
+
+    threading.Thread(target=reader, name="agent-http", daemon=True).start()
     try:
         while True:
             if call.cancel.is_set():
                 raise ProviderError("cancelled")
             try:
-                raw = resp.readline()
-            except socket.timeout:
-                raise ProviderError("timeout", "the stream stalled for %ss" % timeout)
-            except (ValueError, OSError, AttributeError) as e:
-                if call.cancel.is_set():
-                    raise ProviderError("cancelled")
-                raise ProviderError("protocol", "stream broke: %s" % e)
-            if not raw:
-                break
-            total += len(raw)
-            if total > MAX_STREAM_BYTES:
-                raise ProviderError("protocol", "answer larger than %d MB" % (MAX_STREAM_BYTES // (1024 * 1024)))
-            line = raw.decode("utf-8", "replace").strip()
-            if line:
-                yield line
+                kind, val = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if kind == "line":
+                yield val
+            elif kind == "end":
+                return
+            else:
+                raise val
     finally:
-        try:
-            resp.close()
-        except Exception as e:
-            print("agent http: close: %s" % e, flush=True)
+        done.set()                                   # stop reading (normal end, break, or Stop)
+        call.close()
 
 
 def get_json(url, headers=None, timeout=10, secret=None, cancel=None):

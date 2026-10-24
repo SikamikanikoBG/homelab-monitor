@@ -1278,5 +1278,9 @@
   "set.scope_push": "push（实验数据）",
   "set.scope_read": "read（Grafana、MCP）",
   "set.tab_security": "🔒 安全",
-  "agent.act.files.changed_within": "允许路径下最近 N 天内修改过的文件（备份新鲜度）"
+  "agent.act.files.changed_within": "允许路径下最近 N 天内修改过的文件（备份新鲜度）",
+  "agent.chats": "☰ 对话",
+  "agent.stopping": "正在停止…",
+  "agent.failed": "出了点问题。",
+  "agent.recent": "最近的对话"
 }

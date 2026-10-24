@@ -1168,5 +1168,9 @@
   "set.scope_push": "push (experiments)",
   "set.scope_read": "read (Grafana, MCP)",
   "set.tab_security": "🔒 Security",
-  "agent.act.files.changed_within": "Files changed in the last N days under an allowed path (backup freshness)"
+  "agent.act.files.changed_within": "Files changed in the last N days under an allowed path (backup freshness)",
+  "agent.chats": "☰ Chats",
+  "agent.stopping": "Stopping…",
+  "agent.failed": "Something went wrong.",
+  "agent.recent": "Recent chats"
 }
