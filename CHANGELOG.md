@@ -8,6 +8,7 @@ release notes.
 ## [Unreleased] — `next`
 
 **Fixed**
+- **Benchmarks said your ollama wasn't answering while its connectivity Test passed.** The Test probes the ollama you registered under Settings → AI servers; the Benchmark Lab only ever talked to `COPILOT_OLLAMA_URL`, which defaults to `127.0.0.1:11434` — so an ollama on another box was green in one place and "not responding" in the other. The lab now benchmarks the registered ollama, unless you set `COPILOT_OLLAMA_URL` yourself (that still wins), and the error names the address it actually tried.
 - **A remote host's container RAM now matches the hub's calculation method.** The probe was reading `docker stats`' `MemUsage`, which still counts reclaimable file cache and inflated mmap-heavy (AI model) containers; it now reads anon+shmem straight from the container's cgroup, exactly like the hub. A container's remote-reported RAM may read lower than before — that's the correction, not a regression.
 
 ## [0.37.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.37.0) — 2026-09-23 · **Your containers get their logos**
