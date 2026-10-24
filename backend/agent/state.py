@@ -38,6 +38,8 @@ DEFAULTS = {
     "gpu_defer_max_min": "30",
     "cloud_min_interval_s": "3600",
     "max_output_tokens": "2048",
+    # {host: ["/var/log/myapp", ...]} — the only paths the file probes may look at.
+    "watched_paths": "{}",
 }
 
 
