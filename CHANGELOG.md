@@ -7,6 +7,9 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Added**
+- **Make the sidebar yours: reorder tabs and hide the ones you don't use** ([#33](https://github.com/SikamikanikoBG/homelab-monitor/issues/33)). **✎ Customize** at the foot of the sidebar turns the nav into an editor: drag a tab to move it within its group (Monitoring, AI, …), or focus it and press `Alt`+`↑`/`↓`; the eye hides or shows it. No AI servers? Hide the whole AI group and its heading goes too. Settings-group tabs can be moved but not hidden, so the config is always one click away. A hidden tab isn't locked away: its URL and the search box still open it. The layout lives in this browser only (`hl_tab_order` / `hl_tab_hidden`), and **Settings → General → Sidebar layout** resets it. Tabs added by a future release still show up for you, at the end of their group.
+
 **Fixed**
 - **A remote host's container RAM now matches the hub's calculation method.** The probe was reading `docker stats`' `MemUsage`, which still counts reclaimable file cache and inflated mmap-heavy (AI model) containers; it now reads anon+shmem straight from the container's cgroup, exactly like the hub. A container's remote-reported RAM may read lower than before — that's the correction, not a regression.
 

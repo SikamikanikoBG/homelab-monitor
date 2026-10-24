@@ -696,6 +696,19 @@ body{background:var(--canvas)}
 .nrow:hover .hic,.nrow.on .hic{opacity:1}
 .nrow.on .hic{color:var(--accent)}
 .nrow .tdot{width:7px;height:7px;border-radius:2px;margin-left:auto}
+/* sidebar customise mode (#33) */
+.nedithint{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;color:var(--mut);padding:4px 9px 6px}
+.nedithint span{flex:1 1 100%}
+.nedithint .rb{font-size:11px;padding:3px 9px}
+.nrow.nedit{cursor:grab;outline:1px dashed var(--bd);outline-offset:-1px;margin:2px 0}
+.nrow.nedit.noff{opacity:.45}
+.nrow.nedit.noff span:not(.ngrip){text-decoration:line-through}
+.nrow.nedit.ndrag{opacity:.35}
+.nrow.nedit.nover{outline:2px dashed var(--accent)}
+.nrow .ngrip{color:var(--mut);font-size:12px;line-height:1}
+.nrow .neye{margin-left:auto;display:inline-flex;border:0;background:none;color:var(--mut);padding:2px;border-radius:4px;cursor:pointer}
+.nrow .neye:hover{color:var(--tx);background:var(--hover)}
+.thtoggle.on{color:var(--accent)}
 .foot{border-top:1px solid var(--bd);padding:10px;display:flex;flex-direction:column;gap:9px}
 .foot .ghstar{align-self:flex-start}
 .footrow{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap}
@@ -849,6 +862,9 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
   .navlist{display:flex;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1 1 100%;order:3;padding:5px 8px;gap:3px;scrollbar-width:thin}
   .navgroup{display:none}
   .nrow{width:auto;flex:none;white-space:nowrap}.nrow .tdot{margin-left:6px}
+  .navlist.editing{align-items:center}
+  .nedithint{flex:none;flex-wrap:nowrap;padding:0 4px}.nedithint span{display:none}
+  .nrow .neye{margin-left:4px}
   /* engagement cluster: keep it on mobile, but as a compact horizontal row that
      sits under the nav (the verbose star-CTA blurb is the only thing dropped). */
   .side .star-cta{display:none}
@@ -2701,6 +2717,11 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <button class="rb" id="ai_add" type="button" data-i18n="general.ai_add" data-i18n-def="Add">Add</button>
           </div>
         </div>
+        <div id="set-sidebar-layout">
+          <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.sidebar_title" data-i18n-def="Sidebar layout">Sidebar layout</div>
+          <p class="cap" style="margin:0 0 8px" data-i18n-html="general.sidebar_cap" data-i18n-def="Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.">Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.</p>
+          <button class="rb" id="nav_reset" type="button" data-i18n="general.sidebar_reset" data-i18n-def="Reset sidebar to default">Reset sidebar to default</button>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
           <button class="rb on" id="al_save_general" data-i18n="btn.save">Save</button>
         </div>
@@ -3524,19 +3545,116 @@ const NAV_ICON = {
 };
 const tabBtn = t => `<button class="nrow" data-t="${t.id}">${svgIc(NAV_ICON[t.id]||'')}<span>${I18N.t('nav.'+t.id, t.label)}</span><span class="tdot" id="ndot-${t.id}" style="display:none"></span></button>`;
 const isSettingsTab = id => !!(TABS.find(t=>t.id===id)||{}).settings;
+// ── Sidebar customisation (#33) ──────────────────────────────────────────────
+// Per-browser, like the display-mode widget picks: reorder tabs within their
+// zone and hide the ones you never open. Zones are read off TABS, so a tab in a
+// brand-new zone needs no change here. Hidden tabs stay reachable by URL hash
+// and global search — hiding declutters the nav, it doesn't lock anything away.
+const NAV_ORDER_KEY = 'hl_tab_order', NAV_HIDDEN_KEY = 'hl_tab_hidden';
+const NAV_ZONE_LABEL = {monitoring:'Monitoring', ai:'AI', settings:'Settings'};
+let NAV_EDITING = false, NAV_DRAG = null;
+function navLoad(key){
+  try{ const v = JSON.parse(localStorage.getItem(key)); return Array.isArray(v) ? v : []; }catch(e){ return []; }
+}
+function navStore(key, ids){
+  try{ ids.length ? localStorage.setItem(key, JSON.stringify(ids)) : localStorage.removeItem(key); }catch(e){}
+}
+function tabZone(t){ return t.zone || 'monitoring'; }
+// Settings-zone tabs can move but not hide: they hold the config, and the reset.
+function navHideable(t){ return tabZone(t) !== 'settings'; }
+function navZones(){ return [...new Set(TABS.map(tabZone))]; }
+function navHiddenSet(){
+  const ids = navLoad(NAV_HIDDEN_KEY);
+  return new Set(TABS.filter(t => navHideable(t) && ids.includes(t.id)).map(t => t.id));
+}
+// A zone's tabs in the saved order. Tabs the saved order has never seen (a
+// later release added them) go after it, in their TABS order.
+function navOrdered(z){
+  const order = navLoad(NAV_ORDER_KEY);
+  const rank = t => { const i = order.indexOf(t.id); return i < 0 ? order.length + TABS.indexOf(t) : i; };
+  return TABS.filter(t => tabZone(t) === z).sort((a, b) => rank(a) - rank(b));
+}
+// Move `id` to where `toId` sits (before it when moving up, after it when
+// moving down), within one zone; a cross-zone move is ignored.
+function navMove(id, toId){
+  const t = TABS.find(x => x.id === id), to = TABS.find(x => x.id === toId);
+  if(!t || !to || id === toId || tabZone(t) !== tabZone(to)) return false;
+  const ids = navOrdered(tabZone(t)).map(x => x.id);
+  const ti = ids.indexOf(toId);
+  ids.splice(ids.indexOf(id), 1); ids.splice(ti, 0, id);
+  navStore(NAV_ORDER_KEY, navZones().flatMap(z => z === tabZone(t) ? ids : navOrdered(z).map(x => x.id)));
+  return true;
+}
+function navToggleHidden(id){
+  const t = TABS.find(x => x.id === id); if(!t || !navHideable(t)) return;
+  const h = navHiddenSet(); h.has(id) ? h.delete(id) : h.add(id);
+  navStore(NAV_HIDDEN_KEY, [...h]);
+}
+function navReset(){
+  navStore(NAV_ORDER_KEY, []); navStore(NAV_HIDDEN_KEY, []);
+  buildNav();
+  toast('ok', I18N.t('nav.reset_done', 'Sidebar reset to the default layout'));
+}
+function navSetEditing(on){
+  NAV_EDITING = on; buildNav();
+}
+const NAV_EYE = '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>';
+const NAV_EYE_OFF = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>';
+function navEditRow(t, off){
+  const label = I18N.t('nav.'+t.id, t.label);
+  const eye = navHideable(t)
+    ? `<button type="button" class="neye" data-eye="${t.id}" aria-pressed="${off ? 'false' : 'true'}" title="${off ? I18N.t('nav.show', 'Show in sidebar') : I18N.t('nav.hide', 'Hide from sidebar')}" aria-label="${(off ? I18N.t('nav.show', 'Show in sidebar') : I18N.t('nav.hide', 'Hide from sidebar'))+': '+label}">${svgIc(off ? NAV_EYE_OFF : NAV_EYE)}</button>`
+    : '';
+  return `<div class="nrow nedit${off ? ' noff' : ''}" data-t="${t.id}" data-z="${tabZone(t)}" draggable="true" tabindex="0" aria-label="${label}"><span class="ngrip" aria-hidden="true">⠿</span>${svgIc(NAV_ICON[t.id]||'')}<span>${label}</span>${eye}</div>`;
+}
+function navWireEdit(nl){
+  nl.querySelectorAll('.neye').forEach(b => b.onclick = e => { e.stopPropagation(); navToggleHidden(b.dataset.eye); buildNav(); });
+  const back = id => { const r = nl.querySelector(`.nedit[data-t="${id}"]`); if(r) r.focus(); };
+  nl.querySelectorAll('.nedit').forEach(row => {
+    row.ondragstart = e => { NAV_DRAG = {id: row.dataset.t, z: row.dataset.z}; row.classList.add('ndrag');
+      e.dataTransfer.effectAllowed = 'move'; try{ e.dataTransfer.setData('text/plain', row.dataset.t); }catch(_){} };
+    row.ondragend = () => { NAV_DRAG = null; nl.querySelectorAll('.ndrag,.nover').forEach(x => x.classList.remove('ndrag','nover')); };
+    // Only a row in the same zone is a drop target, so the cursor says "no" elsewhere.
+    row.ondragover = e => { if(!NAV_DRAG || NAV_DRAG.z !== row.dataset.z) return; e.preventDefault(); row.classList.add('nover'); };
+    row.ondragleave = () => row.classList.remove('nover');
+    row.ondrop = e => { e.preventDefault(); const id = NAV_DRAG && NAV_DRAG.id; NAV_DRAG = null;
+      if(id && navMove(id, row.dataset.t)){ buildNav(); back(id); } };
+    // Keyboard reorder: Alt+↑/↓ (Alt+←/→ on the phone-width strip).
+    row.onkeydown = e => {
+      if(!e.altKey || !['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) return;
+      const up = e.key === 'ArrowUp' || e.key === 'ArrowLeft';
+      const sib = up ? row.previousElementSibling : row.nextElementSibling;
+      if(!sib || !sib.classList.contains('nedit')) return;
+      e.preventDefault();
+      if(navMove(row.dataset.t, sib.dataset.t)){ buildNav(); back(row.dataset.t); }
+    };
+  });
+  const r = document.getElementById('navResetInline'); if(r) r.onclick = navReset;
+  const d = document.getElementById('navDoneInline'); if(d) d.onclick = () => navSetEditing(false);
+}
 function buildNav(){
   const nl = document.getElementById('navlist'); if(!nl) return;
-  // Three zones so AI/Data-Science features live in their own area — a pure
-  // homelab admin can ignore it. Falls back to Monitoring for any tab w/o a zone.
-  const zone = id => (TABS.find(t=>t.id===id)||{}).zone || 'monitoring';
-  const group = (label, z) => {
-    const rows = TABS.filter(t => (t.zone||'monitoring')===z);
-    return rows.length ? `<div class="navgroup">${label}</div>` + rows.map(tabBtn).join('') : '';
-  };
-  nl.innerHTML = group(I18N.t('nav.group.monitoring','Monitoring'),'monitoring')
-               + group(I18N.t('nav.group.ai','AI'),'ai')
-               + group(I18N.t('nav.group.settings','Settings'),'settings');
-  nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
+  // Zones keep AI/Data-Science features in their own area — a pure homelab
+  // admin can ignore it. Falls back to Monitoring for any tab w/o a zone.
+  const hidden = navHiddenSet();
+  const head = NAV_EDITING
+    ? `<div class="nedithint"><span>${I18N.t('nav.edit_hint', 'Drag to reorder within a group · eye to hide')}</span>`
+      + `<button type="button" class="rb" id="navResetInline">${I18N.t('nav.reset', 'Reset')}</button>`
+      + `<button type="button" class="rb on" id="navDoneInline">${I18N.t('nav.edit_done', 'Done')}</button></div>`
+    : '';
+  nl.classList.toggle('editing', NAV_EDITING);
+  const eb = document.getElementById('navEditBtn');
+  if(eb){ eb.classList.toggle('on', NAV_EDITING); eb.setAttribute('aria-pressed', NAV_EDITING ? 'true' : 'false');
+    const l = eb.querySelector('.nelabel'); if(l) l.textContent = NAV_EDITING ? I18N.t('nav.edit_done', 'Done') : I18N.t('nav.edit', 'Customize'); }
+  nl.innerHTML = head + navZones().map(z => {
+    const rows = navOrdered(z).filter(t => NAV_EDITING || !hidden.has(t.id));
+    if(!rows.length) return '';
+    const label = I18N.t('nav.group.'+z, NAV_ZONE_LABEL[z] || z.charAt(0).toUpperCase() + z.slice(1));
+    return `<div class="navgroup">${label}</div>` + rows.map(t => NAV_EDITING ? navEditRow(t, hidden.has(t.id)) : tabBtn(t)).join('');
+  }).join('');
+  if(NAV_EDITING) navWireEdit(nl);
+  else nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
+  const on = nl.querySelector(`.nrow[data-t="${TAB}"]`); if(on) on.classList.add('on');
 }
 // Drawer is gone; keep the name as a no-op so showTab() needn't change shape.
 function setSettingsMode(on){ SETTINGS_OPEN = on; }
@@ -3585,8 +3703,10 @@ function mountShell(){
   foot.insertAdjacentHTML('beforeend',
     '<div class="footrow">'
     + '<button class="thtoggle" id="themeBtn"><span class="thicon">☾</span><span class="thlabel" data-i18n="footer.theme.dark">Dark</span></button>'
-    + '<button class="thtoggle" id="densityBtn">▤ <span class="dlabel" data-i18n="footer.density.compact">Compact</span></button></div>'
+    + '<button class="thtoggle" id="densityBtn">▤ <span class="dlabel" data-i18n="footer.density.compact">Compact</span></button>'
+    + '<button class="thtoggle" id="navEditBtn" aria-pressed="false" title="'+I18N.t('nav.edit_title','Reorder or hide sidebar tabs')+'">✎ <span class="nelabel">'+I18N.t('nav.edit','Customize')+'</span></button></div>'
     + '<div class="themeswitch" id="themeswitch"><button data-th="dark" data-i18n="footer.theme.dark">Dark</button><button data-th="light" data-i18n="footer.theme.light">Light</button><button data-th="system" data-i18n="footer.theme.system">System</button></div>');
+  const neb = document.getElementById('navEditBtn'); if(neb) neb.addEventListener('click', () => navSetEditing(!NAV_EDITING));
   ['header', '.topnav', '.sub'].forEach(sel => { const el = document.querySelector('.content > ' + sel); if(el) el.remove(); });
 }
 
@@ -10712,6 +10832,8 @@ const al_save_costs = document.getElementById('al_save_costs');
 if(al_save_costs) al_save_costs.onclick = saveAlerts;   // both panes persist all settings
 const al_save_general = document.getElementById('al_save_general');
 if(al_save_general) al_save_general.onclick = saveAlerts;
+const nav_reset = document.getElementById('nav_reset');
+if(nav_reset) nav_reset.onclick = navReset;
 const ai_add = document.getElementById('ai_add');
 if(ai_add) ai_add.onclick = addAiServer;
 wireAutoSave();   // settings also persist on field focus-out (no Save-button hunt)

@@ -7,6 +7,14 @@
     "untranslated": [
       "nav.group.ai",
       "nav.gpu",
+      "nav.edit",
+      "nav.edit_done",
+      "nav.edit_title",
+      "nav.edit_hint",
+      "nav.reset",
+      "nav.show",
+      "nav.hide",
+      "nav.reset_done",
       "brand.name",
       "sidebar.coffee",
       "sidebar.coffee_title",
@@ -105,9 +113,12 @@
       "search.hint_close",
       "general.icon_pack_label",
       "general.icon_pack_cap",
-      "general.icon_pack_stats"
+      "general.icon_pack_stats",
+      "general.sidebar_title",
+      "general.sidebar_cap",
+      "general.sidebar_reset"
     ],
-    "coverage": 0.882
+    "coverage": 0.8708
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -127,6 +138,14 @@
   "nav.hosts": "主机",
   "nav.alerts": "设置",
   "nav.backup": "备份",
+  "nav.edit": "Customize",
+  "nav.edit_done": "Done",
+  "nav.edit_title": "Reorder or hide sidebar tabs",
+  "nav.edit_hint": "Drag to reorder within a group · eye to hide",
+  "nav.reset": "Reset",
+  "nav.show": "Show in sidebar",
+  "nav.hide": "Hide from sidebar",
+  "nav.reset_done": "Sidebar reset to the default layout",
   "brand.name": "HomeLab Monitor",
   "brand.home_aria": "前往概览",
   "sidebar.star": "在 GitHub 上加星",
@@ -964,5 +983,8 @@
   "search.hint_close": "close",
   "general.icon_pack_label": "<b>App icons</b> — give containers and services their real logos, from the ~2,900-icon <a href=\"https://selfh.st/icons/\" target=\"_blank\" rel=\"noopener\">selfh.st</a> set.",
   "general.icon_pack_cap": "The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.",
-  "general.icon_pack_stats": "{known} icons known, {cached} cached on this hub."
+  "general.icon_pack_stats": "{known} icons known, {cached} cached on this hub.",
+  "general.sidebar_title": "Sidebar layout",
+  "general.sidebar_cap": "Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.",
+  "general.sidebar_reset": "Reset sidebar to default"
 }

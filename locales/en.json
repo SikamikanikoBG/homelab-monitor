@@ -23,6 +23,14 @@
   "nav.hosts": "Hosts",
   "nav.alerts": "Settings",
   "nav.backup": "Backup",
+  "nav.edit": "Customize",
+  "nav.edit_done": "Done",
+  "nav.edit_title": "Reorder or hide sidebar tabs",
+  "nav.edit_hint": "Drag to reorder within a group · eye to hide",
+  "nav.reset": "Reset",
+  "nav.show": "Show in sidebar",
+  "nav.hide": "Hide from sidebar",
+  "nav.reset_done": "Sidebar reset to the default layout",
   "brand.name": "HomeLab Monitor",
   "brand.home_aria": "Go to Overview",
   "sidebar.star": "Star on GitHub",
@@ -860,5 +868,8 @@
   "search.hint_close": "close",
   "general.icon_pack_label": "<b>App icons</b> — give containers and services their real logos, from the ~2,900-icon <a href=\"https://selfh.st/icons/\" target=\"_blank\" rel=\"noopener\">selfh.st</a> set.",
   "general.icon_pack_cap": "The hub fetches each icon once and keeps it under its data volume — your browser never talks to the icon CDN, and the icons keep working offline. Off falls back to the marks bundled in this page.",
-  "general.icon_pack_stats": "{known} icons known, {cached} cached on this hub."
+  "general.icon_pack_stats": "{known} icons known, {cached} cached on this hub.",
+  "general.sidebar_title": "Sidebar layout",
+  "general.sidebar_cap": "Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.",
+  "general.sidebar_reset": "Reset sidebar to default"
 }
