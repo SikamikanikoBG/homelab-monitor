@@ -99,6 +99,11 @@ jobs:
       - name: Dashboard TFLOPS cells
         run: node tests/js/test_tflops_cells.js
 
+      # Sidebar customisation (#33): zone-bound reorder, unhideable Settings
+      # tabs, tabs/zones added after an order was saved.
+      - name: Dashboard sidebar customisation
+        run: node tests/js/test_nav_customize.js
+
       - name: Build the image
         run: docker build -t homelab-monitor:ci .
 
