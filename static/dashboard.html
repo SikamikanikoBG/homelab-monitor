@@ -3463,7 +3463,9 @@ function applyIcons(scope){
   });
 }
 const sev = p => p>=90?'var(--crit)':p>=75?'var(--warn)':'var(--ok)';
-const esc = s => (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// Escapes quotes too: values land inside attribute="…" as often as in text, and a
+// name with a " in it must not be able to close the attribute (#354).
+const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ICON={critical:'⛔',warning:'⚠️',ok:'✅',info:'ℹ️'};
 // Stable per-name colour, returned as HEX rather than hsl(). Several call sites
 // append a two-digit alpha (`colorFor(x)+'cc'`) for chart fills, and
@@ -10606,7 +10608,7 @@ function verGt(a, b){                    // a > b ? (tolerant numeric semver)
 // **bold**, `code`, [links](url)). Everything is escaped first, so it's safe to
 // set as innerHTML even though the source is our own bundled file.
 function mdMini(md){
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const inline = s => esc(s)
     .replace(/`([^`]+)`/g, (_,c)=>`<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, (_,b)=>`<strong>${b}</strong>`)
