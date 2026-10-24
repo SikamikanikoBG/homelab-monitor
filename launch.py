@@ -9,6 +9,7 @@ dashboard down. Set ``ENABLE_MCP=0`` to run the dashboard alone.
 """
 
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -21,6 +22,12 @@ _shutting = False
 
 def _start_monitor():
     return subprocess.Popen([PY, "/app/app.py"])
+
+
+# A per-container secret the dashboard accepts, read-only and from loopback
+# only, so the built-in MCP server keeps working once a login is set (#354).
+# Generated fresh on every start; it never leaves the container.
+os.environ.setdefault("HLM_INTERNAL_TOKEN", secrets.token_urlsafe(32))
 
 
 def _start_mcp():

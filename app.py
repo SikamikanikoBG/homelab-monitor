@@ -153,6 +153,7 @@ app.register_blueprint(_hosts_api_bp)
 app.register_blueprint(_integrations_bp)
 app.register_blueprint(_icons_bp)
 app.register_blueprint(_benchmarks_bp)
+import backend.wiring as _wiring; _wiring.install(app)   # login gate + AI agent (#354), dormant by default
 
 # ── Prometheus gauges (defined once at module level) ──────────────────────────
 _GAUGES: dict = {}
@@ -7626,6 +7627,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=brief_worker, daemon=True).start()
     threading.Thread(target=_collector_watchdog, daemon=True).start()
     ICON_STORE.refresh_index_async()
+    _wiring.start_workers()   # AI agent threads; nothing starts unless the agent is enabled
 
 
 import os as _os

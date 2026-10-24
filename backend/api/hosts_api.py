@@ -1,10 +1,19 @@
 """backend/api/hosts_api.py — hosts_api routes (Phase 3.4)."""
 from flask import Blueprint, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
+import hashlib
+import json
+import os
 import time
 import re
 import shlex
 
 bp = Blueprint('hosts_api', __name__)
+
+
+def _agent_hosts():
+    """Agent policy follows a host's rename and is dropped with the host."""
+    from backend.agent import hosts
+    return hosts
 
 
 @bp.route("/api/hosts", methods=["GET", "POST"])
@@ -26,6 +35,8 @@ def api_hosts_one(name):
     import app as _app
     if request.method == "DELETE":
         ok = _app.delete_host(name)
+        if ok:
+            _agent_hosts().deleted(name)
         return jsonify({"ok": ok}), (200 if ok else 404)
     body = request.get_json(silent=True) or {}
     new_name = body.get("name").strip() if isinstance(body.get("name"), str) else None
@@ -41,6 +52,7 @@ def api_hosts_one(name):
         host, err = _app.rename_host(name, new_name)
         if err:
             return jsonify({"ok": False, "error": err}), 404 if err.startswith("No host") else 400
+        _agent_hosts().renamed(name, host["name"])
         name = host["name"]
     if ssh_target is not None or tags is not None:
         host, err = _app.update_host(name, ssh_target=ssh_target, tags=tags)
@@ -149,6 +161,12 @@ def api_hosts_test(name):
     return jsonify({"ok": True, "result": result})
 
 
+def host_run_enabled():
+    """`/api/hosts/<name>/run` runs any shell command on a host. Nothing in the
+    dashboard uses it, so it is off unless ENABLE_HOST_RUN=1 (#354)."""
+    return (os.environ.get("ENABLE_HOST_RUN") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 @bp.route("/api/hosts/<name>/run", methods=["POST"])
 def api_hosts_run(name):
     import app as _app
@@ -159,12 +177,22 @@ def api_hosts_run(name):
     the API is reachable to anyone on the LAN who can hit the dashboard."""
     if not _app.ENABLE_CONTROLS:
         return jsonify({"ok": False, "error": "Controls are disabled (ENABLE_CONTROLS=0)."}), 403
+    if not host_run_enabled():
+        return jsonify({"ok": False, "error": "Running arbitrary commands is off by default. "
+                        "Set ENABLE_HOST_RUN=1 to turn it on (see website/configuration.md)."}), 403
     body = request.get_json(silent=True) or {}
     cmd = (body.get("cmd") or "").strip()
     sudo_password = body.get("sudo_password") or None
     if not cmd:
         return jsonify({"ok": False, "error": "cmd required"}), 400
     result = _app.run_on_host(name, cmd, sudo_password=sudo_password)
+    # Every use is logged — host, caller and exit code, never the command
+    # (it may hold secrets).
+    from backend.auth import gate
+    p = gate.principal()
+    print(json.dumps({"event": "host_run", "host": name, "caller": "%s:%s" % (p.get("kind"), p.get("id")),
+                      "ip": request.remote_addr, "exit_code": (result or {}).get("exit_code"),
+                      "cmd_sha256": hashlib.sha256(cmd.encode("utf-8")).hexdigest()}), flush=True)
     # Drop the password reference ASAP — Python keeps the string object until
     # GC, but at least we don't hold our own reference past this point.
     sudo_password = None
