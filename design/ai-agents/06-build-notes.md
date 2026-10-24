@@ -109,3 +109,26 @@ deviation picks the option closest to the plan's intent.
 - Merge to `next`, the `:next` image and the :9801 dev deploy — the orchestrator does these after the alpha test.
 - Updating #331 / linking #327–#330 — instructions said not to comment on #331/#342.
 - Co-maintainer sign-off on the `ports.py` seam (DA hard requirement 17).
+
+## Alpha pass 1 — fixes (findings in `07-alpha/FINDINGS.md`)
+
+Every high and medium finding has a regression test in `tests/test_agent_alpha_fixes.py`
+(plus JS checks in `tests/js/test_agent_ui.js`). The builder's re-check against the live
+alpha is `07-alpha/scripts/v_fixes.py` (15/15 pass after the redeploy).
+
+| # | Status | Commit |
+|---|---|---|
+| 1 | fixed: actions picker in New/Edit; refusal hint names the Actions list | 8ec3f78 (API: bf2165e) |
+| 2, 5, 6, 7, 34 | fixed (Stop cancels the model call, "Stopping…"; inline errors; phone chat list; deep links) | 39a4d25 |
+| 3, 9, 10, 26, 27 | fixed (catalogue `exit_codes`, exit 127 = "not available on this host", streak counts the same call only) | 67f7a46, acf10e8 |
+| 4, 8, 18 | fixed (rename/delete in one transaction with the agent hooks; orphans pruned at boot) | bee079e |
+| 11, 12, 14, 16, 17, 20, 22, 23, 29, 30, 33, 36 | fixed (validation of settings, tasks, keys, approvals; filters; 403 for non-admin bearers) | bf2165e (UI parts: 8ec3f78) |
+| 13, 15, 19, 24, 31, 32, 35, 37 | fixed (UI texts, estimates, discovery "Use", toasts) | 8ec3f78 |
+| 21 | documented: API-key hashes stay in backups (not reversible; push keys keep working) — `docs/security.md` | 8ec3f78 |
+| 28 | fixed: frame headers sent only when a login is set; Windows/EC-28 note in `docs/agents.md` | 8ec3f78 |
+| 25 | won't fix: it would need filtering the model's text; the prompt already lists the catalogue and how an action is enabled | — |
+
+Notes: server-side policy hints stay English (they are model-facing; the UI translates its own
+texts). One CI run (on 8ec3f78) failed three cost tests that seed samples at `now-100s`; it ran
+across an hour boundary (18:00:19) and the same tests pass on the next commit — a pre-existing,
+time-dependent flake unrelated to this branch.
