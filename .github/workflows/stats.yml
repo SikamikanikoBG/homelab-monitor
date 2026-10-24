@@ -4,6 +4,10 @@ name: Update repo stats
 # traffic API. So this workflow hits that endpoint with the workflow's own
 # token, drops a shields.io-endpoint JSON onto an orphan branch (`stats`), and
 # the README badge reads it from raw.githubusercontent.com. No gist, no PAT.
+#
+# It also renders a transformation chart (usage.svg) from the full commit
+# history on the `stats` branch, so the README shows how real usage has
+# changed over time, not just the current 14-day snapshot.
 
 on:
   schedule:
@@ -11,7 +15,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['.github/workflows/stats.yml']
+    paths: ['.github/workflows/stats.yml', 'scripts/stats_chart.py']
 
 permissions:
   contents: write
@@ -68,3 +72,20 @@ jobs:
           # Surface a hard failure *after* the badge JSON is published, so the
           # README badge always renders even on permission errors.
           if [ "$COUNT" = "—" ]; then exit 1; fi
+
+      - name: Render usage transformation chart
+        env:
+          GH_TOKEN: ${{ secrets.STATS_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # matplotlib is already a repo dependency; no extra install needed.
+          python3 scripts/stats_chart.py \
+            --repo "${{ github.repository }}" \
+            --token "$GH_TOKEN" \
+            --out usage.svg \
+            --title "HomeLab Monitor — GitHub usage transformation"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add usage.svg
+          git commit -m "stats: usage transformation chart ($(date -u +%Y-%m-%d))" || { echo "no change"; exit 0; }
+          git push origin stats
