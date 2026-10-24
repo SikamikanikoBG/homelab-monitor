@@ -10,7 +10,6 @@ actions are never retried; a host that times out is a failed result (EC-9).
 import json
 import threading
 import time
-import urllib.parse
 
 from backend.agent import audit, catalog, policy, ports, store
 from backend.agent.catalog import checks
@@ -48,6 +47,7 @@ def _run_command(host, cmd, timeout_s):
         try:
             code, raw = ports.docker_req(cmd["method"], cmd["path"], body=cmd.get("body"), timeout=timeout_s)
         except Exception as e:
+            print("agent executor: docker socket error: %s" % e, flush=True)
             return {"ok": False, "exit_code": -1, "stdout": "", "stderr": "Docker socket: %s" % e}
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
         return {"ok": 200 <= code < 300 or code == 304, "exit_code": code, "stdout": text if code < 400 else "",
@@ -69,6 +69,7 @@ def _run_command(host, cmd, timeout_s):
                 return {"ok": True, "exit_code": resp.status, "stdout": resp.read(65536).decode("utf-8", "replace"),
                         "stderr": ""}
         except Exception as e:
+            print("agent executor: ollama api error: %s" % e, flush=True)
             return {"ok": False, "exit_code": -1, "stdout": "", "stderr": str(e)[:300]}
     else:
         return {"ok": False, "exit_code": -1, "stdout": "", "stderr": "unknown executor"}

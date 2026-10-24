@@ -1,0 +1,26 @@
+{
+  "id": "container-health",
+  "version": 1,
+  "name": "Container health",
+  "desc": "Unhealthy, restart-looping and long-exited containers across your hosts. Restarts an unhealthy container once (low risk, rate-limited); everything else is reported.",
+  "prompt": "For each selected host, list containers with get_containers (pass the host). Report containers that are unhealthy, exited with a non-zero code, or restarting. For a container that is running but unhealthy, restart it once with container.restart and say so; do not restart containers that are restarting by themselves or exited, report them instead. List containers that have been exited for more than 14 days as cleanup candidates.",
+  "tools": [
+    "list_hosts",
+    "get_containers",
+    "get_events"
+  ],
+  "probes": [],
+  "actions": [
+    "container.restart"
+  ],
+  "requires": [
+    "docker"
+  ],
+  "default_cron": "30 7 * * *",
+  "default_mode": "propose",
+  "budget": {
+    "max_steps": 20,
+    "max_seconds": 480
+  },
+  "est_tokens": 12000
+}

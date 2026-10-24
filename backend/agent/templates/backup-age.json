@@ -1,0 +1,24 @@
+{
+  "id": "backup-age",
+  "version": 1,
+  "name": "Backup freshness",
+  "desc": "Checks that the backup folders you list got new files recently. Report only.",
+  "prompt": "For each selected host, check each watched path with files.newest_mtime and report the newest file time per path (each output line starts with a Unix time). A path with nothing in the last 2 days is stale: say so clearly. If a host has no watched paths, say they can be added under Agent policy.",
+  "tools": [
+    "list_hosts"
+  ],
+  "probes": [
+    "files.newest_mtime"
+  ],
+  "actions": [],
+  "requires": [
+    "linux"
+  ],
+  "default_cron": "0 9 * * *",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 12,
+    "max_seconds": 360
+  },
+  "est_tokens": 8000
+}

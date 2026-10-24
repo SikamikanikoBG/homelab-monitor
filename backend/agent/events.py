@@ -37,8 +37,8 @@ def _wake():
         cond.notify_all()
 
 
-def publish(kind, **data):
-    payload = dict(data, type=kind, ts=time.time())
+def publish(event_type, **data):
+    payload = dict(data, type=event_type, ts=time.time())
     with _lock:
         _state["seq"] += 1
         _events.append((_state["seq"], payload))

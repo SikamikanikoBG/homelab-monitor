@@ -530,6 +530,14 @@ def approvals_expire_all(reason):
     return rows
 
 
+def approvals_expire_for_run(run_id, reason):
+    """A stopped chat run's own confirm cards go with it."""
+    with ports.db() as c:
+        c.execute("UPDATE agent_approvals SET status='expired', decided_at=?, decided_by=? "
+                  "WHERE run_id=? AND status='pending' AND attended=1", (now(), reason, run_id))
+        c.commit()
+
+
 def approvals_executing():
     with ports.db() as c:
         return c.execute("SELECT COUNT(*) FROM agent_approvals WHERE status='executing'").fetchone()[0]

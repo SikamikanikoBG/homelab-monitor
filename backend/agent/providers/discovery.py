@@ -59,7 +59,8 @@ def _reachable(c):
     url = c["base_url"].rstrip("/") + ("/api/tags" if p.get("adapter") == "ollama" else "/models")
     try:
         data = http.get_json(url, timeout=2)
-    except Exception:
+    except Exception as e:                       # unreachable is an answer here, not an error
+        print("agent discovery: %s not reachable (%s)" % (c["base_url"], e), flush=True)
         return False, []
     if p.get("adapter") == "ollama":
         models = [m.get("name") for m in (data.get("models") or []) if m.get("name")]

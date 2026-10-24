@@ -32,6 +32,9 @@ class _Resp:
 
 
 class TestClientToken(unittest.TestCase):
+    def setUp(self):
+        hc.set_transport(None)         # the agent's tests may have installed the in-process one
+
     def _headers_sent(self, env):
         seen = {}
 
