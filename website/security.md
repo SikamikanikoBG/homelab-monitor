@@ -146,7 +146,16 @@ clears the password and every session (and switches the AI agent off).
 
 **Backups don't carry secrets.** `/api/backup` blanks the alert channels'
 webhook URLs, tokens and passwords, AI provider keys, the password hash and all
-sessions in the downloaded copy. After a restore, re-enter them.
+sessions in the downloaded copy. After a restore, re-enter them. API keys are
+kept: the database only holds their SHA-256 hashes (the keys themselves are
+shown once, at creation, and never stored), so a backup can't be used to
+recover a key — and the push keys your notebooks use keep working after a
+restore. Revoke a key under Integrations → API keys if a backup went somewhere
+it shouldn't.
+
+With a login set, responses also carry `X-Frame-Options: SAMEORIGIN` and
+`Content-Security-Policy: frame-ancestors 'self'`, so no other site can frame
+the logged-in dashboard. Without a login, responses are unchanged.
 
 **`/api/hosts/<name>/run`** (run any command on a host; nothing in the UI uses
 it) is off unless `ENABLE_HOST_RUN=1`, and every use is logged without the

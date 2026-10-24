@@ -87,11 +87,23 @@ Rules the server enforces no matter what the model says:
 - The policy is checked when the model proposes an action **and again right before it runs**
   (after an approval too).
 
+**Windows hosts:** container actions run `docker` through PowerShell and
+service actions use `Start-Service` / `Restart-Service`; there is no sudo, so
+whether they work depends on which `authorized_keys` file holds the hub's key
+(a plain user's, or `administrators_authorized_keys`). A Windows command gets 30
+seconds; a slow `Restart-Service` can take longer and be reported as failed
+even though the service restarted — check the Services tab before retrying.
+Journal and package checks aren't offered for Windows.
+
 Root actions run as `sudo -n`. If the SSH user can't do that, the agent shows the exact sudoers line
 that would allow that one command (no wildcards). Note that a user in the `docker` group is
 already root-equivalent on that box.
 
 ## Chat and confirm cards
+
+Automations only take the actions ticked under **Actions** in their New/Edit
+dialog (templates come with theirs ticked); none ticked means it only reads and
+reports.
 
 Ask in plain words: *"why is my server slow?"*, *"what's using the GPU?"*, *"restart web on lab1"*.
 Each tool the agent used shows as a chip you can open. When an action needs your OK you get a

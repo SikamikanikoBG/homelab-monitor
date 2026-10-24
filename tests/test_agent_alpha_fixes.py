@@ -327,3 +327,66 @@ class ValidationCase(unittest.TestCase):
             self.assertEqual(self.on.get("/api/agent/settings").get_json()["channels_configured"], ["ntfy"])
         finally:
             app.save_settings({"ntfy_topic": ""})
+
+
+class UiBackendCase(unittest.TestCase):
+    def setUp(self):
+        from auth_helpers import clear_login
+        clear_login()
+
+    def tearDown(self):
+        from auth_helpers import clear_login
+        clear_login()
+
+    def test_19_auth_status_tells_the_page_whether_to_load_the_agent(self):
+        import os
+        c = app.app.test_client()
+        with patch.dict(os.environ, {"AGENT_ENABLED": ""}):
+            self.assertFalse(c.get("/api/auth/status").get_json()["agent"])
+        with patch.dict(os.environ, {"AGENT_ENABLED": "1"}):
+            self.assertTrue(c.get("/api/auth/status").get_json()["agent"])
+        html = open(os.path.join(os.path.dirname(app.__file__), "static", "dashboard.html"), encoding="utf-8").read()
+        self.assertIn("if(!(await HLM_AUTH.status()).agent) return;", html)
+
+    def test_28_frame_headers_only_with_a_login(self):
+        from auth_helpers import login
+        c = app.app.test_client()
+        self.assertNotIn("X-Frame-Options", c.get("/healthz").headers)
+        login(c)
+        r = c.get("/healthz")
+        self.assertEqual(r.headers["X-Frame-Options"], "SAMEORIGIN")
+        self.assertIn("frame-ancestors", r.headers["Content-Security-Policy"])
+
+    def test_1_not_in_task_hint_points_at_the_actions_picker(self):
+        self.assertIn("under Actions", policy.hint("not_in_task", "lab1", "container.restart"))
+        js = open(__import__("os").path.join(__import__("os").path.dirname(app.__file__), "static", "agent.js"), encoding="utf-8").read()
+        self.assertIn("data-act-id", js)          # the New/Edit dialog has the actions picker
+
+
+class HtmlErrorCase(unittest.TestCase):
+    def test_36_html_error_pages_are_not_dumped(self):
+        import http.server as hs
+        import threading
+
+        class H(hs.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = b"<html><body><h1>Not Found</h1><script>x</script></body></html>"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        srv = hs.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            from backend.agent.providers.base import ProviderError
+            from backend.agent.providers.openai_compat import OpenAICompatAdapter
+            with self.assertRaises(ProviderError) as cm:
+                OpenAICompatAdapter("http://127.0.0.1:%d/v1" % srv.server_address[1], preset={}).list_models()
+            self.assertNotIn("<", cm.exception.message)
+            self.assertIn("404", cm.exception.message)
+        finally:
+            srv.shutdown()

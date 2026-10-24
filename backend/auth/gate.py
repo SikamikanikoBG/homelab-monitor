@@ -31,6 +31,16 @@ _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 
 def install(app):
     app.before_request(gate)
+    app.after_request(frame_headers)
+
+
+def frame_headers(resp):
+    """With a login on, nothing may frame the dashboard (clickjacking a logged-in
+    session). Without one, responses stay exactly as they were (alpha #28)."""
+    if sessions.password_set():
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'self'")
+    return resp
 
 
 def internal_token():

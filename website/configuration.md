@@ -35,6 +35,7 @@ Set these under `environment:` in `docker-compose.yml`. All optional.
 | `AUTH_COOKIE_SECURE` | *(unset)* | `1` forces the `Secure` flag on the session cookie behind a TLS-terminating proxy. |
 | `AGENT_ENABLED` | **off** | `1` makes the optional [AI agent](agents.md) available (it still needs a password and the Enable switch). |
 | `AGENT_MAX_RUNS` | `2` | Agent runs at once; the rest queue. |
+| `AGENT_KEY_DIR` | `/run/secrets` | The only folder a provider key given as `file:/path` may be read from. |
 
 ### Write actions (`ALLOW_SELF_UPDATE`, `ENABLE_CONTROLS`)
 

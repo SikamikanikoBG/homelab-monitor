@@ -52,7 +52,7 @@ class LoginCase(unittest.TestCase):
 class TestNoPassword(LoginCase):
     def test_status_says_no_password(self):
         j = self.c.get("/api/auth/status").get_json()
-        self.assertEqual(j, {"password_set": False, "authenticated": False, "via": None})
+        self.assertEqual(j, {"password_set": False, "authenticated": False, "via": None, "agent": False})
 
     def test_routes_open_as_before(self):
         self.assertEqual(self.c.get("/api/fleet").status_code, 200)

@@ -10837,7 +10837,7 @@ loadData(); loadHealth(); loadFleet();
 // AI agent (#354): its UI lives in static/agent.js + agent.css and is only
 // loaded when the server says the agent exists (AGENT_ENABLED=1); otherwise
 // /api/agent/status is a 404 and nothing more is fetched.
-(async () => { try{ const r=await fetch('/api/agent/status'); if(!r.ok) return; const v=encodeURIComponent((await r.json()).version||'');
+(async () => { try{ if(!(await HLM_AUTH.status()).agent) return; const r=await fetch('/api/agent/status'); if(!r.ok) return; const v=encodeURIComponent((await r.json()).version||'');
   const css=document.createElement('link'); css.rel='stylesheet'; css.href='/static/agent.css?v='+v; document.head.appendChild(css);
   const js=document.createElement('script'); js.src='/static/agent.js?v='+v; document.body.appendChild(js); }catch(e){} })();
 // Pick up the reduced-motion preference before the Settings tab is ever

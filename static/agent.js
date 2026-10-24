@@ -137,6 +137,18 @@ function agRiskPill(risk) {
   return '<span class="ag-pill ' + agEsc(risk) + '">' + agEsc(t) + '</span>';
 }
 
+/** Date and time, always (Activity lists runs from many days). */
+function agWhenFull(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function agTriggerLabel(t) {
+  return { chat: agT('agent.trig.chat', 'chat'), schedule: agT('agent.trig.schedule', 'schedule'), manual: agT('agent.trig.manual', 'run now'),
+    dry_run: agT('agent.trig.dry_run', 'dry run') }[t] || t;
+}
+
 function agWhen(ts) {
   if (!ts) return '—';
   const d = new Date(ts * 1000);
@@ -146,14 +158,18 @@ function agWhen(ts) {
     : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function agStatusPill(st) {
-  const cls = { done: 'ok', running: 'info', queued: 'info', waiting_approval: 'warn', failed: 'crit', refused: 'crit',
-    cancelled: '', interrupted: 'warn', budget_exhausted: 'warn' }[st] || '';
-  const label = { done: agT('agent.st.done', 'done'), running: agT('agent.st.running', 'running'),
+function agStatusLabel(st) {
+  return { done: agT('agent.st.done', 'done'), running: agT('agent.st.running', 'running'),
     queued: agT('agent.st.queued', 'queued'), waiting_approval: agT('agent.st.waiting', 'waiting for you'),
     failed: agT('agent.st.failed', 'failed'), refused: agT('agent.st.refused', 'refused'),
     cancelled: agT('agent.st.cancelled', 'stopped'), interrupted: agT('agent.st.interrupted', 'interrupted'),
     budget_exhausted: agT('agent.st.budget', 'out of budget') }[st] || st;
+}
+
+function agStatusPill(st) {
+  const cls = { done: 'ok', running: 'info', queued: 'info', waiting_approval: 'warn', failed: 'crit', refused: 'crit',
+    cancelled: '', interrupted: 'warn', budget_exhausted: 'warn' }[st] || '';
+  const label = agStatusLabel(st);
   return '<span class="ag-pill ' + cls + '">' + agEsc(label) + '</span>';
 }
 
@@ -311,7 +327,7 @@ async function agRender(soft) {
 
 function agEnableCard() {
   return '<div class="ag-card" style="max-width:640px"><div class="ag-h">' + agEsc(agT('agent.enable_h', 'Switch the agent on')) + '</div><p>' +
-    agEsc(agT('agent.enable_p', 'When it is on you can chat with your lab and run automations. Every host starts Passive (read only) and every action starts at Deny until you change it under Agent policy.')) +
+    agEsc(agT('agent.enable_p', 'When it is on you can chat with your lab and run automations. New hosts start Passive (read only) and every action starts at Deny until you change it under Agent policy; switching the agent off and on again keeps the policy you set.')) +
     '</p>' + (AG.status && !AG.status.has_provider ? '<p class="ag-mut">' + agEsc(agT('agent.enable_model', 'It needs a model too: pick one under Models & keys.')) + '</p>' : '') +
     '<div class="ag-row"><button class="ag-btn pri" id="ag-enable">' + agEsc(agT('agent.enable_btn', 'Enable the agent')) + '</button>' +
     '<button class="ag-btn" id="ag-to-models">' + agEsc(agT('agent.v.models', 'Models & keys')) + '</button></div></div>';
@@ -330,7 +346,7 @@ function agWireEnable(root) {
 
 async function agLoadView() {
   if (AG.view === 'chat') { await Promise.all([agLoadConvs(), agLoadApprovals(), agLoadModelChoices(), agLoadPolicy(), agLoadTasks()]); if (AG.convId) await agLoadConv(AG.convId); }
-  if (AG.view === 'auto') await Promise.all([agLoadTasks(), agLoadTemplates(), agLoadModelChoices(), agLoadPolicy()]);
+  if (AG.view === 'auto') await Promise.all([agLoadTasks(), agLoadTemplates(), agLoadModelChoices(), agLoadPolicy()]);  // model choices load settings too
   if (AG.view === 'approvals') await agLoadApprovals();
   if (AG.view === 'activity') { await agLoadRuns(); if (AG.runSel) await agLoadRun(AG.runSel); }
   if (AG.view === 'policy') await agLoadPolicy();
@@ -350,10 +366,13 @@ async function agLoadTasks() { const r = await agApi('/api/agent/tasks'); if (r.
 async function agLoadTemplates() { const r = await agApi('/api/agent/templates'); if (r.ok) AG.templates = r.body.templates || []; }
 async function agLoadPolicy() { const r = await agApi('/api/agent/policy'); if (r.ok) AG.policy = r.body; }
 async function agLoadSettings() { const r = await agApi('/api/agent/settings'); if (r.ok) AG.settings = r.body; }
-async function agLoadRuns() {
-  const q = Object.entries(AG.filters).filter(([, v]) => v).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
-  const r = await agApi('/api/agent/runs?limit=100' + (q ? '&' + q : ''));
-  if (r.ok) AG.runs = r.body.items || [];
+async function agLoadRuns(more) {
+  const q = Object.entries(AG.filters).filter(([k, v]) => v && k !== 'sinceDate').map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+  const cur = more && AG.runsNext ? '&cursor=' + AG.runsNext : '';
+  const r = await agApi('/api/agent/runs?limit=50' + (q ? '&' + q : '') + cur);
+  if (!r.ok) return;
+  AG.runs = more ? AG.runs.concat(r.body.items || []) : (r.body.items || []);
+  AG.runsNext = r.body.next || null;
 }
 async function agLoadRun(id) { const r = await agApi('/api/agent/runs/' + encodeURIComponent(id)); AG.runDetail = r.ok ? r.body : null; }
 async function agLoadModelChoices() {
@@ -628,13 +647,25 @@ function agApprovalCard(a, compact) {
   return html + '</div>';
 }
 
+/** One line saying what became of an approval (#31). */
+function agApprovalOutcome(a) {
+  const base = { done: agT('agent.ap.done', 'Approved and done'), approved: agT('agent.ap.approved', 'Approved'),
+    executing: agT('agent.ap.executing', 'Running…'), rejected: agT('agent.ap.rejected', 'Rejected — nothing was run'),
+    expired: agT('agent.ap.expired', 'Expired — nothing was run'), failed: agT('agent.ap.failed', 'Approved, but it failed'),
+    refused: agT('agent.ap.refused', 'Refused at run time') }[a.status] || a.status;
+  return a.result && (a.status === 'refused' || a.status === 'failed') ? base + ': ' + String(a.result).slice(0, 160) : base;
+}
+
 function agWireApprovalButtons(root) {
   root.querySelectorAll('[data-ap],[data-rj]').forEach(b => b.onclick = async () => {
     const id = b.dataset.ap || b.dataset.rj;
     root.querySelectorAll('[data-ap="' + id + '"],[data-rj="' + id + '"]').forEach(x => { x.disabled = true; });
     const r = await agApi('/api/agent/approvals/' + encodeURIComponent(id) + '/decision', 'POST', { decision: b.dataset.ap ? 'approve' : 'reject' });
-    if (!r.ok && r.status === 409) agToast('info', agT('agent.already_decided', 'Already decided (another tab or device).'));
-    else if (!r.ok) agToast('critical', r.body.message || 'Failed');
+    if (!r.ok && r.body.error === 'expired') agToast('info', agT('agent.ap.expired', 'Expired — nothing was run'));
+    else if (!r.ok && r.status === 409) agToast('info', agT('agent.already_decided', 'Already decided (another tab or device).'));
+    else if (!r.ok) agToast('critical', r.body.message || agT('agent.failed', 'Something went wrong.'));
+    else agToast(r.body.status === 'done' || r.body.status === 'rejected' ? 'ok' : r.body.status === 'refused' || r.body.status === 'failed' ? 'warning' : 'info',
+      agApprovalOutcome(r.body.approval || { status: r.body.status }));
     await Promise.all([agLoadApprovals(), agRefreshStatus()]);
     agScheduleRefetch({ conv: true, runs: true });
   });
@@ -667,6 +698,8 @@ function agRenderAuto(view) {
       const on = active[t.id];
       return '<div class="ag-tpl' + (on ? ' on' : '') + '"><h4>' + agEsc(agT('agent.tpl.' + t.id + '.name', t.name)) + '</h4><p>' + agEsc(agT('agent.tpl.' + t.id + '.desc', t.desc)) + '</p>' +
         '<div class="meta"><span class="ag-pill">' + agEsc(agCronLabel(t.default_cron)) + '</span>' +
+        (t.est_tokens ? '<span class="ag-pill" title="' + agEsc(agT('agent.est_t', 'Estimated tokens per run, on your default model')) + '">' +
+          agEsc(agTf('agent.est_short', '~{n}k tokens', { n: Math.round(t.est_tokens / 1000) })) + '</span>' : '') +
         (t.actions.length ? '<span class="ag-pill medium">' + agEsc(agTf('agent.may_propose', 'may act on {n}', { n: t.actions.length })) + '</span>' : '<span class="ag-pill low">' + agEsc(agT('agent.report_only', 'report only')) + '</span>') +
         (t.eligible_hosts.length ? '' : '<span class="ag-pill">' + agEsc(agT('agent.no_hosts', 'no matching host')) + '</span>') + '</div>' +
         '<div class="ag-row">' + (on ? '<span class="ag-pill low">● ' + agEsc(agT('agent.active', 'Active')) + '</span>' : '') +
@@ -724,6 +757,20 @@ function agModeLabel(m) {
 
 
 const AG_CHANNELS = ['inapp', 'all', 'discord', 'ntfy', 'telegram', 'email', 'slack', 'webhook'];
+const AG_CHANNEL_NAMES = { inapp: 'In-app', all: 'All alert channels', discord: 'Discord', ntfy: 'ntfy', telegram: 'Telegram',
+  email: 'Email', slack: 'Slack', webhook: 'Webhook' };
+
+/** A channel can be picked once it is set up in Settings → Alerts (in-app always). */
+function agChannelReady(c) {
+  if (c === 'inapp' || c === 'all') return true;
+  const ready = (AG.settings && AG.settings.channels_configured) || [];
+  return ready.indexOf(c) >= 0;
+}
+
+/** The catalogue actions an automation may be allowed to take (not the read-only checks). */
+function agActionChoices() {
+  return ((AG.policy && AG.policy.actions) || []).filter(a => !a.probe);
+}
 
 /** Activate a template (tpl) or edit/duplicate/create a task (task). */
 function agTaskDialog(tpl, task) {
@@ -734,6 +781,7 @@ function agTaskDialog(tpl, task) {
   const cronNow = base.cron || (tpl && tpl.default_cron) || '0 3 * * *';
   const mode = base.mode || (tpl && tpl.default_mode) || 'report';
   const channels = (base.delivery && base.delivery.channels) || ['inapp'];
+  const chosenActions = base.actions || (tpl ? tpl.actions.map(a => a.id) : []);
   const sel = base.provider_id && base.model ? base.provider_id + '|' + base.model : agDefaultModel();
   const scrim = document.createElement('div');
   scrim.className = 'ag-scrim ag-root';
@@ -753,9 +801,15 @@ function agTaskDialog(tpl, task) {
     '<input class="ag-field ag-mono" id="agd-cron" value="' + agEsc(cronNow) + '"' + (sched === 'custom' ? '' : ' hidden') + '><div class="ag-mut ag-mono" id="agd-preview" style="font-size:12px"></div></div>' +
     '<div class="ag-fld"><label for="agd-mode">' + agEsc(agT('agent.f.mode', 'Mode')) + '</label><select class="ag-field" id="agd-mode">' +
     ['act', 'propose', 'report'].map(m => '<option value="' + m + '"' + (m === mode ? ' selected' : '') + '>' + agEsc({ act: agT('agent.mode_act_long', 'Act within policy (low risk runs, the rest waits for approval)'), propose: agT('agent.mode_propose_long', 'Propose only (everything waits for approval)'), report: agT('agent.mode_report', 'Report only') }[m]) + '</option>').join('') + '</select></div>' +
-    '<div class="ag-fld"><label for="agd-model">' + agEsc(agT('agent.model', 'Model')) + '</label><select class="ag-field" id="agd-model">' + agModelOptions(sel) + '</select></div>' +
+    '<div class="ag-fld"><span class="lbl">' + agEsc(agT('agent.f.actions', 'Actions it may take (your Agent policy still decides each one)')) + '</span><div class="ag-checks">' +
+    agActionChoices().map(a => '<label title="' + agEsc(a.risk) + '"><input type="checkbox" data-act-id="' + agEsc(a.id) + '"' + (chosenActions.indexOf(a.id) >= 0 ? ' checked' : '') + '> ' +
+      agEsc(agT('agent.act.' + a.id, a.title)) + '</label>').join('') + '</div>' +
+    '<div class="ag-mut" style="font-size:12px">' + agEsc(agT('agent.f.actions_note', 'None ticked = it only reads and reports.')) + '</div></div>' +
+    '<div class="ag-fld"><label for="agd-model">' + agEsc(agT('agent.model', 'Model')) + '</label><select class="ag-field" id="agd-model">' + agModelOptions(sel) + '</select>' +
+    '<div class="ag-mut" id="agd-est" style="font-size:12px"></div></div>' +
     '<div class="ag-fld"><span class="lbl">' + agEsc(agT('agent.f.delivery', 'Send the report to')) + '</span><div class="ag-checks">' +
-    AG_CHANNELS.map(c => '<label><input type="checkbox" data-ch="' + c + '"' + (channels.indexOf(c) >= 0 ? ' checked' : '') + '> ' + agEsc(agT('agent.ch.' + c, { inapp: 'In-app', all: 'All alert channels' }[c] || c)) + '</label>').join('') + '</div></div>' +
+    AG_CHANNELS.map(c => { const ok = agChannelReady(c); return '<label' + (ok ? '' : ' class="ag-mut"') + '><input type="checkbox" data-ch="' + c + '"' + (channels.indexOf(c) >= 0 && ok ? ' checked' : '') + (ok ? '' : ' disabled') + '> ' +
+      agEsc(agT('agent.ch.' + c, AG_CHANNEL_NAMES[c] || c)) + (ok ? '' : ' (' + agEsc(agT('agent.ch.not_set', 'not set up')) + ')') + '</label>'; }).join('') + '</div></div>' +
     '<div class="ag-err" id="agd-err"></div>' +
     '<div class="ag-row" style="justify-content:flex-end"><button class="ag-btn" id="agd-cancel">' + agEsc(agT('agent.cancel', 'Cancel')) + '</button>' +
     (editing ? '' : '<button class="ag-btn" id="agd-dry">' + agEsc(agT('agent.run_once', 'Run once now (report only)')) + '</button>') +
@@ -783,10 +837,23 @@ function agTaskDialog(tpl, task) {
     if (tpl) body.template_id = tpl.id;
     else if (!editing && base.template_id) { body.template_id = base.template_id; }
     const p = $('#agd-prompt'); if (p) body.prompt = p.value.trim();
-    if (!tpl && base.actions && !editing) body.actions = base.actions;
+    body.actions = [...scrim.querySelectorAll('[data-act-id]')].filter(x => x.checked).map(x => x.dataset.actId);
     if (!tpl && base.tools && !editing) body.tools = base.tools;
     return body;
   };
+  const est = () => {
+    const box = $('#agd-est'); if (!box) return;
+    const [pid, model] = String($('#agd-model').value || '').split('|');
+    const m = AG.models.find(x => x.provider_id === pid && x.model === model);
+    const p = AG.providers.find(x => x.id === pid);
+    const tokens = (tpl && tpl.est_tokens) || base.est_tokens || 0;
+    if (!tokens) { box.textContent = ''; return; }
+    const price = m ? (m.price_in || 0) : 0;
+    box.textContent = agTf('agent.est', 'About {n} tokens per run', { n: tokens.toLocaleString() }) + ' · ' +
+      (p && p.local ? agT('agent.est_local', 'local model: free') : price ? agTf('agent.est_cost', '≈ {c} per run', { c: (tokens * price / 1e6).toFixed(3) }) : agT('agent.est_noprice', 'set a price under Models & keys to see the cost'));
+  };
+  $('#agd-model').onchange = est;
+  est();
   const save = async () => {
     const body = collect();
     const r = editing ? await agApi('/api/agent/tasks/' + task.id, 'PATCH', body) : await agApi('/api/agent/tasks', 'POST', body);
@@ -812,23 +879,39 @@ function agRenderActivity(view) {
   let html = '<div class="ag-row" style="margin-bottom:10px">' +
     '<select class="ag-modelsel" id="agf-host" aria-label="' + agEsc(agT('agent.f.host', 'Host')) + '"><option value="">' + agEsc(agT('agent.all_hosts', 'All hosts')) + '</option>' + hosts.map(h => '<option' + (f.host === h ? ' selected' : '') + '>' + agEsc(h) + '</option>').join('') + '</select>' +
     '<select class="ag-modelsel" id="agf-status" aria-label="' + agEsc(agT('agent.f.outcome', 'Outcome')) + '"><option value="">' + agEsc(agT('agent.all_outcomes', 'All outcomes')) + '</option>' +
-    ['done', 'waiting_approval', 'failed', 'refused', 'cancelled', 'interrupted', 'budget_exhausted'].map(s => '<option value="' + s + '"' + (f.status === s ? ' selected' : '') + '>' + agEsc(s.replace(/_/g, ' ')) + '</option>').join('') + '</select>' +
+    ['done', 'waiting_approval', 'failed', 'refused', 'cancelled', 'interrupted', 'budget_exhausted'].map(s => '<option value="' + s + '"' + (f.status === s ? ' selected' : '') + '>' + agEsc(agStatusLabel(s)) + '</option>').join('') + '</select>' +
     '<select class="ag-modelsel" id="agf-trigger" aria-label="' + agEsc(agT('agent.f.trigger', 'Trigger')) + '"><option value="">' + agEsc(agT('agent.all_triggers', 'Chat and automations')) + '</option>' +
-    ['chat', 'schedule', 'manual', 'dry_run'].map(s => '<option value="' + s + '"' + (f.trigger === s ? ' selected' : '') + '>' + agEsc(s.replace('_', ' ')) + '</option>').join('') + '</select>' +
+    ['chat', 'schedule', 'manual', 'dry_run'].map(s => '<option value="' + s + '"' + (f.trigger === s ? ' selected' : '') + '>' + agEsc(agTriggerLabel(s)) + '</option>').join('') + '</select>' +
+    '<select class="ag-modelsel" id="agf-task" aria-label="' + agEsc(agT('agent.f.task', 'Automation')) + '"><option value="">' + agEsc(agT('agent.all_tasks', 'All automations')) + '</option>' +
+    AG.tasks.map(t => '<option value="' + agEsc(t.id) + '"' + (f.task_id === t.id ? ' selected' : '') + '>' + agEsc(t.name) + '</option>').join('') + '</select>' +
+    '<select class="ag-modelsel" id="agf-action" aria-label="' + agEsc(agT('agent.pol.action', 'Action')) + '"><option value="">' + agEsc(agT('agent.all_actions', 'All actions')) + '</option>' +
+    ((AG.policy && AG.policy.actions) || []).map(a => '<option value="' + agEsc(a.id) + '"' + (f.action === a.id ? ' selected' : '') + '>' + agEsc(agT('agent.act.' + a.id, a.title)) + '</option>').join('') + '</select>' +
+    '<input type="date" class="ag-modelsel" id="agf-since" aria-label="' + agEsc(agT('agent.f.since', 'Since')) + '" value="' + agEsc(f.sinceDate || '') + '">' +
+    '<input class="ag-modelsel" id="agf-q" placeholder="' + agEsc(agT('agent.f.search', 'Search titles')) + '" value="' + agEsc(f.q || '') + '">' +
     '<span class="ag-sp"></span><a class="ag-btn sm" href="/api/agent/audit/export?format=json' + (qs ? '&' + agEsc(qs) : '') + '" download>' + agEsc(agT('agent.export_json', 'Export JSON')) + '</a>' +
     '<a class="ag-btn sm" href="/api/agent/audit/export?format=csv' + (qs ? '&' + agEsc(qs) : '') + '" download>' + agEsc(agT('agent.export_csv', 'Export CSV')) + '</a></div>';
   html += '<div class="ag-card" style="padding:4px 6px"><div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.col.when', 'When')) + '</th><th>' + agEsc(agT('agent.col.run', 'Run')) + '</th><th>' +
     agEsc(agT('agent.col.trigger', 'Trigger')) + '</th><th>' + agEsc(agT('agent.model', 'Model')) + '</th><th>' + agEsc(agT('agent.col.tokens', 'Tokens')) + '</th><th>' + agEsc(agT('agent.col.outcome', 'Outcome')) + '</th></tr></thead><tbody>' +
-    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhen(r.created_at)) + '</td><td>' + agEsc(r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
-      agEsc(r.trigger) + (r.actor ? ' · ' + agEsc(r.actor) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mono">' + agEsc((r.prompt_tokens || 0) + ' / ' + (r.completion_tokens || 0)) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
-      : '<tr><td colspan="6" class="ag-mut">' + agEsc(agT('agent.no_runs', 'Nothing yet.')) + '</td></tr>') + '</tbody></table></div></div>';
+    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhenFull(r.created_at)) + '</td><td>' + agEsc(r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
+      agEsc(agTriggerLabel(r.trigger)) + (r.actor ? ' · ' + agEsc(r.actor) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mono">' + agEsc((r.prompt_tokens || 0) + ' / ' + (r.completion_tokens || 0)) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
+      : '<tr><td colspan="6" class="ag-mut">' + agEsc(agT('agent.no_runs', 'Nothing yet.')) + '</td></tr>') + '</tbody></table></div>' +
+    (AG.runsNext ? '<div class="ag-row" style="justify-content:center;margin:6px"><button class="ag-btn sm" id="agf-more">' + agEsc(agT('agent.load_more', 'Load more')) + '</button></div>' : '') + '</div>';
   html += '<div id="ag-rundetail"></div>';
   view.innerHTML = html;
   const reload = async () => { await agLoadRuns(); agRenderActivity(view); };
   view.querySelector('#agf-host').onchange = e => { AG.filters.host = e.target.value; reload(); };
   view.querySelector('#agf-status').onchange = e => { AG.filters.status = e.target.value; reload(); };
   view.querySelector('#agf-trigger').onchange = e => { AG.filters.trigger = e.target.value; reload(); };
-  view.querySelectorAll('[data-run]').forEach(tr => tr.onclick = async () => { AG.runSel = tr.dataset.run; await agLoadRun(AG.runSel); agRenderActivity(view); });
+  view.querySelector('#agf-task').onchange = e => { AG.filters.task_id = e.target.value; reload(); };
+  view.querySelector('#agf-action').onchange = e => { AG.filters.action = e.target.value; reload(); };
+  view.querySelector('#agf-since').onchange = e => { AG.filters.sinceDate = e.target.value; AG.filters.since = e.target.value ? Math.floor(new Date(e.target.value + 'T00:00:00').getTime() / 1000) : ''; reload(); };
+  view.querySelector('#agf-q').onchange = e => { AG.filters.q = e.target.value.trim(); reload(); };
+  const more = view.querySelector('#agf-more');
+  if (more) more.onclick = async () => { await agLoadRuns(true); agRenderActivity(view); };
+  view.querySelectorAll('[data-run]').forEach(tr => tr.onclick = async () => {
+    AG.runSel = tr.dataset.run; await agLoadRun(AG.runSel); agRenderActivity(view);
+    const box = document.getElementById('ag-rundetail'); if (box) box.scrollIntoView({ block: 'start' });   // phone: the detail is far below (#11)
+  });
   if (AG.runDetail && AG.runSel === AG.runDetail.run.id) agPaintRunDetail(view.querySelector('#ag-rundetail'), AG.runDetail);
 }
 
@@ -887,6 +970,7 @@ function agRenderPolicy(view) {
     '</tbody></table></div><p class="ag-mut" style="font-size:12px;margin:8px 0 0">' + agEsc(agT('agent.pol.mcp_note', 'New hosts start Passive. Off applies to this in-app agent only; the read-only MCP server still sees the whole fleet.')) + '</p></div>';
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.pol.actions_on', 'Allowed actions on')) + ' <select class="ag-modelsel" id="agp-host">' + p.hosts.map(h => '<option' + (h.host === H.host ? ' selected' : '') + '>' + agEsc(h.host) + '</option>').join('') + '</select></div>' +
     (H.mode !== 'active' ? '<div class="ag-banner warn">' + agEsc(agTf('agent.pol.not_active', '{host} is not Active, so none of these run there until you set it Active.', { host: H.host })) + '</div>' : '') +
+    '<div class="ag-scrollhint">' + agEsc(agT('agent.swipe', '← swipe the table to see the rules →')) + '</div>' +
     '<div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.pol.action', 'Action')) + '</th><th>' + agEsc(agT('agent.pol.risk', 'Risk')) + '</th><th>' + agEsc(agT('agent.pol.runs', 'Runs')) + '</th><th>' +
     agEsc(agT('agent.pol.in_chat', 'In chat')) + '</th><th>' + agEsc(agT('agent.pol.unattended', 'Unattended')) + '</th></tr></thead><tbody>' +
     p.actions.filter(a => !a.probe).map(a => {
@@ -950,6 +1034,25 @@ function agRenderPolicy(view) {
 
 // ── models & keys ────────────────────────────────────────────────────────────
 
+/** A provider test result in the page's language (#24); errors by kind, never a raw body (#36). */
+function agTestText(t) {
+  if (!t) return '';
+  if (t.ok) return agTf('agent.m.models_n', '{n} models', { n: (t.models || []).length || parseInt(t.detail, 10) || 0 });
+  const kinds = { auth: agT('agent.err.auth', 'The provider rejected the key (401/403).'), unreachable: agT('agent.err.unreachable', 'The provider can’t be reached.'),
+    rate_limited: agT('agent.err.rate_limited', 'The provider is rate-limiting (429).'), server: agT('agent.err.server', 'The provider had an internal error (5xx).'),
+    bad_request: agT('agent.err.bad_request', 'The provider refused the request — check the URL.'), timeout: agT('agent.err.timeout', 'The provider took too long to answer.'),
+    protocol: agT('agent.err.protocol', 'The answer wasn’t what a model server sends — check the URL.') };
+  return kinds[t.error_kind] || t.detail || agT('agent.failed', 'Something went wrong.');
+}
+
+/** A tool-probe result in the page's language. */
+function agProbeText(r) {
+  if (r.tools === 'yes' && r.multi_step === 'yes') return agT('agent.probe.good', 'Calls tools and follows up on their results.');
+  if (r.tools === 'yes') return agT('agent.probe.single', 'Calls tools, but didn’t follow up on a tool result — fine for questions, weak for multi-step tasks.');
+  if (r.tools === 'no') return agT('agent.probe.no', 'This model answered in text instead of calling the tool, so it can’t drive the agent.');
+  return agTf('agent.probe.unknown', 'Couldn’t test it: {why}', { why: agTestText({ ok: false, error_kind: null, detail: r.detail }) });
+}
+
 function agBadge(m) {
   const t = { yes: ['ok', agT('agent.badge.tools_yes', 'tool calls: works')], no: ['crit', agT('agent.badge.tools_no', 'no tool calls')], unknown: ['', agT('agent.badge.untested', 'untested')] }[m.tools] || ['', m.tools];
   let html = '<span class="ag-pill ' + t[0] + '">' + agEsc(t[1]) + '</span>';
@@ -971,16 +1074,21 @@ function agRenderModels(view) {
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.found', 'Found on your lab')) + '</div>' +
     (AG.discovered.length ? '<div class="ag-tw"><table><tbody>' + AG.discovered.map((d, i) => '<tr><td class="ag-mono">' + agEsc(d.server || d.provider_key) + '</td><td class="ag-mono ag-mut">' + agEsc(d.preset + '@' + d.host) + '</td><td>' +
       (d.reachable ? '<span class="ag-pill ok">' + agEsc(agTf('agent.m.models_n', '{n} models', { n: d.models.length })) + '</span>' : '<span class="ag-pill">' + agEsc(agT('agent.m.unreachable', 'seen, but not reachable from the hub')) + '</span>') + '</td><td>' +
-      (d.provider_id ? '<span class="ag-pill info">' + agEsc(agT('agent.m.added', 'added')) + '</span>' : '<button class="ag-btn sm pri" data-disc="' + i + '"' + (d.reachable ? '' : ' disabled') + '>' + agEsc(agT('agent.m.add', 'Add')) + '</button>') + '</td></tr>').join('') + '</tbody></table></div>'
+      (d.provider_id ? '<span class="ag-pill info">' + agEsc(agT('agent.m.added', 'added')) + '</span>' : '<button class="ag-btn sm pri" data-disc="' + i + '"' + (d.reachable ? '' : ' disabled') + '>' + agEsc(agT('agent.m.add', 'Add')) + '</button>') + '</td></tr>' +
+      (d.reachable && d.models.length ? '<tr><td colspan="4"><div class="ag-row">' + d.models.slice(0, 12).map(m => {
+        const known = d.provider_id ? AG.models.find(x => x.provider_id === d.provider_id && x.model === m) : null;
+        return '<span class="ag-row" style="gap:4px"><span class="ag-mono">' + agEsc(m) + '</span>' + (known ? agBadge(known) : '') +
+          '<button class="ag-btn sm" data-disc-use="' + i + '|' + agEsc(m) + '"' + (known && known.tools === 'no' ? ' disabled' : '') + '>' + agEsc(agT('agent.m.use', 'Use')) + '</button></span>';
+      }).join('') + '</div></td></tr>' : '')).join('') + '</tbody></table></div>'
       : '<p class="ag-mut">' + agEsc(agT('agent.m.none_found', 'No model servers found on your lab. Add Ollama, vLLM, llama.cpp or LM Studio as a custom AI server in Settings → General, or add one by URL below.')) + '</p>') + '</div>';
   html += AG.providers.map(p => '<div class="ag-card"><div class="ag-h">' + agEsc(p.label) + ' <span class="ag-pill">' + agEsc(p.local ? agT('agent.local', 'local') : agT('agent.cloud', 'cloud')) + '</span>' + (p.experimental ? '<span class="ag-pill warn">' + agEsc(agT('agent.m.experimental', 'experimental')) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" data-ptest="' + agEsc(p.id) + '">' + agEsc(agT('agent.m.test', 'Test & list models')) + '</button><button class="ag-btn sm no" data-pdel="' + agEsc(p.id) + '">' + agEsc(agT('agent.delete', 'Delete')) + '</button></div>' +
     '<div class="ag-mut ag-mono" style="font-size:12px">' + agEsc(p.base_url) + (p.key_set ? ' · ' + agEsc(agT('agent.m.key', 'key')) + ' ' + agEsc(p.key_ref ? p.key_ref : '••••' + (p.key_last4 || '')) : '') + '</div>' +
-    (p.last_test ? '<div style="font-size:12px;margin-top:4px">' + (p.last_test.ok ? '<span class="ag-pill ok">' + agEsc(p.last_test.detail) + '</span>' : '<span class="ag-pill crit">' + agEsc(p.last_test.detail || p.last_test.error_kind) + '</span>') + '</div>' : '') +
+    (p.last_test ? '<div style="font-size:12px;margin-top:4px">' + (p.last_test.ok ? '<span class="ag-pill ok">' + agEsc(agTestText(p.last_test)) + '</span>' : '<span class="ag-pill crit">' + agEsc(agTestText(p.last_test)) + '</span>') + '</div>' : '') +
     (p.local ? '' : '<div class="ag-row" style="margin-top:6px"><input class="ag-field" type="password" autocomplete="new-password" placeholder="' + agEsc(p.key_set ? agT('agent.m.replace_key', 'Replace key') : agT('agent.m.paste_key', 'Paste API key')) + '" data-pkey="' + agEsc(p.id) + '"><button class="ag-btn sm" data-pkeysave="' + agEsc(p.id) + '">' + agEsc(agT('agent.save', 'Save')) + '</button></div>') +
     ((byProv[p.id] || []).length ? '<div class="ag-tw" style="margin-top:8px"><table><tbody>' + byProv[p.id].map(m => {
       const v = m.provider_id + '|' + m.model;
-      return '<tr><td class="ag-mono">' + agEsc(m.model) + (m.context_window ? ' <span class="ag-mut">' + agEsc(Math.round(m.context_window / 1024) + 'k ctx') + '</span>' : '') + '</td><td>' + agBadge(m) + (m.detail ? '<div class="ag-mut" style="font-size:12px">' + agEsc(m.detail) + '</div>' : '') + '</td>' +
+      return '<tr><td class="ag-mono">' + agEsc(m.model) + (m.context_window ? ' <span class="ag-mut">' + agEsc(Math.round(m.context_window / 1024) + 'k ctx') + '</span>' : '') + '</td><td>' + agBadge(m) + (m.probed_at ? '<div class="ag-mut" style="font-size:12px">' + agEsc(agProbeText(m)) + '</div>' : '') + '</td>' +
         (p.local ? '' : '<td><input class="ag-field" style="width:70px" data-pin="' + agEsc(v) + '" value="' + agEsc(m.price_in || '') + '" placeholder="in/M" title="' + agEsc(agT('agent.m.price_t', 'Price per million tokens, in the Costs tab currency')) + '"> <input class="ag-field" style="width:70px" data-pout="' + agEsc(v) + '" value="' + agEsc(m.price_out || '') + '" placeholder="out/M"></td>') +
         '<td class="ag-row"><button class="ag-btn sm" data-probe="' + agEsc(v) + '">' + agEsc(agT('agent.m.test_model', 'Test')) + '</button>' +
         (v === def ? '<span class="ag-pill info">' + agEsc(agT('agent.m.default', 'default')) + '</span>' : '<button class="ag-btn sm pri" data-use="' + agEsc(v) + '"' + (m.tools === 'no' ? ' disabled' : '') + '>' + agEsc(agT('agent.m.use', 'Use')) + '</button>') + '</td></tr>';
@@ -1031,9 +1139,28 @@ function agRenderModels(view) {
     if (r.ok) { await agApi('/api/agent/providers/' + r.body.provider.id + '/test', 'POST', {}); await agLoadSettings(); }
     await agLoadModels(true); agRenderModels(view);
   });
+  view.querySelectorAll('[data-disc-use]').forEach(b => b.onclick = async () => {
+    const cut = b.dataset.discUse.indexOf('|');
+    const d = AG.discovered[+b.dataset.discUse.slice(0, cut)], model = b.dataset.discUse.slice(cut + 1);
+    b.disabled = true; b.textContent = agT('agent.m.testing', 'Testing…');
+    let pid = d.provider_id;
+    if (!pid) {
+      const r = await agApi('/api/agent/providers', 'POST', { preset: d.preset, base_url: d.base_url, label: (d.server || d.preset) + ' @ ' + d.host, source: 'discovered' });
+      if (!r.ok) { agToast('critical', r.body.message || agT('agent.failed', 'Something went wrong.')); return; }
+      pid = r.body.provider.id;
+      await agApi('/api/agent/providers/' + pid + '/test', 'POST', {});
+    }
+    const pr = await agApi('/api/agent/models/probe', 'POST', { provider_id: pid, model });
+    if (pr.body.tools === 'yes') {
+      const r = await agApi('/api/agent/settings', 'PUT', { default_provider_id: pid, default_model: model });
+      if (r.ok) AG.settings = r.body;
+    }
+    agToast(pr.body.tools === 'yes' ? 'ok' : 'warning', agProbeText(pr.body));
+    await agLoadModels(true); agRenderModels(view);
+  });
   view.querySelectorAll('[data-ptest]').forEach(b => b.onclick = async () => {
     b.disabled = true; const r = await agApi('/api/agent/providers/' + b.dataset.ptest + '/test', 'POST', {});
-    agToast(r.body.ok ? 'ok' : 'critical', r.body.ok ? r.body.detail : (r.body.detail || 'Failed')); reload();
+    agToast(r.body.ok ? 'ok' : 'critical', agTestText(r.body)); reload();
   });
   view.querySelectorAll('[data-pdel]').forEach(b => b.onclick = async () => {
     if (!confirm(agT('agent.m.del_confirm', 'Remove this provider? Automations using it will show a warning.'))) return;
@@ -1050,7 +1177,7 @@ function agRenderModels(view) {
     const [pid, model] = b.dataset.probe.split('|');
     b.disabled = true; b.textContent = agT('agent.m.testing', 'Testing…');
     const r = await agApi('/api/agent/models/probe', 'POST', { provider_id: pid, model });
-    agToast(r.body.tools === 'yes' ? 'ok' : 'warning', r.body.detail || ''); reload();
+    agToast(r.body.tools === 'yes' ? 'ok' : 'warning', agProbeText(r.body)); reload();
   });
   view.querySelectorAll('[data-use]').forEach(b => b.onclick = async () => {
     const [pid, model] = b.dataset.use.split('|');

@@ -75,12 +75,16 @@ def login_page():
 def status():
     """What the login page and the fetch wrapper need. Open, and says nothing
     beyond whether a password exists and whether *this* caller is logged in."""
+    # `agent` tells the page whether to load the agent UI at all, so a default
+    # install never even asks /api/agent/status (and logs no 404, alpha #19).
+    from backend.agent import state as agent_state
+    agent = agent_state.env_allowed()
     if not sessions.password_set():
-        return jsonify({"password_set": False, "authenticated": False, "via": None})
+        return jsonify({"password_set": False, "authenticated": False, "via": None, "agent": agent})
     row = sessions.lookup(request.cookies.get(sessions.COOKIE))
     if row:
-        return jsonify({"password_set": True, "authenticated": True, "via": "session", "csrf": row[1]})
-    return jsonify({"password_set": True, "authenticated": False, "via": None})
+        return jsonify({"password_set": True, "authenticated": True, "via": "session", "csrf": row[1], "agent": agent})
+    return jsonify({"password_set": True, "authenticated": False, "via": None, "agent": agent})
 
 
 @bp.route("/api/auth/check")

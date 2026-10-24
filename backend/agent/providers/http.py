@@ -84,6 +84,9 @@ def _error_from_http(e, secret):
             msg = j["message"]
     except ValueError:
         pass
+    ctype = (e.headers.get("Content-Type") if e.headers else "") or ""
+    if "html" in ctype.lower():
+        msg = "HTTP %s %s" % (e.code, e.reason or "")      # a web page, not an API answer: no raw HTML (alpha #36)
     msg = _scrub(msg or str(e.reason), secret)
     code = e.code
     retry_after = None

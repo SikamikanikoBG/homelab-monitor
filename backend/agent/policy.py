@@ -223,7 +223,7 @@ HINTS = {
     "controls_disabled": "Controls are off for the whole dashboard (ENABLE_CONTROLS=0), so every action is refused.",
     "protected": "{host} → {target} is protected for the agent ({why}). Unmark it in Agent policy if you really want this.",
     "host_passive": "{host} is Passive, so the agent can only read it. To allow this, set {host} to Active and \"{title}\" to Ask or Allow in Agent policy.",
-    "not_in_task": "This automation isn't set up to run \"{title}\". Edit the automation to add it.",
+    "not_in_task": "This automation isn't set up to run \"{title}\". Edit the automation and tick \"{title}\" under Actions.",
     "report_only": "This run is in Report mode: it only reports. Switch the automation to Propose or Act to get actions.",
     "rule_deny": "\"{title}\" is set to Deny on {host}. Set it to Ask or Allow in Agent policy.",
     "approved": "Approved.",

@@ -191,4 +191,27 @@ check('alpha #5: Stop shows a stopping state', () => {
   assert.ok(SRC.includes("agT('agent.stopping', 'Stopping…')"));
 });
 
+check('alpha #1/#36: automations offer the catalogue actions; channels need to be set up', () => {
+  const c3 = { console, String, Array, Object, AG: { policy: { actions: [{ id: 'a', probe: false }, { id: 'p', probe: true }] },
+    settings: { channels_configured: ['ntfy'] } } };
+  vm.createContext(c3);
+  vm.runInContext([take('agActionChoices'), take('agChannelReady')].join('\n'), c3);
+  assert.deepStrictEqual(plain(c3.agActionChoices().map(a => a.id)), ['a']);
+  assert.strictEqual(c3.agChannelReady('inapp'), true);
+  assert.strictEqual(c3.agChannelReady('ntfy'), true);
+  assert.strictEqual(c3.agChannelReady('discord'), false);
+});
+
+check('alpha #24/#31/#36: outcomes and provider errors read as sentences, not raw text', () => {
+  vm.runInContext([take('agApprovalOutcome'), take('agTestText'), take('agProbeText'), take('agStatusLabel'),
+    take('agTriggerLabel'), take('agWhenFull')].join('\n'), ctx);
+  assert.strictEqual(ctx.agApprovalOutcome({ status: 'refused', result: 'lab1 is Passive' }), 'Refused at run time: lab1 is Passive');
+  assert.strictEqual(ctx.agTestText({ ok: false, error_kind: 'protocol', detail: '<html>' }).includes('<'), false);
+  assert.strictEqual(ctx.agTestText({ ok: true, models: ['a', 'b'] }), '2 models');
+  assert.ok(ctx.agProbeText({ tools: 'no' }).includes('can’t drive the agent'));
+  assert.strictEqual(ctx.agStatusLabel('waiting_approval'), 'waiting for you');
+  assert.strictEqual(ctx.agTriggerLabel('manual'), 'run now');
+  assert.ok(/\d{4}/.test(ctx.agWhenFull(1735689600)));     // the date, with the year, always (#32)
+});
+
 console.log('\n' + n + ' agent UI checks passed');
