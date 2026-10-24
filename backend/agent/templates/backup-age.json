@@ -1,0 +1,24 @@
+{
+  "id": "backup-age",
+  "version": 2,
+  "name": "Backup freshness",
+  "desc": "Checks that the backup folders you list got new files recently. Report only.",
+  "prompt": "For each selected host, check each watched path with files.changed_within and days 2. A path with no files changed in the last 2 days is stale: say so clearly. If a path is fresh, say how many files changed. If a host has no watched paths, say they can be added under Agent policy.",
+  "tools": [
+    "list_hosts"
+  ],
+  "probes": [
+    "files.changed_within"
+  ],
+  "actions": [],
+  "requires": [
+    "linux"
+  ],
+  "default_cron": "0 9 * * *",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 12,
+    "max_seconds": 360
+  },
+  "est_tokens": 8000
+}

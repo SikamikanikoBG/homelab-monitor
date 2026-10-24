@@ -11,10 +11,21 @@ import uuid
 
 
 def open_db_connection(path: str):
-    """Open a SQLite connection with WAL mode and busy_timeout set."""
+    """Open a SQLite connection with WAL mode and busy_timeout set.
+
+    Switching a fresh file to WAL takes an exclusive lock and SQLite answers
+    "database is locked" at once — without waiting — when a second thread opens
+    the same new file at that moment, so the switch is retried briefly."""
     conn = sqlite3.connect(path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    for attempt in range(50):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            break
+        except sqlite3.OperationalError:
+            if attempt == 49:
+                raise
+            time.sleep(0.02)
     return conn
 
 

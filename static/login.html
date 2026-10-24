@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HomeLab Monitor — log in</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<style>
+:root{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--crit:#cf222e;--ok:#1a7f37;--info:#0969da;
+--canvas:#f6f8fa;--inset:#f6f8fa;--critbg:#cf222e14;--onaccent:#1a1100;--accentbtn:#d29922;
+--sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;
+--crit:#f85149;--ok:#3fb950;--info:#58a6ff;--canvas:#0a0e14;--inset:#0d1117;--critbg:#f8514918;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--crit:#f85149;--ok:#3fb950;--info:#58a6ff;
+--canvas:#0a0e14;--inset:#0d1117;--critbg:#f8514918;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--canvas);color:var(--tx);
+font:14px/1.5 var(--sans);padding:16px}
+.box{width:min(360px,100%);background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:22px;display:grid;gap:12px}
+h1{font-size:18px;margin:0;display:flex;gap:8px;align-items:center}
+p{margin:0;color:var(--mut);font-size:13px}
+input{width:100%;border:1px solid var(--bd);border-radius:8px;background:var(--inset);color:var(--tx);font:14px var(--sans);padding:9px 10px}
+input:focus-visible,button:focus-visible{outline:2px solid var(--info);outline-offset:1px}
+button{border:1px solid var(--accentbtn);background:var(--accentbtn);color:var(--onaccent);border-radius:8px;padding:9px;font:600 14px var(--sans);cursor:pointer}
+button[disabled]{opacity:.6;cursor:default}
+.err{border:1px solid var(--crit);background:var(--critbg);color:var(--crit);border-radius:8px;padding:7px 10px;font-size:13px}
+code{font-size:12px}
+</style></head>
+<body>
+<form class="box" id="f" autocomplete="on">
+  <h1><img src="/static/logo.svg" alt="" width="22" height="22"><span data-i18n="login.title">HomeLab Monitor</span></h1>
+  <p data-i18n="login.intro">This dashboard has a login. Please enter its password.</p>
+  <input type="password" id="pw" name="password" autocomplete="current-password" autofocus aria-label="Password" placeholder="Password" data-i18n-ph="login.password">
+  <div class="err" id="err" hidden></div>
+  <button type="submit" id="go" data-i18n="login.submit">Log in</button>
+  <p data-i18n-html="login.forgot">Forgot it? Run <code>docker exec homelab-monitor python -m backend.auth.cli reset-password</code> on the host.</p>
+</form>
+<script>
+'use strict';
+(function () {
+  const theme = localStorage.getItem('hl_theme');
+  if (theme === 'dark' || theme === 'light') document.documentElement.setAttribute('data-theme', theme);
+  // Only same-site paths are followed after login; anything else goes home.
+  function nextUrl() {
+    const n = new URLSearchParams(location.search).get('next') || '/';
+    return (n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/login')) ? n : '/';
+  }
+  async function localize() {
+    const lang = localStorage.getItem('hl_lang') || '';
+    if (!lang || lang === 'en') return;
+    try {
+      const d = await (await fetch('/locales/' + encodeURIComponent(lang) + '.json')).json();
+      document.querySelectorAll('[data-i18n]').forEach(el => { const v = d[el.dataset.i18n]; if (v) el.textContent = v; });
+      document.querySelectorAll('[data-i18n-ph]').forEach(el => { const v = d[el.dataset.i18nPh]; if (v) el.placeholder = v; });
+    } catch (e) { /* English stays */ }
+  }
+  localize();
+  fetch('/api/auth/status').then(r => r.json()).then(s => {
+    if (!s.password_set || s.authenticated) location.replace(nextUrl());
+  }).catch(() => {});
+  const err = document.getElementById('err'), go = document.getElementById('go');
+  document.getElementById('f').addEventListener('submit', async e => {
+    e.preventDefault();
+    go.disabled = true; err.hidden = true;
+    try {
+      const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('pw').value }) });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) { location.replace(nextUrl()); return; }
+      err.textContent = j.message || ('HTTP ' + r.status);
+      err.hidden = false;
+    } catch (ex) {
+      err.textContent = String(ex); err.hidden = false;
+    }
+    go.disabled = false;
+  });
+})();
+</script>
+</body></html>

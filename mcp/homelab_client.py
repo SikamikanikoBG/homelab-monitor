@@ -45,15 +45,51 @@ class MonitorError(RuntimeError):
     """
 
 
+# In-process transport (#354): the dashboard's own AI agent calls these same
+# functions without a network hop by installing a callable here that takes a
+# path and returns (status, body_text). Unset (the MCP server, any script) =
+# plain urllib, exactly as before.
+_transport = None
+
+
+def set_transport(fn):
+    global _transport
+    _transport = fn
+
+
+def _auth_headers():
+    """A bearer token when one is configured: HOMELAB_API_TOKEN (a read key an
+    external MCP client sets once the dashboard has a login) or the per-container
+    HLM_INTERNAL_TOKEN that launch.py hands the built-in MCP server."""
+    tok = os.environ.get("HOMELAB_API_TOKEN") or os.environ.get("HLM_INTERNAL_TOKEN")
+    return {"Authorization": "Bearer " + tok} if tok else {}
+
+
+def _via_transport(path):
+    status, raw = _transport(path)
+    if status >= 400:
+        raise MonitorError("monitor returned HTTP %s for %s" % (status, path))
+    return raw
+
+
 def _get(path):
     """GET a JSON endpoint and return the decoded object."""
+    if _transport is not None:
+        raw = _via_transport(path)
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise MonitorError("monitor returned a non-JSON body for %s" % path)
     url = base_url() + path
-    req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                               "User-Agent": "homelab-monitor-mcp"})
+    req = urllib.request.Request(url, headers=dict({"Accept": "application/json",
+                                                    "User-Agent": "homelab-monitor-mcp"}, **_auth_headers()))
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MonitorError("monitor needs a login (HTTP 401) — set HOMELAB_API_TOKEN to a read key "
+                               "from Settings → Integrations → API keys (see website/mcp.md)")
         raise MonitorError("monitor returned HTTP %s for %s" % (e.code, path))
     except urllib.error.URLError as e:
         raise MonitorError("cannot reach monitor at %s (%s)" % (base_url(), e.reason))
@@ -67,8 +103,10 @@ def _get(path):
 
 def _get_text(path):
     """GET a text endpoint (e.g. /metrics) and return the raw string."""
+    if _transport is not None:
+        return _via_transport(path)
     url = base_url() + path
-    req = urllib.request.Request(url, headers={"User-Agent": "homelab-monitor-mcp"})
+    req = urllib.request.Request(url, headers=dict({"User-Agent": "homelab-monitor-mcp"}, **_auth_headers()))
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             return resp.read().decode("utf-8", "replace")
