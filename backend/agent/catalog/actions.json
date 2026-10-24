@@ -1,5 +1,5 @@
 {
-  "_doc": "The agent's only way to change anything: named, parameterised actions. Each argv element is a literal or exactly one {param}; an integer or enum param may also sit inside a literal (\"--vacuum-time={days}d\"). Params are validated against their schema and quoted (shlex for POSIX, single quotes for PowerShell). risk 'none' = a read-only probe. Every rule defaults to deny until the owner ticks it. 'unattended': 'never' caps an action at Ask with no unlock. 'sudo': true actions run as `sudo -n` and are capped at Ask. Not in v1: reboot, volume removal, file deletion, any shell.",
+  "_doc": "The agent's only way to change anything: named, parameterised actions. Each argv element is a literal or exactly one {param}; an integer or enum param may also sit inside a literal (\"--vacuum-time={days}d\"). Commands stay within what POSIX and BusyBox tools accept, so they also run on minimal hosts. 'exit_codes' lists exit codes that are answers, not failures, with what they mean. Params are validated against their schema and quoted (shlex for POSIX, single quotes for PowerShell). risk 'none' = a read-only probe. Every rule defaults to deny until the owner ticks it. 'unattended': 'never' caps an action at Ask with no unlock. 'sudo': true actions run as `sudo -n` and are capped at Ask. Not in v1: reboot, volume removal, file deletion, any shell.",
   "version": 1,
   "actions": [
     {"id": "container.start", "title": "Start a container", "risk": "low", "idempotent": true,
@@ -130,7 +130,7 @@
     {"id": "host.disk_usage", "title": "Disk usage per filesystem", "risk": "none", "requires": ["linux"],
      "target": {"kind": "host"},
      "params": {"type": "object", "additionalProperties": false, "properties": {}},
-     "linux": {"via": "ssh", "argv": ["df", "-h", "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay"]},
+     "linux": {"via": "ssh", "argv": ["df", "-hP"]},
      "windows": {"via": "ps", "argv": ["Get-PSDrive", "-PSProvider", "FileSystem"]},
      "timeout_s": 30},
 
@@ -146,7 +146,8 @@
      "linux": {"via": "ssh", "argv": ["apt", "list", "--upgradable"]},
      "timeout_s": 60},
 
-    {"id": "host.reboot_required", "title": "Is a reboot pending (exit code 0 = yes)", "risk": "none",
+    {"id": "host.reboot_required", "title": "Is a reboot pending", "risk": "none",
+     "exit_codes": {"0": "A reboot is pending (/var/run/reboot-required exists).", "1": "No reboot is pending."},
      "requires": ["linux"], "target": {"kind": "host"},
      "params": {"type": "object", "additionalProperties": false, "properties": {}},
      "linux": {"via": "ssh", "argv": ["test", "-f", "/var/run/reboot-required"]},
@@ -161,25 +162,26 @@
      "timeout_s": 30},
 
     {"id": "gpu.kernel_errors_24h", "title": "Kernel errors of the last 24 h (GPU Xid errors show here)",
-     "risk": "none", "requires": ["linux"], "target": {"kind": "host"},
+     "risk": "none", "requires": ["systemd", "linux"], "target": {"kind": "host"},
      "params": {"type": "object", "additionalProperties": false, "properties": {}},
      "linux": {"via": "ssh", "argv": ["journalctl", "-k", "--since", "-24h", "-p", "err", "--no-pager", "-q", "-n", "200"]},
      "timeout_s": 30},
 
-    {"id": "files.list_older_than", "title": "List files older than N days under an allowed path",
+    {"id": "files.list_older_than", "title": "Files older than N days under an allowed path, with their size in KB",
      "risk": "none", "requires": ["linux"], "pre": ["path_allowed"], "target": {"param": "path", "kind": "path"},
      "params": {"type": "object", "additionalProperties": false, "required": ["path", "days"],
                 "properties": {"path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]{0,254}$"},
                                "days": {"type": "integer", "minimum": 1, "maximum": 3650}}},
      "linux": {"via": "ssh", "argv": ["find", "{path}", "-xdev", "-type", "f", "-mtime", "+{days}",
-                                      "-printf", "%s %TY-%Tm-%Td %p\\n"]},
+                                      "-exec", "du", "-k", "{}", "+"]},
      "timeout_s": 60},
 
-    {"id": "files.newest_mtime", "title": "Last-modified time of an allowed path (backup freshness)",
+    {"id": "files.changed_within", "title": "Files changed in the last N days under an allowed path (backup freshness)",
      "risk": "none", "requires": ["linux"], "pre": ["path_allowed"], "target": {"param": "path", "kind": "path"},
-     "params": {"type": "object", "additionalProperties": false, "required": ["path"],
-                "properties": {"path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]{0,254}$"}}},
-     "linux": {"via": "ssh", "argv": ["find", "{path}", "-maxdepth", "2", "-newermt", "-30 days", "-printf", "%T@ %p\\n"]},
+     "params": {"type": "object", "additionalProperties": false, "required": ["path", "days"],
+                "properties": {"path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]{0,254}$"},
+                               "days": {"type": "integer", "minimum": 1, "maximum": 365}}},
+     "linux": {"via": "ssh", "argv": ["find", "{path}", "-maxdepth", "2", "-type", "f", "-mtime", "-{days}"]},
      "timeout_s": 60}
   ]
 }

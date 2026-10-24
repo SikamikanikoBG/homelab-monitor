@@ -133,14 +133,21 @@ def execute(run_id, host, action_id, params, *, attended, run_mode="act", task_a
         ms = int((time.monotonic() - t0) * 1000)
         out = {"ok": bool(r.get("ok")), "exit_code": r.get("exit_code"), "stdout": _trim(r.get("stdout")),
                "stderr": _trim(r.get("stderr"), 1500), "ms": ms}
-        excerpt = (out["stdout"] or out["stderr"] or ("ok" if out["ok"] else "failed"))[:2000]
+        meaning = (a.get("exit_codes") or {}).get(str(r.get("exit_code")))
+        if meaning:
+            # An exit code the catalogue declares as an answer, not a failure (#3).
+            out.update(ok=True, meaning=meaning)
+        elif cmd["via"] in ("ssh", "ps") and r.get("exit_code") == 127:
+            out["meaning"] = "Not available on %s: the command isn't installed there." % host
+        excerpt = ((out.get("meaning") + " " if out.get("meaning") else "") +
+                   (out["stdout"] or out["stderr"] or ("ok" if out["ok"] else "failed")))[:2000]
         store.step_append(run_id, "%s_result" % step_kind_prefix, tool=action_id, host=host, target=target,
                           args_json=params, ok=out["ok"], result_bytes=len(r.get("stdout") or "") +
                           len(r.get("stderr") or ""), result_excerpt=excerpt, approval_id=approval_id,
                           actor=actor, duration_ms=ms)
         audit.action_line("result", run_id, host, action_id, params, ok=out["ok"], approval_id=approval_id,
                           actor=actor, detail=None if out["ok"] else out["stderr"])
-        out["message"] = ("Done." if out["ok"] else "Failed (exit %s)." % out["exit_code"])
+        out["message"] = out.get("meaning") or ("Done." if out["ok"] else "Failed (exit %s)." % out["exit_code"])
         return out
     finally:
         _holder.pop(host, None)

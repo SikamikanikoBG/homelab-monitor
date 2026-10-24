@@ -980,11 +980,10 @@
   "agent.act.docker.prune_dangling_images": "删除悬空（无标签）镜像",
   "agent.act.docker.prune_stopped_containers": "删除停止超过 N 小时的容器",
   "agent.act.docker.system_df": "Docker 磁盘占用",
-  "agent.act.files.list_older_than": "列出允许路径下超过 N 天的文件",
-  "agent.act.files.newest_mtime": "允许路径的最后修改时间（备份新鲜度）",
+  "agent.act.files.list_older_than": "允许路径下超过 N 天的文件及其大小（KB）",
   "agent.act.gpu.kernel_errors_24h": "最近 24 小时的内核错误（GPU Xid 错误会出现在这里）",
   "agent.act.host.disk_usage": "各文件系统的磁盘占用",
-  "agent.act.host.reboot_required": "是否需要重启（退出码 0 = 是）",
+  "agent.act.host.reboot_required": "是否需要重启",
   "agent.act.journal.disk_usage": "日志大小",
   "agent.act.journal.vacuum": "将 systemd 日志压缩到最近 N 天",
   "agent.act.ollama.list_models": "已安装的 Ollama 模型",
@@ -1278,5 +1277,6 @@
   "set.scope_admin": "admin（全部权限）",
   "set.scope_push": "push（实验数据）",
   "set.scope_read": "read（Grafana、MCP）",
-  "set.tab_security": "🔒 安全"
+  "set.tab_security": "🔒 安全",
+  "agent.act.files.changed_within": "允许路径下最近 N 天内修改过的文件（备份新鲜度）"
 }

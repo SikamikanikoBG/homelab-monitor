@@ -306,7 +306,7 @@ def _result_text(action_id, host, res):
     if res.get("refused"):
         return "not allowed: " + res.get("message", "")
     body = {"action": action_id, "host": host, "ok": bool(res.get("ok")), "exit_code": res.get("exit_code"),
-            "output": res.get("stdout"), "error": res.get("stderr") or None}
+            "meaning": res.get("meaning"), "output": res.get("stdout"), "error": res.get("stderr") or None}
     return toolbox.wrap(action_id, body)
 
 

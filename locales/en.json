@@ -870,11 +870,10 @@
   "agent.act.docker.prune_dangling_images": "Remove dangling (untagged) images",
   "agent.act.docker.prune_stopped_containers": "Remove stopped containers older than N hours",
   "agent.act.docker.system_df": "Docker disk usage",
-  "agent.act.files.list_older_than": "List files older than N days under an allowed path",
-  "agent.act.files.newest_mtime": "Last-modified time of an allowed path (backup freshness)",
+  "agent.act.files.list_older_than": "Files older than N days under an allowed path, with their size in KB",
   "agent.act.gpu.kernel_errors_24h": "Kernel errors of the last 24 h (GPU Xid errors show here)",
   "agent.act.host.disk_usage": "Disk usage per filesystem",
-  "agent.act.host.reboot_required": "Is a reboot pending (exit code 0 = yes)",
+  "agent.act.host.reboot_required": "Is a reboot pending",
   "agent.act.journal.disk_usage": "Journal size",
   "agent.act.journal.vacuum": "Shrink the systemd journal to the last N days",
   "agent.act.ollama.list_models": "Installed Ollama models",
@@ -1168,5 +1167,6 @@
   "set.scope_admin": "admin (everything)",
   "set.scope_push": "push (experiments)",
   "set.scope_read": "read (Grafana, MCP)",
-  "set.tab_security": "🔒 Security"
+  "set.tab_security": "🔒 Security",
+  "agent.act.files.changed_within": "Files changed in the last N days under an allowed path (backup freshness)"
 }

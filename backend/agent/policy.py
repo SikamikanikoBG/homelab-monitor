@@ -188,6 +188,10 @@ def decide(host, action_id, params, *, attended, run_mode="act", task_actions=No
     mode = mode_for(host)
     if host not in ports.host_names():
         return Decision("deny", "unknown_host")
+    if mode != "off" and host != "local" and not ports.host_block(host):
+        # Before its first poll after a hub restart we don't know the host's OS
+        # or tools yet; say so instead of "not available here" (alpha #27).
+        return Decision("deny", "host_not_ready")
     errs = catalog.check_params(a, params)
     fam = os_family(host)
     sup = catalog.supported(a, host, fam) and requires_met(a, host)
@@ -214,6 +218,7 @@ HINTS = {
     "bad_params": "The request had invalid parameters.",
     "unsupported_on_host": "\"{title}\" isn't available on {host} (wrong OS, or the tool it needs isn't there).",
     "unknown_host": "There is no host called {host}.",
+    "host_not_ready": "{host} hasn't reported in since the hub started, so I can't check it yet. Try again in a minute.",
     "unknown_action": "That action isn't in the catalogue.",
     "controls_disabled": "Controls are off for the whole dashboard (ENABLE_CONTROLS=0), so every action is refused.",
     "protected": "{host} → {target} is protected for the agent ({why}). Unmark it in Agent policy if you really want this.",

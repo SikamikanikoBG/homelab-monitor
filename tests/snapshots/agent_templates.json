@@ -18,9 +18,9 @@
         "id": "backup-age",
         "name": "Backup freshness",
         "probes": [
-          "files.newest_mtime"
+          "files.changed_within"
         ],
-        "prompt": "For each selected host, check each watched path with files.newest_mtime and report the newest file time per path (each output line starts with a Unix time). A path with nothing in the last 2 days is stale: say so clearly. If a host has no watched paths, say they can be added under Agent policy.",
+        "prompt": "For each selected host, check each watched path with files.changed_within and days 2. A path with no files changed in the last 2 days is stale: say so clearly. If a path is fresh, say how many files changed. If a host has no watched paths, say they can be added under Agent policy.",
         "requires": [
           "linux"
         ],
@@ -28,7 +28,7 @@
         "tools": [
           "list_hosts"
         ],
-        "version": 1,
+        "version": 2,
         "waits_for_approval": []
       },
       {

@@ -83,3 +83,94 @@ class RenameCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from backend.agent import catalog, executor, guards, policy  # noqa: E402
+
+
+class ProbeCase(unittest.TestCase):
+    def setUp(self):
+        from agent_fakes import wipe_agent_tables
+        wipe_agent_tables()
+        self.fleet = FakeFleet({"alp": {"family": "linux", "os_id": "alpine", "containers": ["web"]}}).start()
+        with app.HOST_DATA_LOCK:                 # BusyBox box: docker, no systemd
+            app.HOST_DATA["alp"]["data"]["host"]["systemd"] = {"available": False}
+        self.run = store.run_create(store.conversation_create("t"), "chat", True, "act")
+
+    def tearDown(self):
+        self.fleet.stop()
+
+    def test_3_reboot_not_required_is_an_answer_not_a_failure(self):
+        self.fleet.result = {"ok": False, "exit_code": 1, "stdout": "", "stderr": ""}
+        out = executor.probe(self.run, "alp", "host.reboot_required", {})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["meaning"], "No reboot is pending.")
+        self.fleet.result = {"ok": True, "exit_code": 0, "stdout": "", "stderr": ""}
+        self.assertIn("pending", executor.probe(self.run, "alp", "host.reboot_required", {})["meaning"])
+
+    def test_9_missing_command_says_not_available(self):
+        self.fleet.result = {"ok": False, "exit_code": 127, "stdout": "", "stderr": "sh: x: not found"}
+        out = executor.probe(self.run, "alp", "docker.system_df", {})
+        self.assertFalse(out["ok"])
+        self.assertIn("Not available on alp", out["meaning"])
+
+    def test_9_probes_use_portable_commands(self):
+        r = lambda aid, p: catalog.render(catalog.get(aid), "linux", p)["cmd"]
+        self.assertEqual(r("host.disk_usage", {}), "df -hP")
+        self.assertEqual(r("files.list_older_than", {"path": "/srv", "days": 30}),
+                         "find /srv -xdev -type f -mtime +30 -exec du -k '{}' +")
+        self.assertEqual(r("files.changed_within", {"path": "/srv", "days": 2}),
+                         "find /srv -maxdepth 2 -type f -mtime -2")
+        for a in catalog.actions():
+            for tok in (a.get("linux") or {}).get("argv", []):
+                self.assertNotIn(tok, ("-printf", "-newermt", "-x"), a["id"])   # GNU-only flags
+
+    def test_9_kernel_errors_need_journalctl(self):
+        self.assertNotIn("systemd", policy.capabilities("alp"))
+        self.assertEqual(policy.decide("alp", "gpu.kernel_errors_24h", {}, attended=True).reason,
+                         "unsupported_on_host")
+
+    def test_27_host_without_data_yet_is_not_ready(self):
+        with app.HOST_DATA_LOCK:
+            saved = app.HOST_DATA.pop("alp")
+        try:
+            d = policy.decide("alp", "docker.system_df", {}, attended=True)
+            self.assertEqual(d.reason, "host_not_ready")
+            self.assertIn("hasn't reported in", policy.hint(d.reason, "alp", "docker.system_df"))
+        finally:
+            with app.HOST_DATA_LOCK:
+                app.HOST_DATA["alp"] = saved
+
+
+class StreakCase(unittest.TestCase):
+    def rec(self, name, ok):
+        return guards.StepRecord(name, guards.args_hash(name, {}), "r", ok, "x")
+
+    def test_10_unrelated_failures_dont_end_the_run(self):
+        w = guards.Watch({})
+        for n in ("a", "b", "c", "d", "e"):
+            w.record(self.rec(n, False))
+        self.assertIsNone(guards.error_streak_reason(w))
+
+    def test_10_the_same_failing_call_does(self):
+        w = guards.Watch({})
+        for _ in range(3):
+            w.record(self.rec("a", False))
+        self.assertIsNotNone(guards.error_streak_reason(w))
+        w.record(self.rec("a", True))
+        self.assertEqual(w.error_streak, 0)
+
+
+class UnknownHostCase(unittest.TestCase):
+    def setUp(self):
+        self.on = AgentOn().start()
+
+    def tearDown(self):
+        self.on.stop()
+
+    def test_26_unknown_host_is_not_called_off(self):
+        from backend.agent import toolbox
+        ok, text = toolbox.call_read(toolbox.Scope(), "get_host", {"name": "nosuch"})
+        self.assertFalse(ok)
+        self.assertIn("no host called nosuch", text)
+        self.assertNotIn("Off", text)

@@ -545,7 +545,7 @@
           "type": "object"
         },
         "preview": {
-          "linux": "df -h -x tmpfs -x devtmpfs -x overlay",
+          "linux": "df -hP",
           "windows": "Get-PSDrive -PSProvider FileSystem"
         },
         "probe": true,
@@ -643,7 +643,7 @@
         "targets": [
           "linux"
         ],
-        "title": "Is a reboot pending (exit code 0 = yes)",
+        "title": "Is a reboot pending",
         "unattended": "policy"
       },
       {
@@ -691,6 +691,7 @@
         },
         "probe": true,
         "requires": [
+          "systemd",
           "linux"
         ],
         "risk": "none",
@@ -728,7 +729,7 @@
           "type": "object"
         },
         "preview": {
-          "linux": "find {path} -xdev -type f -mtime +{days} -printf %s %TY-%Tm-%Td %p\\n"
+          "linux": "find {path} -xdev -type f -mtime +{days} -exec du -k {} +"
         },
         "probe": true,
         "requires": [
@@ -743,28 +744,34 @@
         "targets": [
           "linux"
         ],
-        "title": "List files older than N days under an allowed path",
+        "title": "Files older than N days under an allowed path, with their size in KB",
         "unattended": "policy"
       },
       {
         "default_rule": "deny",
-        "id": "files.newest_mtime",
+        "id": "files.changed_within",
         "idempotent": false,
         "params": {
           "additionalProperties": false,
           "properties": {
+            "days": {
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            },
             "path": {
               "pattern": "^/[A-Za-z0-9._/-]{0,254}$",
               "type": "string"
             }
           },
           "required": [
-            "path"
+            "path",
+            "days"
           ],
           "type": "object"
         },
         "preview": {
-          "linux": "find {path} -maxdepth 2 -newermt -30 days -printf %T@ %p\\n"
+          "linux": "find {path} -maxdepth 2 -type f -mtime -{days}"
         },
         "probe": true,
         "requires": [
@@ -779,7 +786,7 @@
         "targets": [
           "linux"
         ],
-        "title": "Last-modified time of an allowed path (backup freshness)",
+        "title": "Files changed in the last N days under an allowed path (backup freshness)",
         "unattended": "policy"
       }
     ],

@@ -50,8 +50,17 @@ class Watch:
     empty_replies: int = 0
 
     def record(self, rec):
+        """The error streak counts the SAME failing call in a row (alpha #10):
+        unrelated failures — one host offline, one check missing — are normal
+        in a productive run and must not end it."""
+        prev = self.steps[-1] if self.steps else None
         self.steps.append(rec)
-        self.error_streak = 0 if rec.ok else self.error_streak + 1
+        if rec.ok:
+            self.error_streak = 0
+        elif prev is not None and not prev.ok and prev.args_hash == rec.args_hash:
+            self.error_streak += 1
+        else:
+            self.error_streak = 1
 
 
 def budget_exceeded(w):

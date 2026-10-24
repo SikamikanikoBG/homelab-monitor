@@ -122,6 +122,8 @@ def call_read(scope, name, args):
     args = defaults(spec.params, args)
     if spec.host_scope in ("arg", "host_opt"):
         host = args.get(spec.host_arg) or "local"
+        if host not in ports.host_names():
+            return False, "error: there is no host called %s. list_hosts shows the hosts." % str(host)[:60]
         if not scope.visible(host):
             return False, "not permitted: %s is Off for the agent (or not part of this task)." % host
     if spec.host_scope == "hub" and not scope.visible("local"):
