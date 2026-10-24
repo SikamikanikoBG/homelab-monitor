@@ -56,6 +56,30 @@ jobs:
       - name: Verify snapshots are byte-identical on second run
         run: python -m pytest tests/test_snapshots.py -q
 
+  # ── full suite ────────────────────────────────────────────────────────────────
+  # The whole pytest suite plus every lift-and-run JS test, on every PR. Before
+  # this, the full suite only ran in release-validate.yml, so a PR could break a
+  # test nobody ran until release day.
+  tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run the full test suite
+        run: python -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e
+
+      - name: Run the JS lift-and-run tests
+        run: for f in tests/js/test_*.js; do echo "== $f"; node "$f"; done
+
   smoke:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -122,7 +146,7 @@ jobs:
   # release.yml publishes on `v*` tags. A Watchtower-followed staging instance on
   # the hub (deploy/docker-compose.next.yml) redeploys whenever `:next` moves.
   publish-next:
-    needs: [snapshot, smoke]
+    needs: [snapshot, smoke, tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     steps:
