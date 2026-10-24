@@ -378,12 +378,12 @@ def conversation_one(cid):
         store.conversation_update(cid, title=b.get("title"), archived=b.get("archived"))
         c = store.conversation_get(cid)
     runs = [r for r in store.run_list(limit=500) if r["conversation_id"] == cid]
-    pend = []
+    cards = []
     for r in runs:
-        pend += [approvals.serialize(a) for a in store.approval_list(run_id=r["id"]) if a["status"] == "pending"]
+        cards += [approvals.serialize(a) for a in store.approval_list(run_id=r["id"])]
     return jsonify({"conversation": _conv_out(c), "messages": [_msg_out(m) for m in store.message_list(cid)],
                     "runs": [_run_out(r) for r in sorted(runs, key=lambda r: (r["created_at"], r["id"]))],
-                    "approvals": pend})
+                    "approvals": sorted(cards, key=lambda a: (a["created_at"], a["id"]))})
 
 
 def _clean_context(ctx):

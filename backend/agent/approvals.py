@@ -136,10 +136,12 @@ def serialize(a):
     act = catalog.get(a["action"]) or {"title": a["action"], "risk": a.get("risk")}
     from backend.agent import policy
     key = catalog.target_key(a["host"], policy.os_family(a["host"])) if a["host"] in ports.host_names() else "linux"
-    return {"id": a["id"], "run_id": a["run_id"], "task_id": a.get("task_id"), "action": a["action"],
+    return {"id": a["id"], "run_id": a["run_id"], "task_id": a.get("task_id"), "call_id": a.get("call_id"),
+            "action": a["action"],
             "title": act["title"], "host": a["host"], "params": a["params"], "risk": a["risk"],
             "rationale": a.get("rationale"), "status": a["status"], "attended": bool(a.get("attended")),
             "seen_count": a.get("seen_count") or 1, "created_at": a["created_at"],
             "last_proposed_at": a.get("last_proposed_at"), "expires_at": a["expires_at"],
             "decided_at": a.get("decided_at"), "decided_by": a.get("decided_by"),
-            "result": a.get("result_excerpt"), "command_preview": catalog.preview(act, key) if "params" in act else None}
+            "result": a.get("result_excerpt"), "command_preview": catalog.preview(act, key) if "params" in act else None,
+            "host_mode": policy.mode_for(a["host"]), "rule": policy.rule_for(a["host"], a["action"])[0]}
