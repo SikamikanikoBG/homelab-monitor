@@ -6,6 +6,7 @@ Provider keys: the `api_key` column is read by exactly one function,
 `provider_secret()`. Every other provider query names its columns and leaves
 the key out, so no serializer can leak it by accident.
 """
+import contextlib
 import hashlib
 import json
 import time
@@ -55,11 +56,10 @@ def _row(cur):
 
 # ── admin log ────────────────────────────────────────────────────────────────
 
-def admin_log(kind, subject, detail, actor=None):
-    with ports.db() as c:
+def admin_log(kind, subject, detail, actor=None, conn=None):
+    with _on(conn) as c:
         c.execute("INSERT INTO agent_admin_log(ts,actor,kind,subject,detail_json) VALUES(?,?,?,?,?)",
                   (now(), actor, kind, subject, _dumps(detail)))
-        c.commit()
 
 
 def admin_log_list(limit=200):
@@ -592,37 +592,67 @@ def set_protected(host, kind, name, on, reason=None):
         c.commit()
 
 
-def host_renamed(old, new):
+@contextlib.contextmanager
+def _on(conn):
+    """The caller's connection inside its open transaction (no commit here),
+    or our own under the dashboard lock, committed on the way out."""
+    if conn is not None:
+        yield conn
+        return
     with ports.db() as c:
+        yield c
+        c.commit()
+
+
+def _refuse_pending(c, host, by, why):
+    """Refuse a host's pending approvals; cancel chat runs parked on them so the
+    conversation isn't stuck waiting for a card that can never be decided."""
+    pend = [r[0] for r in c.execute("SELECT id FROM agent_approvals WHERE host=? AND status='pending'", (host,))]
+    runs = [r[0] for r in c.execute("SELECT DISTINCT run_id FROM agent_approvals WHERE host=? AND status='pending' "
+                                    "AND attended=1", (host,))]
+    c.execute("UPDATE agent_approvals SET status='refused', decided_at=?, decided_by=?, result_excerpt=? "
+              "WHERE host=? AND status='pending'", (now(), by, why, host))
+    for rid in runs:
+        c.execute("UPDATE agent_runs SET status='cancelled', status_reason=?, ended_at=? "
+                  "WHERE id=? AND status='waiting_approval'", (by, now(), rid))
+    return pend
+
+
+def host_renamed(old, new, conn=None):
+    with _on(conn) as c:
         for table in ("agent_host_policy", "agent_action_rules", "agent_protected"):
             c.execute("UPDATE OR REPLACE %s SET host=? WHERE host=?" % table, (new, old))
-        pend = c.execute("SELECT id FROM agent_approvals WHERE host=? AND status='pending'", (old,)).fetchall()
-        c.execute("UPDATE agent_approvals SET status='refused', decided_at=?, decided_by='host_renamed', "
-                  "result_excerpt='The host was renamed; the agent must propose this again.' "
-                  "WHERE host=? AND status='pending'", (now(), old))
+        pend = _refuse_pending(c, old, "host_renamed", "The host was renamed; the agent must propose this again.")
         for tid, hosts_json in c.execute("SELECT id, hosts_json FROM agent_tasks").fetchall():
             hosts = _loads(hosts_json, [])
             if old in hosts:
                 c.execute("UPDATE agent_tasks SET hosts_json=? WHERE id=?",
                           (_dumps([new if h == old else h for h in hosts]), tid))
-        c.commit()
-    return [p[0] for p in pend]
+    return pend
 
 
-def host_deleted(name):
-    with ports.db() as c:
+def host_deleted(name, conn=None):
+    with _on(conn) as c:
         for table in ("agent_host_policy", "agent_action_rules", "agent_protected"):
             c.execute("DELETE FROM %s WHERE host=?" % table, (name,))
-        pend = c.execute("SELECT id FROM agent_approvals WHERE host=? AND status='pending'", (name,)).fetchall()
-        c.execute("UPDATE agent_approvals SET status='refused', decided_at=?, decided_by='host_deleted', "
-                  "result_excerpt='The host was removed.' WHERE host=? AND status='pending'", (now(), name))
+        pend = _refuse_pending(c, name, "host_deleted", "The host was removed.")
         for tid, hosts_json in c.execute("SELECT id, hosts_json FROM agent_tasks").fetchall():
             hosts = _loads(hosts_json, [])
             if name in hosts:
                 c.execute("UPDATE agent_tasks SET hosts_json=? WHERE id=?",
                           (_dumps([h for h in hosts if h != name]), tid))
+    return pend
+
+
+def prune_policy_orphans(known_hosts):
+    """Remove policy rows whose host isn't registered any more."""
+    marks = ",".join("?" * len(known_hosts))
+    n = 0
+    with ports.db() as c:
+        for table in ("agent_host_policy", "agent_action_rules", "agent_protected"):
+            n += c.execute("DELETE FROM %s WHERE host NOT IN (%s)" % (table, marks), list(known_hosts)).rowcount
         c.commit()
-    return [p[0] for p in pend]
+    return n
 
 
 # ── tasks & fires ────────────────────────────────────────────────────────────

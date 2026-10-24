@@ -10,12 +10,6 @@ import shlex
 bp = Blueprint('hosts_api', __name__)
 
 
-def _agent_hosts():
-    """Agent policy follows a host's rename and is dropped with the host."""
-    from backend.agent import hosts
-    return hosts
-
-
 @bp.route("/api/hosts", methods=["GET", "POST"])
 def api_hosts():
     import app as _app
@@ -30,13 +24,24 @@ def api_hosts():
     return jsonify({"hosts": _app.list_hosts()})
 
 
+def _rolled_back_on_error(fn, *args):
+    """A rename/delete touches several tables in one transaction (history,
+    agent policy); if any step fails, undo all of it instead of leaving the
+    half-done transaction for the next writer to commit."""
+    import app as _app
+    try:
+        return fn(*args)
+    except Exception:
+        with _app.LOCK:
+            _app.DB.rollback()
+        raise
+
+
 @bp.route("/api/hosts/<name>", methods=["DELETE", "PATCH"])
 def api_hosts_one(name):
     import app as _app
     if request.method == "DELETE":
-        ok = _app.delete_host(name)
-        if ok:
-            _agent_hosts().deleted(name)
+        ok = _rolled_back_on_error(_app.delete_host, name)
         return jsonify({"ok": ok}), (200 if ok else 404)
     body = request.get_json(silent=True) or {}
     new_name = body.get("name").strip() if isinstance(body.get("name"), str) else None
@@ -49,10 +54,9 @@ def api_hosts_one(name):
         return jsonify({"ok": False, "error": "SSH target must look like user@host or user@host:port."}), 400
     host = None
     if new_name and new_name != name:
-        host, err = _app.rename_host(name, new_name)
+        host, err = _rolled_back_on_error(_app.rename_host, name, new_name)
         if err:
             return jsonify({"ok": False, "error": err}), 404 if err.startswith("No host") else 400
-        _agent_hosts().renamed(name, host["name"])
         name = host["name"]
     if ssh_target is not None or tags is not None:
         host, err = _app.update_host(name, ssh_target=ssh_target, tags=tags)

@@ -26,4 +26,8 @@ def start_workers():
     if os.environ.get("ADMIN_PASSWORD") or os.environ.get("ADMIN_PASSWORD_FILE"):
         sessions.seed_from_env()
     if state.env_allowed():
+        from backend.agent import hosts
+        n = hosts.prune_orphans()
+        if n:
+            print("agent: removed %d policy row(s) of hosts that no longer exist" % n, flush=True)
         boot.start_if_enabled()
