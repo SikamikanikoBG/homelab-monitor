@@ -104,7 +104,7 @@ class TestAgentSmoke(unittest.TestCase):
         self.page.wait_for_function("() => document.querySelector('#ag-msgs').innerText.includes('Restarted web on lab1.')",
                                     timeout=30000)
         self.shot("11-approved")
-        self.assertLessEqual(self.api("GET", "/api/agent/status")["j"]["pending_approvals"], before + 1 - 1)
+        self.assertLessEqual(self.api("GET", "/api/agent/status")["j"]["pending_approvals"], before)   # this card is no longer pending
         self.chat('#stub [{"tool_calls":[{"name":"container__restart","arguments":{"host":"lab2","name":"web"}}]},'
                   '{"text":"Not allowed on lab2."}]')
         self.page.wait_for_function("() => document.querySelector('#ag-msgs').innerText.includes('Not allowed on lab2.')",
