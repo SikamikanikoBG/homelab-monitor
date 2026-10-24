@@ -128,6 +128,7 @@
      "timeout_s": 60},
 
     {"id": "host.disk_usage", "title": "Disk usage per filesystem", "risk": "none", "requires": ["linux"],
+     "exit_codes": {"1": "Some filesystems couldn't be read (permissions); the others are listed."},
      "target": {"kind": "host"},
      "params": {"type": "object", "additionalProperties": false, "properties": {}},
      "linux": {"via": "ssh", "argv": ["df", "-hP"]},
@@ -168,6 +169,7 @@
      "timeout_s": 30},
 
     {"id": "files.list_older_than", "title": "Files older than N days under an allowed path, with their size in KB",
+     "exit_codes": {"1": "Some folders couldn't be read (permissions); what could be read is listed."},
      "risk": "none", "requires": ["linux"], "pre": ["path_allowed"], "target": {"param": "path", "kind": "path"},
      "params": {"type": "object", "additionalProperties": false, "required": ["path", "days"],
                 "properties": {"path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]{0,254}$"},
@@ -177,6 +179,7 @@
      "timeout_s": 60},
 
     {"id": "files.changed_within", "title": "Files changed in the last N days under an allowed path (backup freshness)",
+     "exit_codes": {"1": "Some folders couldn't be read (permissions); what could be read is listed."},
      "risk": "none", "requires": ["linux"], "pre": ["path_allowed"], "target": {"param": "path", "kind": "path"},
      "params": {"type": "object", "additionalProperties": false, "required": ["path", "days"],
                 "properties": {"path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]{0,254}$"},

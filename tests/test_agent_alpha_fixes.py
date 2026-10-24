@@ -390,3 +390,13 @@ class HtmlErrorCase(unittest.TestCase):
             self.assertIn("404", cm.exception.message)
         finally:
             srv.shutdown()
+
+
+class PartialReadCase(ProbeCase):
+    def test_9_partial_read_is_an_answer(self):
+        # BusyBox df exits 1 when one mount can't be read, after listing the rest.
+        self.fleet.result = {"ok": False, "exit_code": 1, "stdout": "Filesystem Size\n/dev/sda1 10G", "stderr": ""}
+        out = executor.probe(self.run, "alp", "host.disk_usage", {})
+        self.assertTrue(out["ok"])
+        self.assertIn("couldn't be read", out["meaning"])
+        self.assertIn("/dev/sda1", out["stdout"])
