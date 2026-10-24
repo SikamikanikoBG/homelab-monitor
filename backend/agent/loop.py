@@ -273,6 +273,10 @@ def _handle(r, ctx, ctl, kinds, call, approval=None):
         _tool_message(r, call, refusal, False, "error")
         return
     kind = kinds.get(name)
+    if kind is None and catalog.from_tool_name(name):
+        # A catalogue action that isn't offered here (host Passive, rule Deny,
+        # controls off…): let the policy say exactly which setting would allow it.
+        kind = ("action", catalog.from_tool_name(name))
     if kind is None:
         text = "error: there is no tool called %s here." % name[:80]
         w.record(guards.StepRecord(name, ah, guards.result_hash(text), False, text))

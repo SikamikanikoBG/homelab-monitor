@@ -221,8 +221,13 @@ class TestActions(LoopCase):
     def test_passive_refusal_names_the_setting(self):
         self.script({"tool_calls": [call("container__restart", host="lab1", name="web")]}, {"text": "Not allowed."})
         self.ask()
-        # Passive host: no action tools are even offered, the call is unknown
+        # Passive host: the action isn't offered, and calling it anyway gets the
+        # policy's plain reason naming the setting that would allow it (US-7).
         self.assertNotIn("container__restart", [t["name"] for t in self.adapter.requests[0].tools])
+        tool = [m["content"] for m in self.messages() if m["role"] == "tool"][0]
+        self.assertIn("not allowed", tool)
+        self.assertIn("lab1 is Passive", tool)
+        self.assertIn("Active", tool)
         self.assertEqual(self.fleet.commands, [])
 
     def test_deny_after_policy_change_mid_run_names_setting(self):
