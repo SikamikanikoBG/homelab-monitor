@@ -246,19 +246,45 @@ def validate_task(t):
         cron.zone(t.get("tz"))
     except cron.CronError as e:
         errs["tz"] = str(e)
+    if c is not None and not errs.get("tz") and cron.next_after(c, t.get("tz"), int(time.time())) is None:
+        errs["cron"] = "this schedule never fires (no such date in the next four years)"
     if t.get("mode") not in ("report", "propose", "act"):
         errs["mode"] = "mode must be report, propose or act"
     if not (t.get("name") or "").strip():
         errs["name"] = "give it a name"
+    elif len(t["name"]) > 120:
+        errs["name"] = "keep the name under 120 characters"
     if not (t.get("prompt") or "").strip():
         errs["prompt"] = "say what it should do"
+    elif len(t["prompt"]) > 8000:
+        errs["prompt"] = "keep the instructions under 8,000 characters"
     if t.get("catch_up", "skip") not in ("skip", "once"):
         errs["catch_up"] = "catch_up must be skip or once"
     hosts = t.get("hosts") or []
     known = set(ports.host_names())
     bad = [h for h in hosts if h not in known]
-    if bad:
+    modes = store.host_modes()
+    off = [h for h in hosts if h in known and modes.get(h, "passive") == "off"]
+    if not hosts:
+        errs["hosts"] = "pick at least one host"
+    elif bad:
         errs["hosts"] = "unknown host(s): %s" % ", ".join(bad)
+    elif off:
+        errs["hosts"] = "the agent can't see %s (Off in Agent policy)" % ", ".join(off)
+    elif t.get("template_id"):
+        from backend.agent import templates
+        tpl = templates.get(t["template_id"])
+        unfit = [h for h in hosts if tpl and h not in templates.eligible_hosts(tpl)]
+        if unfit:
+            errs["hosts"] = "this template doesn't fit %s (it needs %s)" % (", ".join(unfit), ", ".join(tpl.get("requires") or []))
+    chans = [c for c in ((t.get("delivery") or {}).get("channels") or []) if c not in ("inapp", "all")]
+    unset = [c for c in chans if c not in ports.channels_configured()]
+    if unset:
+        errs["delivery"] = "not set up yet: %s (Settings → Alerts)" % ", ".join(unset)
+    if t.get("provider_id") and t.get("model"):
+        m = store.model_get(t["provider_id"], t["model"])
+        if m and m.get("tools") == "no":
+            errs["model"] = "this model can't call tools, so it can't run an automation"
     prov = store.provider_get(t.get("provider_id")) if t.get("provider_id") else None
     if t.get("provider_id") and not prov:
         errs["provider_id"] = "unknown provider"

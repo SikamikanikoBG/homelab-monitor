@@ -34,6 +34,11 @@ def _guard():
         abort(404)
     if request.endpoint == "agent_api.status":
         return None
+    from backend.auth import gate
+    p = gate.principal()
+    if p.get("kind") in ("bearer", "internal") and p.get("scope") != "admin":
+        # The agent's conversations and audit are admin data, like its export (alpha #20).
+        return _err(403, "scope", "The agent API needs a dashboard login or an admin key.")
     if not state.password_set():
         return _err(403, "password_required", "Set a dashboard password first (Settings → Security).")
     if request.endpoint in _NEEDS_ON and not state.runtime_enabled():
@@ -120,33 +125,76 @@ def _settings_out():
     for k in ("budget_chat", "budget_scheduled"):
         out[k] = state.get_json(k)
     out["tz_effective"] = state.tz()
+    out["channels_configured"] = ports.channels_configured()
     return out
+
+
+# Sensible ranges, so a typo can't turn a budget off or a card into an
+# instant expiry (alpha #12).
+_BOUNDS = {"approval_ttl_h": (1, 720), "chat_card_ttl_min": (1, 1440), "cost_cap_run": (0, 1000),
+           "cost_cap_task_day": (0, 1000), "cost_cap_day": (0, 10000), "rate_limit_per_day": (0, 100),
+           "gpu_busy_util_pct": (1, 100), "gpu_min_free_vram_mb": (0, 1048576), "gpu_defer_max_min": (0, 240),
+           "cloud_min_interval_s": (600, 604800), "max_output_tokens": (64, 32768)}
+_BUDGET_BOUNDS = {"max_steps": (1, 100), "max_seconds": (10, 7200), "max_tokens": (1000, 2000000)}
+
+
+def _check_budget(cur, new, field):
+    """A partial budget is merged into the current one; every value checked."""
+    if not isinstance(new, dict):
+        return None, "%s must be an object" % field
+    out = dict(cur)
+    for k, v in new.items():
+        if k not in _BUDGET_BOUNDS:
+            return None, "%s.%s isn't a budget setting" % (field, k)
+        lo, hi = _BUDGET_BOUNDS[k]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            return None, "%s.%s must be between %s and %s" % (field, k, lo, hi)
+        out[k] = int(v)
+    return out, None
+
+
+def _model_refused(pid, model):
+    m = store.model_get(pid, model) if pid and model else None
+    return bool(m and m.get("tools") == "no")
 
 
 @bp.route("/api/agent/settings", methods=["GET", "PUT"])
 def settings():
     if request.method == "PUT":
         b = _body()
-        upd = {k: b[k] for k in _SETTING_KEYS if k in b}
+        unknown = sorted(k for k in b if k not in _SETTING_KEYS)
+        if unknown:
+            return _err(400, "unknown_setting", "Unknown setting(s): %s" % ", ".join(unknown), fields=unknown)
+        upd = dict(b)
         if upd.get("tz"):
             try:
                 cron.zone(upd["tz"])
             except cron.CronError as e:
                 return _err(400, "bad_tz", str(e), field="tz")
-        for k in _NUMERIC:
+        for k, (lo, hi) in _BOUNDS.items():
             if k in upd:
                 try:
-                    if float(upd[k]) < 0:
-                        raise ValueError
-                    upd[k] = str(upd[k])
+                    v = float(upd[k])
                 except (TypeError, ValueError):
-                    return _err(400, "bad_value", "%s must be a positive number" % k, field=k)
+                    v = None
+                if v is None or not lo <= v <= hi:
+                    return _err(400, "bad_value", "%s must be between %s and %s" % (k, lo, hi), field=k)
+                upd[k] = str(upd[k])
         for k in ("budget_chat", "budget_scheduled"):
-            if k in upd and not isinstance(upd[k], dict):
-                return _err(400, "bad_value", "%s must be an object" % k, field=k)
+            if k in upd:
+                merged, err = _check_budget(state.get_json(k), upd[k], k)
+                if err:
+                    return _err(400, "bad_value", err, field=k)
+                upd[k] = merged
         for k in ("default_provider_id", "default_model"):
             if k in upd:
                 upd[k] = str(upd[k] or "")[:200]
+        if upd.get("default_provider_id") and not store.provider_get(upd["default_provider_id"]):
+            return _err(400, "unknown_provider", "That provider doesn't exist.", field="default_provider_id")
+        pid = upd.get("default_provider_id", state.get("default_provider_id"))
+        if upd.get("default_model") and _model_refused(pid, upd["default_model"]):
+            return _err(400, "model_without_tools", "That model can't call tools, so the agent can't use it.",
+                        field="default_model")
         state.put(upd, actor=_actor())
     return jsonify(_settings_out())
 
@@ -171,14 +219,14 @@ def providers_route():
     err = providers.check_base_url(base)
     if err:
         return _err(400, "bad_url", err, field="base_url")
-    err = providers.check_key_ref(b.get("key_ref"))
+    key, ref = providers.split_key(b.get("api_key"), b.get("key_ref"))
+    err = providers.check_key_ref(ref)
     if err:
         return _err(400, "bad_key_ref", err, field="key_ref")
-    key = (b.get("api_key") or "").strip() or None
     extra = {k: str(v)[:200] for k, v in (b.get("extra") or {}).items() if k in (p.get("extra_fields") or [])}
     row = {"id": store.new_id(), "preset": p["id"], "adapter": p["adapter"],
            "label": (b.get("label") or p["label"]).strip()[:80], "base_url": base, "api_key": key,
-           "key_ref": b.get("key_ref") or None, "key_last4": key[-4:] if key else None, "extra": extra,
+           "key_ref": ref, "key_last4": key[-4:] if key else None, "extra": extra,
            "source": "discovered" if b.get("source") == "discovered" else "manual"}
     store.provider_insert(row)
     store.admin_log("provider", row["id"], {"added": p["id"], "base_url": base}, actor=_actor())
@@ -213,9 +261,17 @@ def provider_one(pid):
         if providers.url_host(base) != providers.url_host(cur["base_url"]) and "api_key" not in b:
             # A key is never pointed at a different server without being re-entered.
             upd.update(api_key=None, key_last4=None)
-    if "api_key" in b:
-        key = (b["api_key"] or "").strip() or None
-        upd.update(api_key=key, key_last4=key[-4:] if key else None)
+    if "api_key" in b and b["api_key"] is None:
+        upd.update(api_key=None, key_last4=None)             # explicit null clears the stored key
+    elif (b.get("api_key") or "").strip():                   # an empty string changes nothing (alpha #23)
+        key, ref = providers.split_key(b["api_key"], None)
+        if ref:
+            err = providers.check_key_ref(ref)
+            if err:
+                return _err(400, "bad_key_ref", err, field="api_key")
+            upd.update(key_ref=ref, api_key=None, key_last4=None)
+        else:
+            upd.update(api_key=key, key_last4=key[-4:])
     if "key_ref" in b:
         err = providers.check_key_ref(b["key_ref"])
         if err:
@@ -426,9 +482,9 @@ def post_message(cid):
 
 def _run_filters():
     a = request.args
-    f = {k: a.get(k) or None for k in ("trigger", "task_id", "host", "action", "status")}
-    for k, col in (("from", "since"), ("to", "until"), ("cursor", "before")):
-        v = a.get(k)
+    f = {k: a.get(k) or None for k in ("trigger", "task_id", "host", "action", "status", "q")}
+    for keys, col in ((("from", "since"), "since"), (("to", "until"), "until"), (("cursor",), "before")):
+        v = next((a.get(k) for k in keys if a.get(k)), None)
         f[col] = int(v) if v and v.isdigit() else None
     return f
 
@@ -504,7 +560,15 @@ def approval_decision(aid):
         return _err(400, "bad_decision", "decision must be approve or reject")
     code, payload = approvals.decide(aid, d == "approve", _actor())
     if code == 200:
-        payload["approval"] = approvals.serialize(store.approval_get(aid))
+        # Give the execution a moment, so the answer says "done" or "refused"
+        # rather than just "approved" (alpha #30). The card updates live anyway.
+        deadline = time.monotonic() + 5
+        a = store.approval_get(aid)
+        while a["status"] in ("approved", "executing") and time.monotonic() < deadline:
+            time.sleep(0.2)
+            a = store.approval_get(aid)
+        payload["status"] = a["status"]
+        payload["approval"] = approvals.serialize(a)
     return jsonify(payload), code
 
 

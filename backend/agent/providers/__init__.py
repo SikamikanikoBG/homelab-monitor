@@ -6,6 +6,8 @@ backup) or, better, outside the database: `key_ref` = `env:NAME` or
 """
 import json
 import os
+import posixpath
+import re
 import threading
 import urllib.parse
 
@@ -61,14 +63,31 @@ def url_host(url):
         return ""
 
 
+def key_dir():
+    """Where file: key references may point (Docker/compose secrets by default)."""
+    return (os.environ.get("AGENT_KEY_DIR") or "/run/secrets").rstrip("/") + "/"
+
+
+def split_key(api_key, key_ref):
+    """(key, ref): a key typed as env:NAME or file:/path is a reference, not a
+    literal key (alpha #22)."""
+    k = (api_key or "").strip()
+    if k.startswith(("env:", "file:")):
+        return None, k
+    return (k or None), (key_ref or None)
+
+
 def check_key_ref(ref):
     if not ref:
         return None
-    if ref.startswith("env:") and len(ref) > 4:
+    if ref.startswith("env:") and re.fullmatch(r"env:[A-Za-z_][A-Za-z0-9_]{0,127}", ref):
         return None
-    if ref.startswith("file:/") and len(ref) > 6:
-        return None
-    return "A key reference looks like env:NAME or file:/run/secrets/name."
+    if ref.startswith("file:"):
+        path = posixpath.normpath(ref[5:])
+        if path.startswith(key_dir()) and ".." not in ref:
+            return None
+        return "A file key must live under %s (set AGENT_KEY_DIR to change it)." % key_dir()
+    return "A key reference looks like env:NAME or file:%sname." % key_dir()
 
 
 def resolve_key(row):
@@ -77,6 +96,8 @@ def resolve_key(row):
     if ref.startswith("env:"):
         return os.environ.get(ref[4:]) or None
     if ref.startswith("file:"):
+        if check_key_ref(ref):
+            return None
         try:
             with open(ref[5:], encoding="utf-8") as f:
                 return f.read().strip() or None

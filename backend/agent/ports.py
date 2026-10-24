@@ -188,6 +188,19 @@ def dispatch_to_channels(level, title, detail, channels):
     return _dispatch_to_channels(dashboard_settings(), level, title, detail, channels)
 
 
+# What each alert channel needs before it can deliver — the same settings
+# backend/notify checks before sending.
+_CHANNEL_NEEDS = {"discord": ("discord_webhook_url",), "ntfy": ("ntfy_topic",),
+                  "telegram": ("telegram_token", "telegram_chat_id"),
+                  "email": ("email_host", "email_from", "email_to"),
+                  "slack": ("slack_webhook_url",), "webhook": ("webhook_url",)}
+
+
+def channels_configured():
+    s = dashboard_settings()
+    return sorted(c for c, keys in _CHANNEL_NEEDS.items() if all(s.get(k) for k in keys))
+
+
 def retention_secs():
     return _app().get_retention_secs()
 

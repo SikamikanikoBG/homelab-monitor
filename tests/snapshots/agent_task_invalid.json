@@ -3,6 +3,7 @@
     "error": "invalid",
     "fields": {
       "cron": "expression: needs 5 fields (minute hour day month weekday)",
+      "hosts": "pick at least one host",
       "mode": "mode must be report, propose or act",
       "name": "give it a name",
       "prompt": "say what it should do"

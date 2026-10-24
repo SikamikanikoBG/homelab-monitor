@@ -140,6 +140,18 @@ def _run(r, ctl, resume):
         _say(r, "No model is set up for the agent yet. Add one under Agent → Models & keys.")
         finish(r["id"], "failed", "no_model")
         return
+    if not ctx.model or ctx.model.get("tools") not in ("yes", "no"):
+        # Never tested (or the test couldn't reach it): test now, two small calls,
+        # before letting it loose without tools (alpha #14).
+        from backend.agent.providers import probe as probe_mod
+        res = probe_mod.tool_probe(providers.adapter_for(ctx.provider), r["model"], cancel=ctl.cancel)
+        store.model_upsert(ctx.provider["id"], r["model"], tools=res["tools"], multi_step=res["multi_step"],
+                           probe_detail=res["detail"], probed_at=store.now())
+        ctx.model = store.model_get(ctx.provider["id"], r["model"])
+        if res["tools"] == "unknown":
+            _say(r, "I couldn't test %s: %s" % (r["model"], res["detail"]))
+            finish(r["id"], "failed", "model_untestable")
+            return
     if ctx.model and ctx.model.get("tools") == "no":
         _say(r, "%s can't call tools, so it can't look at your lab or act. Pick a model marked "
                 "\"tool calls: works\" under Agent → Models & keys." % r["model"])

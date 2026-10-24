@@ -304,32 +304,35 @@ def run_add_usage(rid, prompt_tokens, completion_tokens, cost_micros):
 
 
 def run_list(trigger=None, task_id=None, host=None, action=None, status=None, since=None, until=None,
-             before=None, limit=50):
-    q = "SELECT r.*, c.title AS title FROM agent_runs r LEFT JOIN agent_conversations c ON c.id=r.conversation_id WHERE 1=1"
+             before=None, limit=50, q=None):
+    sql = "SELECT r.*, c.title AS title FROM agent_runs r LEFT JOIN agent_conversations c ON c.id=r.conversation_id WHERE 1=1"
     args = []
     for col, val in (("r.trigger", trigger), ("r.task_id", task_id), ("r.status", status)):
         if val:
-            q += " AND %s=?" % col
+            sql += " AND %s=?" % col
             args.append(val)
     if host:
-        q += " AND r.id IN (SELECT run_id FROM agent_steps WHERE host=?)"
+        sql += " AND r.id IN (SELECT run_id FROM agent_steps WHERE host=?)"
         args.append(host)
     if action:
-        q += " AND r.id IN (SELECT run_id FROM agent_steps WHERE tool=? AND kind IN ('action_intent','policy'))"
+        sql += " AND r.id IN (SELECT run_id FROM agent_steps WHERE tool=? AND kind IN ('action_intent','policy','approval','probe_intent'))"
         args.append(action)
+    if q:
+        sql += " AND (c.title LIKE ? OR r.id LIKE ?)"
+        args += ["%" + q + "%", q + "%"]
     if since:
-        q += " AND r.created_at>=?"
+        sql += " AND r.created_at>=?"
         args.append(int(since))
     if until:
-        q += " AND r.created_at<?"
+        sql += " AND r.created_at<?"
         args.append(int(until))
     if before:
-        q += " AND r.created_at<?"
+        sql += " AND r.created_at<?"
         args.append(int(before))
-    q += " ORDER BY r.created_at DESC, r.id LIMIT ?"
+    sql += " ORDER BY r.created_at DESC, r.id LIMIT ?"
     args.append(int(limit))
     with ports.db() as c:
-        rows = _rows(c.execute(q, args))
+        rows = _rows(c.execute(sql, args))
     for r in rows:
         r["context"] = _loads(r.pop("context_json"), None)
         r["hosts"] = _loads(r.pop("hosts_json"), None)

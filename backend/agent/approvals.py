@@ -65,6 +65,10 @@ def decide(aid, approve, actor):
     to = "approved" if approve else "rejected"
     if not store.approval_transition(aid, "pending", to, actor=actor):
         cur = store.approval_get(aid)
+        if cur["status"] == "pending":                    # still pending but past its time (alpha #17)
+            expire()
+            return 409, {"ok": False, "error": "expired", "status": "expired",
+                         "message": "This approval expired; nothing was run."}
         return 409, {"ok": False, "error": "already_decided", "status": cur["status"]}
     audit.approval_line(aid, to, actor)
     events.publish("approval", approval_id=aid, run_id=appr["run_id"], status=to, **store.counts())

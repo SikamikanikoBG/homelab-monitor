@@ -11,6 +11,7 @@
       "max_steps": 25,
       "max_tokens": 200000
     },
+    "channels_configured": [],
     "chat_card_ttl_min": "30",
     "cloud_min_interval_s": "3600",
     "cost_cap_day": "2.00",

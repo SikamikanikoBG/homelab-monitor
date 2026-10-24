@@ -218,6 +218,8 @@ class TestScheduler(SchedCase):
         self.assertIsNone(scheduler._gpu_busy("http://unknown-host:1"))
 
     def test_delivery_to_channels(self):
+        app.save_settings({"ntfy_topic": "lab"})          # a channel must be set up to be picked
+        self.addCleanup(app.save_settings, {"ntfy_topic": ""})
         t = self.task(delivery={"channels": ["inapp", "ntfy"]})
         with patch("backend.agent.ports.dispatch_to_channels") as d:
             self.on.post("/api/agent/tasks/%s/run" % t["id"])
@@ -268,7 +270,7 @@ class TestTemplates(SchedCase):
         self.fleet.start()
 
     def test_activation_snapshots_the_template(self):
-        t = self.task(template_id="docker-cleanup")
+        t = self.task(template_id="docker-cleanup", hosts=["lab1"])     # a host with Docker
         self.assertEqual(t["template_version"], 1)
         self.assertIn("docker.prune_build_cache", t["actions"])
         self.assertIn("docker.system_df", t["tools"])

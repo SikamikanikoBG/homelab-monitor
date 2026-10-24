@@ -26,11 +26,11 @@ def busy():
     if not _has_tables():
         return None
     from backend.agent import store
-    running = [r for r in store.runs_with_status(("running",))]
+    running = store.counts()["running"]                    # queued + running, as the status shows (alpha #33)
     executing = store.approvals_executing()
     if not running and not executing:
         return None
-    return "%d agent run(s) running, %d approved action(s) executing" % (len(running), executing)
+    return "%d agent run(s) in progress, %d approved action(s) executing" % (running, executing)
 
 
 def cancel_all(reason):

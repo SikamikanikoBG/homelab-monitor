@@ -212,3 +212,118 @@ class StopCase(unittest.TestCase):
             ChatRequest(model="stub-agent", system="", messages=[{"role": "user", "content": "x"}]), cancel=ev)
         self.assertEqual(r.text, "hello")
         self.assertFalse(ev.is_set())
+
+
+class ValidationCase(unittest.TestCase):
+    def setUp(self):
+        self.on = AgentOn().start()
+        self.fleet = FakeFleet().start()
+        r = self.on.post("/api/agent/providers", {"preset": "vllm", "base_url": "http://m:1/v1"})
+        self.pid = r.get_json()["provider"]["id"]
+        store.model_upsert(self.pid, "good", tools="yes")
+        store.model_upsert(self.pid, "bad", tools="no")
+
+    def tearDown(self):
+        self.fleet.stop()
+        self.on.stop()
+
+    def test_12_settings_bounds_unknown_keys_and_partial_budgets(self):
+        for body in ({"chat_card_ttl_min": 0}, {"approval_ttl_h": 100000}, {"max_output_tokens": 1e9},
+                     {"default_provider_id": "nope"}, {"made_up": 1}, {"budget_chat": {"max_steps": 0}},
+                     {"budget_chat": {"bogus": 3}}, {"default_model": "bad"}):
+            self.assertEqual(self.on.put("/api/agent/settings", body).status_code, 400, body)
+        r = self.on.put("/api/agent/settings", {"budget_chat": {"max_steps": 5}})
+        self.assertEqual(r.get_json()["budget_chat"], {"max_steps": 5, "max_seconds": 300, "max_tokens": 120000})
+
+    def test_14_untested_model_is_probed_before_it_runs(self):
+        store.model_upsert(self.pid, "fresh")
+        ad = ScriptedAdapter([{"text": "I only talk."}])
+        cid = self.on.post("/api/agent/conversations").get_json()["id"]
+        with patch.object(providers, "adapter_for", lambda row: ad):
+            rid = self.on.post("/api/agent/conversations/%s/messages" % cid,
+                               {"text": "hi", "provider_id": self.pid, "model": "fresh"}).get_json()["run_id"]
+        self.assertEqual(store.model_get(self.pid, "fresh")["tools"], "no")
+        self.assertEqual(store.run_get(rid)["status"], "refused")
+
+    def test_16_task_create_rejects_what_cant_work(self):
+        base = {"name": "t", "prompt": "p", "cron": "0 3 * * *", "mode": "report", "hosts": ["lab1"]}
+        cases = [dict(base, hosts=[]), dict(base, name="x" * 200), dict(base, prompt="y" * 9000),
+                 dict(base, delivery={"channels": ["discord"]}), dict(base, provider_id=self.pid, model="bad")]
+        store.set_host_mode("lab1", "off")
+        cases.append(dict(base))
+        for body in cases:
+            r = self.on.post("/api/agent/tasks", body)
+            self.assertEqual(r.status_code, 400, (body.get("hosts"), list(r.get_json().get("fields", {}))))
+        store.set_host_mode("lab1", "passive")
+        with patch.object(app, "HEALTH", {"docker": {"available": False}}):
+            r = self.on.post("/api/agent/tasks", {"template_id": "docker-cleanup", "hosts": ["local"]})
+        self.assertIn("hosts", r.get_json()["fields"])
+
+    def test_29_a_cron_that_never_fires_is_refused(self):
+        r = self.on.post("/api/agent/tasks", {"name": "t", "prompt": "p", "cron": "0 0 31 2 *", "mode": "report",
+                                              "hosts": ["lab1"]})
+        self.assertIn("never fires", r.get_json()["fields"]["cron"])
+
+    def test_17_approving_an_expired_card_says_expired(self):
+        rid = store.run_create("c", "schedule", False, "act")
+        aid, _ = approvals.propose(store.run_get(rid), "c1", "container.restart", "lab1", {"name": "web"}, None)
+        with app.LOCK:
+            app.DB.execute("UPDATE agent_approvals SET expires_at=1 WHERE id=?", (aid,))
+            app.DB.commit()
+        r = self.on.post("/api/agent/approvals/%s/decision" % aid, {"decision": "approve"})
+        self.assertEqual((r.status_code, r.get_json()["error"], r.get_json()["status"]), (409, "expired", "expired"))
+
+    def test_30_decision_reports_the_execution_outcome(self):
+        store.set_host_mode("lab1", "active")
+        store.set_action_rule("lab1", "container.restart", "ask", False)
+        rid = store.run_create("c", "schedule", False, "act", status="done")
+        aid, _ = approvals.propose(store.run_get(rid), "c1", "container.restart", "lab1", {"name": "web"}, None)
+        store.set_host_mode("lab1", "passive")          # refused at execution time
+        r = self.on.post("/api/agent/approvals/%s/decision" % aid, {"decision": "approve"})
+        self.assertEqual(r.get_json()["status"], "refused")
+
+    def test_20_read_keys_cant_read_the_agent(self):
+        from auth_helpers import mint_key
+        _, key = mint_key("read")
+        h = {"Authorization": "Bearer " + key}
+        c = app.app.test_client()
+        for path in ("/api/agent/runs", "/api/agent/conversations", "/api/agent/audit/export"):
+            self.assertEqual(c.get(path, headers=h).status_code, 403, path)
+        _, admin = mint_key("admin")
+        self.assertEqual(c.get("/api/agent/runs", headers={"Authorization": "Bearer " + admin}).status_code, 200)
+        with app.LOCK:
+            app.DB.execute("DELETE FROM api_keys")
+            app.DB.commit()
+
+    def test_22_23_key_references_and_empty_patch(self):
+        r = self.on.post("/api/agent/providers", {"preset": "openai", "api_key": "env:OPENAI_KEY"})
+        p = r.get_json()["provider"]
+        self.assertEqual((p["key_ref"], p["key_last4"]), ("env:OPENAI_KEY", None))
+        self.assertIsNone(store.provider_secret(p["id"]))
+        self.assertEqual(self.on.post("/api/agent/providers", {"preset": "openai", "key_ref": "file:/etc/shadow"}).status_code, 400)
+        self.assertEqual(self.on.post("/api/agent/providers", {"preset": "openai", "key_ref": "file:/run/secrets/../../etc/x"}).status_code, 400)
+        self.assertEqual(self.on.post("/api/agent/providers", {"preset": "openai", "key_ref": "file:/run/secrets/openai"}).status_code, 200)
+        pid = self.on.post("/api/agent/providers", {"preset": "openai", "api_key": "sk-real-1234"}).get_json()["provider"]["id"]
+        self.on.patch("/api/agent/providers/" + pid, {"api_key": ""})
+        self.assertEqual(store.provider_secret(pid), "sk-real-1234")
+        self.on.patch("/api/agent/providers/" + pid, {"api_key": None})
+        self.assertIsNone(store.provider_secret(pid))
+
+    def test_11_activity_filters(self):
+        cid = store.conversation_create("disk report")
+        rid = store.run_create(cid, "chat", True, "act", status="done")
+        self.assertEqual([r["id"] for r in self.on.get("/api/agent/runs?q=disk").get_json()["items"]], [rid])
+        self.assertEqual(self.on.get("/api/agent/runs?q=nothing").get_json()["items"], [])
+        self.assertEqual(self.on.get("/api/agent/runs?since=%d" % (time.time() + 100)).get_json()["items"], [])
+
+    def test_33_busy_matches_status(self):
+        from backend.agent import maintenance
+        store.run_create("c", "chat", True, "act", status="queued")
+        self.assertIn("1 agent run(s) in progress", maintenance.busy())
+
+    def test_36_settings_list_configured_channels(self):
+        app.save_settings({"ntfy_topic": "lab"})
+        try:
+            self.assertEqual(self.on.get("/api/agent/settings").get_json()["channels_configured"], ["ntfy"])
+        finally:
+            app.save_settings({"ntfy_topic": ""})
