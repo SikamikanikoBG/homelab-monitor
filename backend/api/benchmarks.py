@@ -69,8 +69,32 @@ def _bench_enabled():
 
 
 def _default_endpoint():
+    """The ollama the lab benchmarks. An explicit COPILOT_OLLAMA_URL wins; else the
+    first ollama registered under Settings → AI servers; else the localhost
+    default. Without the middle step, an ollama on another box passed its
+    connectivity Test while this tab kept talking to 127.0.0.1 and reported it
+    "not answering" (#350) — the two checks have to look at the same server."""
     import app as _app
+    if _app.COPILOT_OLLAMA_URL_SET:
+        return _app.COPILOT_OLLAMA_URL
+    from backend.probes import parse_custom_servers
+    custom, _err = parse_custom_servers(_app.get_settings().get("custom_ai_servers") or "")
+    for s in custom or []:
+        if s["provider"] == "ollama":
+            host = s["host"]
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"                       # bare IPv6 literal
+            return f"http://{host}:{s['port']}"
     return _app.COPILOT_OLLAMA_URL
+
+
+def _registry(endpoint):
+    """(models, reachable) for `endpoint`. The cached app registry already polls
+    COPILOT_OLLAMA_URL, so reuse it there; any other endpoint is fetched direct."""
+    import app as _app
+    if endpoint == _app.COPILOT_OLLAMA_URL:
+        return _app._model_registry()
+    return _app._fetch_model_registry(endpoint)
 
 
 def _post_json(base_url, path, payload, timeout):
@@ -355,12 +379,13 @@ def bench_targets():
     import app as _app
     if not _bench_enabled():
         return jsonify({"enabled": False, "reachable": False, "models": [], "gpus": []})
-    models, reachable = _app._model_registry()
+    endpoint = _default_endpoint()
+    models, reachable = _registry(endpoint)
     # Only benchmarkable providers (ollama) — the on-disk catalogue.
     out = [{"name": m["name"], "family": m.get("family"), "param_size": m.get("param_size"),
             "quant": m.get("quant"), "size_gb": m.get("size_gb"), "loaded": m.get("loaded")}
            for m in models]
-    return jsonify({"enabled": True, "reachable": reachable, "endpoint": _default_endpoint(),
+    return jsonify({"enabled": True, "reachable": reachable, "endpoint": endpoint,
                     "models": out, "gpus": _gpu_inventory(),
                     "ctx_ladder": list(bench.DEFAULT_CTX_LADDER),
                     "default_gen_tokens": bench.DEFAULT_GEN_TOKENS,
@@ -456,7 +481,7 @@ def bench_start():
                      "endpoint": endpoint, "host": host, "error": None})
     # We now own the slot; any failure below must release it or it wedges "active".
     try:
-        reg, _ = _app._model_registry()
+        reg, _ = _registry(endpoint)
         reg_by = {m["name"]: m for m in reg}
         # Reuse the single GPU snapshot taken during validation (an nvidia-smi
         # subprocess) — identical for every model, and calling it again inside

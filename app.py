@@ -6586,23 +6586,28 @@ def _run_cost_window(cur, started, ended, ctx):
 # a small /api/ps (resident) + /api/tags (on-disk) poller, cached briefly so a
 # chatty UI can't hammer ollama. No generation, no GPU spin, no secret leak.
 COPILOT_OLLAMA_URL = os.environ.get("COPILOT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+# Whether the operator set COPILOT_OLLAMA_URL themselves. When they didn't, the
+# Benchmark Lab follows a registered ollama (Settings → AI servers) instead of
+# the localhost default — see backend/api/benchmarks.py::_default_endpoint (#350).
+COPILOT_OLLAMA_URL_SET = bool(os.environ.get("COPILOT_OLLAMA_URL", "").strip())
 COPILOT_ENABLED    = os.environ.get("COPILOT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 _REGISTRY_LOCK = threading.Lock()
 _REGISTRY_CACHE = None            # {"ts": int, "models": [...], "reachable": bool}
 _REGISTRY_TTL = float(os.environ.get("COPILOT_REGISTRY_TTL", "45"))  # seconds
 
 
-def _llm_resident_models():
+def _llm_resident_models(base=None):
     """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
     timeout, stdlib only. Returns (list, reachable). Each entry:
     {name, size_mb, vram_mb, gpu_fraction, keep_alive_sec}. gpu_fraction is the
     share of the model resident in VRAM (size_vram/size) — surfaces GPU vs CPU
     offload. keep_alive_sec is seconds until expires_at (keep-alive countdown).
+    `base` overrides COPILOT_OLLAMA_URL (the Benchmark Lab's resolved endpoint).
 
     MUST be called OUTSIDE any held LOCK (it does network I/O)."""
     if not COPILOT_ENABLED:
         return [], False
-    url = COPILOT_OLLAMA_URL + "/api/ps"
+    url = (base or COPILOT_OLLAMA_URL).rstrip("/") + "/api/ps"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
@@ -6696,13 +6701,14 @@ def _registry_totals(models):
     }
 
 
-def _fetch_model_registry():
+def _fetch_model_registry(base=None):
     """Poll ollama GET /api/tags for the on-disk catalogue, cross-referenced with
     the resident set. Returns (models, reachable). Read-only, short timeout,
-    stdlib only. MUST be called OUTSIDE any held LOCK (network I/O)."""
+    stdlib only. `base` overrides COPILOT_OLLAMA_URL. MUST be called OUTSIDE any
+    held LOCK (network I/O)."""
     if not COPILOT_ENABLED:
         return [], False
-    url = COPILOT_OLLAMA_URL + "/api/tags"
+    url = (base or COPILOT_OLLAMA_URL).rstrip("/") + "/api/tags"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=4) as r:
@@ -6711,7 +6717,7 @@ def _fetch_model_registry():
         return [], False
     # Resident cross-ref is best-effort: if /api/ps fails we still return the
     # on-disk list (just without loaded flags), never an error.
-    resident, _ = _llm_resident_models()
+    resident, _ = _llm_resident_models(base)
     return _parse_model_registry(tags, resident), True
 
 

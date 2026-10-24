@@ -2139,7 +2139,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <section data-tab="benchmarks" hidden>
   <div id="bench-disabled" class="card" hidden>
     <h2>📊 Benchmark Lab</h2>
-    <p class="cap" id="bench-disabled-msg">Benchmarking needs a reachable ollama endpoint. Set <b>COPILOT_OLLAMA_URL</b> (and keep <b>BENCH_ENABLED</b> on), then reopen this tab.</p>
+    <p class="cap" id="bench-disabled-msg">Benchmarking needs a reachable ollama endpoint. Register one under <b>Settings → AI servers</b> or set <b>COPILOT_OLLAMA_URL</b> (and keep <b>BENCH_ENABLED</b> on), then reopen this tab.</p>
   </div>
 
   <div class="card" id="bench-launch" hidden>
@@ -11464,7 +11464,7 @@ async function loadBenchTargets(){
   const disabled=document.getElementById('bench-disabled'), launch=document.getElementById('bench-launch');
   if(!j.enabled || !j.reachable){
     disabled.hidden=false; launch.hidden=true;
-    if(j.enabled && !j.reachable) document.getElementById('bench-disabled-msg').innerHTML='ollama is enabled but not answering at its configured URL. Start it (or fix <b>COPILOT_OLLAMA_URL</b>) and reopen this tab.';
+    if(j.enabled && !j.reachable) document.getElementById('bench-disabled-msg').innerHTML='ollama is not answering at <b>'+bEsc(j.endpoint||'its configured URL')+'</b>. Start it, register the right one under <b>Settings → AI servers</b> (or set <b>COPILOT_OLLAMA_URL</b>), and reopen this tab.';
     return;
   }
   disabled.hidden=true; launch.hidden=false;
