@@ -28,6 +28,13 @@ Set these under `environment:` in `docker-compose.yml`. All optional.
 | `MONITOR_IMAGE` | *(unset)* | Used **internally** by the self-update flow to pin an exact image — the versioned `:x.y.z` tag for the upgrade, the previous image ref/digest for a rollback. You normally never set this by hand; left unset, the shipped compose file falls back to the usual `sikamikaniko123/homelab-monitor:latest`. |
 | `SSH_DIR` | `/data/.ssh` | Where the multi-host SSH keypair lives. Persists across rebuilds. |
 | `ENABLE_CONTROLS` | **on** | Turns on the action buttons on the Containers and Services tabs (start/stop/restart, restart policy). Set to `0` to turn them off — see note below. |
+| `ENABLE_HOST_RUN` | **off** | The `/api/hosts/<name>/run` route that runs any shell command on a host. Nothing in the dashboard uses it; set `1` only if a script of yours does. Every use is logged. |
+| `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE` | *(unset)* | Sets the dashboard password at boot, only if none is set yet (see [Security](security.md#dashboard-login)). |
+| `METRICS_REQUIRE_AUTH` | *(unset)* | With a login set, `1` makes `/metrics` need a read API key. |
+| `TRUSTED_ORIGINS` | *(unset)* | Extra origins (comma-separated) allowed to make changes with a session, for unusual reverse-proxy setups. |
+| `AUTH_COOKIE_SECURE` | *(unset)* | `1` forces the `Secure` flag on the session cookie behind a TLS-terminating proxy. |
+| `AGENT_ENABLED` | **off** | `1` makes the optional [AI agent](agents.md) available (it still needs a password and the Enable switch). |
+| `AGENT_MAX_RUNS` | `2` | Agent runs at once; the rest queue. |
 
 ### Write actions (`ALLOW_SELF_UPDATE`, `ENABLE_CONTROLS`)
 
