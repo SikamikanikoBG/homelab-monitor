@@ -1,7 +1,7 @@
 # A throw-away "box" for the agent's alpha test: sshd + its own Docker daemon
 # (docker-in-docker). Nothing from the real host is mounted into it.
 FROM docker:27-dind
-RUN apk add --no-cache openssh-server sudo bash python3 shadow \
+RUN apk add --no-cache --upgrade openssh-client openssh-server sudo bash python3 shadow \
  && ssh-keygen -A \
  && adduser -D -s /bin/bash lab \
  && echo "lab:$(head -c 24 /dev/urandom | base64)" | chpasswd \
