@@ -12,6 +12,11 @@ name: Update star history chart
 # We are the repo's owner, so we can read our own stargazers: this renders the
 # chart here, commits two SVGs, and the README points at those. No third party,
 # no token to leak, and it survives whatever star-history.com does next.
+#
+# The SVGs live on an orphan `star-history` branch, not on main: main is
+# protected (PR-only, required checks), so a bot push there is rejected with
+# GH006 — which is why this workflow failed on every run from 2026-09-30 (#319).
+# Same pattern as stats.yml and its `stats` branch.
 
 on:
   schedule:
@@ -49,17 +54,24 @@ jobs:
           # with a 403 "not accessible by personal access token" — that is why
           # the chart went stale on 2026-08-09.)
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/star_history.py --out-dir docs
+        run: python scripts/star_history.py --out-dir "$RUNNER_TEMP/chart"
 
-      - name: Commit if the chart moved
+      - name: Publish to the star-history branch if the chart moved
         run: |
           set -euo pipefail
-          if git diff --quiet -- docs/star-history-light.svg docs/star-history-dark.svg; then
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin star-history:star-history 2>/dev/null; then
+            git checkout star-history
+          else
+            git checkout --orphan star-history
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp "$RUNNER_TEMP"/chart/star-history-*.svg .
+          git add star-history-light.svg star-history-dark.svg
+          if git diff --cached --quiet; then
             echo "no change — nobody starred since the last run"
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/star-history-light.svg docs/star-history-dark.svg
-          git commit -m "chore(readme): refresh the star-history chart [skip ci]"
-          git push
+          git commit -m "chore(readme): refresh the star-history chart"
+          git push origin star-history

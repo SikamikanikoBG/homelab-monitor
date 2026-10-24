@@ -78,8 +78,12 @@ jobs:
           GH_TOKEN: ${{ secrets.STATS_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
+          # The previous step left the worktree on the orphan `stats` branch,
+          # which has no scripts/ — read the renderer from the commit this run
+          # was triggered on instead.
+          git show "${{ github.sha }}:scripts/stats_chart.py" > "$RUNNER_TEMP/stats_chart.py"
           # matplotlib is already a repo dependency; no extra install needed.
-          python3 scripts/stats_chart.py \
+          python3 "$RUNNER_TEMP/stats_chart.py" \
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --out usage.svg \
