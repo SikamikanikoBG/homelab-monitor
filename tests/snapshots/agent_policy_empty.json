@@ -1,0 +1,816 @@
+{
+  "body": {
+    "actions": [
+      {
+        "default_rule": "deny",
+        "id": "container.start",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker start -- {name}",
+          "local": "POST /containers/{name}/start (Docker API)",
+          "windows": "docker start -- {name}"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "container",
+          "param": "name"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Start a container",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "container.restart",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker restart -- {name}",
+          "local": "POST /containers/{name}/restart (Docker API)",
+          "windows": "docker restart -- {name}"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "container",
+          "param": "name"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Restart a container",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "container.stop",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker stop -- {name}",
+          "local": "POST /containers/{name}/stop (Docker API)",
+          "windows": "docker stop -- {name}"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "medium",
+        "sudo": false,
+        "target": {
+          "kind": "container",
+          "param": "name"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Stop a container",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "container.set_restart_policy",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "type": "string"
+            },
+            "policy": {
+              "enum": [
+                "no",
+                "on-failure",
+                "unless-stopped",
+                "always"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "policy"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker update --restart {policy} -- {name}",
+          "local": "POST /containers/{name}/update (Docker API)",
+          "windows": "docker update --restart {policy} -- {name}"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "container",
+          "param": "name"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Change a container's restart policy",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "service.start",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "unit": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,254}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "unit"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "sudo -n systemctl start -- {unit}",
+          "local": "systemctl start <unit> (D-Bus)",
+          "windows": "Start-Service -Name {unit}"
+        },
+        "probe": false,
+        "requires": [
+          "services"
+        ],
+        "risk": "medium",
+        "sudo": true,
+        "target": {
+          "kind": "service",
+          "param": "unit"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Start a service",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "service.restart",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "unit": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,254}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "unit"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "sudo -n systemctl restart -- {unit}",
+          "local": "systemctl restart <unit> (D-Bus)",
+          "windows": "Restart-Service -Force -Name {unit}"
+        },
+        "probe": false,
+        "requires": [
+          "services"
+        ],
+        "risk": "medium",
+        "sudo": true,
+        "target": {
+          "kind": "service",
+          "param": "unit"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Restart a service",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "docker.prune_dangling_images",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker image prune --force",
+          "local": "POST /images/prune (Docker API)",
+          "windows": "docker image prune --force"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Remove dangling (untagged) images",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "docker.prune_build_cache",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker builder prune --force",
+          "local": "POST /build/prune (Docker API)",
+          "windows": "docker builder prune --force"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Remove the Docker build cache",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "docker.prune_stopped_containers",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "older_than_h": {
+              "maximum": 8760,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "older_than_h"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker container prune --force --filter until={older_than_h}h",
+          "local": "POST /containers/prune (Docker API)",
+          "windows": "docker container prune --force --filter until={older_than_h}h"
+        },
+        "probe": false,
+        "requires": [
+          "docker"
+        ],
+        "risk": "medium",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Remove stopped containers older than N hours",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "journal.vacuum",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "days": {
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "days"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "sudo -n journalctl --vacuum-time={days}d"
+        },
+        "probe": false,
+        "requires": [
+          "systemd",
+          "linux"
+        ],
+        "risk": "medium",
+        "sudo": true,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Shrink the systemd journal to the last N days",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "ollama.unload_model",
+        "idempotent": true,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,199}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "ollama stop {model}",
+          "local": "POST /api/generate (Ollama API)",
+          "windows": "ollama stop {model}"
+        },
+        "probe": false,
+        "requires": [
+          "ollama"
+        ],
+        "risk": "low",
+        "sudo": false,
+        "target": {
+          "kind": "model",
+          "param": "model"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Unload an Ollama model from memory",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "ollama.remove_model",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,199}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "ollama rm {model}",
+          "local": "DELETE /api/delete (Ollama API)",
+          "windows": "ollama rm {model}"
+        },
+        "probe": false,
+        "requires": [
+          "ollama"
+        ],
+        "risk": "high",
+        "sudo": false,
+        "target": {
+          "kind": "model",
+          "param": "model"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Delete an Ollama model from disk",
+        "unattended": "never"
+      },
+      {
+        "default_rule": "deny",
+        "id": "docker.system_df",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker system df",
+          "local": "GET /system/df (Docker API)",
+          "windows": "docker system df"
+        },
+        "probe": true,
+        "requires": [
+          "docker"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Docker disk usage",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "docker.list_dangling",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "docker images --filter dangling=true",
+          "local": "GET /images/json (Docker API)",
+          "windows": "docker images --filter dangling=true"
+        },
+        "probe": true,
+        "requires": [
+          "docker"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "List dangling images",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "host.disk_usage",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "df -h -x tmpfs -x devtmpfs -x overlay",
+          "windows": "Get-PSDrive -PSProvider FileSystem"
+        },
+        "probe": true,
+        "requires": [
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux",
+          "windows"
+        ],
+        "title": "Disk usage per filesystem",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "journal.disk_usage",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "journalctl --disk-usage"
+        },
+        "probe": true,
+        "requires": [
+          "systemd",
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Journal size",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "updates.list",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "apt list --upgradable"
+        },
+        "probe": true,
+        "requires": [
+          "apt"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Pending package updates (apt)",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "host.reboot_required",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "test -f /var/run/reboot-required"
+        },
+        "probe": true,
+        "requires": [
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Is a reboot pending (exit code 0 = yes)",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "ollama.list_models",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "ollama list",
+          "local": "GET /api/tags (Ollama API)",
+          "windows": "ollama list"
+        },
+        "probe": true,
+        "requires": [
+          "ollama"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "local",
+          "linux",
+          "windows"
+        ],
+        "title": "Installed Ollama models",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "gpu.kernel_errors_24h",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "preview": {
+          "linux": "journalctl -k --since -24h -p err --no-pager -q -n 200"
+        },
+        "probe": true,
+        "requires": [
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "host"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Kernel errors of the last 24 h (GPU Xid errors show here)",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "files.list_older_than",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "days": {
+              "maximum": 3650,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "pattern": "^/[A-Za-z0-9._/-]{0,254}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "days"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "find {path} -xdev -type f -mtime +{days} -printf %s %TY-%Tm-%Td %p\\n"
+        },
+        "probe": true,
+        "requires": [
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "path",
+          "param": "path"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "List files older than N days under an allowed path",
+        "unattended": "policy"
+      },
+      {
+        "default_rule": "deny",
+        "id": "files.newest_mtime",
+        "idempotent": false,
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "pattern": "^/[A-Za-z0-9._/-]{0,254}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "preview": {
+          "linux": "find {path} -maxdepth 2 -newermt -30 days -printf %T@ %p\\n"
+        },
+        "probe": true,
+        "requires": [
+          "linux"
+        ],
+        "risk": "none",
+        "sudo": false,
+        "target": {
+          "kind": "path",
+          "param": "path"
+        },
+        "targets": [
+          "linux"
+        ],
+        "title": "Last-modified time of an allowed path (backup freshness)",
+        "unattended": "policy"
+      }
+    ],
+    "catalogue_version": 1,
+    "controls_enabled": true,
+    "default_mode": "passive",
+    "hosts": [
+      {
+        "capabilities": [
+          "docker",
+          "linux"
+        ],
+        "host": "local",
+        "mode": "passive",
+        "online": true,
+        "os": "linux"
+      },
+      {
+        "capabilities": [
+          "apt",
+          "docker",
+          "linux",
+          "services",
+          "systemd"
+        ],
+        "host": "lab1",
+        "mode": "passive",
+        "online": true,
+        "os": "linux"
+      }
+    ],
+    "protected": [],
+    "rules": {},
+    "watched_paths": {}
+  },
+  "status": 200
+}

@@ -1,0 +1,33 @@
+{
+  "body": {
+    "items": [
+      {
+        "action": "container.restart",
+        "attended": true,
+        "call_id": "call_1",
+        "command_preview": "docker restart -- {name}",
+        "created_at": 1735689600,
+        "decided_at": null,
+        "decided_by": null,
+        "expires_at": 1735691400,
+        "host": "lab1",
+        "host_mode": "active",
+        "id": "id0004",
+        "last_proposed_at": 1735689600,
+        "params": {
+          "name": "web"
+        },
+        "rationale": "it is stuck",
+        "result": null,
+        "risk": "low",
+        "rule": "ask",
+        "run_id": "id0003",
+        "seen_count": 1,
+        "status": "pending",
+        "task_id": null,
+        "title": "Restart a container"
+      }
+    ]
+  },
+  "status": 200
+}

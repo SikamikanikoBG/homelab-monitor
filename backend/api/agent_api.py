@@ -9,7 +9,6 @@ Provider keys are write-only: no response here ever contains one.
 import json
 import re
 import time
-import uuid
 
 from flask import Blueprint, Response, abort, jsonify, request
 
@@ -177,7 +176,7 @@ def providers_route():
         return _err(400, "bad_key_ref", err, field="key_ref")
     key = (b.get("api_key") or "").strip() or None
     extra = {k: str(v)[:200] for k, v in (b.get("extra") or {}).items() if k in (p.get("extra_fields") or [])}
-    row = {"id": uuid.uuid4().hex, "preset": p["id"], "adapter": p["adapter"],
+    row = {"id": store.new_id(), "preset": p["id"], "adapter": p["adapter"],
            "label": (b.get("label") or p["label"]).strip()[:80], "base_url": base, "api_key": key,
            "key_ref": b.get("key_ref") or None, "key_last4": key[-4:] if key else None, "extra": extra,
            "source": "discovered" if b.get("source") == "discovered" else "manual"}

@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "hour: 25 is outside 0-23",
+    "field": "hour",
+    "ok": false
+  },
+  "status": 200
+}
