@@ -113,7 +113,7 @@
       "agent.ch.webhook",
       "login.title"
     ],
-    "coverage": 0.9081
+    "coverage": 0.9084
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
