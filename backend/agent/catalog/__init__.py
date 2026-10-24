@@ -155,6 +155,21 @@ def preview(a, key):
     return "%s %s (%s)" % (spec["method"], spec["path"].split("?")[0], "Docker API" if spec["via"] == "docker_api" else "Ollama API")
 
 
+def preview_with(a, key, params):
+    """The exact command for these params (what a confirm card shows)."""
+    if not a.get(key) or check_params(a, params):
+        return preview(a, key)
+    cmd = render(a, key, params)
+    if cmd["via"] == "ssh":
+        return cmd["cmd"]
+    if cmd["via"] == "ps":
+        return cmd["script"]
+    if cmd["via"] == "systemd":
+        return "systemctl %s %s (D-Bus)" % (cmd["action"], cmd["unit"])
+    return "%s %s (%s)" % (cmd["method"], urllib.parse.unquote(cmd["path"]),
+                           "Docker API" if cmd["via"] == "docker_api" else "Ollama API")
+
+
 def sudoers_line(a, user, params):
     """The exact sudoers line that would let this one command run without a
     password: exact arguments, no wildcards."""

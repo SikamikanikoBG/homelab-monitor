@@ -243,7 +243,7 @@ function agScheduleRefetch(need) {
     const n = AG.pendingNeed || {};
     AG.pendingNeed = null; AG.refetchTimer = null;
     if (n.conv) { await agLoadConv(AG.convId); if (AG.widgetConv && AG.widgetConv !== AG.convId) await agLoadWidgetConv(); }
-    if (n.approvals) await agLoadApprovals();
+    if (n.approvals || n.conv) await agLoadApprovals();
     if (n.tasks && AG.view === 'auto') await agLoadTasks();
     if (n.runs && AG.view === 'activity') await agLoadRuns();
     agRepaint();

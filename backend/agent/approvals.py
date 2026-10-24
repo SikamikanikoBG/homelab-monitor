@@ -143,5 +143,5 @@ def serialize(a):
             "seen_count": a.get("seen_count") or 1, "created_at": a["created_at"],
             "last_proposed_at": a.get("last_proposed_at"), "expires_at": a["expires_at"],
             "decided_at": a.get("decided_at"), "decided_by": a.get("decided_by"),
-            "result": a.get("result_excerpt"), "command_preview": catalog.preview(act, key) if "params" in act else None,
+            "result": a.get("result_excerpt"), "command_preview": catalog.preview_with(act, key, a["params"]) if "params" in act else None,
             "host_mode": policy.mode_for(a["host"]), "rule": policy.rule_for(a["host"], a["action"])[0]}

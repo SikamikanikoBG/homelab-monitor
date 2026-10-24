@@ -48,6 +48,8 @@ for n in 1 2; do
   curl -fsS -X POST localhost:9831/api/hosts -H 'Content-Type: application/json' \
     -d "{\"name\":\"lab$n\",\"ssh_target\":\"lab@hlm-target$n:22\"}" >/dev/null
 done
+# the poller only polls hosts whose last Test passed
+for n in 1 2; do curl -fsS -X POST localhost:9831/api/hosts/lab$n/test >/dev/null; done
 
 # 5) a deterministic model on the side
 docker run -d --name hlm-alpha-stub --network hlm-alpha -v "$SRC/tests":/stub:ro python:3.12-slim \

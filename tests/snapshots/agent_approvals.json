@@ -5,7 +5,7 @@
         "action": "container.restart",
         "attended": true,
         "call_id": "call_1",
-        "command_preview": "docker restart -- {name}",
+        "command_preview": "docker restart -- web",
         "created_at": 1735689600,
         "decided_at": null,
         "decided_by": null,
