@@ -358,7 +358,7 @@
   "cost.sub_norapl": "· 已测量 GPU · CPU 功耗不可用 (RAPL)",
   "cost.sub_host": "· {host}: {parts} 已测量 · 暂不支持远程主机的各进程明细",
   "cost.rnone_t": "暂未获取到 {host} 的功耗数据",
-  "cost.rnone_d": "计算电费需要实测功耗数据: 通过 nvidia-smi 获取 NVIDIA 显卡功耗或通过通过 RAPL 获取 CPU 和内存功耗（经 SSH 读取通常需要 root 权限）。此主机未提供上述任何数据，因此无法可靠计算电费。",
+  "cost.rnone_d": "计算电费需要实测功耗数据: 通过 nvidia-smi 获取 NVIDIA 显卡功耗或通过 RAPL 获取 CPU 和内存功耗（经 SSH 读取通常需要 root 权限）。此主机未提供上述任何数据，因此无法可靠计算电费。",
   "cost.total_now": "当前总功耗",
   "cost.this_range": "{v} 本范围",
   "cost.kwh_range": "{v} kWh 本范围",
