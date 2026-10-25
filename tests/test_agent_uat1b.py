@@ -104,3 +104,24 @@ class ActivityCase(LoopCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CustomServerPlaceCase(LoopCase):
+    def test_the_collector_files_a_custom_server_under_the_host_that_owns_its_address(self):
+        from backend import collectors
+        hosts = [{"name": "vader", "ssh_target": "arsen@10.0.0.9:22"}, {"name": "nas", "ssh_target": "nas.lan"}]
+        self.assertEqual(collectors._host_by_address("10.0.0.9", hosts), "vader")
+        self.assertEqual(collectors._host_by_address("nas.lan", hosts), "nas")
+        self.assertIsNone(collectors._host_by_address("100.76.27.18", hosts))
+        self.assertEqual(collectors._resolve_fleet_host(collectors._host_by_address("10.0.0.9", hosts),
+                                                        {"local", "vader", "nas"}), "vader")
+
+    def test_the_agent_sees_a_far_server_at_its_address_not_on_the_hub(self):
+        rows = {"loaded": [{"service": "vader-vllm", "host": "local", "model": "qwen"},
+                           {"service": "ollama", "host": "local", "model": "llama"}]}
+        got = toolbox.place_custom_servers(rows, {"vader-vllm": "100.76.27.18"})
+        self.assertEqual((got["loaded"][0]["host"], got["loaded"][0]["not_on_the_hub"]), ("100.76.27.18", True))
+        self.assertEqual(got["loaded"][1]["host"], "local")
+        servers = [{"name": "vader-vllm", "host": "100.76.27.18", "port": 18021, "provider": "vllm", "fleet_host": ""}]
+        with patch.object(ports, "custom_ai_servers", return_value=servers):
+            self.assertEqual(toolbox.place_custom_servers(rows)["loaded"][0]["host"], "100.76.27.18")

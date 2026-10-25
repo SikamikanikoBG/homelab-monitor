@@ -141,7 +141,29 @@ def call_read(scope, name, args):
     if spec.host_scope == "fleet":
         data = _filter_rows(data, scope.off_hosts(), _ROW_HOST_KEY.get(name, "host"))
     data = mark_agent_model(data, getattr(scope, "agent_model", None))
+    data = place_custom_servers(data)
     return True, wrap(name, data)
+
+
+def place_custom_servers(obj, servers=None):
+    """Rows of a custom AI server that the dashboard files under the hub only
+    because no fleet host was given for it say where it really is: its address
+    (UAT-1). Matched by the server's name, from the custom_ai_servers setting."""
+    if servers is None:
+        servers = {s.get("name"): s.get("host") for s in ports.custom_ai_servers()
+                   if s.get("name") and not s.get("fleet_host") and ports.host_for_address(s.get("host")) != "local"}
+    if not servers:
+        return obj
+    if isinstance(obj, list):
+        return [place_custom_servers(x, servers) for x in obj]
+    if isinstance(obj, dict):
+        out = {k: place_custom_servers(v, servers) for k, v in obj.items()}
+        addr = servers.get(out.get("service")) or servers.get(out.get("server"))
+        if addr and out.get("host") in (None, "local"):
+            out["host"] = ports.host_for_address(addr) or addr
+            out["not_on_the_hub"] = True
+        return out
+    return obj
 
 
 # The fields a model is named by in the read tools' rows.

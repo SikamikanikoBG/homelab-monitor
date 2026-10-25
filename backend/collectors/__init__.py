@@ -131,6 +131,21 @@ def _resolve_fleet_host(stored, known_hosts):
         return "local"
     return stored if stored in known_hosts else "local"
 
+def _host_by_address(addr, hosts):
+    """The registered host whose ssh target is `addr` (the same box), else None.
+    A custom AI server with no fleet_host is stamped with it, so a vLLM on vader
+    shows under vader instead of the hub (UAT-1). Pure → unit-testable."""
+    a = (addr or "").strip().lower()
+    if not a:
+        return None
+    for h in hosts:
+        t = (h.get("ssh_target") or "").strip().lower()
+        t = t.split("@", 1)[-1].rsplit(":", 1)[0] if t else ""
+        if t and t == a:
+            return h.get("name")
+    return None
+
+
 def purge_finished_runs(conn, cutoff):
     """Delete finished runs whose end predates `cutoff`, with their metrics.
 
@@ -335,14 +350,15 @@ def sample_once():
     # Fleet names the per-host AI Models tab filters on: "local" (the hub) plus
     # the registered hosts. Read once per sample, not per row.
     try:
-        _known_hosts = {"local"} | {h["name"] for h in _app.list_hosts()}
+        _registered = _app.list_hosts()
+        _known_hosts = {"local"} | {h["name"] for h in _registered}
     except Exception:
-        _known_hosts = {"local"}
+        _registered, _known_hosts = [], {"local"}
     for s in custom:
         if any(c["name"] == s["name"] for c in ai):
             continue                                    # container discovery already covers it
-        fleet = _resolve_fleet_host(s.get("fleet_host"), _known_hosts)
-        if fleet != (s.get("fleet_host") or "local"):
+        fleet = _resolve_fleet_host(s.get("fleet_host") or _host_by_address(s["host"], _registered), _known_hosts)
+        if s.get("fleet_host") and fleet != s["fleet_host"]:
             print(f"custom_ai_servers '{s['name']}': host '{s.get('fleet_host')}' "
                   f"not registered — shown under the hub instead", flush=True)
         ai.append({"name": s["name"], "ip": s["host"], "port": s["port"],
