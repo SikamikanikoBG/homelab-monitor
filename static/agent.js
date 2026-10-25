@@ -315,7 +315,11 @@ function agScheduleRefetch(need) {
   AG.refetchTimer = setTimeout(async () => {
     const n = AG.pendingNeed || {};
     AG.pendingNeed = null; AG.refetchTimer = null;
-    if (n.conv) { await agLoadConv(AG.convId); if (AG.widgetConv && AG.widgetConv !== AG.convId) await agLoadWidgetConv(); }
+    if (n.conv) {
+      await agLoadConv(AG.convId);
+      if (AG.widgetConv && AG.widgetConv !== AG.convId) await agLoadWidgetConv();
+      if ((TAB === 'agent' && AG.view === 'chat') || AG.widgetOpen) await agLoadConvs();   // a new title arrives after the answer
+    }
     if (n.approvals || n.conv) await agLoadApprovals();
     if (n.tasks && AG.view === 'auto') await agLoadTasks();
     if (n.runs && AG.view === 'activity') await agLoadRuns();

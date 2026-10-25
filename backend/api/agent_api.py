@@ -397,6 +397,13 @@ def setup_dismiss():
     return jsonify(onboarding.setup_state())
 
 
+def _found_label(preset, c):
+    """"vLLM on vader" when the server belongs to a fleet host, else "vLLM at 10.0.0.9"."""
+    if c.get("host") and c["host"] != "local":
+        return ("%s on %s" % (preset["label"], c["host"]))[:80]
+    return ("%s at %s" % (preset["label"], providers.url_host(c["base_url"]) or "?"))[:80]
+
+
 @bp.route("/api/agent/setup/models", methods=["GET", "POST"])
 def setup_models():
     """GET: the models the hub knows, with test results and a recommendation.
@@ -412,7 +419,7 @@ def setup_models():
             if not p or providers.check_base_url(c["base_url"]):
                 continue
             row = {"id": store.new_id(), "preset": p["id"], "adapter": p["adapter"],
-                   "label": ("%s on %s" % (c.get("server") or p["label"], c.get("host") or "?"))[:80],
+                   "label": _found_label(p, c),
                    "base_url": c["base_url"].rstrip("/"), "api_key": None, "key_ref": None, "key_last4": None,
                    "extra": {}, "source": "discovered"}
             store.provider_insert(row)

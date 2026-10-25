@@ -212,9 +212,9 @@
 .ag-state{font-size:12px;color:var(--mut);white-space:nowrap}
 .ag-state.ok{color:var(--ok)}
 .ag-state.no{color:var(--crit)}
-.ag-cloud{border:1px solid var(--bd);border-radius:12px;padding:10px 14px}
-.ag-cloud summary{cursor:pointer;font-size:13px;color:var(--tx)}
-.ag-cloud p{margin:8px 0}
+.ag-cloud,.ag-byurl{border:1px solid var(--bd);border-radius:12px;padding:10px 14px}
+.ag-cloud summary,.ag-byurl summary{cursor:pointer;font-size:13px;color:var(--tx)}
+.ag-cloud p,.ag-byurl p{margin:8px 0}
 /* the Overview card */
 .ag-home{margin:0 0 16px}
 .ag-homecard{background:var(--mc-glass,var(--card));-webkit-backdrop-filter:blur(16px) saturate(1.15);backdrop-filter:blur(16px) saturate(1.15);border:1px solid var(--bd);

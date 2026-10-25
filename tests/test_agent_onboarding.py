@@ -145,6 +145,8 @@ class ModelChoiceCase(LoopCase):
                 patch.object(providers, "adapter_for", lambda row: Lister()):
             j = self.on.post("/api/agent/setup/models").get_json()
         self.assertEqual(len(j["added"]), 1)
+        label = store.provider_get(j["added"][0])["label"]
+        self.assertEqual(label, "%s on vader" % providers.preset("vllm")["label"])
         q = next(m for m in j["models"] if m["model"] == "qwen")
         self.assertEqual((q["context_window"], q["tools"]), (131072, "unknown"))
 
