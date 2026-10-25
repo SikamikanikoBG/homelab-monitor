@@ -97,3 +97,14 @@ Counts: critical 0 · high 4 · medium 13 · low 16 · cosmetic 4.
 - EC-11: the per-host lock wasn't exercised under an action.
 - EC-19: the live DST check runs tonight.
 - EC-20, EC-24 and restore with `force` were not exercised.
+
+## Pass 2
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| N1 | medium | The real model's answer claimed "Action waiting on you: restart of worker on lab1" without calling the action tool (no approval, no card). | Fixed in 7a4b07f. The model's text is left as it is. Under every run the chat, widget, run detail and delivery messages show the actions the run really proposed, ran or was refused, built from its audit steps and approvals; when there were none: "No actions were proposed in this run." The system prompt says an action is only pending once its tool returned an approval id. Regression: `tests/test_agent_alpha2.py` (stub claims a pending action, never calls the tool). |
+| N2 | low | security.md said read keys read everything, the agent API refuses them. | Fixed in 7a4b07f (`website/security.md`: only `/api/agent/status` answers a read key). |
+| N3 | low | Activity filter lists empty for 1–2 s after the tab opens. | Fixed in 7a4b07f: policy and automations load with the tab; the selects stay disabled until their data is there. |
+| N4 | low | Use offered for models probed "no tool calls". | Fixed in 7a4b07f: no Use button for them, a "can't be used" pill with a tooltip saying why. |
+| N5 | cosmetic | Activity "Since" date box had no visible label. | Fixed in 7a4b07f. |
+| #17 | leftover | A card already swept to expired answered `already_decided`. | Fixed in 7a4b07f: it answers `error: "expired"`; a decided card still says `already_decided`. |
