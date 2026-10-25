@@ -6,6 +6,7 @@
 .ag-root{--ag-infobg:color-mix(in srgb,var(--info) 10%,transparent);--ag-accbg:color-mix(in srgb,var(--accent) 9%,transparent);
   --ag-accbd:color-mix(in srgb,var(--accent) 45%,transparent);--ag-r:12px;--ag-r2:14px;--ag-ctl:38px;font-size:14px;color:var(--tx)}
 .ag-root *{box-sizing:border-box}
+.ag-root h2,.ag-root h3,.ag-root h4{text-transform:none;letter-spacing:normal;color:var(--tx)}
 .ag-root [hidden],.ag-fab[hidden],.ag-badge[hidden]{display:none!important}
 .ag-mut{color:var(--mut)}
 .ag-small{font-size:12.5px}
@@ -290,6 +291,8 @@ body.display .ag-fab,body.display .ag-panel{display:none!important}
   .ag-msg.u{max-width:90%}
   .ag-homecard{padding:16px}
   .ag-askform{flex-direction:column}
+  .ag-home .ag-sugs{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+  .ag-home .ag-sug{flex:none}
   .ag-wiz{padding:18px 16px}
   .ag-scrim.ag-wizard{padding:0;align-items:stretch}
   .ag-scrim.ag-wizard .ag-dialog{border-radius:0;width:100%;max-height:none;height:100%;align-content:start}
