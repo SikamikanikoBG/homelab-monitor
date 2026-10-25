@@ -1,0 +1,7 @@
+{
+  "agent": false,
+  "authenticated": true,
+  "csrf": "<random>",
+  "password_set": true,
+  "via": "session"
+}

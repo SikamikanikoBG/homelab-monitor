@@ -118,6 +118,63 @@ This distinction is why some local results may be unknown even when the
 corresponding remote probe can determine them.
 
 
+## Dashboard login
+
+The dashboard has an **optional** login. Until you set a password nothing
+changes: every page and API answers as it always did, which is fine on a
+trusted LAN. Set one under **Settings → Security** (or `ADMIN_PASSWORD` /
+`ADMIN_PASSWORD_FILE` at boot) and:
+
+- browsers log in at `/login` and get a server-side session (the cookie is
+  `HttpOnly`, `SameSite=Lax`, and only its hash is stored); changing the
+  password signs every other browser out;
+- every change (POST/PUT/PATCH/DELETE) from a browser needs the session's CSRF
+  token and a same-origin request — the dashboard adds it for you
+  (`TRUSTED_ORIGINS` lists extra origins for reverse proxies);
+- scripts use an **API key with a scope** (Settings → Integrations → API keys):
+  `push` only reaches the experiment push routes (every key made before the
+  login existed is a push key), `read` reads everything except the backup, the
+  key listings and the AI agent (Grafana, Homepage, an MCP client; of the
+  agent's API a read key only gets `/api/agent/status`, its conversations, runs
+  and audit need a login or an admin key), `admin` does everything and
+  expires after 90 days by default. Read and admin keys can only be made once a
+  password exists; setting the first password revokes any you don't keep;
+- open without a login: `/healthz`, `/metrics` (set `METRICS_REQUIRE_AUTH=1`
+  to require a read key), the public status page and the login page;
+- after 5 wrong passwords an address waits a growing delay (up to a minute).
+
+Forgot it? `docker exec homelab-monitor python -m backend.auth.cli reset-password`
+clears the password and every session (and switches the AI agent off).
+
+**Backups don't carry secrets.** `/api/backup` blanks the alert channels'
+webhook URLs, tokens and passwords, AI provider keys, the password hash and all
+sessions in the downloaded copy. After a restore, re-enter them. API keys are
+kept: the database only holds their SHA-256 hashes (the keys themselves are
+shown once, at creation, and never stored), so a backup can't be used to
+recover a key — and the push keys your notebooks use keep working after a
+restore. Revoke a key under Integrations → API keys if a backup went somewhere
+it shouldn't.
+
+With a login set, responses also carry `X-Frame-Options: SAMEORIGIN` and
+`Content-Security-Policy: frame-ancestors 'self'`, so no other site can frame
+the logged-in dashboard. Without a login, responses are unchanged.
+
+**`/api/hosts/<name>/run`** (run any command on a host; nothing in the UI uses
+it) is off unless `ENABLE_HOST_RUN=1`, and every use is logged without the
+command text.
+
+## AI agent
+
+The optional [AI agent](agents.md) can only run behind the login. What it may
+do is decided on the server, per host (Off / Passive / Active) and per action
+(Deny / Ask / Allow), checked when it proposes and again when it executes. It
+has no shell: only a fixed catalogue of named actions with validated, quoted
+parameters. Tool results are treated as untrusted data, so a container named
+"ignore previous instructions" can at most make it *propose* something you
+then see on a card. What Passive and Off protect: they bind this in-app agent.
+They don't bind the read-only MCP server (it still sees the whole fleet) or a
+person using the dashboard's own buttons (those follow `ENABLE_CONTROLS`).
+
 ## API and multi-host access
 
 API-protected surfaces accept an API key either as a Bearer token in the
@@ -134,7 +191,8 @@ or slow host does not block the monitoring loop.
 The posture checks only inspect system state. They do not enable a firewall,
 change SSH configuration, start fail2ban, install updates, or reboot a host.
 
-HomeLab Monitor's MCP server is also read-only. It exposes host posture through
+HomeLab Monitor's MCP server is also read-only (with a login set, its HTTP
+port needs a read key too — see [MCP](mcp.md)). It exposes host posture through
 the monitor's existing read-only APIs but does not expose the dashboard's
 container/service controls or self-update actions.
 

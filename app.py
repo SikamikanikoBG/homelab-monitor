@@ -153,6 +153,7 @@ app.register_blueprint(_hosts_api_bp)
 app.register_blueprint(_integrations_bp)
 app.register_blueprint(_icons_bp)
 app.register_blueprint(_benchmarks_bp)
+import backend.wiring as _wiring; _wiring.install(app)   # login gate + AI agent (#354), dormant by default
 
 # ── Prometheus gauges (defined once at module level) ──────────────────────────
 _GAUGES: dict = {}
@@ -3610,10 +3611,13 @@ def add_host(name, ssh_target, tags=""):
             return None, f"A host named '{name}' already exists."
     return {"name": name, "ssh_target": ssh_target.strip()}, None
 
+import backend.agent.hosts as _agent_hosts
 def delete_host(name):
     from backend.db.repos import hosts as _hosts_repo
     with LOCK:
-        rowcount = _hosts_repo.delete(name, conn=DB)
+        rowcount = _hosts_repo.delete(name, conn=DB, commit=False)
+        _agent_hosts.deleted(name, conn=DB)          # agent policy goes with the host, same transaction
+        DB.commit()
     return rowcount > 0
 
 def rename_host(old, new):
@@ -3632,7 +3636,7 @@ def rename_host(old, new):
         return None, "Nothing to update."
     with LOCK:
         try:
-            rowcount = _hosts_repo.rename(old, new, conn=DB)
+            rowcount = _hosts_repo.rename(old, new, conn=DB, commit=False)
         except sqlite3.IntegrityError:
             return None, f"A host named '{new}' already exists."
         if rowcount == 0:
@@ -3646,6 +3650,7 @@ def rename_host(old, new):
         # name while the renamed host shows an empty GPU tab.
         from backend.db.repos import gpu_samples as _gs_repo
         _gs_repo.rename_host(old, new, conn=DB)
+        _agent_hosts.renamed(old, new, conn=DB)      # agent policy follows, same transaction (#354)
         DB.commit()
     with HOST_DATA_LOCK:
         if old in HOST_DATA:
@@ -7626,6 +7631,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=brief_worker, daemon=True).start()
     threading.Thread(target=_collector_watchdog, daemon=True).start()
     ICON_STORE.refresh_index_async()
+    _wiring.start_workers()   # AI agent threads; nothing starts unless the agent is enabled
 
 
 import os as _os

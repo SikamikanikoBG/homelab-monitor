@@ -366,6 +366,16 @@ def _transport_security():
     )
 
 
+def _serve_http_behind_login():
+    """Streamable HTTP, wrapped so the port follows the dashboard's login: open
+    while no password is set (as before), bearer read/admin key once it is."""
+    import uvicorn
+    from login_guard import LoginGuard
+    app = LoginGuard(mcp.streamable_http_app(), hc.base_url(), os.environ.get("HLM_INTERNAL_TOKEN"))
+    uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port,
+                log_level=mcp.settings.log_level.lower())
+
+
 def main():
     transport = (os.environ.get("MCP_TRANSPORT") or "stdio").strip().lower()
     if transport in ("http", "streamable-http", "streamable_http"):
@@ -374,7 +384,7 @@ def main():
         mcp.settings.transport_security = _transport_security()
         print("homelab-monitor MCP on http://%s:%s/mcp -> %s"
               % (mcp.settings.host, mcp.settings.port, hc.base_url()), file=sys.stderr)
-        mcp.run(transport="streamable-http")
+        _serve_http_behind_login()
     elif transport == "sse":
         mcp.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")
         mcp.settings.port = int(os.environ.get("MCP_PORT", "9810"))

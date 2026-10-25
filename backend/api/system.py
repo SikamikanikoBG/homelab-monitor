@@ -9,6 +9,7 @@ import tempfile
 import threading
 
 from backend.db.repos import system as system_repo
+from backend.auth.marks import open_access, open_unless_env, sensitive
 
 bp = Blueprint('system', __name__)
 
@@ -46,9 +47,16 @@ def api_stream():
             return jsonify({"error": "too many open streams"}), 503
         _stream_n += 1
 
+    # The AI agent's live frames ride this same stream (one connection per tab,
+    # #354). With the agent off nothing is ever published, so `agent_rev` never
+    # moves and the stream is byte-identical to what it was.
+    from backend.agent import events as _agent_events, state as _agent_state
+    agent_on = _agent_state.env_allowed()
+
     def gen():
         global _stream_n
         last_live = last_fleet = -1
+        last_agent = _agent_events.rev()
         try:
             # Retry hint for the browser's own reconnect logic, then an immediate
             # first frame so a fresh page paints from the stream instead of
@@ -56,12 +64,14 @@ def api_stream():
             yield "retry: 3000\n\n"
             while True:
                 with _app.LIVE_COND:
-                    if _app.LIVE_REV == last_live and _app.FLEET_REV == last_fleet:
+                    if (_app.LIVE_REV == last_live and _app.FLEET_REV == last_fleet
+                            and (not agent_on or _agent_events.rev() == last_agent)):
                         # Bounded wait so the loop still emits a keepalive through
                         # proxies that time out idle connections.
                         _app.LIVE_COND.wait(timeout=20)
                     live, fleet = _app.LIVE_REV, _app.FLEET_REV
-                if live == last_live and fleet == last_fleet:
+                    agent_rev = _agent_events.rev() if agent_on else last_agent
+                if live == last_live and fleet == last_fleet and agent_rev == last_agent:
                     yield ": ping\n\n"
                     continue
                 if live != last_live:
@@ -70,6 +80,10 @@ def api_stream():
                 if fleet != last_fleet:
                     last_fleet = fleet
                     yield "event: fleet\ndata: " + json.dumps(_app.fleet_payload()) + "\n\n"
+                if agent_rev != last_agent:
+                    frames, last_agent = _agent_events.frames_since(last_agent)
+                    if frames:
+                        yield frames
         except GeneratorExit:
             raise
         finally:
@@ -253,6 +267,7 @@ def api_network():
 
 
 @bp.route("/healthz")
+@open_access
 def healthz():
     import app as _app
     """Cheap liveness probe for Docker's HEALTHCHECK and any uptime monitor.
@@ -314,6 +329,7 @@ def api_changelog():
 
 
 @bp.route("/favicon.ico")
+@open_access
 def favicon():
     import app as _app
     """Default-favicon URL — browsers ask for /favicon.ico even when an explicit
@@ -323,6 +339,7 @@ def favicon():
 
 
 @bp.route("/locales/<path:fn>")
+@open_access
 def locales(fn):
     import app as _app
     """Serve UI translation files (i18n, #148). The dashboard fetches
@@ -399,6 +416,7 @@ def api_health():
 
 
 @bp.route("/metrics")
+@open_unless_env("METRICS_REQUIRE_AUTH")
 def metrics():
     import app as _app
     """Prometheus text-format scrape endpoint.
@@ -546,6 +564,7 @@ def api_disk_scan():
 
 
 @bp.route("/api/backup")
+@sensitive
 def api_backup_download():
     import app as _app
     """Stream a consistent SQLite snapshot (VACUUM INTO) of the live database."""
@@ -559,6 +578,9 @@ def api_backup_download():
             fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix=".backup_", dir=_app._data_dir())
             os.close(fd)
             _app.db_backup.vacuum_into(_app.DB, tmp_path)
+        # The copy leaves the hub; secrets don't (#354). See backend/backup_scrub.py.
+        from backend.backup_scrub import scrub
+        scrub(tmp_path, _app.SETTING_SECRETS)
     except Exception as e:
         if tmp_path:
             try: os.unlink(tmp_path)
@@ -586,6 +608,12 @@ def api_backup_restore():
     upload = request.files.get("backup")
     if not upload or not upload.filename:
         return jsonify({"ok": False, "error": "No backup file uploaded."}), 400
+    from backend.agent import maintenance
+    if request.form.get("force") in ("1", "true"):
+        maintenance.cancel_all("database restore")
+    busy = maintenance.refuse_payload("restore")
+    if busy:
+        return jsonify(busy), 409
 
     upload_path = None
     try:
@@ -611,6 +639,7 @@ def api_backup_restore():
                 upload_path = None
                 _app.db_backup.remove_wal_sidecars(_app.DB_PATH)
                 _app.reopen_db()
+                maintenance.after_restore()
             except Exception as e:
                 try:
                     _app.reopen_db()
@@ -728,6 +757,12 @@ def api_update_app():
     202 = job started. Gated by _app.ALLOW_SELF_UPDATE — off by default."""
     body = request.get_json(silent=True) or {}
     force = bool(body.get("force"))
+    from backend.agent import maintenance
+    if force:
+        maintenance.cancel_all("self-update")
+    busy = maintenance.refuse_payload("update")
+    if busy:
+        return jsonify(busy), 409
     code, payload = _app.start_self_update(force=force)
     return jsonify(payload), code
 

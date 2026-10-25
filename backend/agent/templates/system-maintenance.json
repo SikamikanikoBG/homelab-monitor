@@ -1,0 +1,33 @@
+{
+  "id": "system-maintenance",
+  "version": 1,
+  "name": "System maintenance",
+  "desc": "Disk, journal size, pending updates, reboot needed, failed services. Proposes a journal vacuum and dangling-image cleanup.",
+  "prompt": "For each selected host: check disk use (host.disk_usage), journal size (journal.disk_usage), pending updates (updates.list where available), whether a reboot is pending (host.reboot_required: exit code 0 means yes), and failed services (get_services with the host). If the journal is larger than 1 GB, propose journal.vacuum with days 14. If Docker has dangling images, propose docker.prune_dangling_images. Never reboot or update anything. Finish with a short per-host report.",
+  "tools": [
+    "list_hosts",
+    "get_host",
+    "get_services"
+  ],
+  "probes": [
+    "host.disk_usage",
+    "journal.disk_usage",
+    "updates.list",
+    "host.reboot_required",
+    "docker.system_df"
+  ],
+  "actions": [
+    "journal.vacuum",
+    "docker.prune_dangling_images"
+  ],
+  "requires": [
+    "linux"
+  ],
+  "default_cron": "0 4 * * 0",
+  "default_mode": "propose",
+  "budget": {
+    "max_steps": 25,
+    "max_seconds": 600
+  },
+  "est_tokens": 20000
+}

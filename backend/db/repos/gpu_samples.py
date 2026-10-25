@@ -308,4 +308,7 @@ def rename_host(old: str, new: str, conn=None):
     """Follow a host rename so its GPU history doesn't split in two."""
     c = conn or connection()
     for tbl in ("gpu_samples", "gpu_samples_1h", "proc"):
-        c.execute(f"UPDATE {tbl} SET host=? WHERE host=?", (new, old))
+        # OR IGNORE + delete: a name used before (rename back, or a sample the
+        # poller wrote mid-rename) already owns some (ts, host) keys; keep those.
+        c.execute(f"UPDATE OR IGNORE {tbl} SET host=? WHERE host=?", (new, old))
+        c.execute(f"DELETE FROM {tbl} WHERE host=?", (old,))

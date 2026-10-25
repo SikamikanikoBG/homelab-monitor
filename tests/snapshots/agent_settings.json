@@ -1,0 +1,31 @@
+{
+  "body": {
+    "approval_ttl_h": "24",
+    "budget_chat": {
+      "max_seconds": 300,
+      "max_steps": 12,
+      "max_tokens": 120000
+    },
+    "budget_scheduled": {
+      "max_seconds": 600,
+      "max_steps": 25,
+      "max_tokens": 200000
+    },
+    "channels_configured": [],
+    "chat_card_ttl_min": "30",
+    "cloud_min_interval_s": "3600",
+    "cost_cap_day": "2.00",
+    "cost_cap_run": "0.50",
+    "cost_cap_task_day": "1.00",
+    "default_model": "",
+    "default_provider_id": "",
+    "gpu_busy_util_pct": "85",
+    "gpu_defer_max_min": "30",
+    "gpu_min_free_vram_mb": "1024",
+    "max_output_tokens": "2048",
+    "rate_limit_per_day": "3",
+    "tz": "",
+    "tz_effective": "UTC"
+  },
+  "status": 200
+}
