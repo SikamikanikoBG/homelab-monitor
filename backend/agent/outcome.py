@@ -71,8 +71,9 @@ def work(run):
     can see; others count the host they name (the tool's declared host field)."""
     from backend.agent import policy, ports
     from backend.tools.read import BY_NAME
-    hosts, lookups, fleet = set(), 0, False
+    hosts, lookups, fleet, last = set(), 0, False, None
     for s in store.step_list(run["id"]):
+        last = s["ts"]
         if s["kind"] == "tool":
             lookups += 1
             spec = BY_NAME.get(s["tool"])
@@ -90,6 +91,7 @@ def work(run):
                 hosts.add(s["host"])
     if fleet:
         hosts |= {h for h in ports.host_names() if policy.mode_for(h) != "off"}
-    end = run.get("ended_at") or (store.now() if run.get("started_at") else None)
+    # a run parked on an approval is not working: its time stops at its last step
+    end = run.get("ended_at") or (store.now() if run.get("status") in ("queued", "running") else last)
     secs = max(0, end - run["started_at"]) if end and run.get("started_at") else None
     return {"machines": len(hosts), "lookups": lookups, "seconds": secs}

@@ -311,3 +311,6 @@ body.display .ag-fab,body.display .ag-panel{display:none!important}
 .ag-switch{display:inline-flex;align-items:center;gap:8px;min-height:var(--ag-ctl);font-weight:600;margin-right:8px}
 .ag-checks label{font-weight:400}
 @media (max-width:700px){.ag-wide{display:none}}
+.ag-cbox textarea:focus-visible{outline:none!important}
+.ag-panel .ag-ph b{font-size:14.5px;white-space:nowrap}
+@media (max-width:600px){.ag-panel .ag-ctx{display:none}}

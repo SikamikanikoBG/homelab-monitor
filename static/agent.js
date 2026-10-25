@@ -1307,7 +1307,7 @@ function agRenderWidget() {
   const ctx = agContext();
   const hasModel = AG.models.some(m => m.tools !== 'no');
   const kept = agSaveInput('agw');
-  panel.innerHTML = '<div class="ag-ph"><b>' + agEsc(agT('agent.widget_title', 'Ask your homelab')) + '</b>' +
+  panel.innerHTML = '<div class="ag-ph">' + AG_ICON_SM + '<b>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</b>' +
     (ctx.tab ? '<span class="ag-ctx">' + agEsc(agTf('agent.context', 'context: {tab}{host}', { tab: ctx.tab, host: ctx.host ? ' · ' + ctx.host : '' })) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" id="agw-new" title="' + agEsc(agT('agent.new_chat', '+ New chat')) + '">+</button>' +
     '<button class="ag-btn sm" id="agw-open">' + agEsc(agT('agent.open_in_agent', 'Open in Agent')) + '</button>' +
