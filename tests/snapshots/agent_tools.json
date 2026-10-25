@@ -792,7 +792,7 @@
     ],
     "read": [
       {
-        "description": "Every host in the fleet with headline vitals (the hub first): online state, CPU, RAM and every filesystem's use %. Start here; one call covers the whole fleet.",
+        "description": "Start here. Every host: online, CPU, RAM, disks, containers; plus `attention`, the active events the dashboard's Overview shows. One call covers the fleet.",
         "host_scope": "fleet",
         "kind": "read",
         "name": "list_hosts",

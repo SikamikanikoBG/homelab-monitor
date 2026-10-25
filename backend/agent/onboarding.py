@@ -126,7 +126,10 @@ def overview():
                        "at": r["ended_at"] or r["created_at"], "line": run_line(r)})
         if len(lately) >= OVERNIGHT_MAX:
             break
-    return {"model": {"provider_id": pid or None, "model": model or None, "provider": (prov or {}).get("label"),
+    nxt = sorted(({"task": t["name"], "at": t["next_fire"]} for t in store.task_list()
+                  if t.get("enabled") and t.get("next_fire")), key=lambda x: x["at"])[:3]
+    return {"next": nxt, "routines": len(tasks),
+            "model": {"provider_id": pid or None, "model": model or None, "provider": (prov or {}).get("label"),
                       "local": bool(prov) and providers.is_local(prov)},
             "pending_count": len(pend), "waiting": waiting, "lately": lately,
             "hosts": len(ports.host_names()), "preset": policy.preset()}

@@ -45,8 +45,9 @@ def candidates():
     for s in ports.ai_servers():
         add(s.get("host") or "local", s.get("name"), s.get("provider"), s.get("ip") or "127.0.0.1", s.get("port"))
     for s in ports.custom_ai_servers():
-        add(s.get("fleet_host") or s.get("runs_on") or "local", s.get("name"), s.get("provider"), s.get("host"),
-            s.get("port"))
+        # A custom server is wherever its address is, not on the hub (UAT-1).
+        add(s.get("fleet_host") or s.get("runs_on") or ports.host_for_address(s.get("host")), s.get("name"),
+            s.get("provider"), s.get("host"), s.get("port"))
     for host, catalog in ports.remote_model_catalogs().items():
         addr = ports.ssh_target_host(host)
         for key in sorted({(m.get("provider") or "") for m in catalog}):

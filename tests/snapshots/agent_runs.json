@@ -12,6 +12,7 @@
         "ended_at": null,
         "hosts": null,
         "id": "id0003",
+        "label": "restart web",
         "mode": "act",
         "model": "m1",
         "prompt_tokens": 100,

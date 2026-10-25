@@ -288,6 +288,13 @@ def run():
         offl = r["hosts"][1]
         check(offl["online"] is False and offl["error"] == "ssh timeout", "offline host carries error")
         check(offl["vitals"] is None, "no vitals when host snapshot missing")
+        check(loc["vitals"]["containers"] == {"total": 3, "running": 2, "not_running_or_unhealthy": ["n8n", "searxng"]},
+              "the hub's container counts come from the same health data as the dashboard")
+        titles = [a["title"] for a in r["attention"]]
+        check("1 host(s) offline" in titles and "2 container(s) need attention" in titles,
+              "the Overview's events ride along: offline hosts, containers")
+        check("GPU VRAM peaked at 8.2 GB driven by open-webui" in titles, "and the monitor's own insights")
+        check(r["attention_count"] == len(r["attention"]), "attention_count")
 
         print("get_host (online)")
         r = hc.get_host("local")

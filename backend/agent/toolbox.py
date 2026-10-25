@@ -30,7 +30,8 @@ def install_transport():
 class Scope:
     """Everything a run's tool layer needs to know, read once per model step."""
 
-    def __init__(self, hosts=None, run_mode="act", task_actions=None, task_tools=None, controls=None):
+    def __init__(self, hosts=None, run_mode="act", task_actions=None, task_tools=None, controls=None,
+                 agent_model=None, agent_server=None):
         all_hosts = ports.host_names()
         self.hosts = [h for h in (hosts or all_hosts) if h in all_hosts]
         self.modes = store.host_modes()
@@ -39,6 +40,8 @@ class Scope:
         self.task_actions = task_actions
         self.task_tools = task_tools
         self.controls = ports.controls_enabled() if controls is None else controls
+        self.agent_model = agent_model          # the model this run thinks with, and where it is served
+        self.agent_server = agent_server
 
     def mode(self, host):
         return policy.mode_for(host, self.modes)
@@ -137,7 +140,27 @@ def call_read(scope, name, args):
         return False, "error: %s" % str(e)[:300]
     if spec.host_scope == "fleet":
         data = _filter_rows(data, scope.off_hosts(), _ROW_HOST_KEY.get(name, "host"))
+    data = mark_agent_model(data, getattr(scope, "agent_model", None))
     return True, wrap(name, data)
+
+
+# The fields a model is named by in the read tools' rows.
+_MODEL_FIELDS = ("model", "name", "id")
+
+
+def mark_agent_model(obj, model):
+    """Every row that names the agent's own model says so (UAT-1): it is busy
+    answering, never idle, and never something to unload."""
+    if not model:
+        return obj
+    if isinstance(obj, list):
+        return [mark_agent_model(x, model) for x in obj]
+    if isinstance(obj, dict):
+        out = {k: mark_agent_model(v, model) for k, v in obj.items()}
+        if any(out.get(f) == model for f in _MODEL_FIELDS):
+            out["in_use_by_agent"] = True
+        return out
+    return obj
 
 
 def wrap(name, data):

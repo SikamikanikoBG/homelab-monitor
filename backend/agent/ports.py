@@ -8,6 +8,7 @@ a lazy `import app` inside it. When the refactor's `core/act/` lands, this file
 is re-pointed and nothing else changes.
 """
 import contextlib
+import functools
 import os
 import threading
 
@@ -193,6 +194,47 @@ def remote_model_catalogs():
         cat = (entry.get("data") or {}).get("model_catalog") or []
         out[name] = [m for m in cat if isinstance(m, dict)]
     return out
+
+
+@functools.lru_cache(maxsize=256)
+def _resolve(name):
+    """A name's IPv4, once per process (a slow resolver must not slow every run)."""
+    import ipaddress
+    import socket
+    try:
+        ipaddress.ip_address(name)
+        return name
+    except ValueError:
+        pass
+    try:
+        return socket.gethostbyname(name)
+    except OSError:
+        return None
+
+
+def host_for_address(addr):
+    """The fleet host that owns an address (its ssh target, or any IPv4 its
+    probe reports), "local" for the hub's loopback, else None. Used to say
+    where a model server runs instead of assuming the hub (UAT-1)."""
+    addr = (addr or "").strip().lower().strip("[]")
+    if not addr:
+        return None
+    if addr in ("localhost", "127.0.0.1", "::1"):
+        return "local"
+    want = {addr, _resolve(addr)} - {None}
+    for name in host_names():
+        known = set()
+        target = ssh_target_host(name) if name != "local" else None
+        if target:
+            known |= {target.lower(), _resolve(target)} - {None}
+        net = host_block(name).get("net") or {}
+        if net.get("primary_ip"):
+            known.add(net["primary_ip"])
+        for i in net.get("ifaces") or []:
+            known |= {str(ip).split("/")[0] for ip in i.get("ipv4") or []}
+        if want & known:
+            return name
+    return None
 
 
 def ssh_target_host(host):

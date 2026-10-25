@@ -57,7 +57,7 @@
 .ag-pill.info{color:var(--info);border-color:var(--info);background:var(--ag-infobg)}
 .ag-badge{font:700 11px/18px inherit;font-family:inherit;border-radius:999px;padding:0 7px;min-width:20px;text-align:center;background:var(--accent);color:var(--bg);margin-left:auto}
 .ag-badge.new{font-size:10px;letter-spacing:.06em}
-.ag-tag{font:700 10px/18px inherit;font-family:inherit;letter-spacing:.06em;border-radius:5px;padding:0 6px;background:var(--ag-accbg);color:var(--accent);border:1px solid var(--ag-accbd)}
+.ag-tag{font:700 9.5px/16px inherit;font-family:inherit;letter-spacing:.06em;border-radius:999px;padding:0 7px;background:var(--accent);color:var(--bg);border:0}
 .ag-field{font-size:13.5px}
 .ag-banner{border:1px solid var(--info);background:var(--ag-infobg);border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:16px}
 .ag-banner.warn{border-color:var(--warn);background:var(--warnbg)}
@@ -314,3 +314,10 @@ body.display .ag-fab,body.display .ag-panel{display:none!important}
 .ag-cbox textarea:focus-visible{outline:none!important}
 .ag-panel .ag-ph b{font-size:14.5px;white-space:nowrap}
 @media (max-width:600px){.ag-panel .ag-ctx{display:none}}
+.ag-pre{background:var(--inset);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;overflow:auto;margin:6px 0;font:12.5px/1.5 var(--mono);white-space:pre}
+.ag-pre code{background:none;border:0;padding:0}
+.ag-args{margin-top:4px}.ag-args summary{font-size:12px;color:var(--mut);cursor:pointer}.ag-args .ag-mono{color:var(--mut);margin-top:4px;overflow-wrap:anywhere}
+.ag-panel .ag-ctx{border:0;padding:0;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+table.ag-found td{white-space:nowrap}table.ag-found td:first-child{width:30%}
+body.ag-fab-on{padding-bottom:84px}
+@media (max-width:600px){body.ag-tab-on #diagbanner{display:none!important}}

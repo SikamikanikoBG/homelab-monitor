@@ -90,8 +90,9 @@ def _track(fn):
 def list_hosts() -> dict:
     """List every host in the fleet with headline vitals (hub listed first).
 
-    Returns the roster: name, online status, OS, CPU/RAM load, fullest disk and any
-    OS-upgrade/reboot hint per host. Start here, then drill in with `get_host`.
+    Returns the roster: name, online status, OS, CPU/RAM load, every disk, container
+    counts and any OS-upgrade/reboot hint per host, plus `attention`: the active
+    events the dashboard's Overview shows. Start here, then drill in with `get_host`.
     """
     return hc.list_hosts()
 

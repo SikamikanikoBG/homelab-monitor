@@ -244,6 +244,19 @@ def message_list(cid):
     return rows
 
 
+def run_questions(run_ids):
+    """{run_id: the user's message that started it}, in one query."""
+    ids = [i for i in run_ids if i]
+    if not ids:
+        return {}
+    out = {}
+    with ports.db() as c:
+        for rid, content in c.execute("SELECT run_id, content FROM agent_messages WHERE role='user' AND run_id IN (%s) "
+                                      "ORDER BY id" % ",".join("?" * len(ids)), ids):
+            out.setdefault(rid, content)
+    return out
+
+
 # ── runs ─────────────────────────────────────────────────────────────────────
 
 def run_create(conversation_id, trigger, attended, mode, provider_id=None, model=None, task_id=None,

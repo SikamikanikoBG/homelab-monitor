@@ -88,7 +88,8 @@ class _Ctx:
         hosts = (self.task or {}).get("hosts") or None
         self.scope_args = dict(hosts=hosts, run_mode=run["mode"],
                                task_actions=(self.task or {}).get("actions") if self.task else None,
-                               task_tools=(self.task or {}).get("tools") if self.task else None)
+                               task_tools=(self.task or {}).get("tools") if self.task else None,
+                               agent_model=run.get("model"), agent_server=self._server_line())
         budget = state.get_json("budget_chat" if run["trigger"] == "chat" else "budget_scheduled")
         budget.update((self.task or {}).get("budget") or {})
         self.watch = guards.Watch(budget)
@@ -96,6 +97,13 @@ class _Ctx:
         self.actor = run.get("actor") or ("scheduler" if run.get("task_id") else "chat")
         self.base_url = (self.provider or {}).get("base_url")
         self.cloud = bool(self.provider) and not providers.is_local(self.provider)
+
+    def _server_line(self):
+        if not self.provider:
+            return None
+        addr = providers.url_host(self.provider.get("base_url"))
+        host = ports.host_for_address(addr)
+        return "%s (%s)" % (self.provider.get("label") or self.provider.get("preset"), "host %s" % host if host else addr)
 
     def scope(self):
         return toolbox.Scope(**self.scope_args)
@@ -230,7 +238,7 @@ def _request(r, ctx, extra_user=None, no_tools=False):
     system = prompts.build(hosts=scope.hosts, modes=scope.modes, rules=scope.rules, run_mode=r["mode"],
                            attended=ctx.attended, context=r.get("context"),
                            task_prompt=(ctx.task or {}).get("prompt"), tz_name=state.tz(),
-                           controls=scope.controls)
+                           controls=scope.controls, self_model=scope.agent_model, self_server=scope.agent_server)
     msgs = _history(r)
     if extra_user:
         msgs.append({"role": "user", "content": extra_user})

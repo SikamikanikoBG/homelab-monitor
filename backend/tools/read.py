@@ -78,8 +78,8 @@ def _scan_disk(path="/", rescan=False):
 
 
 READ_TOOLS = [
-    ToolSpec("list_hosts", "Every host in the fleet with headline vitals (the hub first): online state, "
-             "CPU, RAM and every filesystem's use %. Start here; one call covers the whole fleet.",
+    ToolSpec("list_hosts", "Start here. Every host: online, CPU, RAM, disks, containers; plus `attention`, "
+             "the active events the dashboard's Overview shows. One call covers the fleet.",
              _obj(), _call("list_hosts"), host_scope="fleet"),
     ToolSpec("get_host", "Full System/Network/Security inventory of one host, including its Docker "
              "containers and systemd services. Large: use it when one host needs a closer look.",

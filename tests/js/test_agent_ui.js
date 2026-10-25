@@ -35,7 +35,8 @@ function takeConst(name) {
 
 const ctx = { console, JSON, Object, Array, String, Number, Math, Date, RegExp, TAB: 'gpu', CURRENT_HOST: 'lab1' };
 vm.createContext(ctx);
-vm.runInContext([takeConst('AG_TABS'), take('agT'), take('agTf'), take('agEsc'), take('agDeepLink'), take('agMarkdown'),
+vm.runInContext([takeConst('AG_TABS'), take('agT'), take('agTf'), take('agEsc'), take('agDeepLink'), take('agMarkdown'), take('agLinkLabel'), take('agToolLabel'),
+  "var AG = { policy: { actions: [{ id: 'container.restart', title: 'Restart a container' }] } };",
   take('agContext'), take('agFabVisible'), take('agUnattended'), take('agReduce'), take('agChatItems'),
   take('agChipLabel'), take('agStepLine')].join('\n'), ctx);
 
@@ -141,13 +142,13 @@ check('chat items: chips carry their result and their approval card', () => {
   assert.strictEqual(items.length, 3);
   assert.strictEqual(items[1].chips[0].result.content, '{"tool":"x"}');
   assert.strictEqual(items[1].chips[0].card.id, 'a1');
-  assert.strictEqual(ctx.agChipLabel(items[1].chips[0]).text, '✓ container.restart · lab1');
+  assert.strictEqual(ctx.agChipLabel(items[1].chips[0]).text, '✓ Restart a container · lab1');
   assert.strictEqual(ctx.agChipLabel({ name: 'x', args: {}, result: { content: 'not allowed: y' } }).bad, true);
 });
 
 check('activity lines name what, where and why', () => {
   const l = ctx.agStepLine({ kind: 'policy', tool: 'container.stop', host: 'nas', target: 'smb', decision: 'deny', decision_reason: 'host_passive', excerpt: 'nas is Passive' });
-  assert.ok(l.text.includes('container.stop · nas → smb'));
+  assert.ok(l.text.includes('Container stop · nas → smb'), l.text);
   assert.ok(l.text.includes('host_passive'));
   assert.strictEqual(ctx.agStepLine({ kind: 'model', tokens_in: 10, tokens_out: 2 }).tag, 'model');
 });
@@ -203,7 +204,7 @@ check('alpha #1/#36: automations offer the catalogue actions; channels need to b
 });
 
 check('alpha #24/#31/#36: outcomes and provider errors read as sentences, not raw text', () => {
-  vm.runInContext([take('agApprovalOutcome'), take('agTestText'), take('agProbeText'), take('agStatusLabel'),
+  vm.runInContext([take('agModelsN'), take('agApprovalOutcome'), take('agTestText'), take('agProbeText'), take('agStatusLabel'),
     take('agTriggerLabel'), take('agWhenFull')].join('\n'), ctx);
   assert.strictEqual(ctx.agApprovalOutcome({ status: 'refused', result: 'lab1 is Passive' }), 'Refused at run time: lab1 is Passive');
   assert.strictEqual(ctx.agTestText({ ok: false, error_kind: 'protocol', detail: '<html>' }).includes('<'), false);
@@ -302,6 +303,39 @@ check('UAT-1: suggestions are a declared list; the Agent sits in the AI group; t
   assert.ok(SRC.includes("zone: 'ai'"));
   assert.ok(fs.readFileSync(path.join(ROOT, 'static', 'agent.css'), 'utf8').includes('body.display .ag-home{display:none!important}'));
   assert.ok(SRC.includes("const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'settings'];"));
+});
+
+check('UAT-1 pass 2: code fences, page names for links, readable tokens and plurals', () => {
+  const out = ctx.agMarkdown('Run:\n```\ndocker system df\n<x>\n```\nthen `ls` — see #disks');
+  assert.ok(out.includes('<pre class="ag-pre"><code>docker system df\n&lt;x&gt;</code></pre>'));
+  assert.ok(out.includes('<code>ls</code>'));
+  assert.ok(out.includes('data-ag-link="#disks">Disks</a>'), out);
+  assert.ok(!out.includes('```'));
+  vm.runInContext([take('agTokens'), take('agModelsN'), take('agActorLabel')].join('\n'), ctx);
+  assert.strictEqual(ctx.agTokens(950), '950 tokens');
+  assert.strictEqual(ctx.agTokens(86512), '86.5k tokens');
+  assert.strictEqual(ctx.agModelsN(1), '1 model');
+  assert.strictEqual(ctx.agModelsN(3), '3 models');
+  assert.strictEqual(ctx.agActorLabel('session:4e86abcdef'), 'you');
+  assert.strictEqual(ctx.agActorLabel('scheduler'), '');
+  const card = ctx.agApprovalCard({ id: 'a', action: 'x', title: 'Restart', host: 'lab1', params: {}, risk: 'low', status: 'done', decided_by: 'session:4e86' }, false);
+  assert.ok(card.includes('by you') && !card.includes('session:') && !card.includes('Nothing runs until you approve'));
+});
+
+check('UAT-1 pass 2: a weak password is weak; the example and suggestions come from the lab', () => {
+  vm.runInContext([take('agPwScore')].join('\n'), ctx);
+  assert.strictEqual(ctx.agPwScore('aaaaaaaaaa'), 1);
+  assert.strictEqual(ctx.agPwScore('abababababab'), 1);
+  assert.ok(ctx.agPwScore('correct horse 7') >= 2);
+  vm.runInContext([take('agExampleFromFleet'), take('agLabHas'), takeConst('AG_SUGGEST'), take('agSuggestChips')].join('\n'), ctx);
+  const ex = ctx.agExampleFromFleet({ hosts: [
+    { name: 'ardi', online: true, is_local: true, host: { disks: [{ mount: '/data', pct: 72, used: 315, total: 438 }] } },
+    { name: 'cloudy', online: false, host: null }] });
+  assert.ok(ex.a.includes('**ardi /data** at **72%** (123 GB free)') && ex.a.includes('cloudy is offline'), ex.a);
+  assert.strictEqual(ctx.agExampleFromFleet({ hosts: [] }), null);
+  vm.runInContext("var FLEET = { hosts: [{ name: 'a', host: { docker: { containers: [{ name: 'web' }] } } }] }; var HH = { now: { gpu: { available: false } } };", ctx);
+  const chips = ctx.agSuggestChips();
+  assert.ok(!chips.includes('GPU') && chips.includes('memory'), chips);
 });
 
 console.log('\n' + n + ' agent UI checks passed');

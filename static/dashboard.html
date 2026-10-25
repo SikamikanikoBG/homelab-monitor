@@ -5628,7 +5628,8 @@ function renderHealth(){
   if(banner){
     const bad = checks.filter(c=>c.status==='warn'||c.status==='fail');
     if((overall==='warn'||overall==='fail') && bad.length && !DIAG_DISMISSED){
-      const _lead = I18N.tf('diag.banner_lead', `⚠️ ${bad.length} setup item${bad.length>1?'s':''} need attention — some features are limited.`, {n:bad.length});
+      const _lead = bad.length===1 ? I18N.t('diag.banner_lead1', '⚠️ 1 setup item needs attention — some features are limited.')
+        : I18N.tf('diag.banner_lead', `⚠️ ${bad.length} setup items need attention — some features are limited.`, {n:bad.length});
       banner.innerHTML = _lead + ` `
         + `<a href="#" id="diaggo">${I18N.t('diag.banner_link','See Setup &amp; requirements')}</a><button class="x" id="diagx" title="${I18N.t('common.dismiss','Dismiss')}">×</button>`;
       banner.hidden = false;
@@ -10671,6 +10672,10 @@ function showWhatsNew(data, curVersion){
 async function maybeWhatsNew(curVersion){
   if(WN_DONE || !curVersion) return;
   WN_DONE = true;                                // never re-run this page load
+  // The AI agent's first-visit invitation goes first; agent.js shows the notes once it is set up or put off.
+  try{ if((await HLM_AUTH.status()).agent){ const s = await (await fetch('/api/agent/setup')).json();
+    const pref = localStorage.getItem('hlm.agent.home') || '';
+    if(s.allowed && !s.done && !s.dismissed && !pref){ WN_DONE = false; return; } } }catch(e){ /* no agent: as before */ }
   let seen;
   try{ seen = localStorage.getItem(WN_KEY); }catch(e){ return; }
   if(seen === curVersion) return;                // same version (redeploy) → nothing

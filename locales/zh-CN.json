@@ -113,7 +113,7 @@
       "agent.ch.webhook",
       "login.title"
     ],
-    "coverage": 0.9207
+    "coverage": 0.9221
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -373,6 +373,7 @@
   "mcp.disabled_html": "<span class=\"badge warn\">已禁用</span> — 设置 <code>ENABLE_MCP=1</code> 以开启。",
   "mcp.enabled_html": "<span class=\"badge ok\">已启用</span> — 正在 <code>{ep}</code> 上提供服务。",
   "diag.banner_lead": "⚠️ {n} 个设置项需要关注 — 部分功能受限。",
+  "diag.banner_lead1": "⚠️ 1 个设置项需要关注 — 部分功能受限。",
   "diag.banner_link": "查看“设置与要求”",
   "common.dismiss": "忽略",
   "ct.click_logs": "点击查看实时日志",
@@ -1463,5 +1464,28 @@
   "agent.wz.byurl_p": "填写它的地址，例如 Ollama 用 http://192.168.1.20:11434，vLLM 用 http://192.168.1.20:8000/v1。",
   "agent.wz.server": "服务器",
   "agent.wz.address": "地址",
-  "agent.wz.need_url": "请先输入服务器地址。"
+  "agent.wz.need_url": "请先输入服务器地址。",
+  "agent.by": "由{who}",
+  "agent.may_act_1": "可能提出 1 个操作",
+  "agent.k.details": "详情",
+  "agent.m.models_1": "1 个模型",
+  "agent.tokens": "{n} 个 token",
+  "agent.m.cap_day_c": "每日云端支出上限（{c}）",
+  "agent.m.on_host": "在 {h} 上",
+  "agent.m.at_addr": "地址 {a}",
+  "agent.m.all_added": "在你的实验室中找到的模型服务器都已在下面添加。",
+  "agent.context_t": "问题针对这个页面",
+  "agent.ex.full": "有一个磁盘需要清理。",
+  "agent.ex.ok": "没有接近满的磁盘。",
+  "agent.ex.off1": "{h} 离线，所以无法检查。",
+  "agent.ex.offn": "{n} 台机器离线，所以无法检查。",
+  "agent.example_yours": "示例，来自你机群的数据",
+  "agent.example_sample": "示例（一个样例实验室）",
+  "agent.next_first": "还没有例行任务运行过。下一次：{t}，{when}。",
+  "agent.no_routines": "还没有例行任务 — 在“例行任务”中开启一个。",
+  "agent.pw.weak": "太容易猜到 — 至少 10 个字符，并要有变化",
+  "agent.sug.containers": "哪些容器占用内存最多？",
+  "agent.ex.top": "最满的是 **{h} {m}**，占用 **{p}%**。",
+  "agent.ex.top_free": "最满的是 **{h} {m}**，占用 **{p}%**（剩余 {f} GB）。",
+  "agent.tool.list_hosts": "机群概览"
 }

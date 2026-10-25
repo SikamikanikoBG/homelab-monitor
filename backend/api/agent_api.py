@@ -126,6 +126,7 @@ def _settings_out():
         out[k] = state.get_json(k)
     out["tz_effective"] = state.tz()
     out["channels_configured"] = ports.channels_configured()
+    out["currency"] = (ports.dashboard_settings() or {}).get("currency") or "$"
     return out
 
 
@@ -628,7 +629,22 @@ def runs_list():
         limit = 50
     items = store.run_list(limit=limit, **_run_filters())
     nxt = items[-1]["created_at"] if len(items) == limit else None
-    return jsonify({"items": [_run_out(r) for r in items], "next": nxt})
+    return jsonify({"items": [dict(_run_out(r), label=lbl) for r, lbl in zip(items, _run_labels(items))], "next": nxt})
+
+
+def _run_labels(items):
+    """What a run was, in a line: the routine's name, else the question that started it
+    (several runs share a conversation and so its title, UAT-1)."""
+    from backend.agent import extras
+    qs = store.run_questions([r["id"] for r in items])
+    tasks = {t["id"]: t["name"] for t in store.task_list()}
+    out = []
+    for r in items:
+        if r.get("task_id"):
+            out.append(tasks.get(r["task_id"]) or r.get("title"))
+        else:
+            out.append(extras.fallback_title(qs.get(r["id"]) or "") or r.get("title"))
+    return out
 
 
 def _step_out(s):

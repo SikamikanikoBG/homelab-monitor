@@ -21,8 +21,10 @@ const AG_TABS = ['overview', 'gpu', 'costs', 'containers', 'services', 'host', '
 const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'settings'];
 const AG_SETTINGS = ['models', 'policy'];
 // The suggestion chips: a short declared list (texts live in the locale files).
+// The third field names what the lab needs for the question to make sense (from its data).
 const AG_SUGGEST = [['agent.sug.disks', 'How are my disks?'], ['agent.sug.wrong', 'Anything wrong right now?'],
-  ['agent.sug.gpu', 'What is using the GPU?'], ['agent.sug.clean', 'What can I clean up?']];
+  ['agent.sug.gpu', 'What is using the GPU?', 'gpu'], ['agent.sug.clean', 'What can I clean up?'],
+  ['agent.sug.containers', 'Which containers use the most memory?', 'docker']];
 const AG_ICON_PATH = '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>';
 const AG_ICON = '<svg class="ag-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + AG_ICON_PATH + '</svg>';
 const AG_ICON_SM = AG_ICON.replace('ag-ic', 'ag-ic sm');
@@ -77,16 +79,21 @@ function agMarkdown(text) {
     .replace(/\[([^\]\n]{1,80})\]\((#[a-z]+(?:\?host=[A-Za-z0-9_.\-]{1,128})?)\)/g,
       (all, label, href) => agDeepLink(href) ? '<a href="' + href + '" data-ag-link="' + href + '">' + label + '</a>' : all)
     .replace(/(^|[\s(])(#[a-z]+(?:\?host=[A-Za-z0-9_.\-]{1,128})?)(?=$|[\s).,;:!?])/g,
-      (all, pre, href) => agDeepLink(href) ? pre + '<a href="' + href + '" data-ag-link="' + href + '">' + href + '</a>' : all);
+      (all, pre, href) => agDeepLink(href) ? pre + '<a href="' + href + '" data-ag-link="' + href + '">' + agEsc(agLinkLabel(href)) + '</a>' : all);
   const row = l => /^\s*\|.*\|\s*$/.test(l);
   const sep = l => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
   const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
   const out = [];
-  let list = null, tag = 'ul';
+  let list = null, tag = 'ul', code = null;
   const flush = () => { if (list) { out.push('<' + tag + '>' + list.join('') + '</' + tag + '>'); list = null; } };
   const lines = src.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (/^\s*```/.test(line)) {                       // a fenced block: shown as written, never parsed
+      if (code === null) { flush(); code = []; } else { out.push('<pre class="ag-pre"><code>' + code.join('\n') + '</code></pre>'); code = null; }
+      continue;
+    }
+    if (code !== null) { code.push(line); continue; }
     if (row(line) && i + 1 < lines.length && sep(lines[i + 1])) {
       flush();
       const head = cells(line), body = [];
@@ -112,7 +119,16 @@ function agMarkdown(text) {
     if (line.trim()) out.push('<p>' + inline(line) + '</p>');
   }
   flush();
+  if (code !== null) out.push('<pre class="ag-pre"><code>' + code.join('\n') + '</code></pre>');
   return out.join('');
+}
+
+/** An internal link's text: the page's name (and host), not "#disks". */
+function agLinkLabel(href) {
+  const l = agDeepLink(href);
+  if (!l) return href;
+  const name = agT('nav.' + l.tab, l.tab.charAt(0).toUpperCase() + l.tab.slice(1));
+  return l.host ? name + ' · ' + l.host : name;
 }
 
 /** What the page context the widget sends with a question looks like. */
@@ -290,6 +306,7 @@ function agOpenFromHash(hash) {
 }
 
 function agOnTab(id) {
+  document.body.classList.toggle('ag-tab-on', id === 'agent');
   agSyncFab();
   if (id === 'agent') agRender();
   if (id === 'overview') agHomeRefresh();
@@ -556,7 +573,7 @@ function agChatItems(detail) {
 function agChipLabel(c) {
   const host = c.args.host || c.args.name || '';
   const ok = c.result ? !/^(not allowed|not permitted|error|not run)/.test(c.result.content || '') : null;
-  return { text: (ok === null ? '… ' : ok ? '✓ ' : '✕ ') + c.name.replace(/__/g, '.') + (host ? ' · ' + host : ''), bad: ok === false };
+  return { text: (ok === null ? '… ' : ok ? '✓ ' : '✕ ') + agToolLabel(c.name) + (host ? ' · ' + host : ''), bad: ok === false };
 }
 
 function agPaintMessages(box, detail, hasModel) {
@@ -671,7 +688,7 @@ function agApprovalCard(a, compact) {
     ' <span class="ag-mut">·</span> <span class="ag-mono">' + agEsc(a.host) + '</span></div>';
   html += '<div class="s">' + agEsc({ low: agT('agent.risk.low', 'low risk'), medium: agT('agent.risk.medium', 'medium risk'), high: agT('agent.risk.high', 'high risk') }[a.risk] || a.risk || '') +
     (a.seen_count > 1 ? ' · ' + agEsc(agTf('agent.seen', 'proposed {n}×', { n: a.seen_count })) : '') +
-    (compact ? '' : ' · ' + agEsc(agT('agent.nothing_runs', 'Nothing runs until you approve.'))) + '</div>';
+    (compact || st !== 'pending' ? '' : ' · ' + agEsc(agT('agent.nothing_runs', 'Nothing runs until you approve.'))) + '</div>';
   if (!compact) {
     if (a.rationale) html += '<div class="ag-why">' + agEsc(a.rationale) + '</div>';
     if (a.command_preview) html += '<details class="ag-cmd"><summary>' + agEsc(agT('agent.ap.command', 'Exact command')) + '</summary><code>' + agEsc(a.command_preview) + '</code></details>';
@@ -681,7 +698,8 @@ function agApprovalCard(a, compact) {
     html += '<div class="ag-appr-btns"><button type="button" class="ag-btn" data-rj="' + agEsc(a.id) + '">' + agEsc(agT('agent.reject', 'Reject')) + '</button>' +
       '<button type="button" class="ag-btn pri" data-ap="' + agEsc(a.id) + '">' + agEsc(agT('agent.approve', 'Approve')) + '</button></div>';
   } else {
-    html += '<div class="ag-appr-out">' + agEsc(agApprovalOutcome(a)) + (a.decided_by ? ' · ' + agEsc(a.decided_by) : '') + '</div>';
+    const who = agActorLabel(a.decided_by);
+    html += '<div class="ag-appr-out">' + agEsc(agApprovalOutcome(a)) + (who ? ' · ' + agEsc(agTf('agent.by', 'by {who}', { who })) : '') + '</div>';
   }
   return html + '</div>';
 }
@@ -707,7 +725,23 @@ function agWireApprovalButtons(root) {
       agApprovalOutcome(r.body.approval || { status: r.body.status }));
     await Promise.all([agLoadApprovals(), agRefreshStatus()]);
     agScheduleRefetch({ conv: true, runs: true });
+    const a = r.body.approval;
+    if (r.ok && a && (a.status === 'approved' || a.status === 'executing')) agToastWhenDone(a);
   });
+}
+
+/** An approval still running when the decision returned: say how it ended once it has. */
+async function agToastWhenDone(a) {
+  for (let i = 0; i < 20; i++) {
+    await new Promise(res => setTimeout(res, 1500));
+    const r = await agApi('/api/agent/runs/' + encodeURIComponent(a.run_id));
+    const cur = r.ok ? (r.body.approvals || []).find(x => x.id === a.id) : null;
+    if (cur && cur.status !== 'approved' && cur.status !== 'executing') {
+      agToast(cur.status === 'done' ? 'ok' : 'warning', agApprovalOutcome(cur));
+      agScheduleRefetch({ conv: true, runs: true, approvals: true });
+      return;
+    }
+  }
 }
 
 function agRenderApprovals(view) {
@@ -736,7 +770,7 @@ function agRenderAuto(view) {
     body = '<div class="ag-grid">' + AG.templates.map(t => {
       const on = active[t.id];
       const meta = [agCronLabel(t.default_cron), t.est_tokens ? agTf('agent.est_short', '~{n}k tokens', { n: Math.round(t.est_tokens / 1000) }) : '',
-        t.actions.length ? agTf('agent.may_act_n', 'may propose {n} actions', { n: t.actions.length }) : agT('agent.report_only2', 'reports only'),
+        t.actions.length === 1 ? agT('agent.may_act_1', 'may propose 1 action') : t.actions.length ? agTf('agent.may_act_n', 'may propose {n} actions', { n: t.actions.length }) : agT('agent.report_only2', 'reports only'),
         t.eligible_hosts.length ? '' : agT('agent.no_hosts', 'no matching host')].filter(Boolean).join(' · ');
       return '<div class="ag-tpl' + (on ? ' on' : '') + '"><div class="ag-row"><h4 class="ag-grow">' + agEsc(agT('agent.tpl.' + t.id + '.name', t.name)) + '</h4>' +
         (on ? '<span class="ag-stat ok">' + agEsc(agT('agent.active', 'Active')) + '</span>' : '') + '</div><p>' + agEsc(agT('agent.tpl.' + t.id + '.desc', t.desc)) + '</p>' +
@@ -931,8 +965,8 @@ function agRenderActivity(view) {
     '<a class="ag-btn sm" href="/api/agent/audit/export?format=csv' + (qs ? '&' + agEsc(qs) : '') + '" download>' + agEsc(agT('agent.export_csv', 'Export CSV')) + '</a></div>';
   html += '<div class="ag-card" style="padding:4px 6px"><div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.col.when', 'When')) + '</th><th>' + agEsc(agT('agent.col.run', 'Run')) + '</th><th>' +
     agEsc(agT('agent.col.trigger', 'Trigger')) + '</th><th>' + agEsc(agT('agent.model', 'Model')) + '</th><th>' + agEsc(agT('agent.col.tokens', 'Tokens')) + '</th><th>' + agEsc(agT('agent.col.outcome', 'Outcome')) + '</th></tr></thead><tbody>' +
-    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhenFull(r.created_at)) + '</td><td>' + agEsc(r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
-      agEsc(agTriggerLabel(r.trigger)) + (agActorLabel(r.actor) ? ' · ' + agEsc(agActorLabel(r.actor)) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mono">' + agEsc((r.prompt_tokens || 0) + ' / ' + (r.completion_tokens || 0)) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
+    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhenFull(r.created_at)) + '</td><td>' + agEsc(r.label || r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
+      agEsc(agTriggerLabel(r.trigger)) + (agActorLabel(r.actor) ? ' · ' + agEsc(agActorLabel(r.actor)) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mut">' + agEsc(agTokens((r.prompt_tokens || 0) + (r.completion_tokens || 0))) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
       : '<tr><td colspan="6" class="ag-mut">' + agEsc(agT('agent.no_runs', 'Nothing yet.')) + '</td></tr>') + '</tbody></table></div>' +
     (AG.runsNext ? '<div class="ag-row" style="justify-content:center;margin:6px"><button class="ag-btn sm" id="agf-more">' + agEsc(agT('agent.load_more', 'Load more')) + '</button></div>' : '') + '</div>';
   html += '<div id="ag-rundetail"></div>';
@@ -956,12 +990,12 @@ function agRenderActivity(view) {
 
 /** One line per step: who/what/where/why, readable on a phone. */
 function agStepLine(s) {
-  const tool = (s.tool || '').replace(/__/g, '.');
+  const tool = s.kind === 'model' ? (s.tool || '') : agToolLabel(s.tool);
   const where = s.host ? ' · ' + s.host + (s.target ? ' → ' + s.target : '') : '';
   switch (s.kind) {
-    case 'model': return { tag: agT('agent.k.model', 'model'), text: (s.tokens_in || 0) + '→' + (s.tokens_out || 0) + ' tok' + (s.excerpt ? ' · ' + s.excerpt.replace(/[*`#|]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 160) : (s.args && s.args.tool_calls ? ' · ' + s.args.tool_calls.join(', ') : '')) };
+    case 'model': return { tag: agT('agent.k.model', 'model'), text: (s.tokens_in || 0) + '→' + (s.tokens_out || 0) + ' tok' + (s.excerpt ? ' · ' + s.excerpt.replace(/[*`#|]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 160) : (s.args && s.args.tool_calls ? ' · ' + s.args.tool_calls.map(agToolLabel).join(', ') : '')) };
     case 'meta': return { tag: agT('agent.k.label', 'label'), text: [(s.args || {}).title, ((s.args || {}).followups || []).join(' · ')].filter(Boolean).join(' — ') };
-    case 'tool': return { tag: agT('agent.k.read', 'read'), text: tool + where + ' → ' + (s.result_bytes || 0) + ' B' + (s.ok ? '' : ' ✕') };
+    case 'tool': return { tag: agT('agent.k.read', 'read'), text: tool + where + (s.ok ? '' : ' ✕') };
     case 'probe_intent': return { tag: agT('agent.k.check', 'check'), text: tool + where };
     case 'probe_result': return { tag: agT('agent.k.check', 'check'), text: tool + where + (s.ok ? ' ✓' : ' ✕') + (s.excerpt ? ' · ' + s.excerpt.slice(0, 160) : '') };
     case 'action_intent': return { tag: agT('agent.k.act', 'act'), text: tool + where + ' · ' + agT('agent.k.policy', 'policy') + ' ' + (s.decision_reason || '') + (s.approval_id ? ' · ' + agT('agent.k.approval', 'approval') + ' ' + s.approval_id.slice(0, 8) : '') };
@@ -972,17 +1006,25 @@ function agStepLine(s) {
   }
 }
 
+/** A step's arguments, folded, as readable lines (not raw JSON). */
+function agArgs(s) {
+  const a = s.args;
+  if (!a || typeof a !== 'object' || s.kind === 'model' || s.kind === 'meta' || !Object.keys(a).length) return '';
+  const lines = Object.entries(a).map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v, null, 1).replace(/\s*\n\s*/g, ' ') : String(v)));
+  return '<details class="ag-args"><summary>' + agEsc(agT('agent.k.details', 'details')) + '</summary><div class="ag-mono">' + lines.map(agEsc).join('<br>') + '</div></details>';
+}
+
 function agPaintRunDetail(box, d) {
   const r = d.run;
   const dur = r.started_at && r.ended_at ? (r.ended_at - r.started_at) + ' s' : '—';
   box.innerHTML = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.run_detail', 'Run detail')) + ' · ' + agEsc(r.title || r.id.slice(0, 8)) + ' ' + agStatusPill(r.status) + '</div>' +
     '<dl class="ag-kv"><dt>' + agEsc(agT('agent.col.trigger', 'Trigger')) + '</dt><dd>' + agEsc(agTriggerLabel(r.trigger) + (agActorLabel(r.actor) ? ' · ' + agActorLabel(r.actor) : '') + (r.attended ? '' : ' · ' + agT('agent.unattended', 'unattended'))) + '</dd>' +
-    '<dt>' + agEsc(agT('agent.model', 'Model')) + '</dt><dd class="ag-mono">' + agEsc((r.model || '—') + ' · ' + (r.prompt_tokens || 0) + ' in / ' + (r.completion_tokens || 0) + ' out' + (r.cost ? ' · ' + r.cost.toFixed(4) : '')) + '</dd>' +
+    '<dt>' + agEsc(agT('agent.model', 'Model')) + '</dt><dd class="ag-mono">' + agEsc((r.model || '—') + ' · ' + agTokens((r.prompt_tokens || 0) + (r.completion_tokens || 0)) + (r.cost ? ' · ' + r.cost.toFixed(4) : '')) + '</dd>' +
     '<dt>' + agEsc(agT('agent.col.mode', 'Mode')) + '</dt><dd>' + agEsc(agModeLabel(r.mode)) + '</dd>' +
     '<dt>' + agEsc(agT('agent.duration', 'Duration')) + '</dt><dd>' + agEsc(dur + ' · ' + (r.steps || 0) + ' ' + agT('agent.steps', 'steps')) + '</dd>' +
     (r.status_reason ? '<dt>' + agEsc(agT('agent.why_ended', 'Why it ended')) + '</dt><dd>' + agEsc(r.status_reason) + '</dd>' : '') + '</dl>' +
     agRunFacts(r) +
-    '<div style="margin-top:10px">' + d.steps.map(s => { const l = agStepLine(s); return '<div class="ag-step"><span class="ag-mono ag-mut">' + agEsc(new Date(s.ts * 1000).toLocaleTimeString()) + '</span><span><b>' + agEsc(l.tag) + '</b> ' + agEsc(l.text) + '</span></div>'; }).join('') + '</div>' +
+    '<div style="margin-top:10px">' + d.steps.map(s => { const l = agStepLine(s); return '<div class="ag-step"><span class="ag-mono ag-mut">' + agEsc(new Date(s.ts * 1000).toLocaleTimeString()) + '</span><span><b>' + agEsc(l.tag) + '</b> ' + agEsc(l.text) + agArgs(s) + '</span></div>'; }).join('') + '</div>' +
     (d.approvals.length ? '<div class="ag-h" style="margin-top:12px">' + agEsc(agT('agent.v.approvals', 'Approvals')) + '</div>' + d.approvals.map(a => agApprovalCard(a, false)).join('') : '') +
     '<div class="ag-row" style="margin-top:10px"><button class="ag-btn sm" id="ag-open-conv">' + agEsc(agT('agent.open_conv', 'Open the conversation')) + '</button>' +
     ((r.status === 'running' || r.status === 'queued' || r.status === 'waiting_approval') ? '<button class="ag-btn sm no" id="ag-stop-run">' + agEsc(agT('agent.stop', 'Stop')) + '</button>' : '') + '</div></div>';
@@ -1089,12 +1131,29 @@ function agRenderPolicy(view) {
 /** A provider test result in the page's language (#24); errors by kind, never a raw body (#36). */
 function agTestText(t) {
   if (!t) return '';
-  if (t.ok) return agTf('agent.m.models_n', '{n} models', { n: (t.models || []).length || parseInt(t.detail, 10) || 0 });
+  if (t.ok) return agModelsN((t.models || []).length || parseInt(t.detail, 10) || 0);
   const kinds = { auth: agT('agent.err.auth', 'The provider rejected the key (401/403).'), unreachable: agT('agent.err.unreachable', 'The provider can’t be reached.'),
     rate_limited: agT('agent.err.rate_limited', 'The provider is rate-limiting (429).'), server: agT('agent.err.server', 'The provider had an internal error (5xx).'),
     bad_request: agT('agent.err.bad_request', 'The provider refused the request — check the URL.'), timeout: agT('agent.err.timeout', 'The provider took too long to answer.'),
     protocol: agT('agent.err.protocol', 'The answer wasn’t what a model server sends — check the URL.') };
   return kinds[t.error_kind] || t.detail || agT('agent.failed', 'Something went wrong.');
+}
+
+function agModelsN(n) { return n === 1 ? agT('agent.m.models_1', '1 model') : agTf('agent.m.models_n', '{n} models', { n }); }
+
+/** Tokens the way people read them: 950 tokens, 86.5k tokens. */
+function agTokens(n) {
+  n = Number(n) || 0;
+  return n < 1000 ? agTf('agent.tokens', '{n} tokens', { n }) : agTf('agent.tokens', '{n} tokens', { n: (n / 1000).toFixed(n < 100000 ? 1 : 0).replace(/\.0$/, '') + 'k' });
+}
+
+/** A tool or catalogue action by its name in words. */
+function agToolLabel(name) {
+  const id = String(name || '').replace(/__/g, '.');
+  const a = ((AG.policy && AG.policy.actions) || []).find(x => x.id === id);
+  if (a) return agT('agent.act.' + id, a.title);
+  const plain = id.replace(/[._]+/g, ' ').trim();
+  return agT('agent.tool.' + id, plain.charAt(0).toUpperCase() + plain.slice(1));
 }
 
 /** A tool-probe result in the page's language. */
@@ -1128,18 +1187,18 @@ function agRenderModels(view) {
   let html = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.general', 'General')) + '</div><div class="ag-form">' +
     '<label class="ag-switch"><input type="checkbox" id="agm-on"' + (st.enabled ? ' checked' : '') + '> ' + agEsc(agT('agent.m.enabled', 'Agent enabled')) + '</label>' +
     '<div class="ag-fld"><label for="agm-tz">' + agEsc(agT('agent.m.tz', 'Time zone')) + '</label><input id="agm-tz" value="' + agEsc(s.tz || '') + '" placeholder="' + agEsc(s.tz_effective || 'UTC') + '"></div>' +
-    '<div class="ag-fld"><label for="agm-cap">' + agEsc(agT('agent.m.cap_day', 'Cloud spend cap per day')) + '</label><input id="agm-cap" inputmode="decimal" value="' + agEsc(s.cost_cap_day || '') + '"></div>' +
+    '<div class="ag-fld"><label for="agm-cap">' + agEsc(agTf('agent.m.cap_day_c', 'Cloud spend cap per day ({c})', { c: s.currency || '$' })) + '</label><input id="agm-cap" inputmode="decimal" value="' + agEsc(s.cost_cap_day || '') + '"></div>' +
     '<button type="button" class="ag-btn" id="agm-save">' + agEsc(agT('agent.save', 'Save')) + '</button></div></div>';
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.found', 'Found on your lab')) + '</div>' +
-    (AG.discovered.length ? '<div class="ag-tw"><table><tbody>' + AG.discovered.map((d, i) => '<tr><td class="ag-mono">' + agEsc(d.server || d.provider_key) + '</td><td class="ag-mono ag-mut">' + agEsc(d.preset + '@' + d.host) + '</td><td>' +
-      (d.reachable ? '<span class="ag-pill ok">' + agEsc(agTf('agent.m.models_n', '{n} models', { n: d.models.length })) + '</span>' : '<span class="ag-pill">' + agEsc(agT('agent.m.unreachable', 'seen, but not reachable from the hub')) + '</span>') + '</td><td>' +
+    (AG.discovered.some(d => !d.provider_id) ? '<div class="ag-tw"><table class="ag-found"><tbody>' + AG.discovered.map((d, i) => d.provider_id ? '' : '<tr><td class="ag-mono">' + agEsc(d.server || d.provider_key) + '</td><td class="ag-mut">' + agEsc(d.host ? agTf('agent.m.on_host', 'on {h}', { h: d.host }) : agTf('agent.m.at_addr', 'at {a}', { a: String(d.base_url || '').replace(/^https?:\/\//, '') })) + '</td><td>' +
+      (d.reachable ? '<span class="ag-stat ok">' + agEsc(agModelsN(d.models.length)) + '</span>' : '<span class="ag-stat">' + agEsc(agT('agent.m.unreachable', 'seen, but not reachable from the hub')) + '</span>') + '</td><td>' +
       (d.provider_id ? '<span class="ag-stat">' + agEsc(agT('agent.m.added', 'added')) + '</span>' : '<button class="ag-btn sm pri" data-disc="' + i + '"' + (d.reachable ? '' : ' disabled') + '>' + agEsc(agT('agent.m.add', 'Add')) + '</button>') + '</td></tr>' +
       (d.reachable && d.models.length ? '<tr><td colspan="4"><div class="ag-row">' + d.models.slice(0, 12).map(m => {
         const known = d.provider_id ? AG.models.find(x => x.provider_id === d.provider_id && x.model === m) : null;
         return '<span class="ag-row" style="gap:4px"><span class="ag-mono">' + agEsc(m) + '</span>' + (known ? agBadge(known) : '') +
           agUseBtn('data-disc-use', i + '|' + m, known) + '</span>';
       }).join('') + '</div></td></tr>' : '')).join('') + '</tbody></table></div>'
-      : '<p class="ag-mut">' + agEsc(agT('agent.m.none_found', 'No model servers found on your lab. Add Ollama, vLLM, llama.cpp or LM Studio as a custom AI server in Settings → General, or add one by URL below.')) + '</p>') + '</div>';
+      : '<p class="ag-mut">' + agEsc(AG.discovered.length ? agT('agent.m.all_added', 'Every model server found on your lab is added below.') : agT('agent.m.none_found', 'No model servers found on your lab. Add Ollama, vLLM, llama.cpp or LM Studio as a custom AI server in Settings → General, or add one by URL below.')) + '</p>') + '</div>';
   html += AG.providers.map(p => '<div class="ag-card"><div class="ag-h">' + agEsc(p.label) + ' <span class="ag-pill">' + agEsc(p.local ? agT('agent.local', 'local') : agT('agent.cloud', 'cloud')) + '</span>' + (p.experimental ? '<span class="ag-pill warn">' + agEsc(agT('agent.m.experimental', 'experimental')) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" data-ptest="' + agEsc(p.id) + '">' + agEsc(agT('agent.m.test', 'Test & list models')) + '</button><button class="ag-btn sm no" data-pdel="' + agEsc(p.id) + '">' + agEsc(agT('agent.delete', 'Delete')) + '</button></div>' +
     '<div class="ag-mut ag-mono" style="font-size:12px">' + agEsc(p.base_url) + (p.key_set ? ' · ' + agEsc(agT('agent.m.key', 'key')) + ' ' + agEsc(p.key_ref ? p.key_ref : '••••' + (p.key_last4 || '')) : '') + '</div>' +
@@ -1271,6 +1330,7 @@ function agSyncFab() {
   if (!fab) return;
   const show = agFabVisible(AG.status, typeof TAB !== 'undefined' ? TAB : '', document.body.classList.contains('display'));
   fab.hidden = !show;
+  document.body.classList.toggle('ag-fab-on', show);
   if (!show && AG.widgetOpen) agCloseWidget();
   agPaintBadge();
 }
@@ -1308,7 +1368,7 @@ function agRenderWidget() {
   const hasModel = AG.models.some(m => m.tools !== 'no');
   const kept = agSaveInput('agw');
   panel.innerHTML = '<div class="ag-ph">' + AG_ICON_SM + '<b>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</b>' +
-    (ctx.tab ? '<span class="ag-ctx">' + agEsc(agTf('agent.context', 'context: {tab}{host}', { tab: ctx.tab, host: ctx.host ? ' · ' + ctx.host : '' })) + '</span>' : '') +
+    (ctx.tab ? '<span class="ag-ctx" title="' + agEsc(agT('agent.context_t', 'The question is asked about this page')) + '">' + agEsc(agLinkLabel('#' + ctx.tab) + (ctx.host ? ' · ' + ctx.host : '')) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" id="agw-new" title="' + agEsc(agT('agent.new_chat', '+ New chat')) + '">+</button>' +
     '<button class="ag-btn sm" id="agw-open">' + agEsc(agT('agent.open_in_agent', 'Open in Agent')) + '</button>' +
     '<button class="ag-btn sm" id="agw-close" aria-label="' + agEsc(agT('agent.close', 'Close')) + '">✕</button></div>' +
@@ -1381,8 +1441,17 @@ function agRunGroups(detail) {
   return groups;
 }
 
+/** What the lab has, from the dashboard's own data: a reporting GPU, Docker. */
+function agLabHas(what) {
+  const hosts = (typeof FLEET !== 'undefined' && FLEET && FLEET.hosts) || [];
+  const hh = typeof HH !== 'undefined' ? HH : null;
+  if (what === 'gpu') return !!(hh && hh.now && hh.now.gpu && hh.now.gpu.available) || hosts.some(h => ((h.host && h.host.gpus) || []).length);
+  if (what === 'docker') return !!(hh && hh.docker && (hh.docker.containers || []).length) || hosts.some(h => ((h.host && h.host.docker && h.host.docker.containers) || []).length);
+  return true;
+}
+
 function agSuggestChips() {
-  return AG_SUGGEST.map(([k, f]) => { const q = agT(k, f); return '<button type="button" class="ag-sug" data-sug="' + agEsc(q) + '">' + agEsc(q) + '</button>'; }).join('');
+  return AG_SUGGEST.filter(x => !x[2] || agLabHas(x[2])).slice(0, 4).map(([k, f]) => { const q = agT(k, f); return '<button type="button" class="ag-sug" data-sug="' + agEsc(q) + '">' + agEsc(q) + '</button>'; }).join('');
 }
 
 function agWireSuggestions(root) {
@@ -1445,6 +1514,11 @@ function agHomeMount() {
   return el;
 }
 
+/** The dashboard holds "What's new" back while the invitation is up; show it now. */
+function agWhatsNewLater() {
+  try { if (typeof WN_DONE !== 'undefined' && typeof maybeWhatsNew === 'function') { WN_DONE = false; maybeWhatsNew(AG.status && AG.status.version); } } catch (e) { /* the notes are a nicety */ }
+}
+
 function agHomePref(v) {
   try {
     if (v === undefined) return localStorage.getItem('hlm.agent.home') || '';
@@ -1483,10 +1557,31 @@ function agInviteHtml(inTab) {
     step(3, s.enabled, agT('agent.step.perm', 'Choose what it may do')) + '</ol>' +
     '<div class="ag-row"><button type="button" class="ag-btn pri lg" data-agsetup="1">' + agEsc(agT('agent.setup_cta', 'Set it up · about a minute')) + '</button>' +
     (inTab ? '' : '<button type="button" class="ag-btn ghost" id="agh-later">' + agEsc(agT('agent.not_now', 'Not now')) + '</button>') + '</div></div>' +
-    '<div class="ag-inv-r" aria-label="' + agEsc(agT('agent.example', 'For example')) + '"><div class="ag-kicker">' + agEsc(agT('agent.example', 'For example')) + '</div>' +
+    agExampleHtml() + '</div>';
+}
+
+/** The invitation's example: built from this fleet's own data, so it is never
+ *  mistaken for someone else's lab; a plainly labelled sample when there's no data. */
+function agExampleFromFleet(fleet) {
+  const hosts = (fleet && fleet.hosts) || [];
+  if (!hosts.length) return null;
+  const on = hosts.filter(h => h.online || h.is_local), off = hosts.filter(h => !h.online && !h.is_local);
+  let top = null;
+  on.forEach(h => ((h.host && h.host.disks) || []).forEach(d => { if (!top || (d.pct || 0) > top.pct) top = { host: h.label || h.name, mount: d.mount, pct: d.pct || 0, free: d.total && d.used != null ? Math.round(d.total - d.used) : null }; }));
+  if (!top) return null;
+  let a = (top.pct >= 90 ? agT('agent.ex.full', 'One disk needs a clean-up.') : agT('agent.ex.ok', 'Nothing is close to full.')) + ' ' +
+    agTf(top.free != null ? 'agent.ex.top_free' : 'agent.ex.top', 'The fullest is **{h} {m}** at **{p}%**' + (top.free != null ? ' ({f} GB free).' : '.'), { h: top.host, m: top.mount, p: top.pct, f: top.free });
+  if (off.length) a += ' ' + (off.length === 1 ? agTf('agent.ex.off1', '{h} is offline, so I couldn\'t check it.', { h: off[0].label || off[0].name }) : agTf('agent.ex.offn', '{n} machines are offline, so I couldn\'t check them.', { n: off.length }));
+  return { a, w: (on.length === 1 ? agT('agent.work.machine1', '1 machine') : agTf('agent.work.machines', '{n} machines', { n: on.length })) };
+}
+
+function agExampleHtml() {
+  const ex = agExampleFromFleet(typeof FLEET !== 'undefined' ? FLEET : null);
+  return '<div class="ag-inv-r" aria-label="' + agEsc(agT('agent.example', 'Example')) + '"><div class="ag-kicker">' +
+    agEsc(ex ? agT('agent.example_yours', 'Example, from your fleet\'s data') : agT('agent.example_sample', 'Example (a sample lab)')) + '</div>' +
     '<div class="ag-msg u">' + agEsc(agT('agent.example_q', 'How are my disks?')) + '</div>' +
-    '<div class="ag-exa">' + agMarkdown(agT('agent.example_a', 'Everything is healthy. The fullest is **vader /** at **67%** (291 GB free). ardi **/data** is at 72% and growing about 1 GB a day, so it is the one to watch. Two machines are offline, so I couldn\'t check them.')) + '</div>' +
-    '<div class="ag-work static">' + AG_ICON_SM + '<span>' + agEsc(agT('agent.example_w', 'Checked 4 machines · 1 look-up · 6 s')) + '</span></div></div></div>';
+    '<div class="ag-exa">' + agMarkdown(ex ? ex.a : agT('agent.example_a', 'Everything is healthy. The fullest is **vader /** at **67%** (291 GB free). ardi **/data** is at 72% and growing about 1 GB a day, so it is the one to watch. Two machines are offline, so I couldn\'t check them.')) + '</div>' +
+    '<div class="ag-work static">' + AG_ICON_SM + '<span>' + agEsc(ex ? agTf('agent.work.checked', 'Checked {what}', { what: ex.w + ' · ' + agT('agent.work.lookup1', '1 look-up') }) : agT('agent.example_w', 'Checked 4 machines · 1 look-up · 6 s')) + '</span></div></div>';
 }
 
 function agRenderHome() {
@@ -1502,6 +1597,7 @@ function agRenderHome() {
       if (AG.setup.password_set) { const r = await agApi('/api/agent/setup/dismiss', 'POST', { dismissed: true }); if (r.ok) AG.setup = r.body; }
       agHomePref('folded');
       agRenderHome();
+      agWhatsNewLater();
     };
   } else if (state === 'strip') {
     el.innerHTML = '<div class="ag-strip">' + AG_ICON_SM + '<span>' + agEsc(agT('agent.strip', 'Your lab can answer questions — set up the agent in about a minute.')) + '</span><span class="ag-sp"></span>' +
@@ -1532,7 +1628,8 @@ function agAskCardHtml() {
     : '<p class="ag-mut ag-small">' + agEsc(agT('agent.nothing_waits', 'Nothing waits for you.')) + '</p>';
   const lately = o.lately.length ? o.lately.map(r => '<a class="ag-late" href="#agent/run/' + agEsc(r.run_id) + '"><span class="ag-dot ' + dot(r.status) + '"></span><span class="ag-grow">' +
       (r.task ? '<b>' + agEsc(r.task) + ':</b> ' : '') + agEsc(r.line || agStatusLabel(r.status)) + '</span><span class="ag-mono ag-mut">' + agEsc(agWhen(r.at)) + '</span></a>').join('')
-    : '<p class="ag-mut ag-small">' + agEsc(agT('agent.no_lately', 'No routine ran in the last day and a half.')) + '</p>';
+    : '<p class="ag-mut ag-small">' + agEsc(o.next && o.next.length ? agTf('agent.next_first', 'No routine has run yet. Next: {t}, {when}.', { t: o.next[0].task, when: agWhen(o.next[0].at) })
+      : o.routines ? agT('agent.no_lately', 'No routine ran in the last day and a half.') : agT('agent.no_routines', 'No routines yet — switch one on under Routines.')) + '</p>';
   return '<div class="ag-homecard ag-ask"><div class="ag-ask-l"><div class="ag-titlerow">' + AG_ICON + '<h2>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</h2>' +
     '<span class="ag-mut ag-small">' + agEsc(agModelLine(o)) + '</span></div>' +
     '<form class="ag-askform" id="agh-form"><label class="ag-vh" for="agh-q">' + agEsc(agT('agent.hello', 'Ask your lab')) + '</label>' +
@@ -1562,12 +1659,14 @@ async function agAskInWidget(text) {
 function agPwScore(pw) {
   pw = String(pw || '');
   if (pw.length < 10) return pw.length ? 1 : 0;
+  // "aaaaaaaaaa" is long but guessable: few different characters weigh it down
+  if (new Set(pw.toLowerCase()).size < 6) return 1;
   const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter(r => r.test(pw)).length;
   return Math.min(4, 2 + (pw.length >= 14 ? 1 : 0) + (classes >= 3 ? 1 : 0));
 }
 
 function agPwLabel(score) {
-  return [agT('agent.pw.empty', 'At least 10 characters'), agT('agent.pw.short', 'Too short — at least 10 characters'),
+  return [agT('agent.pw.empty', 'At least 10 characters'), agT('agent.pw.weak', 'Too easy to guess — at least 10 characters, with some variety'),
     agT('agent.pw.ok', 'Good enough'), agT('agent.pw.good', 'Strong enough'), agT('agent.pw.great', 'Strong')][score];
 }
 
@@ -1686,11 +1785,14 @@ function agSetupWire(scrim) {
       scrim.querySelectorAll('.ag-meter span').forEach((s, i) => s.className = i < sc ? 'on s' + sc : '');
       $('#agz-pwlabel').textContent = agPwLabel(sc);
     };
-    pw.oninput = meter;
+    const clearErr = () => { if (W.err) { W.err = ''; const e = scrim.querySelector('.ag-err'); if (e) e.textContent = ''; } };
+    pw.oninput = () => { meter(); clearErr(); };
+    $('#agz-pw2').oninput = clearErr;
+    meter();
     const go = $('[data-wz="pw"]');
     const submit = async () => {
       const a = pw.value, b = $('#agz-pw2').value;
-      if (a.length < 10) { W.err = agT('agent.pw.short', 'Too short — at least 10 characters'); agSetupRender(); return; }
+      if (agPwScore(a) < 2) { W.err = agT('agent.pw.weak', 'Too easy to guess — at least 10 characters, with some variety'); agSetupRender(); return; }
       if (a !== b) { W.err = agT('agent.wz.mismatch', 'The two passwords are different.'); agSetupRender(); return; }
       go.disabled = true;
       const r = await agApi('/api/auth/setup', 'POST', { password: a });
@@ -1745,6 +1847,7 @@ function agSetupWire(scrim) {
     if (!r.ok) { W.err = r.body.message || agT('agent.failed', 'Something went wrong.'); if (r.body.error === 'model_not_ready') W.step = 2; agSetupRender(); return; }
     agSetupClose();
     await agRefreshStatus();
+    agWhatsNewLater();
     AG.view = 'chat'; AG.convId = null; AG.detail = null;
     if (TAB !== 'agent') showTab('agent'); else agRender();
   };

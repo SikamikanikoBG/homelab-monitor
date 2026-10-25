@@ -158,11 +158,80 @@ def _host_summary(host):
 
 # ── tool implementations (each returns plain JSON-able data) ─────────────────
 
+def _containers(docker):
+    """Container counts for one host: how many, how many run, which don't (or are unhealthy)."""
+    if not docker:
+        return None
+    cs = docker.get("containers") or []
+    if docker.get("available") is False and not cs:
+        return {"available": False}
+    bad = [c.get("name") for c in cs
+           if (c.get("state") and c.get("state") != "running") or c.get("health") == "unhealthy"
+           or c.get("status") == "bad"]
+    return {"total": len(cs), "running": sum(1 for c in cs if c.get("state") == "running"),
+            "not_running_or_unhealthy": bad[:10]}
+
+
+def _try_get(path):
+    try:
+        return _get(path)
+    except MonitorError:
+        return {}
+
+
+def _attention(rows, health, data):
+    """What the dashboard's Overview event feed shows right now, as data: the
+    same rules (hosts offline, a disk at 90 % or more, GPU telemetry lost, GPU
+    too hot, hub containers not running or unhealthy, pending updates) plus the
+    monitor's own insights (memory, disk I/O, uptime checks down or slow)."""
+    out = []
+    off = [r.get("name") for r in rows if not r.get("is_local") and not r.get("online")]
+    if off:
+        out.append({"level": "critical", "title": "%d host(s) offline" % len(off), "detail": ", ".join(off)})
+    for r in rows:
+        for d in ((r.get("host") or {}).get("disks") or []):
+            if (d.get("pct") or 0) >= 90:
+                out.append({"level": "warning", "title": "%s disk %s at %s%%" % (r.get("name"), d.get("mount"), d.get("pct")),
+                            "detail": "Worth a clean-up before writes start failing."})
+                break
+        tele = r.get("gpu_telemetry") or {}
+        if tele.get("ok") is False:
+            out.append({"level": "critical", "title": "GPU telemetry lost on %s" % r.get("name"),
+                        "detail": tele.get("error") or "The host answers but reports no GPU."})
+    gpu = ((health.get("now") or {}).get("gpu") or {})
+    if (gpu.get("temp") or 0) >= 84:
+        out.append({"level": "critical", "title": "GPU running hot (%s °C)" % gpu.get("temp"), "detail": "Check cooling."})
+    hub = _containers(health.get("docker")) or {}
+    if hub.get("not_running_or_unhealthy"):
+        out.append({"level": "warning", "title": "%d container(s) need attention" % len(hub["not_running_or_unhealthy"]),
+                    "detail": ", ".join(hub["not_running_or_unhealthy"][:3])})
+    upd = sum((((r.get("host") or {}).get("sec") or {}).get("updates") or {}).get("count") or 0 for r in rows)
+    if upd:
+        out.append({"level": "info", "title": "%d package updates pending" % upd, "detail": "Across the fleet."})
+    seen = {a["title"] for a in out}
+    for i in data.get("insights") or []:
+        if isinstance(i, str):
+            i = {"level": "info", "title": i, "detail": ""}
+        if isinstance(i, dict) and i.get("title") not in seen:
+            out.append({"level": i.get("level"), "title": i.get("title"), "detail": i.get("detail")})
+            seen.add(i.get("title"))
+    return out
+
+
 def list_hosts():
-    """Fleet roster + headline vitals for every registered host (local hub first)."""
+    """Fleet roster + headline vitals for every registered host (local hub first),
+    with each host's container counts and the Overview's active events."""
     data = _get("/api/fleet")
+    health = _try_get("/api/health")
+    rows = data.get("hosts", [])
     hosts = []
-    for row in data.get("hosts", []):
+    for row in rows:
+        vitals = _host_summary(row.get("host"))
+        docker = health.get("docker") if row.get("is_local") else (row.get("host") or {}).get("docker")
+        cont = _containers(docker)
+        if vitals is not None and cont is not None:
+            vitals["containers"] = cont
+        tele = row.get("gpu_telemetry") or {}
         hosts.append({
             "name": row.get("name"),
             "label": row.get("label"),
@@ -171,10 +240,13 @@ def list_hosts():
             "ssh_target": row.get("ssh_target"),
             "last_seen_ts": row.get("at"),
             "overall": ((row.get("last_check") or {}).get("summary") or {}).get("overall"),
-            "vitals": _host_summary(row.get("host")),
+            "vitals": vitals,
+            "gpu_telemetry_lost": (tele.get("error") or True) if tele.get("ok") is False else None,
             "error": row.get("error"),
         })
-    return {"count": len(hosts), "sample_interval_sec": data.get("interval"), "hosts": hosts}
+    attention = _attention(rows, health, _try_get("/api/data?range=1h"))
+    return {"count": len(hosts), "sample_interval_sec": data.get("interval"), "hosts": hosts,
+            "attention": attention, "attention_count": len(attention)}
 
 
 def get_host(name):
