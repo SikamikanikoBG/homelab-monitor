@@ -44,13 +44,21 @@ def _say(run, text):
 
 def _history(run):
     """The conversation as adapter messages. Tool results of earlier runs are
-    kept to a short head (their full text stays in the audit)."""
+    kept to a short head (their full text stays in the audit); the previous
+    run's keep a longer one, so a follow-up ("summarise", "and lab2?") can
+    answer from what was just collected instead of collecting it again (UAT-1)."""
     out = []
-    for m in store.message_list(run["conversation_id"]):
+    msgs = store.message_list(run["conversation_id"])
+    earlier = [m["run_id"] for m in msgs if m["run_id"] and m["run_id"] != run["id"]]
+    prev = earlier[-1] if earlier else None
+    for m in msgs:
         if m["role"] == "tool":
             msg = {"role": "tool", "content": m["content"] or "", "tool_call_id": m["tool_call_id"],
                    "name": m["tool_name"]}
-            out.append(msg if m["run_id"] == run["id"] else guards.aged(msg))
+            if m["run_id"] == run["id"]:
+                out.append(msg)
+            else:
+                out.append(guards.aged(msg, guards.PREV_RUN_VIEW_CHARS if m["run_id"] == prev else guards.AGED_VIEW_CHARS))
         elif m["role"] == "assistant":
             out.append({"role": "assistant", "content": m["content"], "tool_calls": m["tool_calls"] or None,
                         "provider_meta": m["provider_meta"]})
@@ -171,46 +179,18 @@ def _run(r, ctl, resume):
             return
         why = guards.budget_exceeded(ctx.watch) or _cost_cap(ctx)
         if why:
-            _say(r, "I stopped because %s. Here is what I have so far; ask again to continue." % why)
-            finish(r["id"], "budget_exhausted", why, "gave up because " + why)
+            _end_with_answer(r, ctx, ctl, adapter, "budget_exhausted", why, why)
             return
-        scope = ctx.scope()
-        tools, kinds = toolbox.specs(scope)
-        system = prompts.build(hosts=scope.hosts, modes=scope.modes, rules=scope.rules, run_mode=r["mode"],
-                               attended=ctx.attended, context=r.get("context"),
-                               task_prompt=(ctx.task or {}).get("prompt"), tz_name=state.tz(),
-                               controls=scope.controls)
-        msgs = _history(r)
-        window = (ctx.model or {}).get("context_window") or 8192
-        max_out = int(state.get("max_output_tokens") or 2048)
-        limit = guards.window_chars(window, max_out)
-        fixed = len(system) + len(json.dumps(tools))
-        if fixed >= limit:
-            _say(r, "The model's context window (%d tokens) is too small for the agent's instructions and "
-                    "tools. Pick a model with a larger window." % window)
-            finish(r["id"], "failed", "context_too_small")
-            return
-        msgs = guards.compress_old_tool_results(msgs, (limit - fixed) // 2)
-        msgs = guards.fit_to_window(msgs, limit - fixed)
-        if guards.total_chars(system, msgs, tools) > limit * 1.05:
-            _say(r, "This conversation no longer fits the model's window (%d tokens). Start a new chat." % window)
-            finish(r["id"], "failed", "context_full")
+        req, kinds, err = _request(r, ctx)
+        if err:
+            _say(r, err[1])
+            finish(r["id"], "failed", err[0])
             return
         if ctx.task and r["trigger"] == "schedule":
             from backend.agent import scheduler
             scheduler.gpu_courtesy_wait(ctx, ctl)
-        req = ChatRequest(model=r["model"], system=system, messages=msgs, tools=tools, max_tokens=max_out,
-                          num_ctx=window if ctx.provider["adapter"] == "ollama" else None)
-        on_delta = (lambda d: events.text_delta(r["id"], d)) if ctx.attended else None
         t0 = time.monotonic()
-        with providers.semaphore(ctx.provider):
-            res = adapter.chat(req, on_delta=on_delta, cancel=ctl.cancel)
-        events.flush_text(r["id"])
-        ctx.watch.model_calls += 1
-        ctx.watch.tokens += res.usage.prompt + res.usage.completion
-        cost = _cost(ctx, res.usage)
-        store.run_add_usage(r["id"], res.usage.prompt, res.usage.completion, cost)
-        metrics.tokens(r.get("provider_id"), res.usage.prompt, res.usage.completion, cost)
+        res = _call_model(r, ctx, ctl, adapter, req)
         store.message_add(r["conversation_id"], "assistant", res.text or None, run_id=r["id"],
                           tool_calls=res.tool_calls or None, provider_meta=res.provider_meta)
         store.step_append(r["id"], "model", tool=r["model"], tokens_in=res.usage.prompt,
@@ -230,13 +210,96 @@ def _run(r, ctl, resume):
             store.message_add(r["conversation_id"], "user", "(Your last reply was empty. Answer the question, "
                               "or call a tool.)", run_id=r["id"])
             continue
-        for call in res.tool_calls:
+        for n, call in enumerate(res.tool_calls):
             _handle(r, ctx, ctl, kinds, call)
             streak = guards.error_streak_reason(ctx.watch)
             if streak:
-                _say(r, "I gave up because %s." % streak)
-                finish(r["id"], "failed", "error_streak", "gave up because " + streak)
+                for rest in res.tool_calls[n + 1:]:       # every call gets an answer, or the history is invalid
+                    _tool_message(r, rest, "not run: the run stopped (%s)." % streak, False, "error")
+                _end_with_answer(r, ctx, ctl, adapter, "failed", "error_streak", streak)
                 return
+
+
+def _request(r, ctx, extra_user=None, no_tools=False):
+    """(ChatRequest, kinds, None) or (None, None, (reason, text)) when it can't fit."""
+    scope = ctx.scope()
+    tools, kinds = toolbox.specs(scope)
+    system = prompts.build(hosts=scope.hosts, modes=scope.modes, rules=scope.rules, run_mode=r["mode"],
+                           attended=ctx.attended, context=r.get("context"),
+                           task_prompt=(ctx.task or {}).get("prompt"), tz_name=state.tz(),
+                           controls=scope.controls)
+    msgs = _history(r)
+    if extra_user:
+        msgs.append({"role": "user", "content": extra_user})
+    window = (ctx.model or {}).get("context_window") or 8192
+    max_out = int(state.get("max_output_tokens") or 2048)
+    limit = guards.window_chars(window, max_out)
+    fixed = len(system) + len(json.dumps(tools))
+    if fixed >= limit:
+        return None, None, ("context_too_small", "The model's context window (%d tokens) is too small for the "
+                            "agent's instructions and tools. Pick a model with a larger window." % window)
+    msgs = guards.compress_old_tool_results(msgs, (limit - fixed) // 2)
+    msgs = guards.fit_to_window(msgs, limit - fixed)
+    if guards.total_chars(system, msgs, tools) > limit * 1.05:
+        return None, None, ("context_full", "This conversation no longer fits the model's window (%d tokens). "
+                            "Start a new chat." % window)
+    return ChatRequest(model=r["model"], system=system, messages=msgs, tools=tools, max_tokens=max_out,
+                       num_ctx=window if ctx.provider["adapter"] == "ollama" else None, no_tools=no_tools), kinds, None
+
+
+def _call_model(r, ctx, ctl, adapter, req):
+    on_delta = (lambda d: events.text_delta(r["id"], d)) if ctx.attended else None
+    with providers.semaphore(ctx.provider):
+        res = adapter.chat(req, on_delta=on_delta, cancel=ctl.cancel)
+    events.flush_text(r["id"])
+    ctx.watch.model_calls += 1
+    ctx.watch.add_usage(res.usage.prompt, res.usage.completion)
+    cost = _cost(ctx, res.usage)
+    store.run_add_usage(r["id"], res.usage.prompt, res.usage.completion, cost)
+    metrics.tokens(r.get("provider_id"), res.usage.prompt, res.usage.completion, cost)
+    return res
+
+
+WRAP_UP = ("[The run is over: %s. You get no more tool calls. Answer my last question now, from what is already in "
+           "this conversation: the findings first, with numbers, then one short line on what you didn't get to "
+           "check. Answer in the language I wrote in. Don't describe your steps and don't promise to continue.]")
+
+
+def _wrap_up(r, ctx, ctl, adapter, why):
+    """One tool-less call that turns what the run gathered into an answer, so a
+    budget or a failing tool never leaves the user with nothing (UAT-1; the
+    port of Jarvis2's _finish/_wrap_up). True when an answer was saved."""
+    if adapter is None:
+        return False
+    try:
+        req, _, err = _request(r, ctx, extra_user=WRAP_UP % why, no_tools=True)
+        if err:
+            return False
+        t0 = time.monotonic()
+        res = _call_model(r, ctx, ctl, adapter, req)
+    except ProviderError as e:
+        if e.kind == "cancelled":
+            raise
+        return False
+    text = (res.text or "").strip()
+    store.step_append(r["id"], "model", tool=r["model"], tokens_in=res.usage.prompt,
+                      tokens_out=res.usage.completion, duration_ms=int((time.monotonic() - t0) * 1000),
+                      result_excerpt=text[:500] or None, args_json={"wrap_up": why})
+    if not text:
+        return False
+    store.message_add(r["conversation_id"], "assistant", text, run_id=r["id"])   # its tool calls, if any, are dropped
+    events.publish("message", run_id=r["id"], conversation_id=r["conversation_id"])
+    return True
+
+
+def _end_with_answer(r, ctx, ctl, adapter, status, reason, why):
+    """End a run that hit a budget or a wall — with an answer from what it has."""
+    if not _wrap_up(r, ctx, ctl, adapter, why):
+        last = next((m["content"] for m in reversed(store.message_list(r["conversation_id"]))
+                     if m["run_id"] == r["id"] and m["role"] == "assistant" and (m["content"] or "").strip()), None)
+        _say(r, "I stopped because %s, and couldn't write an answer from what I had." % why +
+             ("\n\nLast progress: " + last.strip()[:600] if last else " Ask a narrower question to try again."))
+    finish(r["id"], status, reason, "stopped because " + why)
 
 
 def _cost(ctx, usage):

@@ -97,7 +97,7 @@ class OpenAICompatAdapter:
              "temperature": req.temperature, "max_tokens": req.max_tokens}
         if self.preset.get("stream_usage", True):
             p["stream_options"] = {"include_usage": True}
-        if req.tools:
+        if req.tools and not req.no_tools:
             strip = self.preset.get("schema_strip") or []
             p["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                             "parameters": strip_schema(t["parameters"], strip)}}

@@ -160,6 +160,15 @@ everything on your network.
 Agent settings (time zone, budgets, spend caps, approval expiry, GPU courtesy thresholds) live in
 the Agent tab and in `GET/PUT /api/agent/settings`.
 
+**Budgets always end with an answer.** A chat run gets 12 model calls, 300 s and 120,000 tokens
+by default; an automation 25 calls, 600 s and 200,000 tokens. The token budget counts what the
+model really reads and writes: the first prompt, then only what each call adds (new tool
+results and replies), not the whole conversation re-sent at every step. When a budget is reached,
+or tool calls keep failing, the agent makes one more call with no tools and writes its answer
+from what it has gathered, saying what it didn't get to check. A follow-up in the same chat
+("summarise", "and lab2?") sees the previous answer and the previous run's results, so it can
+answer without collecting everything again.
+
 ## Troubleshooting
 
 - **No Agent tab** — `AGENT_ENABLED` isn't `1`, or you aren't logged in.

@@ -109,6 +109,40 @@ def host_online(host):
     return bool(entry) and bool(a._host_is_online(entry))
 
 
+def host_reach(host):
+    """What the hub knows about reaching a host: {"state": online|offline|unknown,
+    "since": last time it answered (epoch) or None, "error": last poll error}.
+    "unknown" only while a host hasn't been polled yet since the hub started."""
+    a = _app()
+    if host == "local":
+        return {"state": "online", "since": None, "error": None}
+    with a.HOST_DATA_LOCK:
+        entry = dict(a.HOST_DATA.get(host) or {})
+    if entry and a._host_is_online(entry):
+        return {"state": "online", "since": entry.get("at"), "error": None}
+    check = next((h.get("last_check") or {} for h in (a.list_hosts() or []) if h.get("name") == host), {})
+    skipped = (check.get("summary") or {}).get("overall") not in (None, "ok", "warn")   # the poller won't try it
+    if entry.get("data") or entry.get("error") or skipped:
+        return {"state": "offline", "since": entry.get("at") or _last_sample(host),
+                "error": entry.get("error") or (check.get("summary") or {}).get("detail")}
+    return {"state": "unknown", "since": None, "error": None}
+
+
+def _last_sample(host):
+    """The newest stored sample of a host (survives hub restarts), or None."""
+    try:
+        with db() as c:
+            row = c.execute("SELECT MAX(ts) FROM host_samples WHERE host=?", (host,)).fetchone()
+            ts = row[0] if row else None
+            if not ts:
+                row = c.execute("SELECT MAX(ts) FROM host_samples_1h WHERE host=?", (host,)).fetchone()
+                ts = row[0] if row else None
+        return int(ts) if ts else None
+    except Exception as e:                      # a missing table on an odd DB: "since" is just unknown
+        print("agent: last sample of %s unreadable: %s" % (host, e), flush=True)
+        return None
+
+
 def host_health(host):
     """Docker/systemd/GPU data for capability checks, from the same caches the
     dashboard shows. Remote: the probe payload; local: HEALTH + LATEST."""

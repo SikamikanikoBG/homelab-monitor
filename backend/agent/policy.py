@@ -188,10 +188,14 @@ def decide(host, action_id, params, *, attended, run_mode="act", task_actions=No
     mode = mode_for(host)
     if host not in ports.host_names():
         return Decision("deny", "unknown_host")
-    if mode != "off" and host != "local" and not ports.host_block(host):
-        # Before its first poll after a hub restart we don't know the host's OS
-        # or tools yet; say so instead of "not available here" (alpha #27).
-        return Decision("deny", "host_not_ready")
+    if mode != "off" and host != "local":
+        if ports.host_reach(host)["state"] == "offline":
+            # The hub knows it's down: say so, with since when (UAT-1), not "try again in a minute".
+            return Decision("deny", "host_offline")
+        if not ports.host_block(host):
+            # Before its first poll after a hub restart we don't know the host's OS
+            # or tools yet; say so instead of "not available here" (alpha #27).
+            return Decision("deny", "host_not_ready")
     errs = catalog.check_params(a, params)
     fam = os_family(host)
     sup = catalog.supported(a, host, fam) and requires_met(a, host)
@@ -218,6 +222,7 @@ HINTS = {
     "bad_params": "The request had invalid parameters.",
     "unsupported_on_host": "\"{title}\" isn't available on {host} (wrong OS, or the tool it needs isn't there).",
     "unknown_host": "There is no host called {host}.",
+    "host_offline": "{host} is offline{since}, so it can't be checked now. list_hosts shows its last known state.",
     "host_not_ready": "{host} hasn't reported in since the hub started, so I can't check it yet. Try again in a minute.",
     "unknown_action": "That action isn't in the catalogue.",
     "controls_disabled": "Controls are off for the whole dashboard (ENABLE_CONTROLS=0), so every action is refused.",
@@ -242,4 +247,25 @@ HINTS = {
 def hint(reason, host, action_id, params=None, why=None):
     a = catalog.get(action_id) or {"title": action_id}
     _, target = catalog.target_of(a, params or {}) if catalog.get(action_id) else ("", "")
-    return HINTS.get(reason, reason).format(host=host, title=a["title"], target=target or host, why=why or "")
+    since = ""
+    if reason == "host_offline":
+        since = _since_text(ports.host_reach(host))
+    return HINTS.get(reason, reason).format(host=host, title=a["title"], target=target or host, why=why or "",
+                                            since=since)
+
+
+def _since_text(reach):
+    """' since 2026-10-24 18:02 (Europe/Sofia)' in the hub's zone, plus the last poll error."""
+    out = ""
+    if reach.get("since"):
+        from datetime import datetime
+        from backend.agent import cron
+        tz = state.tz()
+        try:
+            out = " since " + datetime.fromtimestamp(int(reach["since"]), cron.zone(tz)).strftime("%Y-%m-%d %H:%M") + \
+                " (%s)" % tz
+        except Exception:
+            out = ""
+    if reach.get("error"):
+        out += " — last error: %s" % str(reach["error"])[:120]
+    return out

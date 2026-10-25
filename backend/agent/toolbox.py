@@ -97,7 +97,8 @@ def specs(scope):
         params["required"] = ["host"] + list(params.get("required") or [])
         if not probe:
             params["properties"]["reason"] = REASON_PARAM
-        desc = a["title"] + (" (read-only check)" if probe else " — risk: %s" % a["risk"])
+        desc = a["title"] + (" (read-only check run on the host over SSH; slower than the hub's data — use "
+                             "it when list_hosts/get_host can't answer)" if probe else " — risk: %s" % a["risk"])
         name = catalog.tool_name(a["id"])
         out.append({"name": name, "description": desc, "parameters": params})
         kinds[name] = ("probe" if probe else "action", a["id"])

@@ -283,6 +283,7 @@ def run():
         check(loc["overall"] == "ok", "pulls overall from last_check")
         check(loc["vitals"]["ram_pct"] == 50.0, "computes ram_pct (64000/128000)")
         check(loc["vitals"]["fullest_disk"]["mount"] == "/backup", "picks fullest disk (88%)")
+        check([(d["mount"], d["pct"]) for d in loc["vitals"]["disks"]] == [("/", 41), ("/backup", 88)], "every reported filesystem rides in the roster")
         check(loc["vitals"]["os"] == "openSUSE Leap 16.1", "os pretty name")
         offl = r["hosts"][1]
         check(offl["online"] is False and offl["error"] == "ssh timeout", "offline host carries error")

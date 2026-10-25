@@ -140,11 +140,14 @@ def _host_summary(host):
         "cpu_temp_c": host.get("ctemp"),
         "uptime_sec": host.get("uptime"),
     }
-    # Fullest disk only, so the roster stays one line per host.
+    # The fullest disk, plus every filesystem the probe reports (it keeps at
+    # most six, fullest first), so one roster call answers "how are my disks".
     disks = host.get("disks") or []
     if disks:
         fullest = max(disks, key=lambda d: d.get("pct") or 0)
         out["fullest_disk"] = {"mount": fullest.get("mount"), "pct": fullest.get("pct")}
+        out["disks"] = [{"mount": d.get("mount"), "pct": d.get("pct"), "used_gb": d.get("used"),
+                         "total_gb": d.get("total")} for d in disks]
     # Surface an OS-upgrade hint when enrich_os_upgrade() attached one.
     if host.get("os_upgrade") or os_info.get("upgrade"):
         out["os_upgrade"] = host.get("os_upgrade") or os_info.get("upgrade")
