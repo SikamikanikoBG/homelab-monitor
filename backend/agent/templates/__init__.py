@@ -63,7 +63,7 @@ def eligible_hosts(t):
     modes = store.host_modes()
     out = []
     for h in ports.host_names():
-        if modes.get(h, policy.DEFAULT_MODE) == "off":
+        if policy.mode_for(h, modes) == "off":
             continue
         if req <= policy.capabilities(h):
             out.append(h)
@@ -92,6 +92,7 @@ def public(t, with_hosts=True):
            "tools": t.get("tools") or [], "probes": t.get("probes") or [], "actions": acts,
            "requires": t.get("requires") or [], "default_cron": t["default_cron"],
            "default_mode": t["default_mode"], "budget": t.get("budget") or {}, "est_tokens": t.get("est_tokens"),
+           "starter": bool(t.get("starter")),
            "runs_alone": [a["id"] for a in acts if a["risk"] == "low"],
            "waits_for_approval": [a["id"] for a in acts if a["risk"] != "low"]}
     if with_hosts:

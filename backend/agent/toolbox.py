@@ -41,7 +41,7 @@ class Scope:
         self.controls = ports.controls_enabled() if controls is None else controls
 
     def mode(self, host):
-        return self.modes.get(host, policy.DEFAULT_MODE)
+        return policy.mode_for(host, self.modes)
 
     def visible(self, host):
         return host in self.hosts and self.mode(host) != "off"
@@ -86,7 +86,7 @@ def specs(scope):
             if not probe:
                 if not scope.controls or scope.mode(h) != "active":
                     continue
-                if (scope.rules.get(h, {}).get(a["id"]) or {}).get("rule") not in ("ask", "allow"):
+                if policy.rule_for(h, a["id"], scope.rules)[0] not in ("ask", "allow"):
                     continue
             eligible.append(h)
         if not eligible:

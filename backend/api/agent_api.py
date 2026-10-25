@@ -12,8 +12,8 @@ import time
 
 from flask import Blueprint, Response, abort, jsonify, request
 
-from backend.agent import (approvals, audit, boot, catalog, cron, policy, ports, providers, scheduler, state,
-                           store, templates)
+from backend.agent import (approvals, audit, boot, catalog, cron, onboarding, policy, ports, providers, scheduler,
+                           state, store, templates)
 from backend.agent.providers import discovery, probe as probe_mod
 from backend.agent.providers.base import ProviderError
 from backend.auth.marks import sensitive
@@ -32,7 +32,7 @@ _CHANNELS = ("inapp", "all", "discord", "ntfy", "telegram", "email", "slack", "w
 def _guard():
     if not state.env_allowed():
         abort(404)
-    if request.endpoint == "agent_api.status":
+    if request.endpoint in ("agent_api.status", "agent_api.setup_get"):
         return None
     from backend.auth import gate
     p = gate.principal()
@@ -291,6 +291,12 @@ def provider_test(pid):
     row = store.provider_get(pid)
     if not row:
         return _err(404, "not_found")
+    return jsonify(_test_provider(row))
+
+
+def _test_provider(row):
+    """List a provider's models (and their windows) into the store; the test result."""
+    pid = row["id"]
     t0 = time.monotonic()
     try:
         ad = providers.adapter_for(row)
@@ -301,7 +307,7 @@ def provider_test(pid):
         if e.kind == "auth":
             store.provider_tasks_warn(pid, "key_rejected")
         store.provider_update(pid, {"last_test_at": store.now(), "last_test_json": json.dumps(res)})
-        return jsonify(res)
+        return res
     for m in found[:200]:
         fields = {"context_window": m.context_window} if m.context_window else {}
         store.model_upsert(pid, m.id, **fields)
@@ -318,7 +324,7 @@ def provider_test(pid):
            "latency_ms": int((time.monotonic() - t0) * 1000), "models": [m.id for m in found[:200]]}
     store.provider_update(pid, {"last_test_at": store.now(), "last_test_json": json.dumps(dict(res, models=None))})
     store.provider_tasks_warn(pid, None)
-    return jsonify(res)
+    return res
 
 
 def _model_out(m):
@@ -365,6 +371,111 @@ def model_probe():
     store.model_upsert(row["id"], model, tools=res["tools"], multi_step=res["multi_step"],
                        probe_detail=res["detail"], probed_at=store.now())
     return jsonify(dict(res, context_window=cur.get("context_window")))
+
+
+# ── setup and the Overview card (UAT-1) ──────────────────────────────────────
+
+_FOUND = {"at": 0, "n": 0}
+
+
+@bp.route("/api/agent/setup")
+def setup_get():
+    """Which setup steps are done. Open like /status: before a password exists
+    the dashboard is open anyway, and this carries no lab data."""
+    out = onboarding.setup_state()
+    if not out["done"] and request.args.get("found") == "1":
+        if time.time() - _FOUND["at"] > 60:
+            _FOUND.update(at=time.time(), n=onboarding.found_count())
+        out["found"] = _FOUND["n"]
+    return jsonify(out)
+
+
+@bp.route("/api/agent/setup/dismiss", methods=["POST"])
+def setup_dismiss():
+    on = _body().get("dismissed", True)
+    state.put({"onboarding_dismissed": "1" if on else "0"}, actor=_actor())
+    return jsonify(onboarding.setup_state())
+
+
+@bp.route("/api/agent/setup/models", methods=["GET", "POST"])
+def setup_models():
+    """GET: the models the hub knows, with test results and a recommendation.
+    POST: also find model servers on the network and add the reachable ones as
+    providers, listing their models (the wizard then tests each model)."""
+    if request.method == "POST":
+        from backend.agent.providers import discovery
+        added = []
+        for c in discovery.discover():
+            if not c.get("reachable") or c.get("provider_id"):
+                continue
+            p = providers.preset(c["preset"])
+            if not p or providers.check_base_url(c["base_url"]):
+                continue
+            row = {"id": store.new_id(), "preset": p["id"], "adapter": p["adapter"],
+                   "label": ("%s on %s" % (c.get("server") or p["label"], c.get("host") or "?"))[:80],
+                   "base_url": c["base_url"].rstrip("/"), "api_key": None, "key_ref": None, "key_last4": None,
+                   "extra": {}, "source": "discovered"}
+            store.provider_insert(row)
+            store.admin_log("provider", row["id"], {"added": p["id"], "base_url": row["base_url"], "by": "setup"},
+                            actor=_actor())
+            _test_provider(store.provider_get(row["id"]))
+            added.append(row["id"])
+        return jsonify({"added": added, "models": onboarding.model_choices()})
+    return jsonify({"models": onboarding.model_choices()})
+
+
+@bp.route("/api/agent/policy/preset", methods=["PUT"])
+def policy_preset():
+    name = _body().get("preset")
+    if name not in policy.PRESETS:
+        return _err(400, "bad_preset", "Pick one of: %s." % ", ".join(policy.PRESETS), field="preset")
+    policy.apply_preset(name, actor=_actor())
+    return jsonify({"ok": True, "preset": policy.preset()})
+
+
+@bp.route("/api/agent/setup/finish", methods=["POST"])
+def setup_finish():
+    """The wizard's last step, all checked here: a model that calls tools, a
+    preset, optional starter routines with their defaults; then the agent is on."""
+    b = _body()
+    pid, model = b.get("provider_id") or state.get("default_provider_id"), b.get("model") or state.get("default_model")
+    m = store.model_get(pid, model) if pid and model and store.provider_get(pid) else None
+    if not m or m.get("tools") != "yes":
+        return _err(400, "model_not_ready", "Pick a model that passed the test (it has to call tools).", field="model")
+    name = b.get("preset") or policy.preset() or "ask"
+    if name not in policy.PRESETS:
+        return _err(400, "bad_preset", "Pick one of: %s." % ", ".join(policy.PRESETS), field="preset")
+    tids = [t for t in (b.get("templates") or []) if isinstance(t, str)][:10]
+    for tid in tids:
+        if not templates.get(tid):
+            return _err(400, "bad_template", "Unknown routine: %s" % tid[:60], field="templates")
+    state.put({"default_provider_id": pid, "default_model": model}, actor=_actor())
+    policy.apply_preset(name, actor=_actor())
+    created, skipped = [], []
+    for tid in tids:
+        tpl = templates.get(tid)
+        hosts = templates.eligible_hosts(tpl)
+        if any(t.get("template_id") == tid for t in store.task_list()):
+            skipped.append({"template_id": tid, "why": "already active"})
+            continue
+        t, errs = _task_fields({"template_id": tid, "hosts": hosts, "provider_id": pid, "model": model})
+        if errs:
+            skipped.append({"template_id": tid, "why": "; ".join("%s: %s" % kv for kv in errs.items())})
+            continue
+        nxt = cron.next_after(t["cron"], t["tz"], int(time.time()))
+        t["next_fire"] = nxt[0] if nxt else None
+        new = store.task_insert(t)
+        store.admin_log("task", new, {"created": tid, "by": "setup", "hosts": t["hosts"]}, actor=_actor())
+        created.append(new)
+    state.put({"enabled": "1"}, actor=_actor())
+    store.admin_log("agent_toggle", "enabled", {"by": "setup"}, actor=_actor())
+    boot.start_if_enabled()
+    return jsonify({"ok": True, "state": onboarding.setup_state(), "tasks": created, "skipped": skipped})
+
+
+@bp.route("/api/agent/overview")
+def overview():
+    return jsonify(onboarding.overview())
 
 
 # ── tools, catalogue ─────────────────────────────────────────────────────────
@@ -424,6 +535,8 @@ def _run_full(r):
     out = _run_out(r)
     out["actions"] = outcome.facts(r["id"])
     out["actions_text"] = outcome.footer(out["actions"])
+    from backend.agent import extras
+    out["followups"] = extras.followups(r["id"]) if r["status"] == "done" else []
     return out
 
 
@@ -480,7 +593,8 @@ def post_message(cid):
     rid = store.run_create(cid, "chat", True, "act", provider_id=pid, model=model,
                            context=_clean_context(b.get("context")), actor=_actor())
     store.message_add(cid, "user", text, run_id=rid)
-    store.conversation_touch(cid, title_if_empty=text)
+    from backend.agent import extras
+    store.conversation_touch(cid, title_if_empty=extras.fallback_title(text) or None)
     from backend.agent import events, runs
     events.publish("run", run_id=rid, conversation_id=cid, status="queued")
     runs.manager().submit("run", rid)
@@ -588,16 +702,18 @@ def policy_get():
     modes = store.host_modes()
     hosts = []
     for h in ports.host_names():
-        hosts.append({"host": h, "os": policy.os_family(h), "mode": modes.get(h, policy.DEFAULT_MODE),
+        hosts.append({"host": h, "os": policy.os_family(h), "mode": policy.mode_for(h, modes),
                       "capabilities": sorted(policy.capabilities(h)), "online": ports.host_online(h)})
     try:
         watched = json.loads(state.get("watched_paths") or "{}")
     except ValueError:
         watched = {}
     return jsonify({"controls_enabled": ports.controls_enabled(), "hosts": hosts,
-                    "actions": [catalog.public(a) for a in catalog.actions()], "rules": store.action_rules(),
+                    "actions": [catalog.public(a) for a in catalog.actions()],
+                    "rules": store.action_rules(), "preset": policy.preset(),
+                    "effective_rules": policy.effective_rules(ports.host_names()),
                     "protected": store.protected_list(), "watched_paths": watched,
-                    "catalogue_version": catalog.version(), "default_mode": policy.DEFAULT_MODE})
+                    "catalogue_version": catalog.version(), "default_mode": policy.default_mode()})
 
 
 @bp.route("/api/agent/policy/hosts/<host>", methods=["PUT"])

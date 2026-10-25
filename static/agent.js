@@ -983,7 +983,7 @@ function agRenderPolicy(view) {
   if (!p) { view.innerHTML = '<div class="ag-empty">…</div>'; return; }
   if (!AG.policyHost || !p.hosts.some(h => h.host === AG.policyHost)) AG.policyHost = (p.hosts.find(h => h.mode === 'active') || p.hosts[0]).host;
   const H = p.hosts.find(h => h.host === AG.policyHost);
-  const rules = (p.rules || {})[H.host] || {};
+  const rules = (p.effective_rules || p.rules || {})[H.host] || {};
   let html = p.controls_enabled
     ? '<div class="ag-banner">' + agEsc(agT('agent.pol.controls_on', 'Controls are on (ENABLE_CONTROLS=1). Turning them off makes every action Deny, whatever is set here. The manual buttons on the Containers and Services tabs follow ENABLE_CONTROLS only, not this page.')) + '</div>'
     : '<div class="ag-banner warn">' + agEsc(agT('agent.pol.controls_off', 'Controls are off (ENABLE_CONTROLS=0): the agent can read and run read-only checks, but every action is Deny.')) + '</div>';

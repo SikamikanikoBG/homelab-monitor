@@ -201,6 +201,9 @@ def _run(r, ctl, resume):
         if not res.tool_calls:
             if (res.text or "").strip():
                 finish(r["id"], "done", "answered")
+                if ctx.attended and r["trigger"] == "chat":
+                    from backend.agent import extras
+                    extras.after_answer(r, ctx, adapter, ctl)
                 return
             ctx.watch.empty_replies += 1
             if ctx.watch.empty_replies >= 2:

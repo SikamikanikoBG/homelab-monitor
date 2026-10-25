@@ -32,6 +32,37 @@ MODES = ("off", "passive", "active")
 RULES = ("deny", "ask", "allow")
 DEFAULT_MODE = "passive"
 
+# The permission presets the setup offers (UAT-1). A preset is the default for
+# every host and action without an explicit row, so hosts added later follow
+# it too; the owner's per-host edits are explicit rows and win. "low_risk" is
+# the rule for low-risk actions that need no root; unattended runs still only
+# do those under the rate limit (decide() below), whatever the preset says.
+PRESETS = {
+    "look": {"mode": "passive", "rule": "deny"},
+    "ask": {"mode": "active", "rule": "ask"},
+    "small": {"mode": "active", "rule": "ask", "low_risk": "allow"},
+}
+
+
+def preset():
+    p = state.get("policy_preset") or ""
+    return p if p in PRESETS else ""
+
+
+def default_mode():
+    p = PRESETS.get(preset())
+    return p["mode"] if p else DEFAULT_MODE
+
+
+def default_rule(action_id):
+    p = PRESETS.get(preset())
+    if not p:
+        return "deny"
+    a = catalog.get(action_id) or {}
+    if p.get("low_risk") and a.get("risk") == "low" and not a.get("sudo"):
+        return p["low_risk"]
+    return p["rule"]
+
 
 @dataclass
 class Decision:
@@ -173,11 +204,36 @@ def protected_reason(host, kind, name, model_base_url=None):
 
 def rule_for(host, action_id, rules=None):
     r = (rules if rules is not None else store.action_rules()).get(host, {}).get(action_id)
-    return (r or {}).get("rule", "deny"), bool((r or {}).get("unattended_unlocked"))
+    if not r:
+        return default_rule(action_id), False
+    return r.get("rule", "deny"), bool(r.get("unattended_unlocked"))
 
 
 def mode_for(host, modes=None):
-    return (modes if modes is not None else store.host_modes()).get(host, DEFAULT_MODE)
+    return (modes if modes is not None else store.host_modes()).get(host) or default_mode()
+
+
+def effective_rules(hosts, rules=None):
+    """{host: {action: {rule, unattended_unlocked}}} for every non-probe action,
+    the preset filling in what the owner hasn't set."""
+    rules = rules if rules is not None else store.action_rules()
+    out = {}
+    for h in hosts:
+        for a in catalog.actions():
+            if catalog.is_probe(a):
+                continue
+            rule, unlocked = rule_for(h, a["id"], rules)
+            out.setdefault(h, {})[a["id"]] = {"rule": rule, "unattended_unlocked": unlocked}
+    return out
+
+
+def apply_preset(name, actor=None):
+    """Make `name` the policy of every host: explicit rows go, the preset is the default."""
+    if name not in PRESETS:
+        raise ValueError(name)
+    store.policy_clear()
+    state.put({"policy_preset": name}, actor=actor)
+    store.admin_log("policy_preset", name, {"hosts": ports.host_names()}, actor=actor)
 
 
 def decide(host, action_id, params, *, attended, run_mode="act", task_actions=None, approved=False,

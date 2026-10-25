@@ -1,5 +1,6 @@
 {
   "id": "container-health",
+  "starter": true,
   "version": 1,
   "name": "Container health",
   "desc": "Unhealthy, restart-looping and long-exited containers across your hosts. Restarts an unhealthy container once (low risk, rate-limited); everything else is reported.",

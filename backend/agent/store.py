@@ -570,6 +570,14 @@ def action_rules():
     return out
 
 
+def policy_clear():
+    """Every explicit host mode and action rule goes (a preset takes over)."""
+    with ports.db() as c:
+        c.execute("DELETE FROM agent_host_policy")
+        c.execute("DELETE FROM agent_action_rules")
+        c.commit()
+
+
 def set_action_rule(host, action, rule, unlocked):
     with ports.db() as c:
         c.execute("INSERT INTO agent_action_rules(host,action,rule,unattended_unlocked,updated_at) "

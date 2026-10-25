@@ -36,11 +36,12 @@ MODES = {
 def fleet_lines(hosts, modes, rules):
     lines = []
     for h in hosts:
-        mode = modes.get(h, policy.DEFAULT_MODE)
+        mode = policy.mode_for(h, modes)
         if mode == "off":
             continue
-        allowed = sorted(a for a, r in (rules.get(h) or {}).items() if r.get("rule") in ("ask", "allow"))
-        acts = ", ".join("%s=%s" % (a, rules[h][a]["rule"]) for a in allowed) if mode == "active" else ""
+        eff = policy.effective_rules([h], rules)[h]
+        allowed = sorted(a for a, r in eff.items() if r["rule"] in ("ask", "allow"))
+        acts = ", ".join("%s=%s" % (a, eff[a]["rule"]) for a in allowed) if mode == "active" else ""
         lines.append("- %s: %s%s" % (h, mode, (" — actions: " + acts) if acts else ""))
     return lines
 

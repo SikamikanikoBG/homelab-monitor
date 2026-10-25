@@ -40,6 +40,13 @@ DEFAULTS = {
     "max_output_tokens": "2048",
     # {host: ["/var/log/myapp", ...]} — the only paths the file probes may look at.
     "watched_paths": "{}",
+    # The setup (UAT-1): the permission preset every host follows unless set
+    # per host ("" = none: Passive and Deny), whether the owner folded the
+    # Overview invitation away, and the small extra call after a chat answer
+    # that names the conversation and offers follow-up questions.
+    "policy_preset": "",
+    "onboarding_dismissed": "0",
+    "chat_extras": "1",
 }
 
 

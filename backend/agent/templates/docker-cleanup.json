@@ -1,5 +1,6 @@
 {
   "id": "docker-cleanup",
+  "starter": true,
   "version": 1,
   "name": "Docker cleanup",
   "desc": "Finds dangling images, build cache and long-stopped containers. Prunes dangling images and build cache on its own; proposes removing stopped containers.",

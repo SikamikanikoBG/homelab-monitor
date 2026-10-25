@@ -1,5 +1,6 @@
 {
   "id": "disk-space-watch",
+  "starter": true,
   "version": 1,
   "name": "Disk space watch",
   "desc": "Checks every filesystem; flags any over 85% and what grew. Report only.",
