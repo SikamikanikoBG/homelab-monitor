@@ -133,8 +133,10 @@ trusted LAN. Set one under **Settings → Security** (or `ADMIN_PASSWORD` /
   (`TRUSTED_ORIGINS` lists extra origins for reverse proxies);
 - scripts use an **API key with a scope** (Settings → Integrations → API keys):
   `push` only reaches the experiment push routes (every key made before the
-  login existed is a push key), `read` reads everything except the backup and
-  key listings (Grafana, Homepage, an MCP client), `admin` does everything and
+  login existed is a push key), `read` reads everything except the backup, the
+  key listings and the AI agent (Grafana, Homepage, an MCP client; of the
+  agent's API a read key only gets `/api/agent/status`, its conversations, runs
+  and audit need a login or an admin key), `admin` does everything and
   expires after 90 days by default. Read and admin keys can only be made once a
   password exists; setting the first password revokes any you don't keep;
 - open without a login: `/healthz`, `/metrics` (set `METRICS_REQUIRE_AUTH=1`

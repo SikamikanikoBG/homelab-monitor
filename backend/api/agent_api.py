@@ -418,6 +418,15 @@ def _run_out(r):
             "created_at": r["created_at"], "started_at": r["started_at"], "ended_at": r["ended_at"]}
 
 
+def _run_full(r):
+    """A run with the factual list of what it did with actions (alpha pass 2, N1)."""
+    from backend.agent import outcome
+    out = _run_out(r)
+    out["actions"] = outcome.facts(r["id"])
+    out["actions_text"] = outcome.footer(out["actions"])
+    return out
+
+
 @bp.route("/api/agent/conversations/<cid>", methods=["GET", "PATCH", "DELETE"])
 def conversation_one(cid):
     c = store.conversation_get(cid)
@@ -437,7 +446,7 @@ def conversation_one(cid):
     for r in runs:
         cards += [approvals.serialize(a) for a in store.approval_list(run_id=r["id"])]
     return jsonify({"conversation": _conv_out(c), "messages": [_msg_out(m) for m in store.message_list(cid)],
-                    "runs": [_run_out(r) for r in sorted(runs, key=lambda r: (r["created_at"], r["id"]))],
+                    "runs": [_run_full(r) for r in sorted(runs, key=lambda r: (r["created_at"], r["id"]))],
                     "approvals": sorted(cards, key=lambda a: (a["created_at"], a["id"]))})
 
 
@@ -516,7 +525,7 @@ def run_one(rid):
     after = request.args.get("after_seq") or "0"
     steps = store.step_list(rid, int(after) if after.isdigit() else 0)
     title = (store.conversation_get(r["conversation_id"]) or {}).get("title")
-    return jsonify({"run": _run_out(dict(r, title=title)), "steps": [_step_out(s) for s in steps],
+    return jsonify({"run": _run_full(dict(r, title=title)), "steps": [_step_out(s) for s in steps],
                     "approvals": [approvals.serialize(a) for a in store.approval_list(run_id=rid)]})
 
 

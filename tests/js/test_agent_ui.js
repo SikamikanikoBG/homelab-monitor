@@ -214,4 +214,26 @@ check('alpha #24/#31/#36: outcomes and provider errors read as sentences, not ra
   assert.ok(/\d{4}/.test(ctx.agWhenFull(1735689600)));     // the date, with the year, always (#32)
 });
 
+check('pass 2 N1: under each run, the actions it really took, from its records', () => {
+  vm.runInContext(take('agRunFacts'), ctx);
+  assert.strictEqual(ctx.agRunFacts({ status: 'running' }), '');                 // no data, no claim either way
+  assert.ok(ctx.agRunFacts({ actions: [] }).includes('No actions were proposed in this run.'));
+  const html = ctx.agRunFacts({ actions: [{ outcome: 'pending', action: 'container.restart', title: 'Restart a container', host: 'lab1', target: '<b>w</b>' }] });
+  assert.ok(html.includes('Waiting for your approval'));
+  assert.ok(html.includes('href="#agent/approvals"'));
+  assert.ok(!html.includes('<b>w</b>'));                                       // names are escaped
+  assert.ok(SRC.includes('agRunFacts(r) +'), 'run detail shows the list');
+  assert.ok(/factsAfter\(i\)/.test(take('agPaintMessages')), 'chat and widget show the list');
+});
+
+check('pass 2 N3/N4/N5: filters load with Activity; no Use for models without tool calls; Since has a label', () => {
+  assert.ok(/activity'\) \{ await Promise\.all\(\[agLoadRuns\(\), agLoadPolicy\(\), agLoadTasks\(\)\]\)/.test(SRC));
+  assert.ok(/<label class="ag-flabel" for="agf-since">/.test(SRC));
+  vm.runInContext(take('agUseBtn'), ctx);
+  const no = ctx.agUseBtn('data-use', 'p|m', { tools: 'no' });
+  assert.ok(!no.includes('<button') && /title="[^"]*without calling tools/.test(no));
+  assert.ok(ctx.agUseBtn('data-use', 'p|m', { tools: 'yes' }).includes('<button'));
+  assert.ok(ctx.agUseBtn('data-disc-use', '0|m', null).includes('data-disc-use="0|m"'));
+});
+
 console.log('\n' + n + ' agent UI checks passed');

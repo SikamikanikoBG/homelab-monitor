@@ -1203,5 +1203,18 @@
   "agent.probe.good": "Calls tools and follows up on their results.",
   "agent.probe.single": "Calls tools, but didn’t follow up on a tool result — fine for questions, weak for multi-step tasks.",
   "agent.probe.no": "This model answered in text instead of calling the tool, so it can’t drive the agent.",
-  "agent.probe.unknown": "Couldn’t test it: {why}"
+  "agent.probe.unknown": "Couldn’t test it: {why}",
+  "agent.facts.none": "No actions were proposed in this run.",
+  "agent.facts.pending": "Waiting for your approval",
+  "agent.facts.approved": "Approved",
+  "agent.facts.rejected": "Rejected",
+  "agent.facts.expired": "Expired, not run",
+  "agent.facts.refused": "Refused",
+  "agent.facts.cancelled": "Cancelled",
+  "agent.facts.ran": "Ran",
+  "agent.facts.failed": "Failed",
+  "agent.facts.title": "Actions in this run",
+  "agent.facts.open": "Open approvals",
+  "agent.m.use_no": "This model answered without calling tools in the test, so the agent can’t look at your lab with it. Pick one marked “tool calls: works”.",
+  "agent.m.cant_use": "can’t be used"
 }

@@ -72,6 +72,18 @@
     ],
     "runs": [
       {
+        "actions": [
+          {
+            "action": "container.restart",
+            "approval_id": "id0004",
+            "detail": null,
+            "host": "lab1",
+            "outcome": "pending",
+            "target": "web",
+            "title": "Restart a container"
+          }
+        ],
+        "actions_text": "Actions in this run:\n- Waiting for your approval: Restart a container on lab1 (web) \u2014 /#agent/approvals",
         "actor": "session:738c6e2b82c4",
         "attended": true,
         "completion_tokens": 10,

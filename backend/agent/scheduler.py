@@ -174,11 +174,13 @@ def deliver(run):
         return
     msgs = [m for m in store.message_list(run["conversation_id"]) if m["role"] == "assistant" and m.get("content")]
     summary = (msgs[-1]["content"] if msgs else run.get("status_reason") or run["status"])[:1500]
-    pending = [a for a in store.approval_list(run_id=run["id"]) if a["status"] == "pending"]
+    from backend.agent import outcome
+    did = outcome.facts(run["id"])
+    pending = [f for f in did if f["outcome"] == "pending"]
     level = "warning" if run["status"] != "done" or pending else "info"
     title = "Agent: %s — %s" % (task["name"], run["status"].replace("_", " "))
-    detail = summary + ("\n\n%d action(s) wait for your approval." % len(pending) if pending else "") + \
-        "\nDetails: /#agent/run/%s" % run["id"]
+    # the model's words, then what the run's records say it did (alpha pass 2, N1)
+    detail = summary + "\n\n" + outcome.footer(did) + "\nDetails: /#agent/run/%s" % run["id"]
     try:
         if "all" in out_channels:
             ports.dispatch_alert(level, title, detail)

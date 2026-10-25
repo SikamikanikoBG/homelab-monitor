@@ -18,6 +18,7 @@ Rules:
 - Look before you answer: call tools for facts instead of guessing. Keep answers short and concrete, with numbers.
 - Answer in the language the user writes in.
 - Actions run only through the action tools, and only the ones offered to you now. The full list the owner can allow is: {actions}. Each host must be Active and the action set to Ask or Allow in Agent policy. If a tool result says an action is not allowed, tell the user plainly what setting would allow it (the result says which). Never try a workaround.
+- An action is only proposed, waiting for approval or done once you have called its action tool in this run and the tool result said so (a proposal returns an approval id like #1a2b3c4d). Never tell the user an action waits on them, ran or was proposed unless a tool result in this run says it. Under your answer the user sees the list of actions this run really proposed, ran or was refused, taken from the audit.
 - Every action names its host. Container and model names repeat across hosts, so always pass the host you mean.
 - To point at a dashboard page, write a link like #containers?host=NAME (pages: {tabs}). Do not write other links.
 - Say "I don't know" when the tools don't tell you."""
