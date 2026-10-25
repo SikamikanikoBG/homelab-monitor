@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Setup step 2, model</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#58a6ff;text-decoration:none}a:hover{color:#79b8ff}
+</style>
+</helmet>
+<div style="width:800px;height:640px;box-sizing:border-box;background:#05080c;display:flex;align-items:center;justify-content:center;font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#e6edf3">
+  <div role="dialog" aria-label="Set up the agent" style="width:640px;background:#161b22;border:1px solid #30363d;border-radius:16px;box-shadow:0 24px 60px -20px #000;padding:26px 30px;display:flex;flex-direction:column;gap:16px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+      <span style="display:inline-flex;align-items:center;gap:7px;color:#3fb950"><span style="width:22px;height:22px;border-radius:50%;background:#3fb95022;border:1px solid #3fb950;display:inline-flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg></span>Secure</span>
+      <span style="flex:1;height:1px;background:#30363d"></span>
+      <span style="display:inline-flex;align-items:center;gap:7px;color:#e6edf3;font-weight:600"><span style="width:22px;height:22px;border-radius:50%;background:#d29922;color:#1a1100;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">2</span>Model</span>
+      <span style="flex:1;height:1px;background:#30363d"></span>
+      <span style="display:inline-flex;align-items:center;gap:7px;color:#8b949e"><span style="width:22px;height:22px;border-radius:50%;border:1px solid #30363d;display:inline-flex;align-items:center;justify-content:center;font-size:12px">3</span>Permissions</span>
+    </div>
+    <div>
+      <h2 style="margin:0 0 4px;font-size:20px;font-weight:600">Pick the model that does the thinking</h2>
+      <p style="margin:0;color:#8b949e;font-size:14px">Found on your network and tested just now. Local models are free and nothing leaves your lab.</p>
+    </div>
+
+    <div role="radiogroup" aria-label="Model" style="display:flex;flex-direction:column;gap:10px">
+      <label style="display:flex;align-items:center;gap:14px;border:1.5px solid #d29922;background:#d2992210;border-radius:12px;padding:14px 16px;cursor:pointer">
+        <input type="radio" name="m" checked style="accent-color:#d29922;width:18px;height:18px;margin:0">
+        <span style="flex:1;min-width:0">
+          <span style="display:flex;align-items:center;gap:8px"><b style="font-size:15px">qwen3.8-27b</b><span style="font-size:11px;font-weight:700;color:#1a1100;background:#d29922;border-radius:5px;padding:0 6px">RECOMMENDED</span></span>
+          <span style="display:block;font-size:13px;color:#8b949e">vLLM on vader · 128k context · handles multi-step questions</span>
+        </span>
+        <span style="font-size:12px;color:#3fb950;white-space:nowrap">Works with the agent</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:14px;border:1px solid #30363d;border-radius:12px;padding:14px 16px;cursor:pointer">
+        <input type="radio" name="m" style="accent-color:#d29922;width:18px;height:18px;margin:0">
+        <span style="flex:1;min-width:0">
+          <b style="font-size:15px">llama3.1:8b</b>
+          <span style="display:block;font-size:13px;color:#8b949e">Ollama on ardi · 8k context · quicker, less thorough</span>
+        </span>
+        <span style="font-size:12px;color:#3fb950;white-space:nowrap">Works with the agent</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:14px;border:1px solid #21262d;border-radius:12px;padding:14px 16px;opacity:.6">
+        <input type="radio" name="m" disabled style="width:18px;height:18px;margin:0">
+        <span style="flex:1;min-width:0">
+          <b style="font-size:15px">nomic-embed-text</b>
+          <span style="display:block;font-size:13px;color:#8b949e">Ollama on ardi · an embedding model, it can't hold a conversation</span>
+        </span>
+        <span style="font-size:12px;color:#8b949e;white-space:nowrap">Can't be used</span>
+      </label>
+    </div>
+
+    <details style="border-top:1px solid #30363d;padding-top:12px">
+      <summary style="cursor:pointer;font-size:14px;color:#c9d1d9">Use a cloud model with your own key instead</summary>
+      <div style="font-size:13px;color:#8b949e;margin-top:8px">OpenAI, Anthropic, Groq, Mistral, OpenRouter and more. Your key stays on the server.</div>
+    </details>
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <a href="Setup1.dc.html" style="color:#8b949e;font-size:14px">Back</a>
+      <span style="flex:1"></span>
+      <a href="Setup3.dc.html" style="display:inline-flex;align-items:center;height:42px;padding:0 22px;border-radius:9px;background:#d29922;color:#1a1100;font-weight:700;font-size:14px">Continue</a>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":800,"height":640}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
