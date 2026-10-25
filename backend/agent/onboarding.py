@@ -114,7 +114,8 @@ def overview():
     waiting = []
     for a in pend[:3]:
         s = approvals_mod.serialize(a)
-        waiting.append({"id": s["id"], "title": s["title"], "host": s["host"], "params": s["params"], "risk": s["risk"],
+        waiting.append({"id": s["id"], "action": s["action"], "title": s["title"], "host": s["host"],
+                        "params": s["params"], "risk": s["risk"],
                         "created_at": s["created_at"], "task": tasks.get(a.get("task_id")), "run_id": s["run_id"]})
     since = store.now() - OVERNIGHT_HOURS * 3600
     lately = []

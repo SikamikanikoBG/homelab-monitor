@@ -535,6 +535,7 @@ def _run_full(r):
     out = _run_out(r)
     out["actions"] = outcome.facts(r["id"])
     out["actions_text"] = outcome.footer(out["actions"])
+    out["work"] = outcome.work(r)
     from backend.agent import extras
     out["followups"] = extras.followups(r["id"]) if r["status"] == "done" else []
     return out

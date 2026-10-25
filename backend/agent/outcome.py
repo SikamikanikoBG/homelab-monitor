@@ -63,3 +63,33 @@ def footer(items, link_prefix="/"):
             what += " — " + f["detail"][:160]
         lines.append("- " + what)
     return "\n".join(lines)
+
+
+def work(run):
+    """What a run looked at, for the one line over its answer: "Checked 4
+    machines · 1 look-up · 6 s". A fleet-wide read counts every host the agent
+    can see; others count the host they name (the tool's declared host field)."""
+    from backend.agent import policy, ports
+    from backend.tools.read import BY_NAME
+    hosts, lookups, fleet = set(), 0, False
+    for s in store.step_list(run["id"]):
+        if s["kind"] == "tool":
+            lookups += 1
+            spec = BY_NAME.get(s["tool"])
+            if spec is None:
+                continue
+            if spec.host_scope == "fleet":
+                fleet = True
+            elif spec.host_scope == "hub":
+                hosts.add("local")
+            else:
+                hosts.add((s["args"] or {}).get(spec.host_arg) or "local")
+        elif s["kind"] in ("probe_result", "action_result", "policy", "approval"):
+            lookups += 1
+            if s["host"]:
+                hosts.add(s["host"])
+    if fleet:
+        hosts |= {h for h in ports.host_names() if policy.mode_for(h) != "off"}
+    end = run.get("ended_at") or (store.now() if run.get("started_at") else None)
+    secs = max(0, end - run["started_at"]) if end and run.get("started_at") else None
+    return {"machines": len(hosts), "lookups": lookups, "seconds": secs}

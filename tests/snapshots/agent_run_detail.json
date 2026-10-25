@@ -63,7 +63,12 @@
       "steps": 2,
       "task_id": null,
       "title": "restart web",
-      "trigger": "chat"
+      "trigger": "chat",
+      "work": {
+        "lookups": 1,
+        "machines": 1,
+        "seconds": 0
+      }
     },
     "steps": [
       {

@@ -223,7 +223,7 @@ check('pass 2 N1: under each run, the actions it really took, from its records',
   assert.ok(html.includes('href="#agent/approvals"'));
   assert.ok(!html.includes('<b>w</b>'));                                       // names are escaped
   assert.ok(SRC.includes('agRunFacts(r) +'), 'run detail shows the list');
-  assert.ok(/factsAfter\(i\)/.test(take('agPaintMessages')), 'chat and widget show the list');
+  assert.ok(/agFactsChip\(r\)/.test(take('agPaintMessages')), 'chat and widget show what the run did, as a chip');
 });
 
 check('pass 2 N3/N4/N5: filters load with Activity; no Use for models without tool calls; Since has a label', () => {
@@ -234,6 +234,74 @@ check('pass 2 N3/N4/N5: filters load with Activity; no Use for models without to
   assert.ok(!no.includes('<button') && /title="[^"]*without calling tools/.test(no));
   assert.ok(ctx.agUseBtn('data-use', 'p|m', { tools: 'yes' }).includes('<button'));
   assert.ok(ctx.agUseBtn('data-disc-use', '0|m', null).includes('data-disc-use="0|m"'));
+});
+
+check('UAT-1: markdown tables, headings, ordered lists, italics — escaped first', () => {
+  const out = ctx.agMarkdown('## Disks\n| Host | Use |\n|---|---:|\n| ardi | **72%** |\n| <b>x</b> | 1 |\n\n1. one\n2. two\n*note*');
+  assert.ok(out.includes('<h4>Disks</h4>'));
+  assert.ok(out.includes('<div class="ag-tbl"><table><thead><tr><th>Host</th><th>Use</th></tr></thead>'));
+  assert.ok(out.includes('<td>ardi</td><td><b>72%</b></td>'));
+  assert.ok(out.includes('&lt;b&gt;x&lt;/b&gt;') && !out.includes('<b>x</b>'));
+  assert.ok(out.includes('<ol><li>one</li><li>two</li></ol>'));
+  assert.ok(out.includes('<i>note</i>'));
+  assert.ok(!ctx.agMarkdown('a | b').includes('<table'), 'a lone pipe is not a table');
+});
+
+check('UAT-1: conversations grouped by Today / Yesterday / Earlier', () => {
+  vm.runInContext([take('agDayBucket'), take('agGroupConvs')].join('\n'), ctx);
+  const now = new Date(2026, 9, 25, 10, 0).getTime();
+  const at = (d, h) => new Date(2026, 9, d, h, 0).getTime() / 1000;
+  const g = plain(ctx.agGroupConvs([{ id: 'a', updated_at: at(25, 9) }, { id: 'b', updated_at: at(24, 23) }, { id: 'c', updated_at: at(20, 9) }, { id: 'd', updated_at: at(25, 1) }], now));
+  assert.deepStrictEqual(g.map(x => [x[0], x[1].map(c => c.id)]), [['today', ['a', 'd']], ['yesterday', ['b']], ['earlier', ['c']]]);
+});
+
+check('UAT-1: one line for the work a run did, one chip for its actions', () => {
+  vm.runInContext([take('agWorkLine'), take('agFactsChip')].join('\n'), ctx);
+  assert.strictEqual(ctx.agWorkLine({ work: { machines: 4, lookups: 1, seconds: 6 } }, 1), 'Checked 4 machines · 1 look-up · 6 s');
+  assert.strictEqual(ctx.agWorkLine(null, 3), 'Checked 3 look-ups');
+  assert.ok(ctx.agFactsChip({ actions: [] }).includes('No actions proposed'));
+  const w = ctx.agFactsChip({ actions: [{ outcome: 'pending', title: 'Restart a container', host: 'lab1', target: 'web' }] });
+  assert.ok(w.includes('href="#agent/approvals"') && w.includes('1 action waiting for your approval'));
+  assert.strictEqual(ctx.agFactsChip({ status: 'running' }), '');
+});
+
+check('UAT-1: chat turns per run, approval card with one primary Approve', () => {
+  vm.runInContext([take('agRunGroups'), take('agApprovalCard'), take('agApprovalOutcome')].join('\n'), ctx);
+  const g = plain(ctx.agRunGroups({ messages: [
+    { role: 'user', content: 'q1', run_id: 'r1' }, { role: 'assistant', content: 'looking', run_id: 'r1', tool_calls: [{ id: 'c1', name: 'list_hosts' }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'x' }, { role: 'assistant', content: 'a1', run_id: 'r1' },
+    { role: 'user', content: 'q2', run_id: 'r2' }, { role: 'assistant', content: 'a2', run_id: 'r2' }], approvals: [] }));
+  assert.deepStrictEqual(g.map(x => [x.run_id, x.user, x.chips.length, x.texts]), [['r1', 'q1', 1, ['looking', 'a1']], ['r2', 'q2', 0, ['a2']]]);
+  const card = ctx.agApprovalCard({ id: 'a1', action: 'container.restart', title: 'Restart a container', host: 'lab1', params: { name: 'web' }, risk: 'low', status: 'pending' }, false);
+  assert.strictEqual((card.match(/class="ag-btn pri"/g) || []).length, 1);
+  assert.ok(/class="ag-btn pri" data-ap="a1">Approve/.test(card));
+  assert.ok(card.includes('role="group"'));
+});
+
+check('UAT-1: Overview card state, password meter, model pre-selection', () => {
+  vm.runInContext([take('agHomeState'), take('agPwScore'), take('agPwLabel'), take('agPickModel')].join('\n'), ctx);
+  assert.strictEqual(ctx.agHomeState(null, ''), 'none');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, ''), 'invite');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false, dismissed: true }, ''), 'strip');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, 'folded'), 'strip');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, 'hidden'), 'none');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: true, dismissed: true }, 'hidden'), 'ask');
+  assert.strictEqual(ctx.agPwScore(''), 0);
+  assert.strictEqual(ctx.agPwScore('short'), 1);
+  assert.strictEqual(ctx.agPwScore('longenough'), 2);
+  assert.strictEqual(ctx.agPwScore('Long-Enough-2026!'), 4);
+  const ms = [{ provider_id: 'p', model: 'emb', tools: 'no' }, { provider_id: 'p', model: 'small', tools: 'yes' }, { provider_id: 'p', model: 'big', tools: 'yes', recommended: true }];
+  assert.strictEqual(ctx.agPickModel(ms, ''), 'p|big');
+  assert.strictEqual(ctx.agPickModel(ms, 'p|small'), 'p|small');
+  assert.strictEqual(ctx.agPickModel(ms, 'p|emb'), 'p|big', 'a model that cannot call tools is never kept');
+  assert.strictEqual(ctx.agPickModel([], ''), '');
+});
+
+check('UAT-1: suggestions are a declared list; the Agent sits in the AI group; the card hides in kiosk mode', () => {
+  assert.ok(/const AG_SUGGEST = \[\['agent\.sug\./.test(SRC));
+  assert.ok(SRC.includes("zone: 'ai'"));
+  assert.ok(fs.readFileSync(path.join(ROOT, 'static', 'agent.css'), 'utf8').includes('body.display .ag-home{display:none!important}'));
+  assert.ok(SRC.includes("const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'settings'];"));
 });
 
 console.log('\n' + n + ' agent UI checks passed');
