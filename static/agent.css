@@ -300,3 +300,14 @@ body.display .ag-fab,body.display .ag-panel{display:none!important}
   .ag-tw{position:relative}
   .ag-scrollhint{display:block!important}
 }
+.ag-stat{font-size:12.5px;color:var(--mut);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.ag-stat::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--mut)}
+.ag-stat.ok{color:var(--ok)}.ag-stat.ok::before{background:var(--ok)}
+.ag-stat.no{color:var(--crit)}.ag-stat.no::before{background:var(--crit)}
+.ag-stat.on{color:var(--accent)}.ag-stat.on::before{background:var(--accent)}
+.ag-meta{font-size:12.5px;color:var(--mut);margin-top:auto}
+.ag-form{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end}
+.ag-form .ag-fld input{width:200px}
+.ag-switch{display:inline-flex;align-items:center;gap:8px;min-height:var(--ag-ctl);font-weight:600;margin-right:8px}
+.ag-checks label{font-weight:400}
+@media (max-width:700px){.ag-wide{display:none}}

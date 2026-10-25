@@ -113,7 +113,7 @@
       "agent.ch.webhook",
       "login.title"
     ],
-    "coverage": 0.9193
+    "coverage": 0.9207
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -1440,5 +1440,28 @@
   "agent.sug.disks": "我的磁盘怎么样？",
   "agent.sug.wrong": "现在有什么问题吗？",
   "agent.sug.gpu": "什么在占用 GPU？",
-  "agent.sug.clean": "我可以清理什么？"
+  "agent.sug.clean": "我可以清理什么？",
+  "agent.actor.you": "你",
+  "agent.actor.key": "API 密钥",
+  "agent.actor.system": "中心",
+  "agent.auto.mine_r": "我的例行任务（{n}）",
+  "agent.resume_all_r": "恢复例行任务",
+  "agent.pause_all_r": "暂停所有例行任务",
+  "agent.paused_note_r": "所有例行任务已暂停。恢复之前不会运行任何计划任务。",
+  "agent.may_act_n": "可能提出 {n} 个操作",
+  "agent.report_only2": "只报告",
+  "agent.no_tasks_r": "还没有例行任务。启用一个模板即可开始。",
+  "agent.k.label": "标签",
+  "agent.pol.preset": "适用于每台机器",
+  "agent.pol.preset_p": "以后添加的机器也会遵循它。下面的表格可以更改单台机器或单个操作。",
+  "agent.pol.preset_none": "自定义：在下面按机器设置。选择一个预设会把每台机器重置为该预设。",
+  "agent.pol.mcp_note2": "“关闭”只作用于这个应用内的智能体；只读的 MCP 服务器仍能看到整个机群。",
+  "agent.pol.preset_confirm": "把每台机器都设为“{p}”？你按机器或按操作做的更改会被替换。",
+  "agent.m.general": "常规",
+  "agent.m.in_use": "使用中",
+  "agent.wz.byurl": "我的模型服务器没有列出",
+  "agent.wz.byurl_p": "填写它的地址，例如 Ollama 用 http://192.168.1.20:11434，vLLM 用 http://192.168.1.20:8000/v1。",
+  "agent.wz.server": "服务器",
+  "agent.wz.address": "地址",
+  "agent.wz.need_url": "请先输入服务器地址。"
 }
