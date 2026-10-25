@@ -55,8 +55,20 @@ for n in 1 2; do curl -fsS -X POST localhost:9831/api/hosts/lab$n/test >/dev/nul
 docker run -d --name hlm-alpha-stub --network hlm-alpha -v "$SRC/tests":/stub:ro python:3.12-slim \
   python /stub/agent_stub_server.py --host 0.0.0.0 --port 18099 >/dev/null
 
-# 6) the admin password (logs this shell in only to set it)
-curl -fsS -X POST localhost:9831/api/auth/setup -H 'Content-Type: application/json' \
-  -d "{\"password\":\"$PASS\"}" >/dev/null
-echo "alpha hub: http://$(hostname):9831  password: $PASS"
+# 6) optional: model servers the owner's fleet would show (ALPHA_CUSTOM_AI is the
+#    Settings → General "custom AI servers" JSON), so the setup finds them
+if [ -n "${ALPHA_CUSTOM_AI:-}" ]; then
+  python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"custom_ai_servers": os.environ["ALPHA_CUSTOM_AI"]}))' \
+    | curl -fsS -X POST localhost:9831/api/settings -H 'Content-Type: application/json' -d @- >/dev/null
+fi
+
+# 7) the admin password (logs this shell in only to set it); ALPHA_COLD=1 leaves
+#    the hub without one, for the first-visit walk-through
+if [ -z "${ALPHA_COLD:-}" ]; then
+  curl -fsS -X POST localhost:9831/api/auth/setup -H 'Content-Type: application/json' \
+    -d "{\"password\":\"$PASS\"}" >/dev/null
+  echo "alpha hub: http://$(hostname):9831  password: $PASS"
+else
+  echo "alpha hub: http://$(hostname):9831  (cold: no password yet)"
+fi
 echo "stub model (inside the network): http://hlm-alpha-stub:18099/v1   real: http://100.76.27.18:18021/v1"
