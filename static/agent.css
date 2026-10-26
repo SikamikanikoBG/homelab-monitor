@@ -326,3 +326,6 @@ body.ag-fab-on{padding-bottom:84px}
 .ag-tbl{max-width:100%;-webkit-overflow-scrolling:touch}
 .ag-tbl td{min-width:60px}
 @media (max-width:600px){.ag-tbl table{width:max-content;min-width:100%}.ag-tbl td,.ag-tbl th{padding:7px 10px}}
+.ag-root .ag-cbox textarea,.ag-root .ag-cbox textarea:focus,.ag-root .ag-cbox textarea:focus-visible{border:0!important;outline:none!important;box-shadow:none!important}
+.ag-root .ag-tbl th{text-transform:none;letter-spacing:normal}
+.ag-root input:focus-visible,.ag-root select:focus-visible,.ag-root textarea:focus-visible{box-shadow:none}
