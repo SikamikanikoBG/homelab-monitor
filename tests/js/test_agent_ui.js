@@ -338,4 +338,40 @@ check('UAT-1 pass 2: a weak password is weak; the example and suggestions come f
   assert.ok(!chips.includes('GPU') && chips.includes('memory'), chips);
 });
 
+// Real answers from the owner's session (UAT-1): they must render, not show as markdown source.
+const FIX = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
+
+check('real answer (Bulgarian): headings, a GFM table with bold, emoji and Cyrillic, lists with code and bold', () => {
+  const out = ctx.agMarkdown(FIX('agent_answer_bg.md'));
+  assert.ok(out.includes('<h4>Проблеми</h4>') && out.includes('<h4>Направени действия</h4>'));
+  assert.ok(out.includes('<th>#</th><th>Проблем</th><th>Хост</th><th>Статус</th>'));
+  assert.ok(out.includes('<td><b>nginx.service failed</b> (exit 1)</td><td>local</td><td>✅ <b>Рестартиран</b></td>'), out);
+  assert.ok(out.includes('<td>❌ Не мога — policy е <b>Deny</b> за service.restart на vader</td>'));
+  assert.ok(out.includes('<li>✅ <code>nginx.service</code> restart на <b>local</b> — успешно</li>'));
+  assert.strictEqual((out.match(/<tr>/g) || []).length, 3);
+  assert.ok(!/\*\*|\|---|^##/m.test(out), 'no markdown source left');
+});
+
+check('real answer (mixed): aligned columns, emoji, inline code in cells, nested bold lists, a rule, a fenced block', () => {
+  const out = ctx.agMarkdown(FIX('agent_answer_mixed.md'));
+  assert.ok(out.includes('<h4>Fleet check</h4>'));
+  assert.ok(out.includes('<td><b>ardi</b></td><td><code>/data</code> 72%</td><td>✅ ok</td><td>ℹ️ growing ~1 GB/day</td>'), out);
+  assert.ok(out.includes('<td>⚠️ <b>full soon</b></td>') && out.includes('<td>облак</td>'));
+  assert.ok(out.includes('<li><b>lab1</b>: <code>web</code>, <code>worker</code></li>') && out.includes('<i>nothing</i>'));
+  assert.ok(out.includes('<hr>'));
+  assert.ok(out.includes('<pre class="ag-pre"><code>docker image prune -f\necho &quot;&lt;done&gt;&quot;</code></pre>'), out);
+  assert.ok(!out.includes('```') && !out.includes('**') && !/<p>---<\/p>/.test(out));
+  assert.ok(out.includes('<p>Done.</p>'));
+});
+
+check('tables scroll sideways on a phone instead of overflowing the chat', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'static', 'agent.css'), 'utf8');
+  assert.ok(/\.ag-tbl\{[^}]*overflow-x:auto/.test(css));
+  assert.ok(css.includes('.ag-msg.a,.ag-md{min-width:0;max-width:100%}'));
+});
+
+check('the UI language goes with every question (the fallback reply language)', () => {
+  assert.ok(SRC.includes('context: Object.assign({}, getContext() || {}, { lang: agUiLang() })'));
+});
+
 console.log('\n' + n + ' agent UI checks passed');

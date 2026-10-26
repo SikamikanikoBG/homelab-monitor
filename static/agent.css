@@ -321,3 +321,8 @@ body.display .ag-fab,body.display .ag-panel{display:none!important}
 table.ag-found td{white-space:nowrap}table.ag-found td:first-child{width:30%}
 body.ag-fab-on{padding-bottom:84px}
 @media (max-width:600px){body.ag-tab-on #diagbanner{display:none!important}}
+.ag-msg.a,.ag-md{min-width:0;max-width:100%}
+.ag-md hr{border:0;border-top:1px solid var(--bd);margin:10px 0}
+.ag-tbl{max-width:100%;-webkit-overflow-scrolling:touch}
+.ag-tbl td{min-width:60px}
+@media (max-width:600px){.ag-tbl table{width:max-content;min-width:100%}.ag-tbl td,.ag-tbl th{padding:7px 10px}}

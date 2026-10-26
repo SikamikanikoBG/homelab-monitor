@@ -273,7 +273,7 @@ def _call_model(r, ctx, ctl, adapter, req):
 
 WRAP_UP = ("[The run is over: %s. You get no more tool calls. Answer my last question now, from what is already in "
            "this conversation: the findings first, with numbers, then one short line on what you didn't get to "
-           "check. Answer in the language I wrote in. Don't describe your steps and don't promise to continue.]")
+           "check. Answer in the language of my last message. Don't describe your steps and don't promise to continue.]")
 
 
 def _wrap_up(r, ctx, ctl, adapter, why):

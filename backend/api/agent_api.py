@@ -580,6 +580,9 @@ def _clean_context(ctx):
         v = ctx.get(k)
         if isinstance(v, str) and v.strip():
             out[k] = v.strip()[:60]
+    lang = ctx.get("lang")
+    if isinstance(lang, str) and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?", lang.strip()):
+        out["lang"] = lang.strip()            # the UI language: the reply language when the message doesn't say
     return out or None
 
 

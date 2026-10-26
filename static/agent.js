@@ -105,6 +105,7 @@ function agMarkdown(text) {
         '</tbody></table></div>');
       continue;
     }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push('<hr>'); continue; }
     const h = /^\s*#{1,4}\s+(.*)$/.exec(line);
     if (h) { flush(); out.push('<h4>' + inline(h[1]) + '</h4>'); continue; }
     const ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
@@ -132,6 +133,11 @@ function agLinkLabel(href) {
 }
 
 /** What the page context the widget sends with a question looks like. */
+/** The dashboard's UI language (the agent's fallback reply language). */
+function agUiLang() {
+  return (typeof I18N !== 'undefined' && I18N.locale) || (typeof navigator !== 'undefined' && navigator.language) || 'en';
+}
+
 function agContext() {
   const tab = (typeof TAB !== 'undefined') ? TAB : null;
   const host = (typeof CURRENT_HOST !== 'undefined') ? CURRENT_HOST : null;
@@ -540,7 +546,7 @@ function agWireComposer(root, prefix, getConv, setConv, getContext) {
     }
     const [pid, model] = String((sel && sel.value) || '').split('|');
     const r = await agApi('/api/agent/conversations/' + encodeURIComponent(cid) + '/messages', 'POST',
-      { text, provider_id: pid || undefined, model: model || undefined, context: getContext() });
+      { text, provider_id: pid || undefined, model: model || undefined, context: Object.assign({}, getContext() || {}, { lang: agUiLang() }) });
     send.disabled = false;
     if (!r.ok) { say(r.body.message || r.body.error || agT('agent.failed', 'Something went wrong.')); return; }
     say('');

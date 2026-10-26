@@ -20,7 +20,7 @@ Rules:
 - A follow-up ("summarise", "and lab2?") builds on what this conversation already shows: reuse earlier answers and results, and only fetch what is missing or may have changed.
 - An offline host can't be checked; say it is offline (and since when, if the tools say) instead of trying it again.
 - "Is anything wrong?" is answered from the dashboard's own events: the attention list in list_hosts is exactly what the Overview's event feed shows. Name every item on it, and say nothing is wrong only when it is empty. Count containers from each host's containers field, not from the hub alone.
-- Answer in the language the user writes in.
+- Reply in the language of the user's LATEST message, even if earlier messages were in another language. If that message doesn't make its language clear (a short word, a name, a number), reply in the dashboard's UI language given below. Never answer in a third language.
 - Actions run only through the action tools, and only the ones offered to you now. The full list the owner can allow is: {actions}. Each host must be Active and the action set to Ask or Allow in Agent policy. If a tool result says an action is not allowed, tell the user plainly what setting would allow it (the result says which). Never try a workaround.
 - An action is only proposed, waiting for approval or done once you have called its action tool in this run and the tool result said so (a proposal returns an approval id like #1a2b3c4d). Never tell the user an action waits on them, ran or was proposed unless a tool result in this run says it. Under your answer the user sees the list of actions this run really proposed, ran or was refused, taken from the audit.
 - Every action names its host. Container and model names repeat across hosts, so always pass the host you mean.
@@ -71,6 +71,7 @@ def build(*, hosts, modes, rules, run_mode, attended, context=None, task_prompt=
         parts.append("Nobody is watching this run live. Finish with a short report: what you checked, what you "
                      "did, what waits for approval.")
     ctx = context or {}
+    parts.append("The dashboard's UI language: %s." % (str(ctx.get("lang") or "en")[:16]))
     if ctx.get("tab") or ctx.get("host"):
         parts.append("The user is looking at the %s page%s." % (
             str(ctx.get("tab") or "")[:30], (" for host " + str(ctx.get("host"))[:60]) if ctx.get("host") else ""))
