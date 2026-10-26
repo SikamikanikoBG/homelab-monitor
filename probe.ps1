@@ -505,6 +505,208 @@ function Read-Services {
 # is currently loaded. Row shape matches probe.py exactly — the hub merges local
 # and remote entries through the same code path. Read-only, 2 s timeouts, silent
 # when ollama is not running here.
+# ── Docker inventory (Containers tab) ────────────────────────────────────────
+# Mirrors probe.py's read_docker(): `docker ps -a` for the list, one bounded
+# `docker stats` pass for RAM/CPU%, a `docker ps -s` pass for writable-layer
+# disk, and one `docker inspect` for the restart policy. Every call goes through
+# Invoke-Docker, so a wedged daemon costs a column rather than the whole payload.
+# The Docker CLI speaks
+# the same `--format '{{json .}}'` contract on Windows as it does on Linux, so
+# the JSON below is the exact shape the hub already renders for a Linux host —
+# no hub-side branching. Docker Desktop's Linux-container mode answers all of
+# it; a Windows-container daemon answers too, with Windows-native status
+# strings. Read-only by design: the probe never starts or stops anything. {}
+# when the CLI is absent or the daemon won't answer, matching probe.py — the
+# Hosts-tab capability check is what tells the two apart.
+function ConvertTo-Bytes([string]$v) {
+    # '1.552GiB / 62.72GiB' (docker stats MemUsage) or '2.5MB (virtual 1.2GB)'
+    # (docker ps -s Size) → the leading size in bytes, or $null. Same unit table
+    # and same leading-number rule as probe.py's _MEM_UNITS / _stats_mem_bytes.
+    if (-not $v) { return $null }
+    $m = [regex]::Match($v, '^\s*([\d.]+)\s*([KMGT]i?B|B)', 'IgnoreCase')
+    if (-not $m.Success) { return $null }
+    $units = @{ 'b' = 1; 'kb' = 1000; 'kib' = 1024
+                'mb' = 1000000; 'mib' = 1048576
+                'gb' = 1000000000; 'gib' = 1073741824
+                'tb' = 1000000000000; 'tib' = 1099511627776 }
+    $mult = $units[$m.Groups[2].Value.ToLower()]
+    if (-not $mult) { return $null }
+    # Truncate, not round: probe.py does int(float(x) * mult), so a value like
+    # 1.552GiB lands on the same byte as Linux does instead of one byte higher.
+    try { return [int64][math]::Truncate([double]$m.Groups[1].Value * $mult) } catch { return $null }
+}
+
+# Runs the Docker CLI with a wall-clock cap.
+#
+# `& docker` has no timeout of its own, and the hub gives the whole payload only
+# 15 s (`_ssh_with_stdin`) before it discards every section, not just this one.
+# So each call below is bounded, and running past the cap degrades exactly like a
+# non-zero exit: the caller keeps whatever the other passes produced.
+#
+# Returns @{ Ok = $true; Lines = @(...) }, or @{ Ok = $false; Lines = @() } when
+# docker is absent, the daemon refuses, or the call outlives the cap.
+#
+# The two are kept apart deliberately: an empty list is a healthy daemon with no
+# containers, while Ok = $false means "no Docker here". PowerShell treats $null
+# and an empty array as equal, so a bare list could not tell those apart — every
+# empty host would report a missing Docker instead.
+function Invoke-Docker([string[]]$Arguments, [int]$TimeoutSec) {
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath 'docker' -ArgumentList $Arguments -NoNewWindow `
+                           -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch { }
+            return [pscustomobject]@{ Ok = $false; Lines = @() }
+        }
+        if ($p.ExitCode -ne 0) { return [pscustomobject]@{ Ok = $false; Lines = @() } }
+        return [pscustomobject]@{ Ok = $true; Lines = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) }
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Lines = @() }
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# `docker ps --format '{{json .}}'` reports Names as a comma-separated list —
+# the container name plus any --link aliases — and omits the key entirely for
+# containers created before it existed. probe.py takes the first name and falls
+# back to '?', so a container never reaches the hub with an empty name (which
+# would render as a blank row). Keep the two sides in step.
+function ConvertTo-ContainerName([string]$Names) {
+    if (-not $Names) { return '?' }
+    return ($Names -split ',')[0]
+}
+
+function Read-Docker {
+    $out = @{}
+    # 5 s: the list is the one pass whose failure means "no Docker here", so it
+    # gets the tightest cap.
+    $list = Invoke-Docker @('ps', '-a', '--no-trunc', '--format', '{{json .}}') 5
+    if (-not $list.Ok) { return $out }
+    $lines = $list.Lines
+
+    $conts = @()
+    foreach ($line in $lines) {
+        $line = "$line".Trim()
+        if (-not $line) { continue }
+        try { $d = $line | ConvertFrom-Json } catch { continue }
+        $state = "$($d.State)".ToLowerInvariant()
+        $id    = "$($d.ID)"
+        if ($id.Length -gt 64) { $id = $id.Substring(0, 64) }
+        # RunningFor carries a trailing ' ago'; probe.py strips it. Only a
+        # running container has a meaningful uptime — the rest stay empty.
+        $uptime = ''
+        # -creplace, not -replace: probe.py's replace(" ago", "") is
+        # case-sensitive and drops every occurrence, not just a trailing one.
+        if ($state -eq 'running') { $uptime = ("$($d.RunningFor)") -creplace ' ago', '' }
+        $conts += [ordered]@{
+            id     = $id
+            name   = ConvertTo-ContainerName "$($d.Names)"
+            image  = "$($d.Image)"
+            state  = $state
+            status = "$($d.Status)"
+            ports  = "$($d.Ports)"
+            uptime = $uptime
+        }
+    }
+
+    # Restart policy — one `docker inspect` for the whole list, not one per
+    # container. A failure here costs only that column.
+    try {
+        $ids = @($conts | ForEach-Object { $_.id } | Where-Object { $_ })
+        if ($ids.Count -gt 0) {
+            $pol = @{}
+            $inspectArgs = @('inspect', '--format', "{{.Id}}`t{{.HostConfig.RestartPolicy.Name}}") + $ids
+            foreach ($ln in (Invoke-Docker $inspectArgs 8).Lines) {
+                $ln = "$ln"
+                if (-not $ln.Trim()) { continue }
+                $parts = $ln -split "`t", 2
+                if ($parts.Count -lt 2) { continue }
+                $cid = $parts[0].Trim()
+                if ($cid.Length -gt 64) { $cid = $cid.Substring(0, 64) }
+                $pname = $parts[1].Trim()
+                if ($cid -and $pname) { $pol[$cid] = $pname }
+            }
+            foreach ($c in $conts) {
+                if ($pol.ContainsKey($c.id)) { $c['restart_policy'] = $pol[$c.id] }
+            }
+        }
+    } catch { }
+
+    # Writable-layer disk per container. Sizes make the daemon walk layers, so
+    # this pass is separate and its failure only costs the Disk column.
+    try {
+        $sizes = @{}
+        foreach ($ln in (Invoke-Docker @('ps', '-a', '-s', '--no-trunc', '--format', "{{.ID}}`t{{.Size}}") 8).Lines) {
+            $ln = "$ln"
+            if (-not $ln.Trim()) { continue }
+            $parts = $ln -split "`t", 2
+            if ($parts.Count -lt 2) { continue }
+            $cid = $parts[0].Trim()
+            if ($cid.Length -gt 64) { $cid = $cid.Substring(0, 64) }
+            $b = ConvertTo-Bytes $parts[1]
+            if ($null -ne $b) { $sizes[$cid] = $b }
+        }
+        foreach ($c in $conts) {
+            if ($sizes.ContainsKey($c.id)) { $c['disk_bytes'] = $sizes[$c.id] }
+        }
+    } catch { }
+
+    $running = @($conts | Where-Object { $_.state -eq 'running' }).Count
+
+    # One stats pass for RAM/CPU%. `docker stats` blocks ~1.5s to sample; the
+    # cap in Invoke-Docker is what keeps a wedged daemon from sinking the whole
+    # probe, so a timeout here degrades silently to a missing RAM column.
+    if ($running -gt 0) {
+        try {
+            $stats = @{}
+            foreach ($ln in (Invoke-Docker @('stats', '--no-stream', '--format', '{{json .}}') 8).Lines) {
+                $ln = "$ln".Trim()
+                if (-not $ln) { continue }
+                try { $s = $ln | ConvertFrom-Json } catch { continue }
+                if ($s.Name) { $stats["$($s.Name)"] = $s }
+            }
+            foreach ($c in $conts) {
+                if (-not $stats.ContainsKey($c.name)) { continue }
+                $s = $stats[$c.name]
+                # RAM comes from docker-stats' MemUsage — the only memory figure
+                # the Docker CLI exposes. probe.py moved to the Engine API's
+                # anon+shmem derivation (which needs the daemon socket), but the
+                # issue's "Docker CLI only, no SDK" contract rules that out here:
+                # a stock Windows box doesn't hand PowerShell the named pipe. So
+                # a container with a large mapped file reads higher here than it
+                # would on Linux — the alternative was no RAM column at all.
+                $mb = ConvertTo-Bytes "$($s.MemUsage)"
+                if ($null -ne $mb) { $c['mem_bytes'] = $mb }
+                $pct = "$($s.CPUPerc)".TrimEnd('%')
+                if ($pct -match '^-?[\d.]+$') { $c['cpu_pct'] = [double]$pct }
+            }
+        } catch { }
+    }
+
+    # Same problem rule as probe.py: unhealthy, restarting, or a non-zero exit.
+    $problems = 0
+    foreach ($c in $conts) {
+        # ToLowerInvariant, not ToLower: the latter folds through the thread's
+        # culture, so on tr-TR "RESTARTING" becomes "restartıng" (dotless i).
+        $st = "$($c.status)".ToLowerInvariant()
+        if ($st -like '*unhealthy*') { $problems++ }
+        elseif ($c.state -eq 'restarting') { $problems++ }
+        # Case-sensitive on the raw status, matching probe.py's `"Exited (0)"
+        # not in status`.
+        elseif ($c.state -eq 'exited' -and "$($c.status)" -cnotmatch 'Exited \(0\)') { $problems++ }
+    }
+
+    $out['docker'] = @{
+        available  = $true
+        containers = @($conts)
+        summary    = @{ total = $conts.Count; running = $running; problems = $problems }
+    }
+    return $out
+}
+
 function Read-OllamaModels {
     $api = 'http://127.0.0.1:11434'
     $host_name = $env:COMPUTERNAME
@@ -576,6 +778,7 @@ Merge @{ os = $oshw.os; hw = $oshw.hw }
 Merge (Read-Net)
 Merge (Read-Sec)
 Merge (Read-Services)
+Merge (Read-Docker)
 $merged.disks    = (Read-Disks)
 $merged.hostname = $env:COMPUTERNAME
 
