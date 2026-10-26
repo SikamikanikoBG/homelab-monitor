@@ -792,7 +792,7 @@
     ],
     "read": [
       {
-        "description": "Every host in the fleet with headline vitals (the hub first). Start here.",
+        "description": "Start here. Every host: online, CPU, RAM, disks, containers; plus `attention`, the active events the dashboard's Overview shows. One call covers the fleet.",
         "host_scope": "fleet",
         "kind": "read",
         "name": "list_hosts",
@@ -804,7 +804,7 @@
         }
       },
       {
-        "description": "Full System/Network/Security inventory of one host, including its Docker containers and systemd services.",
+        "description": "Full System/Network/Security inventory of one host, including its Docker containers and systemd services. Large: use it when one host needs a closer look.",
         "host_scope": "arg",
         "kind": "read",
         "name": "get_host",
@@ -949,7 +949,7 @@
         }
       },
       {
-        "description": "Folder-size treemap of a path on the hub (largest folders first).",
+        "description": "Folder-size treemap of a path on the hub (largest folders first). Slow and deep: only to find what fills a disk the overview showed nearly full, or when asked.",
         "host_scope": "hub",
         "kind": "read",
         "name": "scan_disk",

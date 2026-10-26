@@ -17,6 +17,7 @@
     "cost_cap_day": "2.00",
     "cost_cap_run": "0.50",
     "cost_cap_task_day": "1.00",
+    "currency": "$",
     "default_model": "",
     "default_provider_id": "",
     "gpu_busy_util_pct": "85",

@@ -78,10 +78,11 @@ def _scan_disk(path="/", rescan=False):
 
 
 READ_TOOLS = [
-    ToolSpec("list_hosts", "Every host in the fleet with headline vitals (the hub first). Start here.",
+    ToolSpec("list_hosts", "Start here. Every host: online, CPU, RAM, disks, containers; plus `attention`, "
+             "the active events the dashboard's Overview shows. One call covers the fleet.",
              _obj(), _call("list_hosts"), host_scope="fleet"),
     ToolSpec("get_host", "Full System/Network/Security inventory of one host, including its Docker "
-             "containers and systemd services.",
+             "containers and systemd services. Large: use it when one host needs a closer look.",
              _obj({"name": _HOST}, ["name"]), _call("get_host"), host_scope="arg", host_arg="name"),
     ToolSpec("get_snapshot", "The hub's live overview: GPU, host, problem containers and failed services.",
              _obj(), _call("get_snapshot"), host_scope="hub"),
@@ -99,7 +100,8 @@ READ_TOOLS = [
              _obj({"range": _RANGE}), _call("get_gpu"), host_scope="hub"),
     ToolSpec("get_history", "Charted time series of the hub (GPU, CPU, RAM, load, temperatures).",
              _obj({"range": _RANGE}), _call("get_history"), host_scope="hub"),
-    ToolSpec("scan_disk", "Folder-size treemap of a path on the hub (largest folders first).",
+    ToolSpec("scan_disk", "Folder-size treemap of a path on the hub (largest folders first). Slow and deep: "
+             "only to find what fills a disk the overview showed nearly full, or when asked.",
              _obj({"path": {"type": "string", "maxLength": 512, "default": "/"},
                    "rescan": {"type": "boolean", "default": False}}), _scan_disk, host_scope="hub"),
     ToolSpec("get_ai_models", "Loaded model servers, their VRAM and callers.",

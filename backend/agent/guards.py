@@ -17,6 +17,7 @@ ERROR_STREAK_LIMIT = 3
 REPEAT_POINTER_MIN_CHARS = 600
 RESULT_CAP_CHARS = 12000
 AGED_VIEW_CHARS = 600
+PREV_RUN_VIEW_CHARS = 2500      # the previous run's results stay readable for a follow-up (UAT-1)
 COMPRESS_TO = 0.5
 
 
@@ -45,9 +46,20 @@ class Watch:
     started: float = field(default_factory=time.monotonic)
     steps: list = field(default_factory=list)
     model_calls: int = 0
-    tokens: int = 0
+    tokens: int = 0            # tokens the model really read and wrote in this run (see add_usage)
+    last_context: int = 0
     error_streak: int = 0
     empty_replies: int = 0
+
+    def add_usage(self, prompt, completion):
+        """Count what each call ADDS, not the whole conversation re-sent every step
+        (UAT-1, as Jarvis2 counts processed tokens): the first call's prompt, then
+        only the growth since the previous call (the new tool results), plus
+        everything written. Ten calls over the same 8k prompt are ~10k of work,
+        not 80k; a runaway loop still trips the budget because it keeps adding."""
+        prompt, completion = int(prompt or 0), int(completion or 0)
+        self.tokens += max(0, prompt - self.last_context) + completion
+        self.last_context = prompt + completion
 
     def record(self, rec):
         """The error streak counts the SAME failing call in a row (alpha #10):
@@ -71,7 +83,7 @@ def budget_exceeded(w):
     if b.get("max_seconds") and time.monotonic() - w.started >= float(b["max_seconds"]):
         return "it ran out of time (%d s)" % int(b["max_seconds"])
     if b.get("max_tokens") and w.tokens >= int(b["max_tokens"]):
-        return "it used its token budget (%d)" % int(b["max_tokens"])
+        return "it read and wrote its token budget (%d tokens)" % int(b["max_tokens"])
     return None
 
 
@@ -116,12 +128,12 @@ def _size(m):
     return len(m.get("content") or "") + len(json.dumps(m.get("tool_calls") or [], default=str))
 
 
-def aged(m):
+def aged(m, keep=AGED_VIEW_CHARS):
     c = m.get("content") or ""
-    if len(c) <= AGED_VIEW_CHARS:
+    if len(c) <= keep:
         return m
-    return dict(m, content=c[:AGED_VIEW_CHARS] + "\n[older result shortened to save room: %d characters left out]"
-                % (len(c) - AGED_VIEW_CHARS))
+    return dict(m, content=c[:keep] + "\n[older result shortened to save room: %d characters left out]"
+                % (len(c) - keep))
 
 
 def compress_old_tool_results(messages, budget_chars):

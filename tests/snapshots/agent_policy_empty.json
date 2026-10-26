@@ -790,6 +790,108 @@
     "catalogue_version": 1,
     "controls_enabled": true,
     "default_mode": "passive",
+    "effective_rules": {
+      "lab1": {
+        "container.restart": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.set_restart_policy": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.start": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.stop": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_build_cache": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_dangling_images": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_stopped_containers": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "journal.vacuum": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "ollama.remove_model": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "ollama.unload_model": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "service.restart": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "service.start": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        }
+      },
+      "local": {
+        "container.restart": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.set_restart_policy": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.start": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "container.stop": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_build_cache": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_dangling_images": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "docker.prune_stopped_containers": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "journal.vacuum": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "ollama.remove_model": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "ollama.unload_model": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "service.restart": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        },
+        "service.start": {
+          "rule": "deny",
+          "unattended_unlocked": false
+        }
+      }
+    },
     "hosts": [
       {
         "capabilities": [
@@ -815,6 +917,7 @@
         "os": "linux"
       }
     ],
+    "preset": "",
     "protected": [],
     "rules": {},
     "watched_paths": {}

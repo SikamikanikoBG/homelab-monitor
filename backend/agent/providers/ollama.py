@@ -51,7 +51,7 @@ class OllamaAdapter:
             opts["num_ctx"] = int(req.num_ctx)
         p = {"model": req.model, "messages": to_ollama_messages(req.system, req.messages),
              "stream": True, "options": opts}
-        if req.tools:
+        if req.tools and not req.no_tools:
             p["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                             "parameters": t["parameters"]}} for t in req.tools]
         return p

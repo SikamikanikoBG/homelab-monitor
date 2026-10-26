@@ -141,7 +141,9 @@ class TestGuards(LoopCase):
         d = self.run_detail(rid)
         self.assertEqual(d["run"]["status"], "budget_exhausted")
         self.assertIn("3 steps", d["run"]["status_reason"])
-        self.assertEqual(len(self.adapter.requests), 3)
+        # three working calls, then one tool-less call to write the answer (UAT-1)
+        self.assertEqual(len(self.adapter.requests), 4)
+        self.assertEqual([q.no_tools for q in self.adapter.requests], [False, False, False, True])
 
     def test_repeated_failure_refused_then_error_streak(self):
         self.script(*[{"tool_calls": [call("get_host", name="ghost")]} for _ in range(6)])

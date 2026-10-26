@@ -85,10 +85,12 @@ class AgentOn:
         self.env.start()
         self.client = app.app.test_client()
         self.csrf = login(self.client)
-        from backend.agent import runs
+        from backend.agent import runs, state
         runs.use_inline(True)
+        # The title/follow-up call after a chat answer would take the next
+        # scripted turn; the tests that cover it switch it back on.
+        state.put({"chat_extras": "0"})
         if enable:
-            from backend.agent import state
             state.put({"enabled": "1"})
         return self
 

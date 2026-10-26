@@ -61,6 +61,8 @@ class AnthropicAdapter:
         if req.tools:
             p["tools"] = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
                           for t in req.tools]
+            if req.no_tools:
+                p["tool_choice"] = {"type": "none"}
         return p
 
     def abort(self):

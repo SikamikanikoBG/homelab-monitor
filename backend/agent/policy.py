@@ -32,6 +32,37 @@ MODES = ("off", "passive", "active")
 RULES = ("deny", "ask", "allow")
 DEFAULT_MODE = "passive"
 
+# The permission presets the setup offers (UAT-1). A preset is the default for
+# every host and action without an explicit row, so hosts added later follow
+# it too; the owner's per-host edits are explicit rows and win. "low_risk" is
+# the rule for low-risk actions that need no root; unattended runs still only
+# do those under the rate limit (decide() below), whatever the preset says.
+PRESETS = {
+    "look": {"mode": "passive", "rule": "deny"},
+    "ask": {"mode": "active", "rule": "ask"},
+    "small": {"mode": "active", "rule": "ask", "low_risk": "allow"},
+}
+
+
+def preset():
+    p = state.get("policy_preset") or ""
+    return p if p in PRESETS else ""
+
+
+def default_mode():
+    p = PRESETS.get(preset())
+    return p["mode"] if p else DEFAULT_MODE
+
+
+def default_rule(action_id):
+    p = PRESETS.get(preset())
+    if not p:
+        return "deny"
+    a = catalog.get(action_id) or {}
+    if p.get("low_risk") and a.get("risk") == "low" and not a.get("sudo"):
+        return p["low_risk"]
+    return p["rule"]
+
 
 @dataclass
 class Decision:
@@ -173,11 +204,36 @@ def protected_reason(host, kind, name, model_base_url=None):
 
 def rule_for(host, action_id, rules=None):
     r = (rules if rules is not None else store.action_rules()).get(host, {}).get(action_id)
-    return (r or {}).get("rule", "deny"), bool((r or {}).get("unattended_unlocked"))
+    if not r:
+        return default_rule(action_id), False
+    return r.get("rule", "deny"), bool(r.get("unattended_unlocked"))
 
 
 def mode_for(host, modes=None):
-    return (modes if modes is not None else store.host_modes()).get(host, DEFAULT_MODE)
+    return (modes if modes is not None else store.host_modes()).get(host) or default_mode()
+
+
+def effective_rules(hosts, rules=None):
+    """{host: {action: {rule, unattended_unlocked}}} for every non-probe action,
+    the preset filling in what the owner hasn't set."""
+    rules = rules if rules is not None else store.action_rules()
+    out = {}
+    for h in hosts:
+        for a in catalog.actions():
+            if catalog.is_probe(a):
+                continue
+            rule, unlocked = rule_for(h, a["id"], rules)
+            out.setdefault(h, {})[a["id"]] = {"rule": rule, "unattended_unlocked": unlocked}
+    return out
+
+
+def apply_preset(name, actor=None):
+    """Make `name` the policy of every host: explicit rows go, the preset is the default."""
+    if name not in PRESETS:
+        raise ValueError(name)
+    store.policy_clear()
+    state.put({"policy_preset": name}, actor=actor)
+    store.admin_log("policy_preset", name, {"hosts": ports.host_names()}, actor=actor)
 
 
 def decide(host, action_id, params, *, attended, run_mode="act", task_actions=None, approved=False,
@@ -188,10 +244,14 @@ def decide(host, action_id, params, *, attended, run_mode="act", task_actions=No
     mode = mode_for(host)
     if host not in ports.host_names():
         return Decision("deny", "unknown_host")
-    if mode != "off" and host != "local" and not ports.host_block(host):
-        # Before its first poll after a hub restart we don't know the host's OS
-        # or tools yet; say so instead of "not available here" (alpha #27).
-        return Decision("deny", "host_not_ready")
+    if mode != "off" and host != "local":
+        if ports.host_reach(host)["state"] == "offline":
+            # The hub knows it's down: say so, with since when (UAT-1), not "try again in a minute".
+            return Decision("deny", "host_offline")
+        if not ports.host_block(host):
+            # Before its first poll after a hub restart we don't know the host's OS
+            # or tools yet; say so instead of "not available here" (alpha #27).
+            return Decision("deny", "host_not_ready")
     errs = catalog.check_params(a, params)
     fam = os_family(host)
     sup = catalog.supported(a, host, fam) and requires_met(a, host)
@@ -218,6 +278,7 @@ HINTS = {
     "bad_params": "The request had invalid parameters.",
     "unsupported_on_host": "\"{title}\" isn't available on {host} (wrong OS, or the tool it needs isn't there).",
     "unknown_host": "There is no host called {host}.",
+    "host_offline": "{host} is offline{since}, so it can't be checked now. list_hosts shows its last known state.",
     "host_not_ready": "{host} hasn't reported in since the hub started, so I can't check it yet. Try again in a minute.",
     "unknown_action": "That action isn't in the catalogue.",
     "controls_disabled": "Controls are off for the whole dashboard (ENABLE_CONTROLS=0), so every action is refused.",
@@ -242,4 +303,25 @@ HINTS = {
 def hint(reason, host, action_id, params=None, why=None):
     a = catalog.get(action_id) or {"title": action_id}
     _, target = catalog.target_of(a, params or {}) if catalog.get(action_id) else ("", "")
-    return HINTS.get(reason, reason).format(host=host, title=a["title"], target=target or host, why=why or "")
+    since = ""
+    if reason == "host_offline":
+        since = _since_text(ports.host_reach(host))
+    return HINTS.get(reason, reason).format(host=host, title=a["title"], target=target or host, why=why or "",
+                                            since=since)
+
+
+def _since_text(reach):
+    """' since 2026-10-24 18:02 (Europe/Sofia)' in the hub's zone, plus the last poll error."""
+    out = ""
+    if reach.get("since"):
+        from datetime import datetime
+        from backend.agent import cron
+        tz = state.tz()
+        try:
+            out = " since " + datetime.fromtimestamp(int(reach["since"]), cron.zone(tz)).strftime("%Y-%m-%d %H:%M") + \
+                " (%s)" % tz
+        except Exception:
+            out = ""
+    if reach.get("error"):
+        out += " — last error: %s" % str(reach["error"])[:120]
+    return out

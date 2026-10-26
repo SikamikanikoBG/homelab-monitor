@@ -18,7 +18,18 @@
 
 const AG_TABS = ['overview', 'gpu', 'costs', 'containers', 'services', 'host', 'disks', 'diskio', 'network',
   'security', 'uptime', 'models', 'benchmarks', 'experiments', 'hosts', 'agent'];
-const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'policy', 'models'];
+const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'settings'];
+const AG_SETTINGS = ['models', 'policy'];
+// The suggestion chips: a short declared list (texts live in the locale files).
+// The third field names what the lab needs for the question to make sense (from its data).
+const AG_SUGGEST = [['agent.sug.disks', 'How are my disks?'], ['agent.sug.wrong', 'Anything wrong right now?'],
+  ['agent.sug.gpu', 'What is using the GPU?', 'gpu'], ['agent.sug.clean', 'What can I clean up?'],
+  ['agent.sug.containers', 'Which containers use the most memory?', 'docker']];
+const AG_ICON_PATH = '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>';
+const AG_ICON = '<svg class="ag-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + AG_ICON_PATH + '</svg>';
+const AG_ICON_SM = AG_ICON.replace('ag-ic', 'ag-ic sm');
+const AG_CHECK = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>';
+const AG_PLUS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 const AG_SCHEDULES = [['0 3 * * *', 'Daily · 03:00'], ['0 8 * * *', 'Daily · 08:00'], ['30 7 * * *', 'Daily · 07:30'],
   ['0 9 * * *', 'Daily · 09:00'], ['0 3 * * 0', 'Weekly · Sun 03:00'], ['0 4 * * 0', 'Weekly · Sun 04:00'],
   ['0 5 * * 0', 'Weekly · Sun 05:00'], ['0 2 * * 6', 'Weekly · Sat 02:00'], ['0 8 * * 1', 'Weekly · Mon 08:00'],
@@ -28,6 +39,7 @@ const AG = {
   presets: [], approvals: [], tasks: [], templates: [], policy: null, runs: [], runSel: null, runDetail: null,
   streaming: {}, chipOpen: {}, stopping: {}, widgetOpen: false, widgetConv: null, pollTimer: null, refetchTimer: null,
   lastEvent: 0, filters: {}, policyHost: null, autoView: 'templates', settings: null, listOpen: false,
+  setup: null, overview: null, runOpen: {}, setSec: 'models', wiz: null, homeTimer: null, wizFocused: false,
 };
 
 function agT(k, f) { return (typeof I18N !== 'undefined' && I18N.t) ? I18N.t(k, f) : f; }
@@ -56,32 +68,76 @@ function agDeepLink(href) {
 }
 
 /** Model text → safe HTML: escape everything, then a small markdown subset. */
+/** Model text → safe HTML: escape everything, then a small markdown subset
+ *  (paragraphs, headings, lists, tables, bold, italics, code, internal links). */
 function agMarkdown(text) {
   const src = agEsc(text || '');
   const inline = s => s
     .replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, (_, b) => '<b>' + b + '</b>')
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, (_, p, x) => p + '<i>' + x + '</i>')
     .replace(/\[([^\]\n]{1,80})\]\((#[a-z]+(?:\?host=[A-Za-z0-9_.\-]{1,128})?)\)/g,
       (all, label, href) => agDeepLink(href) ? '<a href="' + href + '" data-ag-link="' + href + '">' + label + '</a>' : all)
     .replace(/(^|[\s(])(#[a-z]+(?:\?host=[A-Za-z0-9_.\-]{1,128})?)(?=$|[\s).,;:!?])/g,
-      (all, pre, href) => agDeepLink(href) ? pre + '<a href="' + href + '" data-ag-link="' + href + '">' + href + '</a>' : all);
+      (all, pre, href) => agDeepLink(href) ? pre + '<a href="' + href + '" data-ag-link="' + href + '">' + agEsc(agLinkLabel(href)) + '</a>' : all);
+  const row = l => /^\s*\|.*\|\s*$/.test(l);
+  const sep = l => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
   const out = [];
-  let list = null;
-  for (const line of src.split('\n')) {
-    const li = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/.exec(line);
-    if (li) {
-      if (!list) { list = []; }
-      list.push('<li>' + inline(li[1]) + '</li>');
+  let list = null, tag = 'ul', code = null;
+  const flush = () => { if (list) { out.push('<' + tag + '>' + list.join('') + '</' + tag + '>'); list = null; } };
+  const lines = src.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {                       // a fenced block: shown as written, never parsed
+      if (code === null) { flush(); code = []; } else { out.push('<pre class="ag-pre"><code>' + code.join('\n') + '</code></pre>'); code = null; }
       continue;
     }
-    if (list) { out.push('<ul>' + list.join('') + '</ul>'); list = null; }
+    if (code !== null) { code.push(line); continue; }
+    if (row(line) && i + 1 < lines.length && sep(lines[i + 1])) {
+      flush();
+      const head = cells(line), body = [];
+      i += 2;
+      while (i < lines.length && row(lines[i])) { body.push(cells(lines[i])); i++; }
+      i--;
+      out.push('<div class="ag-tbl"><table><thead><tr>' + head.map(h => '<th>' + inline(h) + '</th>').join('') +
+        '</tr></thead><tbody>' + body.map(r => '<tr>' + head.map((_, k) => '<td>' + inline(r[k] || '') + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table></div>');
+      continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push('<hr>'); continue; }
+    const h = /^\s*#{1,4}\s+(.*)$/.exec(line);
+    if (h) { flush(); out.push('<h4>' + inline(h[1]) + '</h4>'); continue; }
+    const ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (ul || ol) {
+      const t = ol ? 'ol' : 'ul';
+      if (list && tag !== t) flush();
+      if (!list) { list = []; tag = t; }
+      list.push('<li>' + inline((ul || ol)[1]) + '</li>');
+      continue;
+    }
+    flush();
     if (line.trim()) out.push('<p>' + inline(line) + '</p>');
   }
-  if (list) out.push('<ul>' + list.join('') + '</ul>');
+  flush();
+  if (code !== null) out.push('<pre class="ag-pre"><code>' + code.join('\n') + '</code></pre>');
   return out.join('');
 }
 
+/** An internal link's text: the page's name (and host), not "#disks". */
+function agLinkLabel(href) {
+  const l = agDeepLink(href);
+  if (!l) return href;
+  const name = agT('nav.' + l.tab, l.tab.charAt(0).toUpperCase() + l.tab.slice(1));
+  return l.host ? name + ' · ' + l.host : name;
+}
+
 /** What the page context the widget sends with a question looks like. */
+/** The dashboard's UI language (the agent's fallback reply language). */
+function agUiLang() {
+  return (typeof I18N !== 'undefined' && I18N.locale) || (typeof navigator !== 'undefined' && navigator.language) || 'en';
+}
+
 function agContext() {
   const tab = (typeof TAB !== 'undefined') ? TAB : null;
   const host = (typeof CURRENT_HOST !== 'undefined') ? CURRENT_HOST : null;
@@ -144,6 +200,13 @@ function agWhenFull(ts) {
   return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Who started a run, in words: our own actor ids are kind:id. */
+function agActorLabel(actor) {
+  const kind = String(actor || '').split(':')[0];
+  return { session: agT('agent.actor.you', 'you'), open: agT('agent.actor.you', 'you'), bearer: agT('agent.actor.key', 'an API key'),
+    internal: agT('agent.actor.system', 'the hub'), scheduler: '', chat: '' }[kind] || '';
+}
+
 function agTriggerLabel(t) {
   return { chat: agT('agent.trig.chat', 'chat'), schedule: agT('agent.trig.schedule', 'schedule'), manual: agT('agent.trig.manual', 'run now'),
     dry_run: agT('agent.trig.dry_run', 'dry run') }[t] || t;
@@ -179,8 +242,11 @@ async function agBoot() {
   const r = await agApi('/api/agent/status');
   if (!r.ok) return;
   AG.status = r.body;
+  if (typeof NAV_ICON !== 'undefined' && !NAV_ICON.agent) NAV_ICON.agent = AG_ICON_PATH;
   if (!TABS.some(t => t.id === 'agent')) {
-    TABS.push({ id: 'agent', label: 'Agent', charts: false, zone: 'agents' });
+    // First in the AI group (approved mockup), where the models already live.
+    const at = TABS.findIndex(t => t.zone === 'ai');
+    TABS.splice(at < 0 ? TABS.length : at, 0, { id: 'agent', label: 'Agent', charts: false, zone: 'ai' });
   }
   if (!document.querySelector('section[data-tab="agent"]')) {
     const anchor = document.querySelector('section[data-tab="overview"]');
@@ -193,12 +259,13 @@ async function agBoot() {
   }
   buildNav();
   agWatchNav();
-  agPaintBadge();
   agMountWidget();
   document.addEventListener('hl:tab', e => agOnTab(e.detail));
   document.addEventListener('hl:agent', e => { let ev = null; try { ev = JSON.parse(e.detail); } catch (x) { return; } agOnEvent(ev); });
   window.addEventListener('hashchange', agOnHash);
   setInterval(agHeartbeat, 1500);
+  await agHomeRefresh();
+  agPaintBadge();
   const want = (typeof INITIAL_TAB !== 'undefined') ? INITIAL_TAB : '';
   if (String(want).startsWith('agent')) agOpenFromHash('#' + want);
   else if (agDeepLink('#' + want) && agDeepLink('#' + want).host) agFollowLink('#' + want);
@@ -214,11 +281,13 @@ function agWatchNav() {
 
 function agPaintBadge() {
   const n = (AG.status && AG.status.pending_approvals) || 0;
+  const fresh = AG.setup ? !AG.setup.done : !(AG.status && AG.status.enabled);
   const row = document.querySelector('.nrow[data-t="agent"]');
   if (row) {
     let b = row.querySelector('.ag-badge');
-    if (n && !b) { b = document.createElement('span'); b.className = 'ag-badge'; row.appendChild(b); }
-    if (b) { if (n) b.textContent = String(n); else b.remove(); }
+    const text = fresh ? agT('agent.new_badge', 'NEW') : n ? String(n) : '';
+    if (text && !b) { b = document.createElement('span'); b.className = 'ag-badge'; row.appendChild(b); }
+    if (b) { if (text) { b.textContent = text; b.classList.toggle('new', fresh); } else b.remove(); }
   }
   const fb = document.querySelector('.ag-fab .ag-badge');
   if (fb) { fb.textContent = String(n); fb.hidden = !n; }
@@ -235,13 +304,18 @@ function agOnHash() {
 function agOpenFromHash(hash) {
   const parts = String(hash).replace(/^#/, '').split('/');
   if (parts[1] === 'run' && parts[2]) { AG.view = 'activity'; AG.runSel = parts[2]; }
+  else if (parts[1] === 'policy' || parts[1] === 'models') { AG.view = 'settings'; AG.setSec = parts[1]; }
+  else if (parts[1] === 'routines' || parts[1] === 'auto') AG.view = 'auto';
+  else if (parts[1] === 'setup') { agSetupOpen(); return; }
   else if (parts[1] && AG_VIEWS.indexOf(parts[1]) >= 0) AG.view = parts[1];
   if (TAB !== 'agent') showTab('agent'); else agRender();
 }
 
 function agOnTab(id) {
+  document.body.classList.toggle('ag-tab-on', id === 'agent');
   agSyncFab();
   if (id === 'agent') agRender();
+  if (id === 'overview') agHomeRefresh();
 }
 
 async function agRefreshStatus() {
@@ -255,6 +329,7 @@ function agOnEvent(ev) {
   if (ev.type === 'text') { agPaintStreaming(ev.run_id); return; }
   if (need.status) agRefreshStatus();
   if (need.conv || need.approvals || need.tasks || need.runs) agScheduleRefetch(need);
+  if ((need.approvals || need.runs) && typeof TAB !== 'undefined' && TAB === 'overview') agHomeSoon();
 }
 
 function agScheduleRefetch(need) {
@@ -263,7 +338,11 @@ function agScheduleRefetch(need) {
   AG.refetchTimer = setTimeout(async () => {
     const n = AG.pendingNeed || {};
     AG.pendingNeed = null; AG.refetchTimer = null;
-    if (n.conv) { await agLoadConv(AG.convId); if (AG.widgetConv && AG.widgetConv !== AG.convId) await agLoadWidgetConv(); }
+    if (n.conv) {
+      await agLoadConv(AG.convId);
+      if (AG.widgetConv && AG.widgetConv !== AG.convId) await agLoadWidgetConv();
+      if ((TAB === 'agent' && AG.view === 'chat') || AG.widgetOpen) await agLoadConvs();   // a new title arrives after the answer
+    }
     if (n.approvals || n.conv) await agLoadApprovals();
     if (n.tasks && AG.view === 'auto') await agLoadTasks();
     if (n.runs && AG.view === 'activity') await agLoadRuns();
@@ -296,61 +375,34 @@ async function agRender(soft) {
   const root = agRoot();
   if (!root) return;
   const st = AG.status || {};
-  if (!st.password_set) {
-    root.innerHTML = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.title', 'AI agent')) + '</div><p>' +
-      agEsc(agT('agent.need_pw', 'The agent can look at your lab and, where you allow it, act. Because of that it only runs behind a login. Set a dashboard password first.')) +
-      '</p><button class="ag-btn pri" id="ag-go-sec">' + agEsc(agT('agent.go_security', 'Set a password')) + '</button></div>';
-    root.querySelector('#ag-go-sec').onclick = () => { showTab('alerts'); if (typeof setSettingsPane === 'function') setSettingsPane('security'); };
-    return;
-  }
-  if (!soft || !root.querySelector('.ag-tabs')) {
-    root.innerHTML = '<div class="ag-tabs" role="tablist">' + AG_VIEWS.map(v => {
-      const label = { chat: agT('agent.v.chat', 'Chat'), auto: agT('agent.v.auto', 'Automations'),
-        approvals: agT('agent.v.approvals', 'Approvals'), activity: agT('agent.v.activity', 'Activity'),
-        policy: agT('agent.v.policy', 'Agent policy'), models: agT('agent.v.models', 'Models & keys') }[v];
-      return '<button role="tab" data-agv="' + v + '" class="' + (AG.view === v ? 'on' : '') + '">' + agEsc(label) +
-        (v === 'approvals' ? '<span class="ag-badge" hidden></span>' : '') + '</button>';
-    }).join('') + '</div><div id="ag-view"></div>';
+  if (!soft || !root.querySelector('.ag-head')) {
+    const label = { chat: agT('agent.v.chat', 'Chat'), auto: agT('agent.v.routines', 'Routines'), approvals: agT('agent.v.approvals', 'Approvals'),
+      activity: agT('agent.v.activity', 'Activity'), settings: agT('agent.v.settings', 'Settings') };
+    root.innerHTML = '<div class="ag-head"><h2>' + AG_ICON + agEsc(agT('agent.title_short', 'Agent')) + '</h2><div class="ag-seg" role="tablist">' + AG_VIEWS.map(v =>
+      '<button type="button" role="tab" data-agv="' + v + '" aria-selected="' + (AG.view === v ? 'true' : 'false') + '" class="' + (AG.view === v ? 'on' : '') + '">' + agEsc(label[v]) +
+      (v === 'approvals' ? '<span class="ag-badge" hidden></span>' : '') + '</button>').join('') + '</div><span class="ag-headnote" id="ag-headnote"></span></div><div id="ag-view"></div>';
     root.querySelectorAll('[data-agv]').forEach(b => b.onclick = () => { AG.view = b.dataset.agv; agRender(); });
     agPaintBadge();
   }
+  root.querySelectorAll('[data-agv]').forEach(b => { const on = b.dataset.agv === AG.view; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
   const view = root.querySelector('#ag-view');
-  if (!st.enabled && AG.view !== 'models' && AG.view !== 'policy') {
-    view.innerHTML = agEnableCard();
-    agWireEnable(view);
+  if ((!st.password_set || !st.enabled) && AG.view !== 'settings') {
+    view.innerHTML = agSetupCard();
+    agWireSetupCard(view);
     return;
   }
   if (!soft) await agLoadView();
+  const note = root.querySelector('#ag-headnote'); if (note) note.textContent = agHeadNote();
   ({ chat: agRenderChat, auto: agRenderAuto, approvals: agRenderApprovals, activity: agRenderActivity,
-    policy: agRenderPolicy, models: agRenderModels })[AG.view](view);
-}
-
-function agEnableCard() {
-  return '<div class="ag-card" style="max-width:640px"><div class="ag-h">' + agEsc(agT('agent.enable_h', 'Switch the agent on')) + '</div><p>' +
-    agEsc(agT('agent.enable_p', 'When it is on you can chat with your lab and run automations. New hosts start Passive (read only) and every action starts at Deny until you change it under Agent policy; switching the agent off and on again keeps the policy you set.')) +
-    '</p>' + (AG.status && !AG.status.has_provider ? '<p class="ag-mut">' + agEsc(agT('agent.enable_model', 'It needs a model too: pick one under Models & keys.')) + '</p>' : '') +
-    '<div class="ag-row"><button class="ag-btn pri" id="ag-enable">' + agEsc(agT('agent.enable_btn', 'Enable the agent')) + '</button>' +
-    '<button class="ag-btn" id="ag-to-models">' + agEsc(agT('agent.v.models', 'Models & keys')) + '</button></div></div>';
-}
-
-function agWireEnable(root) {
-  const b = root.querySelector('#ag-enable');
-  if (b) b.onclick = async () => {
-    const r = await agApi('/api/agent/enable', 'POST', { enabled: true });
-    if (!r.ok) { agToast('critical', r.body.message || 'Failed'); return; }
-    await agRefreshStatus(); agRender();
-  };
-  const m = root.querySelector('#ag-to-models');
-  if (m) m.onclick = () => { AG.view = 'models'; agRender(); };
+    settings: agRenderSettings })[AG.view](view);
 }
 
 async function agLoadView() {
-  if (AG.view === 'chat') { await Promise.all([agLoadConvs(), agLoadApprovals(), agLoadModelChoices(), agLoadPolicy(), agLoadTasks()]); if (AG.convId) await agLoadConv(AG.convId); }
+  if (AG.view === 'chat') { await Promise.all([agLoadConvs(), agLoadApprovals(), agLoadModelChoices(), agLoadPolicy()]); if (AG.convId) await agLoadConv(AG.convId); }
   if (AG.view === 'auto') await Promise.all([agLoadTasks(), agLoadTemplates(), agLoadModelChoices(), agLoadPolicy()]);  // model choices load settings too
-  if (AG.view === 'approvals') await agLoadApprovals();
+  if (AG.view === 'approvals') await Promise.all([agLoadApprovals(), agLoadPolicy()]);
   if (AG.view === 'activity') { await Promise.all([agLoadRuns(), agLoadPolicy(), agLoadTasks()]); if (AG.runSel) await agLoadRun(AG.runSel); }
-  if (AG.view === 'policy') await agLoadPolicy();
-  if (AG.view === 'models') await Promise.all([agLoadModels(true), agLoadSettings()]);
+  if (AG.view === 'settings') await Promise.all([agLoadPolicy(), agLoadModels(AG.setSec === 'models'), agLoadSettings()]);
 }
 
 // ── loaders ──────────────────────────────────────────────────────────────────
@@ -391,13 +443,10 @@ async function agLoadModels(discover) {
 function agModelOptions(selected) {
   const prov = {};
   AG.providers.forEach(p => { prov[p.id] = p; });
-  const opts = AG.models.filter(m => prov[m.provider_id] && m.tools !== 'no').map(m => {
+  return AG.models.filter(m => prov[m.provider_id] && m.tools !== 'no').map(m => {
     const v = m.provider_id + '|' + m.model;
-    const p = prov[m.provider_id];
-    const tag = p.local ? agT('agent.local', 'local') : agT('agent.cloud', 'cloud');
-    return '<option value="' + agEsc(v) + '"' + (v === selected ? ' selected' : '') + '>' + agEsc(m.model + ' · ' + p.label + ' (' + tag + ')') + '</option>';
-  });
-  return opts.join('');
+    return '<option value="' + agEsc(v) + '"' + (v === selected ? ' selected' : '') + '>' + agEsc(m.model + ' · ' + prov[m.provider_id].label) + '</option>';
+  }).join('');
 }
 
 function agDefaultModel() {
@@ -410,35 +459,24 @@ function agDefaultModel() {
 function agRenderChat(view) {
   const hasModel = AG.models.some(m => m.tools !== 'no');
   const convs = AG.convs.filter(c => c.origin === 'chat');
-  const tasks = AG.convs.filter(c => c.origin === 'task').slice(0, 15);
-  const pend = AG.approvals;
-  const modes = {};
-  (AG.policy ? AG.policy.hosts : []).forEach(h => { modes[h.host] = h.mode; });
-  const nextRuns = AG.tasks.filter(t => t.enabled && t.next_fire).sort((a, b) => a.next_fire - b.next_fire).slice(0, 5);
+  const tasks = AG.convs.filter(c => c.origin === 'task').slice(0, 12);
   const kept = agSaveInput('ag');
-  view.innerHTML = '<div class="ag-cols' + (AG.listOpen ? ' show-list' : '') + '">' +
-    '<div class="ag-convs"><button class="ag-btn sm pri" id="ag-new">' + agEsc(agT('agent.new_chat', '+ New chat')) + '</button>' +
-    convs.map(c => '<button class="ag-conv' + (c.id === AG.convId ? ' on' : '') + '" data-cid="' + agEsc(c.id) + '">' + agEsc(c.title || agT('agent.untitled', 'New chat')) + '<small>' + agEsc(agWhen(c.updated_at)) + '</small></button>').join('') +
-    (tasks.length ? '<div class="ag-h" style="margin:10px 0 4px">' + agEsc(agT('agent.auto_runs', 'Automation runs')) + '</div>' +
-      tasks.map(c => '<button class="ag-conv' + (c.id === AG.convId ? ' on' : '') + '" data-cid="' + agEsc(c.id) + '">' + agEsc(c.title || '') + '<small>' + agEsc(agWhen(c.updated_at)) + ' · ' + agEsc(c.last_status || '') + '</small></button>').join('') : '') +
-    '</div>' +
-    '<div class="ag-chatcol"><div class="ag-phonebar"><button class="ag-btn sm" id="ag-list">' + agEsc(agT('agent.chats', '☰ Chats')) + '</button>' +
-    '<button class="ag-btn sm pri" id="ag-new2">' + agEsc(agT('agent.new_chat', '+ New chat')) + '</button></div>' +
-    '<div class="ag-msgs" id="ag-msgs" aria-live="polite"></div>' + agComposer('ag', hasModel) + '</div>' +
-    '<div class="ag-rail"><div><div class="ag-h">' + agEsc(agT('agent.pending', 'Pending approvals')) + (pend.length ? ' <span class="ag-badge">' + pend.length + '</span>' : '') + '</div>' +
-    (pend.length ? pend.slice(0, 6).map(a => agApprovalCard(a, true)).join('') : '<p class="ag-mut">' + agEsc(agT('agent.none', 'None')) + '</p>') + '</div>' +
-    '<div><div class="ag-h">' + agEsc(agT('agent.fleet_access', 'Fleet access')) + '</div><div class="ag-mini">' +
-    Object.keys(modes).map(h => '<div class="r"><span class="ag-mono">' + agEsc(h) + '</span><span class="ag-sp"></span>' + agModePill(modes[h]) + '</div>').join('') +
-    '</div><a href="#agent/policy" class="ag-mut" style="font-size:12px">' + agEsc(agT('agent.edit_policy', 'Edit policy →')) + '</a></div>' +
-    '<div><div class="ag-h">' + agEsc(agT('agent.next_runs', 'Next runs')) + '</div><div class="ag-mini">' +
-    (nextRuns.length ? nextRuns.map(t => '<div class="r">' + agEsc(t.name) + '<span class="ag-sp"></span><span class="ag-mono ag-mut">' + agEsc(agWhen(t.next_fire)) + '</span></div>').join('') : '<span class="ag-mut">' + agEsc(agT('agent.none', 'None')) + '</span>') +
-    '</div></div></div></div>';
+  const bucket = { today: agT('agent.today', 'Today'), yesterday: agT('agent.yesterday', 'Yesterday'), earlier: agT('agent.earlier', 'Earlier') };
+  const row = c => '<button type="button" class="ag-conv' + (c.id === AG.convId ? ' on' : '') + '" data-cid="' + agEsc(c.id) + '" title="' + agEsc(agWhenFull(c.updated_at)) + '">' + agEsc(c.title || agT('agent.untitled', 'New chat')) + '</button>';
+  view.innerHTML = '<div class="ag-chat' + (AG.listOpen ? ' show-list' : '') + '">' +
+    '<aside class="ag-convs" aria-label="' + agEsc(agT('agent.chats_aria', 'Conversations')) + '"><button type="button" class="ag-btn ag-newchat" id="ag-new">' + AG_PLUS + agEsc(agT('agent.new_chat_btn', 'New chat')) + '</button>' +
+    agGroupConvs(convs, Date.now()).map(([k, cs]) => '<div class="ag-glabel">' + agEsc(bucket[k]) + '</div>' + cs.map(row).join('')).join('') +
+    (convs.length ? '' : '<p class="ag-mut ag-small">' + agEsc(agT('agent.no_chats', 'Your chats will show here.')) + '</p>') +
+    (tasks.length ? '<div class="ag-glabel">' + agEsc(agT('agent.routine_runs', 'Routine runs')) + '</div>' + tasks.map(row).join('') : '') +
+    '</aside>' +
+    '<div class="ag-chatcol"><div class="ag-phonebar"><button type="button" class="ag-btn sm" id="ag-list">' + agEsc(agT('agent.chats', '☰ Chats')) + '</button><span class="ag-sp"></span>' +
+    '<button type="button" class="ag-btn sm" id="ag-new2">' + AG_PLUS + agEsc(agT('agent.new_chat_btn', 'New chat')) + '</button></div>' +
+    '<div class="ag-msgs" id="ag-msgs" aria-live="polite"></div>' + agComposer('ag', hasModel) + '</div></div>';
   const fresh = async () => { AG.convId = null; AG.detail = null; AG.listOpen = false; agRender(true); };
   view.querySelector('#ag-new').onclick = fresh;
   view.querySelector('#ag-new2').onclick = fresh;
   view.querySelector('#ag-list').onclick = () => { AG.listOpen = true; agRender(true); };
   view.querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => { AG.convId = b.dataset.cid; AG.listOpen = false; await agLoadConv(AG.convId); agRender(true); });
-  agWireApprovalButtons(view);
   agPaintMessages(view.querySelector('#ag-msgs'), AG.detail, hasModel);
   agWireComposer(view, 'ag', () => AG.convId, id => { AG.convId = id; }, () => null);
   agRestoreInput('ag', kept);
@@ -450,12 +488,14 @@ function agModePill(mode) {
 }
 
 function agComposer(prefix, hasModel) {
-  return '<div class="ag-composer"><div style="display:grid;gap:6px;flex:1;min-width:0">' +
-    '<select class="ag-modelsel" id="' + prefix + '-model" aria-label="' + agEsc(agT('agent.model', 'Model')) + '">' + agModelOptions(agDefaultModel()) + '</select>' +
-    '<textarea id="' + prefix + '-ta" rows="2" aria-label="' + agEsc(agT('agent.message', 'Message')) + '" placeholder="' + agEsc(agT('agent.ask_ph', 'Ask about your homelab…')) + '"' + (hasModel ? '' : ' disabled') + '></textarea>' +
-    '<div class="ag-err" id="' + prefix + '-err" role="alert"></div></div>' +
-    '<div style="display:grid;gap:6px"><button class="ag-btn" id="' + prefix + '-stop" hidden>' + agEsc(agT('agent.stop', 'Stop')) + '</button>' +
-    '<button class="ag-btn pri" id="' + prefix + '-send"' + (hasModel ? '' : ' disabled') + '>' + agEsc(agT('agent.send', 'Send')) + '</button></div></div>';
+  return '<div class="ag-composer"><div class="ag-cbox">' +
+    '<label class="ag-vh" for="' + prefix + '-ta">' + agEsc(agT('agent.message', 'Message')) + '</label>' +
+    '<textarea id="' + prefix + '-ta" rows="2" placeholder="' + agEsc(agT('agent.ask_ph', 'Ask about your lab…')) + '"' + (hasModel ? '' : ' disabled') + '></textarea>' +
+    '<div class="ag-crow"><label class="ag-modelpill"><span class="ag-vh">' + agEsc(agT('agent.model', 'Model')) + '</span>' +
+    '<select id="' + prefix + '-model">' + agModelOptions(agDefaultModel()) + '</select></label><span class="ag-sp"></span>' +
+    '<button type="button" class="ag-btn" id="' + prefix + '-stop" hidden>' + agEsc(agT('agent.stop', 'Stop')) + '</button>' +
+    '<button type="button" class="ag-btn pri" id="' + prefix + '-send"' + (hasModel ? '' : ' disabled') + '>' + agEsc(agT('agent.send', 'Send')) + '</button></div>' +
+    '<div class="ag-err" id="' + prefix + '-err" role="alert"></div></div></div>';
 }
 
 /** Keep what the user is typing (and the picked model) across a repaint. */
@@ -506,7 +546,7 @@ function agWireComposer(root, prefix, getConv, setConv, getContext) {
     }
     const [pid, model] = String((sel && sel.value) || '').split('|');
     const r = await agApi('/api/agent/conversations/' + encodeURIComponent(cid) + '/messages', 'POST',
-      { text, provider_id: pid || undefined, model: model || undefined, context: getContext() });
+      { text, provider_id: pid || undefined, model: model || undefined, context: Object.assign({}, getContext() || {}, { lang: agUiLang() }) });
     send.disabled = false;
     if (!r.ok) { say(r.body.message || r.body.error || agT('agent.failed', 'Something went wrong.')); return; }
     say('');
@@ -539,64 +579,66 @@ function agChatItems(detail) {
 function agChipLabel(c) {
   const host = c.args.host || c.args.name || '';
   const ok = c.result ? !/^(not allowed|not permitted|error|not run)/.test(c.result.content || '') : null;
-  return { text: (ok === null ? '… ' : ok ? '✓ ' : '✕ ') + c.name.replace(/__/g, '.') + (host ? ' · ' + host : ''), bad: ok === false };
+  return { text: (ok === null ? '… ' : ok ? '✓ ' : '✕ ') + agToolLabel(c.name) + (host ? ' · ' + host : ''), bad: ok === false };
 }
 
 function agPaintMessages(box, detail, hasModel) {
   if (!box) return;
   if (!hasModel) {
-    box.innerHTML = '<div class="ag-empty"><p>' + agEsc(agT('agent.no_model', 'No model is set up yet. The agent can use a local model (Ollama, vLLM, llama.cpp, LM Studio) or a cloud one with your own key.')) +
-      '</p><button class="ag-btn pri" data-agjump="models">' + agEsc(agT('agent.pick_model', 'Pick a model')) + '</button></div>';
-    box.querySelector('[data-agjump]').onclick = () => { AG.view = 'models'; agRender(); };
+    box.innerHTML = '<div class="ag-empty"><h3>' + agEsc(agT('agent.no_model_h', 'Pick a model first')) + '</h3><p>' + agEsc(agT('agent.no_model', 'No model is set up yet. The agent can use a local model (Ollama, vLLM, llama.cpp, LM Studio) or a cloud one with your own key.')) +
+      '</p><button class="ag-btn pri" data-agsetup="1">' + agEsc(agT('agent.setup_go', 'Set it up')) + '</button></div>';
+    box.querySelector('[data-agsetup]').onclick = () => agSetupOpen();
     return;
   }
-  if (!detail) {
-    box.innerHTML = '<div class="ag-empty">' + agEsc(agT('agent.empty_chat', 'Ask anything about your lab — "why is my server slow?", "what is using the GPU?", "restart web on lab1".')) + '</div>';
+  if (!detail || !(detail.messages || []).length) {
+    box.innerHTML = '<div class="ag-empty ag-hello">' + AG_ICON + '<h3>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</h3><p>' +
+      agEsc(agT('agent.hello_p', 'Ask about your machines in plain words. It looks before it answers, and only acts where you allow it.')) + '</p>' +
+      '<div class="ag-sugs">' + agSuggestChips() + '</div></div>';
+    agWireSuggestions(box);
     return;
   }
-  const items = agChatItems(detail);
   const runs = {};
   (detail.runs || []).forEach(r => { runs[r.id] = r; });
+  const groups = agRunGroups(detail);
+  const lastRun = groups.length ? groups[groups.length - 1].run_id : null;
   let html = '';
-  const lastOf = {};
-  items.forEach((it, i) => { if (it.run_id) lastOf[it.run_id] = i; });
-  const factsAfter = i => {
-    const it = items[i], r = it && runs[it.run_id];
-    return r && lastOf[r.id] === i && r.status !== 'running' && r.status !== 'queued' ? agRunFacts(r) : '';
-  };
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (it.kind === 'user') { html += '<div class="ag-msg u">' + agEsc(it.text) + '</div>' + factsAfter(i); continue; }
-    let inner = '';
-    if (it.chips.length) {
-      inner += '<div class="ag-chips">' + it.chips.map(c => {
-        const l = agChipLabel(c);
-        return '<button class="ag-chip' + (AG.chipOpen[c.id] ? ' open' : '') + (l.bad ? ' bad' : '') + '" data-chip="' + agEsc(c.id) + '">' + agEsc(l.text) + '</button>';
-      }).join('') + '</div>';
-      for (const c of it.chips) {
-        if (AG.chipOpen[c.id]) inner += '<div class="ag-chipbody">' + agEsc(agPretty(c)) + '</div>';
-        if (c.card) inner += agApprovalCard(c.card, false);
+  for (const g of groups) {
+    const r = runs[g.run_id] || null;
+    if (g.user != null) html += '<div class="ag-msg u">' + agEsc(g.user) + '</div>';
+    let a = '';
+    if (g.chips.length) {
+      const open = !!AG.runOpen[g.run_id];
+      a += '<button type="button" class="ag-work" data-work="' + agEsc(g.run_id || '') + '" aria-expanded="' + (open ? 'true' : 'false') + '">' + AG_ICON_SM +
+        '<span>' + agEsc(agWorkLine(r, g.chips.length)) + '</span><span class="ag-caret" aria-hidden="true">›</span></button>';
+      if (open) {
+        a += '<div class="ag-steps">' + g.chips.map(c => {
+          const l = agChipLabel(c);
+          return '<button type="button" class="ag-chip' + (AG.chipOpen[c.id] ? ' open' : '') + (l.bad ? ' bad' : '') + '" data-chip="' + agEsc(c.id) + '">' + agEsc(l.text) + '</button>' +
+            (AG.chipOpen[c.id] ? '<div class="ag-chipbody">' + agEsc(agPretty(c)) + '</div>' : '');
+        }).join('') + '</div>';
       }
     }
-    if (it.text) inner += agMarkdown(it.text);
-    if (inner) html += '<div class="ag-msg a">' + inner + '</div>';
-    html += factsAfter(i);
-  }
-  for (const r of detail.runs || []) {
-    if (AG.streaming[r.id] && (r.status === 'running' || r.status === 'queued')) {
-      html += '<div class="ag-msg a" data-stream="' + agEsc(r.id) + '">' + agMarkdown(AG.streaming[r.id]) + '</div>';
+    for (const t of g.texts) a += '<div class="ag-md">' + agMarkdown(t) + '</div>';
+    for (const c of g.chips) if (c.card) a += agApprovalCard(c.card, false);
+    const live = r && (r.status === 'running' || r.status === 'queued');
+    if (live && AG.streaming[r.id]) a += '<div class="ag-md" data-stream="' + agEsc(r.id) + '">' + agMarkdown(AG.streaming[r.id]) + '</div>';
+    if (live) a += '<div class="ag-typing" data-typing="' + agEsc(r.id) + '"><span class="ag-dots" aria-hidden="true"></span>' + agEsc(agT('agent.thinking', 'Working…')) + '</div>';
+    if (r && r.status === 'waiting_approval') a += '<div class="ag-typing">' + agEsc(agT('agent.waiting', 'Waiting for your approval above.')) + '</div>';
+    if (r && !live && r.status !== 'waiting_approval') {
+      const ups = g.run_id === lastRun ? (r.followups || []) : [];
+      a += '<div class="ag-foot">' + agFactsChip(r) + '<span class="ag-sp"></span>' +
+        ups.map(q => '<button type="button" class="ag-sug sm" data-sug="' + agEsc(q) + '">' + agEsc(q) + '</button>').join('') + '</div>';
     }
+    if (a) html += '<article class="ag-msg a">' + a + '</article>';
   }
-  const active = agActiveRun(detail);
-  if (active) html += '<div class="ag-typing" data-typing="' + agEsc(active.id) + '">' + agEsc(agT('agent.thinking', 'Working…')) + '</div>';
-  const waiting = (detail.runs || []).find(r => r.status === 'waiting_approval');
-  if (waiting) html += '<div class="ag-typing">' + agEsc(agT('agent.waiting', 'Waiting for your approval above.')) + '</div>';
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.innerHTML = html;
+  box.querySelectorAll('[data-work]').forEach(b => b.onclick = () => { AG.runOpen[b.dataset.work] = !AG.runOpen[b.dataset.work]; agRepaint(); });
   box.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { AG.chipOpen[b.dataset.chip] = !AG.chipOpen[b.dataset.chip]; agRepaint(); });
   box.querySelectorAll('[data-ag-link]').forEach(a => a.onclick = e => { e.preventDefault(); agFollowLink(a.dataset.agLink); });
+  agWireSuggestions(box);
   agWireApprovalButtons(box);
-  if (atBottom || active) box.scrollTop = box.scrollHeight;
+  if (atBottom || agActiveRun(detail)) box.scrollTop = box.scrollHeight;
 }
 
 /** What the run really did with actions, from its audit (alpha pass 2, N1). Never the model's words. */
@@ -624,11 +666,11 @@ function agPretty(c) {
 
 function agPaintStreaming(runId) {
   const el = document.querySelector('[data-stream="' + runId + '"]');
-  if (el) { el.innerHTML = agMarkdown(AG.streaming[runId] || ''); const box = el.parentNode; box.scrollTop = box.scrollHeight; return; }
+  if (el) { el.innerHTML = agMarkdown(AG.streaming[runId] || ''); const box = el.closest('.ag-msgs'); if (box) box.scrollTop = box.scrollHeight; return; }
   const typing = document.querySelector('[data-typing="' + runId + '"]');
   if (typing) {
     const d = document.createElement('div');
-    d.className = 'ag-msg a'; d.dataset.stream = runId; d.innerHTML = agMarkdown(AG.streaming[runId] || '');
+    d.className = 'ag-md'; d.dataset.stream = runId; d.innerHTML = agMarkdown(AG.streaming[runId] || '');
     typing.parentNode.insertBefore(d, typing);
   }
 }
@@ -647,26 +689,23 @@ function agApprovalCard(a, compact) {
   const st = a.status;
   const cls = st === 'pending' ? '' : (st === 'done' || st === 'approved' || st === 'executing') ? ' done' : ' gone';
   const target = Object.values(a.params || {}).join(' ');
-  let html = '<div class="ag-confirm' + cls + '" data-appr="' + agEsc(a.id) + '">';
-  html += '<div class="q">' + agEsc(a.title) + (target ? ' <span class="ag-mono">' + agEsc(target) + '</span>' : '') + ' · <span class="ag-mono">' + agEsc(a.host) + '</span></div>';
+  let html = '<div class="ag-appr' + cls + '" role="group" aria-label="' + agEsc(agT('agent.ap.needed', 'Approval needed')) + '" data-appr="' + agEsc(a.id) + '">';
+  html += '<div class="ag-appr-main"><div class="t">' + agEsc(agT('agent.act.' + a.action, a.title)) + (target ? ' <span class="ag-mono">' + agEsc(target) + '</span>' : '') +
+    ' <span class="ag-mut">·</span> <span class="ag-mono">' + agEsc(a.host) + '</span></div>';
+  html += '<div class="s">' + agEsc({ low: agT('agent.risk.low', 'low risk'), medium: agT('agent.risk.medium', 'medium risk'), high: agT('agent.risk.high', 'high risk') }[a.risk] || a.risk || '') +
+    (a.seen_count > 1 ? ' · ' + agEsc(agTf('agent.seen', 'proposed {n}×', { n: a.seen_count })) : '') +
+    (compact || st !== 'pending' ? '' : ' · ' + agEsc(agT('agent.nothing_runs', 'Nothing runs until you approve.'))) + '</div>';
   if (!compact) {
-    html += '<div class="ag-row">' + agRiskPill(a.risk) + '<span class="ag-pill">' + agEsc(agTf('agent.policy_line', 'policy: {host} {mode} · {rule}', { host: a.host, mode: a.host_mode, rule: a.rule })) + '</span>' +
-      (a.seen_count > 1 ? '<span class="ag-pill">' + agEsc(agTf('agent.seen', 'proposed {n}×', { n: a.seen_count })) + '</span>' : '') + '</div>';
-    if (a.command_preview) html += '<div class="ag-mono ag-mut">' + agEsc(a.command_preview) + '</div>';
-    if (a.rationale) html += '<div class="ag-why"><b>' + agEsc(agT('agent.reasoning', "Agent's reasoning:")) + '</b> ' + agEsc(a.rationale) + '</div>';
-  } else {
-    html += '<div class="ag-row">' + agRiskPill(a.risk) + '</div>';
+    if (a.rationale) html += '<div class="ag-why">' + agEsc(a.rationale) + '</div>';
+    if (a.command_preview) html += '<details class="ag-cmd"><summary>' + agEsc(agT('agent.ap.command', 'Exact command')) + '</summary><code>' + agEsc(a.command_preview) + '</code></details>';
   }
+  html += '</div>';
   if (st === 'pending') {
-    html += '<div class="ag-row"><button class="ag-btn ok sm" data-ap="' + agEsc(a.id) + '">' + agEsc(agT('agent.approve', 'Approve')) + '</button>' +
-      '<button class="ag-btn no sm" data-rj="' + agEsc(a.id) + '">' + agEsc(agT('agent.reject', 'Reject')) + '</button>' +
-      (compact ? '' : '<span class="ag-mut" style="font-size:12px">' + agEsc(agT('agent.nothing_runs', 'Nothing runs until you approve.')) + '</span>') + '</div>';
+    html += '<div class="ag-appr-btns"><button type="button" class="ag-btn" data-rj="' + agEsc(a.id) + '">' + agEsc(agT('agent.reject', 'Reject')) + '</button>' +
+      '<button type="button" class="ag-btn pri" data-ap="' + agEsc(a.id) + '">' + agEsc(agT('agent.approve', 'Approve')) + '</button></div>';
   } else {
-    const label = { done: agT('agent.ap.done', 'Approved and done'), approved: agT('agent.ap.approved', 'Approved'),
-      executing: agT('agent.ap.executing', 'Running…'), rejected: agT('agent.ap.rejected', 'Rejected — nothing was run'),
-      expired: agT('agent.ap.expired', 'Expired — nothing was run'), failed: agT('agent.ap.failed', 'Approved, but it failed'),
-      refused: agT('agent.ap.refused', 'Refused at run time') }[st] || st;
-    html += '<div class="ag-mut" style="font-size:13px"><b>' + agEsc(label) + '</b>' + (a.decided_by ? ' · ' + agEsc(a.decided_by) : '') + (a.result ? ' — ' + agEsc(String(a.result).slice(0, 200)) : '') + '</div>';
+    const who = agActorLabel(a.decided_by);
+    html += '<div class="ag-appr-out">' + agEsc(agApprovalOutcome(a)) + (who ? ' · ' + agEsc(agTf('agent.by', 'by {who}', { who })) : '') + '</div>';
   }
   return html + '</div>';
 }
@@ -692,15 +731,31 @@ function agWireApprovalButtons(root) {
       agApprovalOutcome(r.body.approval || { status: r.body.status }));
     await Promise.all([agLoadApprovals(), agRefreshStatus()]);
     agScheduleRefetch({ conv: true, runs: true });
+    const a = r.body.approval;
+    if (r.ok && a && (a.status === 'approved' || a.status === 'executing')) agToastWhenDone(a);
   });
+}
+
+/** An approval still running when the decision returned: say how it ended once it has. */
+async function agToastWhenDone(a) {
+  for (let i = 0; i < 20; i++) {
+    await new Promise(res => setTimeout(res, 1500));
+    const r = await agApi('/api/agent/runs/' + encodeURIComponent(a.run_id));
+    const cur = r.ok ? (r.body.approvals || []).find(x => x.id === a.id) : null;
+    if (cur && cur.status !== 'approved' && cur.status !== 'executing') {
+      agToast(cur.status === 'done' ? 'ok' : 'warning', agApprovalOutcome(cur));
+      agScheduleRefetch({ conv: true, runs: true, approvals: true });
+      return;
+    }
+  }
 }
 
 function agRenderApprovals(view) {
   const p = AG.approvals;
-  view.innerHTML = p.length ? '<div style="display:grid;gap:10px;max-width:780px">' + p.map(a => agApprovalCard(a, false) +
-    '<div class="ag-mut" style="font-size:12px;margin:-4px 0 4px">' + agEsc(agTf('agent.expires', 'expires {when}', { when: agWhen(a.expires_at) })) +
-    ' · <a href="#agent/run/' + agEsc(a.run_id) + '">' + agEsc(agT('agent.see_run', 'see the run')) + '</a></div>').join('') + '</div>'
-    : '<div class="ag-empty">' + agEsc(agT('agent.no_pending', 'No pending approvals.')) + '</div>';
+  view.innerHTML = p.length ? '<div class="ag-list">' + p.map(a => '<div>' + agApprovalCard(a, false) +
+    '<div class="ag-mut ag-small ag-under">' + agEsc(agTf('agent.expires', 'expires {when}', { when: agWhen(a.expires_at) })) +
+    ' · <a href="#agent/run/' + agEsc(a.run_id) + '">' + agEsc(agT('agent.see_run', 'see the run')) + '</a></div></div>').join('') + '</div>'
+    : agEmpty(agT('agent.no_pending_h', 'Nothing waits for you'), agT('agent.no_pending', 'When the agent proposes an action that needs your OK, it shows here and on the Overview.'));
   agWireApprovalButtons(view);
 }
 
@@ -710,24 +765,24 @@ function agRenderAuto(view) {
   const sub = AG.autoView;
   const head = '<div class="ag-row" style="margin-bottom:10px">' +
     ['templates', 'mine'].map(v => '<button class="ag-btn sm' + (sub === v ? ' pri' : '') + '" data-autov="' + v + '">' +
-      agEsc(v === 'templates' ? agT('agent.auto.templates', 'Templates') : agTf('agent.auto.mine', 'My automations ({n})', { n: AG.tasks.length })) + '</button>').join('') +
+      agEsc(v === 'templates' ? agT('agent.auto.templates', 'Templates') : agTf('agent.auto.mine_r', 'My routines ({n})', { n: AG.tasks.length })) + '</button>').join('') +
     '<button class="ag-btn sm" id="ag-custom">' + agEsc(agT('agent.auto.custom', '+ New from a prompt')) + '</button><span class="ag-sp"></span>' +
-    '<button class="ag-btn sm" id="ag-pause">' + agEsc(AG.status && AG.status.paused ? agT('agent.resume_all', 'Resume automations') : agT('agent.pause_all', 'Pause all automations')) + '</button></div>' +
-    (AG.status && AG.status.paused ? '<div class="ag-banner warn">' + agEsc(agT('agent.paused_note', 'All automations are paused. Nothing scheduled runs until you resume.')) + '</div>' : '');
+    '<button class="ag-btn sm" id="ag-pause">' + agEsc(AG.status && AG.status.paused ? agT('agent.resume_all_r', 'Resume routines') : agT('agent.pause_all_r', 'Pause all routines')) + '</button></div>' +
+    (AG.status && AG.status.paused ? '<div class="ag-banner warn">' + agEsc(agT('agent.paused_note_r', 'All routines are paused. Nothing scheduled runs until you resume.')) + '</div>' : '');
   let body = '';
   if (sub === 'templates') {
     const active = {};
     AG.tasks.forEach(t => { if (t.template_id) active[t.template_id] = t; });
     body = '<div class="ag-grid">' + AG.templates.map(t => {
       const on = active[t.id];
-      return '<div class="ag-tpl' + (on ? ' on' : '') + '"><h4>' + agEsc(agT('agent.tpl.' + t.id + '.name', t.name)) + '</h4><p>' + agEsc(agT('agent.tpl.' + t.id + '.desc', t.desc)) + '</p>' +
-        '<div class="meta"><span class="ag-pill">' + agEsc(agCronLabel(t.default_cron)) + '</span>' +
-        (t.est_tokens ? '<span class="ag-pill" title="' + agEsc(agT('agent.est_t', 'Estimated tokens per run, on your default model')) + '">' +
-          agEsc(agTf('agent.est_short', '~{n}k tokens', { n: Math.round(t.est_tokens / 1000) })) + '</span>' : '') +
-        (t.actions.length ? '<span class="ag-pill medium">' + agEsc(agTf('agent.may_propose', 'may act on {n}', { n: t.actions.length })) + '</span>' : '<span class="ag-pill low">' + agEsc(agT('agent.report_only', 'report only')) + '</span>') +
-        (t.eligible_hosts.length ? '' : '<span class="ag-pill">' + agEsc(agT('agent.no_hosts', 'no matching host')) + '</span>') + '</div>' +
-        '<div class="ag-row">' + (on ? '<span class="ag-pill low">● ' + agEsc(agT('agent.active', 'Active')) + '</span>' : '') +
-        '<button class="ag-btn sm pri" data-act="' + agEsc(t.id) + '">' + agEsc(on ? agT('agent.add_another', 'Add another') : agT('agent.activate', 'Activate')) + '</button></div></div>';
+      const meta = [agCronLabel(t.default_cron), t.est_tokens ? agTf('agent.est_short', '~{n}k tokens', { n: Math.round(t.est_tokens / 1000) }) : '',
+        t.actions.length === 1 ? agT('agent.may_act_1', 'may propose 1 action') : t.actions.length ? agTf('agent.may_act_n', 'may propose {n} actions', { n: t.actions.length }) : agT('agent.report_only2', 'reports only'),
+        t.eligible_hosts.length ? '' : agT('agent.no_hosts', 'no matching host')].filter(Boolean).join(' · ');
+      return '<div class="ag-tpl' + (on ? ' on' : '') + '"><div class="ag-row"><h4 class="ag-grow">' + agEsc(agT('agent.tpl.' + t.id + '.name', t.name)) + '</h4>' +
+        (on ? '<span class="ag-stat ok">' + agEsc(agT('agent.active', 'Active')) + '</span>' : '') + '</div><p>' + agEsc(agT('agent.tpl.' + t.id + '.desc', t.desc)) + '</p>' +
+        '<div class="ag-meta" title="' + agEsc(agT('agent.est_t', 'Estimated tokens per run, on your default model')) + '">' + agEsc(meta) + '</div>' +
+        '<div class="ag-row"><button type="button" class="ag-btn sm" data-act="' + agEsc(t.id) + '"' + (t.eligible_hosts.length ? '' : ' disabled') + '>' +
+        agEsc(on ? agT('agent.add_another', 'Add another') : agT('agent.activate', 'Activate')) + '</button></div></div>';
     }).join('') + '</div>';
   } else {
     body = AG.tasks.length ? '<div class="ag-card" style="padding:4px 6px"><div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.col.name', 'Automation')) + '</th><th>' + agEsc(agT('agent.col.schedule', 'Schedule')) + '</th><th>' +
@@ -744,7 +799,7 @@ function agRenderAuto(view) {
         '<button class="ag-btn sm" data-tdup="' + agEsc(t.id) + '">' + agEsc(agT('agent.duplicate', 'Duplicate')) + '</button>' +
         '<button class="ag-btn sm" data-ttog="' + agEsc(t.id) + '">' + agEsc(t.enabled ? agT('agent.disable', 'Turn off') : agT('agent.enable', 'Turn on')) + '</button>' +
         '<button class="ag-btn sm no" data-tdel="' + agEsc(t.id) + '">' + agEsc(agT('agent.delete', 'Delete')) + '</button></td></tr>').join('') +
-      '</tbody></table></div></div>' : '<div class="ag-empty">' + agEsc(agT('agent.no_tasks', 'No automations yet. Activate a template to start.')) + '</div>';
+      '</tbody></table></div></div>' : '<div class="ag-empty">' + agEsc(agT('agent.no_tasks_r', 'No routines yet. Activate a template to start.')) + '</div>';
   }
   view.innerHTML = head + body;
   view.querySelectorAll('[data-autov]').forEach(b => b.onclick = () => { AG.autoView = b.dataset.autov; agRenderAuto(view); });
@@ -916,8 +971,8 @@ function agRenderActivity(view) {
     '<a class="ag-btn sm" href="/api/agent/audit/export?format=csv' + (qs ? '&' + agEsc(qs) : '') + '" download>' + agEsc(agT('agent.export_csv', 'Export CSV')) + '</a></div>';
   html += '<div class="ag-card" style="padding:4px 6px"><div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.col.when', 'When')) + '</th><th>' + agEsc(agT('agent.col.run', 'Run')) + '</th><th>' +
     agEsc(agT('agent.col.trigger', 'Trigger')) + '</th><th>' + agEsc(agT('agent.model', 'Model')) + '</th><th>' + agEsc(agT('agent.col.tokens', 'Tokens')) + '</th><th>' + agEsc(agT('agent.col.outcome', 'Outcome')) + '</th></tr></thead><tbody>' +
-    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhenFull(r.created_at)) + '</td><td>' + agEsc(r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
-      agEsc(agTriggerLabel(r.trigger)) + (r.actor ? ' · ' + agEsc(r.actor) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mono">' + agEsc((r.prompt_tokens || 0) + ' / ' + (r.completion_tokens || 0)) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
+    (AG.runs.length ? AG.runs.map(r => '<tr class="clk' + (AG.runSel === r.id ? ' sel' : '') + '" data-run="' + agEsc(r.id) + '"><td class="ag-mono">' + agEsc(agWhenFull(r.created_at)) + '</td><td>' + agEsc(r.label || r.title || r.id.slice(0, 8)) + '</td><td class="ag-mut">' +
+      agEsc(agTriggerLabel(r.trigger)) + (agActorLabel(r.actor) ? ' · ' + agEsc(agActorLabel(r.actor)) : '') + '</td><td class="ag-mono ag-mut">' + agEsc(r.model || '—') + '</td><td class="ag-mut">' + agEsc(agTokens((r.prompt_tokens || 0) + (r.completion_tokens || 0))) + (r.cost ? ' · ' + agEsc(r.cost.toFixed(4)) : '') + '</td><td>' + agStatusPill(r.status) + '</td></tr>').join('')
       : '<tr><td colspan="6" class="ag-mut">' + agEsc(agT('agent.no_runs', 'Nothing yet.')) + '</td></tr>') + '</tbody></table></div>' +
     (AG.runsNext ? '<div class="ag-row" style="justify-content:center;margin:6px"><button class="ag-btn sm" id="agf-more">' + agEsc(agT('agent.load_more', 'Load more')) + '</button></div>' : '') + '</div>';
   html += '<div id="ag-rundetail"></div>';
@@ -941,11 +996,12 @@ function agRenderActivity(view) {
 
 /** One line per step: who/what/where/why, readable on a phone. */
 function agStepLine(s) {
-  const tool = (s.tool || '').replace(/__/g, '.');
+  const tool = s.kind === 'model' ? (s.tool || '') : agToolLabel(s.tool);
   const where = s.host ? ' · ' + s.host + (s.target ? ' → ' + s.target : '') : '';
   switch (s.kind) {
-    case 'model': return { tag: agT('agent.k.model', 'model'), text: (s.tokens_in || 0) + '→' + (s.tokens_out || 0) + ' tok' + (s.excerpt ? ' · ' + s.excerpt.slice(0, 160) : (s.args && s.args.tool_calls ? ' · ' + s.args.tool_calls.join(', ') : '')) };
-    case 'tool': return { tag: agT('agent.k.read', 'read'), text: tool + where + ' → ' + (s.result_bytes || 0) + ' B' + (s.ok ? '' : ' ✕') };
+    case 'model': return { tag: agT('agent.k.model', 'model'), text: (s.tokens_in || 0) + '→' + (s.tokens_out || 0) + ' tok' + (s.excerpt ? ' · ' + s.excerpt.replace(/[*`#|]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 160) : (s.args && s.args.tool_calls ? ' · ' + s.args.tool_calls.map(agToolLabel).join(', ') : '')) };
+    case 'meta': return { tag: agT('agent.k.label', 'label'), text: [(s.args || {}).title, ((s.args || {}).followups || []).join(' · ')].filter(Boolean).join(' — ') };
+    case 'tool': return { tag: agT('agent.k.read', 'read'), text: tool + where + (s.ok ? '' : ' ✕') };
     case 'probe_intent': return { tag: agT('agent.k.check', 'check'), text: tool + where };
     case 'probe_result': return { tag: agT('agent.k.check', 'check'), text: tool + where + (s.ok ? ' ✓' : ' ✕') + (s.excerpt ? ' · ' + s.excerpt.slice(0, 160) : '') };
     case 'action_intent': return { tag: agT('agent.k.act', 'act'), text: tool + where + ' · ' + agT('agent.k.policy', 'policy') + ' ' + (s.decision_reason || '') + (s.approval_id ? ' · ' + agT('agent.k.approval', 'approval') + ' ' + s.approval_id.slice(0, 8) : '') };
@@ -956,17 +1012,25 @@ function agStepLine(s) {
   }
 }
 
+/** A step's arguments, folded, as readable lines (not raw JSON). */
+function agArgs(s) {
+  const a = s.args;
+  if (!a || typeof a !== 'object' || s.kind === 'model' || s.kind === 'meta' || !Object.keys(a).length) return '';
+  const lines = Object.entries(a).map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v, null, 1).replace(/\s*\n\s*/g, ' ') : String(v)));
+  return '<details class="ag-args"><summary>' + agEsc(agT('agent.k.details', 'details')) + '</summary><div class="ag-mono">' + lines.map(agEsc).join('<br>') + '</div></details>';
+}
+
 function agPaintRunDetail(box, d) {
   const r = d.run;
   const dur = r.started_at && r.ended_at ? (r.ended_at - r.started_at) + ' s' : '—';
   box.innerHTML = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.run_detail', 'Run detail')) + ' · ' + agEsc(r.title || r.id.slice(0, 8)) + ' ' + agStatusPill(r.status) + '</div>' +
-    '<dl class="ag-kv"><dt>' + agEsc(agT('agent.col.trigger', 'Trigger')) + '</dt><dd>' + agEsc(r.trigger + ' · ' + (r.actor || '') + (r.attended ? '' : ' · ' + agT('agent.unattended', 'unattended'))) + '</dd>' +
-    '<dt>' + agEsc(agT('agent.model', 'Model')) + '</dt><dd class="ag-mono">' + agEsc((r.model || '—') + ' · ' + (r.prompt_tokens || 0) + ' in / ' + (r.completion_tokens || 0) + ' out' + (r.cost ? ' · ' + r.cost.toFixed(4) : '')) + '</dd>' +
+    '<dl class="ag-kv"><dt>' + agEsc(agT('agent.col.trigger', 'Trigger')) + '</dt><dd>' + agEsc(agTriggerLabel(r.trigger) + (agActorLabel(r.actor) ? ' · ' + agActorLabel(r.actor) : '') + (r.attended ? '' : ' · ' + agT('agent.unattended', 'unattended'))) + '</dd>' +
+    '<dt>' + agEsc(agT('agent.model', 'Model')) + '</dt><dd class="ag-mono">' + agEsc((r.model || '—') + ' · ' + agTokens((r.prompt_tokens || 0) + (r.completion_tokens || 0)) + (r.cost ? ' · ' + r.cost.toFixed(4) : '')) + '</dd>' +
     '<dt>' + agEsc(agT('agent.col.mode', 'Mode')) + '</dt><dd>' + agEsc(agModeLabel(r.mode)) + '</dd>' +
     '<dt>' + agEsc(agT('agent.duration', 'Duration')) + '</dt><dd>' + agEsc(dur + ' · ' + (r.steps || 0) + ' ' + agT('agent.steps', 'steps')) + '</dd>' +
     (r.status_reason ? '<dt>' + agEsc(agT('agent.why_ended', 'Why it ended')) + '</dt><dd>' + agEsc(r.status_reason) + '</dd>' : '') + '</dl>' +
     agRunFacts(r) +
-    '<div style="margin-top:10px">' + d.steps.map(s => { const l = agStepLine(s); return '<div class="ag-step"><span class="ag-mono ag-mut">' + agEsc(new Date(s.ts * 1000).toLocaleTimeString()) + '</span><span><b>' + agEsc(l.tag) + '</b> ' + agEsc(l.text) + '</span></div>'; }).join('') + '</div>' +
+    '<div style="margin-top:10px">' + d.steps.map(s => { const l = agStepLine(s); return '<div class="ag-step"><span class="ag-mono ag-mut">' + agEsc(new Date(s.ts * 1000).toLocaleTimeString()) + '</span><span><b>' + agEsc(l.tag) + '</b> ' + agEsc(l.text) + agArgs(s) + '</span></div>'; }).join('') + '</div>' +
     (d.approvals.length ? '<div class="ag-h" style="margin-top:12px">' + agEsc(agT('agent.v.approvals', 'Approvals')) + '</div>' + d.approvals.map(a => agApprovalCard(a, false)).join('') : '') +
     '<div class="ag-row" style="margin-top:10px"><button class="ag-btn sm" id="ag-open-conv">' + agEsc(agT('agent.open_conv', 'Open the conversation')) + '</button>' +
     ((r.status === 'running' || r.status === 'queued' || r.status === 'waiting_approval') ? '<button class="ag-btn sm no" id="ag-stop-run">' + agEsc(agT('agent.stop', 'Stop')) + '</button>' : '') + '</div></div>';
@@ -983,8 +1047,12 @@ function agRenderPolicy(view) {
   if (!p) { view.innerHTML = '<div class="ag-empty">…</div>'; return; }
   if (!AG.policyHost || !p.hosts.some(h => h.host === AG.policyHost)) AG.policyHost = (p.hosts.find(h => h.mode === 'active') || p.hosts[0]).host;
   const H = p.hosts.find(h => h.host === AG.policyHost);
-  const rules = (p.rules || {})[H.host] || {};
-  let html = p.controls_enabled
+  const rules = (p.effective_rules || p.rules || {})[H.host] || {};
+  const pnames = { look: agT('agent.preset.look', 'Look only'), ask: agT('agent.preset.ask', 'Ask me first'), small: agT('agent.preset.small', 'Handle the small stuff') };
+  let html = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.pol.preset', 'For every machine')) + '</div><div class="ag-row"><div class="ag-seg" role="radiogroup" aria-label="' + agEsc(agT('agent.pol.preset', 'For every machine')) + '">' +
+    Object.keys(pnames).map(k => '<button type="button" role="radio" aria-checked="' + (p.preset === k ? 'true' : 'false') + '" class="' + (p.preset === k ? 'on' : '') + '" data-preset="' + k + '">' + agEsc(pnames[k]) + '</button>').join('') + '</div>' +
+    '<span class="ag-mut ag-small">' + agEsc(p.preset ? agT('agent.pol.preset_p', 'Machines you add later follow it too. The tables below change one machine or one action.') : agT('agent.pol.preset_none', 'Custom: set per machine below. Picking one resets every machine to it.')) + '</span></div></div>';
+  html += p.controls_enabled
     ? '<div class="ag-banner">' + agEsc(agT('agent.pol.controls_on', 'Controls are on (ENABLE_CONTROLS=1). Turning them off makes every action Deny, whatever is set here. The manual buttons on the Containers and Services tabs follow ENABLE_CONTROLS only, not this page.')) + '</div>'
     : '<div class="ag-banner warn">' + agEsc(agT('agent.pol.controls_off', 'Controls are off (ENABLE_CONTROLS=0): the agent can read and run read-only checks, but every action is Deny.')) + '</div>';
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.pol.per_box', 'Per box')) + '</div><div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.pol.host', 'Host')) + '</th><th>' +
@@ -992,11 +1060,11 @@ function agRenderPolicy(view) {
     p.hosts.map(h => '<tr><td><span class="ag-mono">' + agEsc(h.host) + '</span><div class="ag-mut" style="font-size:12px">' + agEsc(h.os + (h.capabilities.length ? ' · ' + h.capabilities.join(', ') : '')) + '</div></td><td><div class="ag-tri" data-host="' + agEsc(h.host) + '">' +
       [['off', 'n', agT('agent.mode.off', 'Off')], ['passive', 'p', agT('agent.mode.passive', 'Passive')], ['active', 'y', agT('agent.mode.active', 'Active')]].map(([m, c, l]) => '<button data-mode="' + m + '" class="' + (h.mode === m ? 'on ' + c : '') + '">' + agEsc(l) + '</button>').join('') +
       '</div></td><td class="ag-mut" style="font-size:12px">' + agEsc({ off: agT('agent.pol.off_m', 'The agent cannot see this box'), passive: agT('agent.pol.passive_m', 'Read only'), active: agT('agent.pol.active_m', 'Can act, within the actions you allow') }[h.mode]) + '</td></tr>').join('') +
-    '</tbody></table></div><p class="ag-mut" style="font-size:12px;margin:8px 0 0">' + agEsc(agT('agent.pol.mcp_note', 'New hosts start Passive. Off applies to this in-app agent only; the read-only MCP server still sees the whole fleet.')) + '</p></div>';
+    '</tbody></table></div><p class="ag-mut" style="font-size:12px;margin:8px 0 0">' + agEsc(agT('agent.pol.mcp_note2', 'Off applies to this in-app agent only; the read-only MCP server still sees the whole fleet.')) + '</p></div>';
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.pol.actions_on', 'Allowed actions on')) + ' <select class="ag-modelsel" id="agp-host">' + p.hosts.map(h => '<option' + (h.host === H.host ? ' selected' : '') + '>' + agEsc(h.host) + '</option>').join('') + '</select></div>' +
     (H.mode !== 'active' ? '<div class="ag-banner warn">' + agEsc(agTf('agent.pol.not_active', '{host} is not Active, so none of these run there until you set it Active.', { host: H.host })) + '</div>' : '') +
     '<div class="ag-scrollhint">' + agEsc(agT('agent.swipe', '← swipe the table to see the rules →')) + '</div>' +
-    '<div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.pol.action', 'Action')) + '</th><th>' + agEsc(agT('agent.pol.risk', 'Risk')) + '</th><th>' + agEsc(agT('agent.pol.runs', 'Runs')) + '</th><th>' +
+    '<div class="ag-tw"><table><thead><tr><th>' + agEsc(agT('agent.pol.action', 'Action')) + '</th><th>' + agEsc(agT('agent.pol.risk', 'Risk')) + '</th><th class="ag-wide">' + agEsc(agT('agent.pol.runs', 'Runs')) + '</th><th>' +
     agEsc(agT('agent.pol.in_chat', 'In chat')) + '</th><th>' + agEsc(agT('agent.pol.unattended', 'Unattended')) + '</th></tr></thead><tbody>' +
     p.actions.filter(a => !a.probe).map(a => {
       const cur = rules[a.id] || {};
@@ -1004,7 +1072,7 @@ function agRenderPolicy(view) {
       const un = agUnattended(a, rule, cur.unattended_unlocked);
       const key = H.os === 'windows' ? 'windows' : H.host === 'local' ? 'local' : 'linux';
       const supported = a.targets.indexOf(key) >= 0 && (a.requires || []).every(r => H.capabilities.indexOf(r) >= 0);
-      return '<tr' + (supported ? '' : ' style="opacity:.5"') + '><td>' + agEsc(agT('agent.act.' + a.id, a.title)) + (a.sudo ? ' <span class="ag-pill">root</span>' : '') + '</td><td>' + agRiskPill(a.risk) + '</td><td class="ag-mono ag-mut" style="font-size:12px">' + agEsc(a.preview[key] || agT('agent.pol.na', 'not available here')) + '</td>' +
+      return '<tr' + (supported ? '' : ' style="opacity:.5"') + '><td>' + agEsc(agT('agent.act.' + a.id, a.title)) + (a.sudo ? ' <span class="ag-pill">root</span>' : '') + '</td><td>' + agRiskPill(a.risk) + '</td><td class="ag-mono ag-mut ag-wide" style="font-size:12px">' + agEsc(a.preview[key] || agT('agent.pol.na', 'not available here')) + '</td>' +
         '<td><div class="ag-tri' + (supported ? '' : ' locked') + '" data-action="' + agEsc(a.id) + '">' + [['deny', 'd', agT('agent.rule.deny', 'Deny')], ['ask', 'a', agT('agent.rule.ask', 'Ask')], ['allow', 'y', agT('agent.rule.allow', 'Allow')]].map(([v, c, l]) => '<button data-rule="' + v + '" class="' + (rule === v ? 'on ' + c : '') + '">' + agEsc(l) + '</button>').join('') + '</div></td>' +
         '<td>' + (un.unlockable && rule === 'allow' ? '<button class="ag-btn sm" data-unlock="' + agEsc(a.id) + '" data-on="' + (cur.unattended_unlocked ? '1' : '') + '">' + agEsc(un.text) + '</button>' : '<span class="ag-pill">' + agEsc(un.text) + '</span>') + '</td></tr>';
     }).join('') + '</tbody></table></div><p class="ag-mut" style="font-size:12px;margin:8px 0 0">' + agEsc(agT('agent.pol.unatt_note', 'Unattended runs only do low-risk actions on their own, at most 3 times a day per target. Medium risk waits for approval unless you unlock it here; high risk and anything needing root always waits.')) + '</p></div>';
@@ -1019,6 +1087,13 @@ function agRenderPolicy(view) {
     '<textarea class="ag-field ag-mono" id="agp-paths" rows="3" style="width:100%">' + agEsc(paths.join('\n')) + '</textarea><div class="ag-row" style="margin-top:6px"><button class="ag-btn sm" id="agp-psave">' + agEsc(agT('agent.save', 'Save')) + '</button></div></div>';
   view.innerHTML = html;
   const reload = async () => { await agLoadPolicy(); agRenderPolicy(view); };
+  view.querySelectorAll('[data-preset]').forEach(b => b.onclick = async () => {
+    if (b.dataset.preset === p.preset) return;
+    if (!confirm(agTf('agent.pol.preset_confirm', 'Set every machine to “{p}”? Changes you made per machine or per action are replaced.', { p: pnames[b.dataset.preset] }))) return;
+    const r = await agApi('/api/agent/policy/preset', 'PUT', { preset: b.dataset.preset });
+    if (!r.ok) agToast('critical', r.body.message || 'Failed');
+    reload();
+  });
   view.querySelectorAll('.ag-tri[data-host] button').forEach(b => b.onclick = async () => {
     const host = b.parentNode.dataset.host;
     const r = await agApi('/api/agent/policy/hosts/' + encodeURIComponent(host), 'PUT', { mode: b.dataset.mode });
@@ -1062,12 +1137,29 @@ function agRenderPolicy(view) {
 /** A provider test result in the page's language (#24); errors by kind, never a raw body (#36). */
 function agTestText(t) {
   if (!t) return '';
-  if (t.ok) return agTf('agent.m.models_n', '{n} models', { n: (t.models || []).length || parseInt(t.detail, 10) || 0 });
+  if (t.ok) return agModelsN((t.models || []).length || parseInt(t.detail, 10) || 0);
   const kinds = { auth: agT('agent.err.auth', 'The provider rejected the key (401/403).'), unreachable: agT('agent.err.unreachable', 'The provider can’t be reached.'),
     rate_limited: agT('agent.err.rate_limited', 'The provider is rate-limiting (429).'), server: agT('agent.err.server', 'The provider had an internal error (5xx).'),
     bad_request: agT('agent.err.bad_request', 'The provider refused the request — check the URL.'), timeout: agT('agent.err.timeout', 'The provider took too long to answer.'),
     protocol: agT('agent.err.protocol', 'The answer wasn’t what a model server sends — check the URL.') };
   return kinds[t.error_kind] || t.detail || agT('agent.failed', 'Something went wrong.');
+}
+
+function agModelsN(n) { return n === 1 ? agT('agent.m.models_1', '1 model') : agTf('agent.m.models_n', '{n} models', { n }); }
+
+/** Tokens the way people read them: 950 tokens, 86.5k tokens. */
+function agTokens(n) {
+  n = Number(n) || 0;
+  return n < 1000 ? agTf('agent.tokens', '{n} tokens', { n }) : agTf('agent.tokens', '{n} tokens', { n: (n / 1000).toFixed(n < 100000 ? 1 : 0).replace(/\.0$/, '') + 'k' });
+}
+
+/** A tool or catalogue action by its name in words. */
+function agToolLabel(name) {
+  const id = String(name || '').replace(/__/g, '.');
+  const a = ((AG.policy && AG.policy.actions) || []).find(x => x.id === id);
+  if (a) return agT('agent.act.' + id, a.title);
+  const plain = id.replace(/[._]+/g, ' ').trim();
+  return agT('agent.tool.' + id, plain.charAt(0).toUpperCase() + plain.slice(1));
 }
 
 /** A tool-probe result in the page's language. */
@@ -1080,17 +1172,16 @@ function agProbeText(r) {
 
 function agUseBtn(attr, value, m) {
   if (m && m.tools === 'no') {
-    return '<span class="ag-pill" title="' + agEsc(agT('agent.m.use_no', 'This model answered without calling tools in the test, so the agent can’t look at your lab with it. Pick one marked “tool calls: works”.')) + '">' +
+    return '<span class="ag-stat" title="' + agEsc(agT('agent.m.use_no', 'This model answered without calling tools in the test, so the agent can’t look at your lab with it. Pick one marked “tool calls: works”.')) + '">' +
       agEsc(agT('agent.m.cant_use', 'can’t be used')) + '</span>';
   }
   return '<button class="ag-btn sm' + (attr === 'data-use' ? ' pri' : '') + '" ' + attr + '="' + agEsc(value) + '">' + agEsc(agT('agent.m.use', 'Use')) + '</button>';
 }
 
 function agBadge(m) {
-  const t = { yes: ['ok', agT('agent.badge.tools_yes', 'tool calls: works')], no: ['crit', agT('agent.badge.tools_no', 'no tool calls')], unknown: ['', agT('agent.badge.untested', 'untested')] }[m.tools] || ['', m.tools];
-  let html = '<span class="ag-pill ' + t[0] + '">' + agEsc(t[1]) + '</span>';
-  if (m.tools === 'yes') html += ' <span class="ag-pill ' + (m.multi_step === 'yes' ? 'ok' : m.multi_step === 'no' ? 'warn' : '') + '">' + agEsc(m.multi_step === 'yes' ? agT('agent.badge.multi_yes', 'multi-step: yes') : m.multi_step === 'no' ? agT('agent.badge.multi_no', 'multi-step: weak') : agT('agent.badge.multi_unknown', 'multi-step: ?')) + '</span>';
-  return html;
+  if (m.tools === 'yes') return '<span class="ag-stat ok">' + agEsc(agT('agent.wz.works', 'Works with the agent')) + '</span>';
+  if (m.tools === 'no') return '<span class="ag-stat no">' + agEsc(agT('agent.wz.cant', 'Can\'t be used')) + '</span>';
+  return '<span class="ag-stat">' + agEsc(agT('agent.badge.untested', 'untested')) + '</span>';
 }
 
 function agRenderModels(view) {
@@ -1099,21 +1190,21 @@ function agRenderModels(view) {
   const def = agDefaultModel();
   const byProv = {};
   AG.models.forEach(m => { (byProv[m.provider_id] = byProv[m.provider_id] || []).push(m); });
-  let html = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.agent', 'The agent')) + '</div><div class="ag-row">' +
-    '<label class="ag-row"><input type="checkbox" id="agm-on"' + (st.enabled ? ' checked' : '') + '> ' + agEsc(agT('agent.m.enabled', 'Agent enabled')) + '</label>' +
-    '<label class="ag-row">' + agEsc(agT('agent.m.tz', 'Time zone')) + ' <input class="ag-field ag-mono" id="agm-tz" style="width:180px" value="' + agEsc(s.tz || '') + '" placeholder="' + agEsc(s.tz_effective || 'UTC') + '"></label>' +
-    '<label class="ag-row">' + agEsc(agT('agent.m.cap_day', 'Cloud spend cap per day')) + ' <input class="ag-field" id="agm-cap" style="width:80px" value="' + agEsc(s.cost_cap_day || '') + '"></label>' +
-    '<button class="ag-btn sm" id="agm-save">' + agEsc(agT('agent.save', 'Save')) + '</button></div></div>';
+  let html = '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.general', 'General')) + '</div><div class="ag-form">' +
+    '<label class="ag-switch"><input type="checkbox" id="agm-on"' + (st.enabled ? ' checked' : '') + '> ' + agEsc(agT('agent.m.enabled', 'Agent enabled')) + '</label>' +
+    '<div class="ag-fld"><label for="agm-tz">' + agEsc(agT('agent.m.tz', 'Time zone')) + '</label><input id="agm-tz" value="' + agEsc(s.tz || '') + '" placeholder="' + agEsc(s.tz_effective || 'UTC') + '"></div>' +
+    '<div class="ag-fld"><label for="agm-cap">' + agEsc(agTf('agent.m.cap_day_c', 'Cloud spend cap per day ({c})', { c: s.currency || '$' })) + '</label><input id="agm-cap" inputmode="decimal" value="' + agEsc(s.cost_cap_day || '') + '"></div>' +
+    '<button type="button" class="ag-btn" id="agm-save">' + agEsc(agT('agent.save', 'Save')) + '</button></div></div>';
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.found', 'Found on your lab')) + '</div>' +
-    (AG.discovered.length ? '<div class="ag-tw"><table><tbody>' + AG.discovered.map((d, i) => '<tr><td class="ag-mono">' + agEsc(d.server || d.provider_key) + '</td><td class="ag-mono ag-mut">' + agEsc(d.preset + '@' + d.host) + '</td><td>' +
-      (d.reachable ? '<span class="ag-pill ok">' + agEsc(agTf('agent.m.models_n', '{n} models', { n: d.models.length })) + '</span>' : '<span class="ag-pill">' + agEsc(agT('agent.m.unreachable', 'seen, but not reachable from the hub')) + '</span>') + '</td><td>' +
-      (d.provider_id ? '<span class="ag-pill info">' + agEsc(agT('agent.m.added', 'added')) + '</span>' : '<button class="ag-btn sm pri" data-disc="' + i + '"' + (d.reachable ? '' : ' disabled') + '>' + agEsc(agT('agent.m.add', 'Add')) + '</button>') + '</td></tr>' +
+    (AG.discovered.some(d => !d.provider_id) ? '<div class="ag-tw"><table class="ag-found"><tbody>' + AG.discovered.map((d, i) => d.provider_id ? '' : '<tr><td class="ag-mono">' + agEsc(d.server || d.provider_key) + '</td><td class="ag-mut">' + agEsc(d.host ? agTf('agent.m.on_host', 'on {h}', { h: d.host }) : agTf('agent.m.at_addr', 'at {a}', { a: String(d.base_url || '').replace(/^https?:\/\//, '') })) + '</td><td>' +
+      (d.reachable ? '<span class="ag-stat ok">' + agEsc(agModelsN(d.models.length)) + '</span>' : '<span class="ag-stat">' + agEsc(agT('agent.m.unreachable', 'seen, but not reachable from the hub')) + '</span>') + '</td><td>' +
+      (d.provider_id ? '<span class="ag-stat">' + agEsc(agT('agent.m.added', 'added')) + '</span>' : '<button class="ag-btn sm pri" data-disc="' + i + '"' + (d.reachable ? '' : ' disabled') + '>' + agEsc(agT('agent.m.add', 'Add')) + '</button>') + '</td></tr>' +
       (d.reachable && d.models.length ? '<tr><td colspan="4"><div class="ag-row">' + d.models.slice(0, 12).map(m => {
         const known = d.provider_id ? AG.models.find(x => x.provider_id === d.provider_id && x.model === m) : null;
         return '<span class="ag-row" style="gap:4px"><span class="ag-mono">' + agEsc(m) + '</span>' + (known ? agBadge(known) : '') +
           agUseBtn('data-disc-use', i + '|' + m, known) + '</span>';
       }).join('') + '</div></td></tr>' : '')).join('') + '</tbody></table></div>'
-      : '<p class="ag-mut">' + agEsc(agT('agent.m.none_found', 'No model servers found on your lab. Add Ollama, vLLM, llama.cpp or LM Studio as a custom AI server in Settings → General, or add one by URL below.')) + '</p>') + '</div>';
+      : '<p class="ag-mut">' + agEsc(AG.discovered.length ? agT('agent.m.all_added', 'Every model server found on your lab is added below.') : agT('agent.m.none_found', 'No model servers found on your lab. Add Ollama, vLLM, llama.cpp or LM Studio as a custom AI server in Settings → General, or add one by URL below.')) + '</p>') + '</div>';
   html += AG.providers.map(p => '<div class="ag-card"><div class="ag-h">' + agEsc(p.label) + ' <span class="ag-pill">' + agEsc(p.local ? agT('agent.local', 'local') : agT('agent.cloud', 'cloud')) + '</span>' + (p.experimental ? '<span class="ag-pill warn">' + agEsc(agT('agent.m.experimental', 'experimental')) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" data-ptest="' + agEsc(p.id) + '">' + agEsc(agT('agent.m.test', 'Test & list models')) + '</button><button class="ag-btn sm no" data-pdel="' + agEsc(p.id) + '">' + agEsc(agT('agent.delete', 'Delete')) + '</button></div>' +
     '<div class="ag-mut ag-mono" style="font-size:12px">' + agEsc(p.base_url) + (p.key_set ? ' · ' + agEsc(agT('agent.m.key', 'key')) + ' ' + agEsc(p.key_ref ? p.key_ref : '••••' + (p.key_last4 || '')) : '') + '</div>' +
@@ -1124,7 +1215,7 @@ function agRenderModels(view) {
       return '<tr><td class="ag-mono">' + agEsc(m.model) + (m.context_window ? ' <span class="ag-mut">' + agEsc(Math.round(m.context_window / 1024) + 'k ctx') + '</span>' : '') + '</td><td>' + agBadge(m) + (m.probed_at ? '<div class="ag-mut" style="font-size:12px">' + agEsc(agProbeText(m)) + '</div>' : '') + '</td>' +
         (p.local ? '' : '<td><input class="ag-field" style="width:70px" data-pin="' + agEsc(v) + '" value="' + agEsc(m.price_in || '') + '" placeholder="in/M" title="' + agEsc(agT('agent.m.price_t', 'Price per million tokens, in the Costs tab currency')) + '"> <input class="ag-field" style="width:70px" data-pout="' + agEsc(v) + '" value="' + agEsc(m.price_out || '') + '" placeholder="out/M"></td>') +
         '<td class="ag-row"><button class="ag-btn sm" data-probe="' + agEsc(v) + '">' + agEsc(agT('agent.m.test_model', 'Test')) + '</button>' +
-        (v === def ? '<span class="ag-pill info">' + agEsc(agT('agent.m.default', 'default')) + '</span>' : agUseBtn('data-use', v, m)) + '</td></tr>';
+        (v === def ? '<span class="ag-stat on">' + agEsc(agT('agent.m.in_use', 'In use')) + '</span>' : agUseBtn('data-use', v, m)) + '</td></tr>';
     }).join('') + '</tbody></table></div>' : '') + '</div>').join('');
   const presets = AG.presets;
   html += '<div class="ag-card"><div class="ag-h">' + agEsc(agT('agent.m.add_provider', 'Add a model provider')) + '</div><div class="ag-row">' +
@@ -1245,6 +1336,7 @@ function agSyncFab() {
   if (!fab) return;
   const show = agFabVisible(AG.status, typeof TAB !== 'undefined' ? TAB : '', document.body.classList.contains('display'));
   fab.hidden = !show;
+  document.body.classList.toggle('ag-fab-on', show);
   if (!show && AG.widgetOpen) agCloseWidget();
   agPaintBadge();
 }
@@ -1281,8 +1373,8 @@ function agRenderWidget() {
   const ctx = agContext();
   const hasModel = AG.models.some(m => m.tools !== 'no');
   const kept = agSaveInput('agw');
-  panel.innerHTML = '<div class="ag-ph"><b>' + agEsc(agT('agent.widget_title', 'Ask your homelab')) + '</b>' +
-    (ctx.tab ? '<span class="ag-ctx">' + agEsc(agTf('agent.context', 'context: {tab}{host}', { tab: ctx.tab, host: ctx.host ? ' · ' + ctx.host : '' })) + '</span>' : '') +
+  panel.innerHTML = '<div class="ag-ph">' + AG_ICON_SM + '<b>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</b>' +
+    (ctx.tab ? '<span class="ag-ctx" title="' + agEsc(agT('agent.context_t', 'The question is asked about this page')) + '">' + agEsc(agLinkLabel('#' + ctx.tab) + (ctx.host ? ' · ' + ctx.host : '')) + '</span>' : '') +
     '<span class="ag-sp"></span><button class="ag-btn sm" id="agw-new" title="' + agEsc(agT('agent.new_chat', '+ New chat')) + '">+</button>' +
     '<button class="ag-btn sm" id="agw-open">' + agEsc(agT('agent.open_in_agent', 'Open in Agent')) + '</button>' +
     '<button class="ag-btn sm" id="agw-close" aria-label="' + agEsc(agT('agent.close', 'Close')) + '">✕</button></div>' +
@@ -1298,6 +1390,513 @@ function agRenderWidget() {
   panel.querySelector('#agw-open').onclick = () => { AG.convId = AG.widgetConv; AG.view = 'chat'; agCloseWidget(); showTab('agent'); };
   agWireComposer(panel, 'agw', () => AG.widgetConv, id => { AG.widgetConv = id; }, agContext);
   agRestoreInput('agw', kept);
+}
+
+// ── UAT-1: Overview card, setup wizard ─────────────────────────────────────
+
+function agDayBucket(ts, nowMs) {
+  const d = new Date(ts * 1000), n = new Date(nowMs);
+  const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(n) - day(d)) / 86400000);
+  return diff <= 0 ? 'today' : diff === 1 ? 'yesterday' : 'earlier';
+}
+
+function agGroupConvs(convs, nowMs) {
+  const order = ['today', 'yesterday', 'earlier'];
+  const g = { today: [], yesterday: [], earlier: [] };
+  (convs || []).forEach(c => g[agDayBucket(c.updated_at || c.created_at || 0, nowMs)].push(c));
+  return order.filter(k => g[k].length).map(k => [k, g[k]]);
+}
+
+function agWorkLine(run, nCalls) {
+  const w = (run && run.work) || null;
+  const m = w ? w.machines : null, n = w ? w.lookups : nCalls, s = w ? w.seconds : null;
+  const parts = [];
+  if (m) parts.push(m === 1 ? agT('agent.work.machine1', '1 machine') : agTf('agent.work.machines', '{n} machines', { n: m }));
+  if (n) parts.push(n === 1 ? agT('agent.work.lookup1', '1 look-up') : agTf('agent.work.lookups', '{n} look-ups', { n }));
+  if (s != null && s >= 0) parts.push(agTf('agent.work.secs', '{n} s', { n: s }));
+  return agTf('agent.work.checked', 'Checked {what}', { what: parts.join(' · ') || agT('agent.work.nothing', 'nothing yet') });
+}
+
+function agFactsChip(run) {
+  if (!run || !Array.isArray(run.actions)) return '';
+  const a = run.actions;
+  if (!a.length) return '<span class="ag-fchip">' + agEsc(agT('agent.facts.chip_none', 'No actions proposed')) + '</span>';
+  const pending = a.filter(f => f.outcome === 'pending').length;
+  const ran = a.filter(f => f.outcome === 'ran').length;
+  const bad = a.filter(f => f.outcome === 'failed' || f.outcome === 'refused').length;
+  const parts = [];
+  if (pending) parts.push(pending === 1 ? agT('agent.facts.chip_wait1', '1 action waiting for your approval') : agTf('agent.facts.chip_wait', '{n} actions waiting for your approval', { n: pending }));
+  if (ran) parts.push(ran === 1 ? agT('agent.facts.chip_ran1', '1 action ran') : agTf('agent.facts.chip_ran', '{n} actions ran', { n: ran }));
+  if (bad) parts.push(bad === 1 ? agT('agent.facts.chip_bad1', '1 refused or failed') : agTf('agent.facts.chip_bad', '{n} refused or failed', { n: bad }));
+  if (!parts.length) parts.push(agTf('agent.facts.chip_other', '{n} actions, already decided', { n: a.length }));
+  const title = a.map(f => f.outcome + ': ' + f.title + ' · ' + (f.host || '?') + (f.target ? ' → ' + f.target : '')).join('\n');
+  return (pending ? '<a class="ag-fchip warn" href="#agent/approvals" title="' + agEsc(title) + '">' : '<span class="ag-fchip' + (bad ? ' bad' : '') + '" title="' + agEsc(title) + '">') +
+    agEsc(parts.join(' · ')) + (pending ? '</a>' : '</span>');
+}
+
+function agRunGroups(detail) {
+  const groups = [], byRun = {};
+  for (const it of agChatItems(detail)) {
+    const key = it.run_id || ('_' + groups.length);
+    let g = byRun[key];
+    if (!g || (it.kind === 'user' && g.user != null)) { g = { run_id: it.run_id, user: null, chips: [], texts: [] }; byRun[key] = g; groups.push(g); }
+    if (it.kind === 'user') g.user = it.text;
+    else { g.chips = g.chips.concat(it.chips); if (it.text) g.texts.push(it.text); }
+  }
+  return groups;
+}
+
+/** What the lab has, from the dashboard's own data: a reporting GPU, Docker. */
+function agLabHas(what) {
+  const hosts = (typeof FLEET !== 'undefined' && FLEET && FLEET.hosts) || [];
+  const hh = typeof HH !== 'undefined' ? HH : null;
+  if (what === 'gpu') return !!(hh && hh.now && hh.now.gpu && hh.now.gpu.available) || hosts.some(h => ((h.host && h.host.gpus) || []).length);
+  if (what === 'docker') return !!(hh && hh.docker && (hh.docker.containers || []).length) || hosts.some(h => ((h.host && h.host.docker && h.host.docker.containers) || []).length);
+  return true;
+}
+
+function agSuggestChips() {
+  return AG_SUGGEST.filter(x => !x[2] || agLabHas(x[2])).slice(0, 4).map(([k, f]) => { const q = agT(k, f); return '<button type="button" class="ag-sug" data-sug="' + agEsc(q) + '">' + agEsc(q) + '</button>'; }).join('');
+}
+
+function agWireSuggestions(root) {
+  root.querySelectorAll('[data-sug]').forEach(b => b.onclick = () => {
+    const panel = b.closest('.ag-panel');
+    const prefix = panel ? 'agw' : 'ag';
+    const ta = document.getElementById(prefix + '-ta');
+    const send = document.getElementById(prefix + '-send');
+    if (!ta || !send) return;
+    ta.value = b.dataset.sug;
+    send.click();
+  });
+}
+
+function agHeadNote() {
+  const p = AG.policy;
+  if (!p) return '';
+  const on = p.hosts.filter(h => h.mode === 'active').length;
+  const label = { look: agT('agent.preset.look', 'Look only'), ask: agT('agent.preset.ask', 'Ask me first'), small: agT('agent.preset.small', 'Handle the small stuff') }[p.preset] || agT('agent.preset.custom', 'Custom permissions');
+  return label + ' · ' + (p.preset === 'look' || !on ? agTf('agent.on_n_read', 'reads {n} machines', { n: p.hosts.filter(h => h.mode !== 'off').length }) : agTf('agent.on_n', 'on {n} machines', { n: on }));
+}
+
+function agSetupCard() {
+  return '<div class="ag-card ag-setupcard">' + agInviteHtml(true) + '</div>';
+}
+
+function agWireSetupCard(root) {
+  root.querySelectorAll('[data-agsetup]').forEach(b => b.onclick = () => agSetupOpen());
+}
+
+function agRenderSettings(view) {
+  const names = { models: agT('agent.v.models', 'Models & keys'), policy: agT('agent.v.permissions', 'Permissions') };
+  view.innerHTML = '<div class="ag-subnav" role="tablist">' + AG_SETTINGS.map(s => '<button type="button" role="tab" data-setsec="' + s + '" aria-selected="' + (AG.setSec === s ? 'true' : 'false') + '" class="' + (AG.setSec === s ? 'on' : '') + '">' + agEsc(names[s]) + '</button>').join('') +
+    '<span class="ag-sp"></span><button type="button" class="ag-btn sm" data-agsetup="1">' + agEsc(agT('agent.setup_again', 'Run the setup again')) + '</button></div><div id="ag-setbody"></div>';
+  view.querySelectorAll('[data-setsec]').forEach(b => b.onclick = async () => { AG.setSec = b.dataset.setsec; await agLoadView(); agRenderSettings(view); });
+  agWireSetupCard(view);
+  const body = view.querySelector('#ag-setbody');
+  if (AG.setSec === 'policy') agRenderPolicy(body); else agRenderModels(body);
+}
+
+function agEmpty(h, p, btn) {
+  return '<div class="ag-card ag-empty"><h3>' + agEsc(h) + '</h3>' + (p ? '<p>' + agEsc(p) + '</p>' : '') + (btn || '') + '</div>';
+}
+
+function agHomeSoon() {
+  clearTimeout(AG.homeTimer);
+  AG.homeTimer = setTimeout(agHomeRefresh, 600);
+}
+
+function agHomeMount() {
+  let el = document.getElementById('ag-home');
+  if (el) return el;
+  const bar = document.getElementById('mc-fleetbar');
+  if (!bar) return null;
+  el = document.createElement('section');
+  el.id = 'ag-home';
+  el.className = 'ag-root ag-home';
+  el.setAttribute('aria-label', agT('agent.title_short', 'Agent'));
+  bar.after(el);
+  return el;
+}
+
+/** The dashboard holds "What's new" back while the invitation is up; show it now. */
+function agWhatsNewLater() {
+  try { if (typeof WN_DONE !== 'undefined' && typeof maybeWhatsNew === 'function') { WN_DONE = false; maybeWhatsNew(AG.status && AG.status.version); } } catch (e) { /* the notes are a nicety */ }
+}
+
+function agHomePref(v) {
+  try {
+    if (v === undefined) return localStorage.getItem('hlm.agent.home') || '';
+    localStorage.setItem('hlm.agent.home', v);
+  } catch (e) { /* private window: the card just shows again */ }
+  return v || '';
+}
+
+async function agHomeRefresh() {
+  const s = await agApi('/api/agent/setup' + (AG.setup && AG.setup.done ? '' : '?found=1'));
+  if (!s.ok) return;
+  AG.setup = s.body;
+  if (AG.setup.done) {
+    const [o, m] = await Promise.all([agApi('/api/agent/overview'), agLoadModelChoices()]);
+    if (o.ok) AG.overview = o.body;
+  }
+  agRenderHome();
+  agPaintBadge();
+}
+
+function agHomeState(setup, pref) {
+  if (!setup || !setup.allowed) return 'none';
+  if (setup.done) return 'ask';
+  if (pref === 'hidden') return 'none';
+  if (setup.dismissed || pref === 'folded') return 'strip';
+  return 'invite';
+}
+
+function agInviteHtml(inTab) {
+  const s = AG.setup || {};
+  const step = (n, done, label, extra) => '<li class="' + (done ? 'done' : '') + '"><span class="ag-num">' + (done ? AG_CHECK : n) + '</span>' + agEsc(label) + (extra || '') + '</li>';
+  const found = s.found ? '<span class="ag-found">' + agEsc(s.found === 1 ? agT('agent.found1', '1 found on your network') : agTf('agent.found_n', '{n} found on your network', { n: s.found })) + '</span>' : '';
+  return '<div class="ag-invite"><div class="ag-inv-l"><div class="ag-titlerow">' + AG_ICON + '<h2>' + agEsc(agT('agent.invite_h', 'Your lab can answer you now')) + '</h2></div>' +
+    '<p>' + agEsc(agT('agent.invite_p', 'Ask about your machines in plain words, or let routine clean-ups run on a schedule. It only does what you allow, per machine, and every step is logged.')) + '</p>' +
+    '<ol class="ag-steps3">' + step(1, s.password_set, agT('agent.step.pw', 'Set a password')) + step(2, s.model_ready, agT('agent.step.model', 'Pick a model'), found) +
+    step(3, s.enabled, agT('agent.step.perm', 'Choose what it may do')) + '</ol>' +
+    '<div class="ag-row"><button type="button" class="ag-btn pri lg" data-agsetup="1">' + agEsc(agT('agent.setup_cta', 'Set it up · about a minute')) + '</button>' +
+    (inTab ? '' : '<button type="button" class="ag-btn ghost" id="agh-later">' + agEsc(agT('agent.not_now', 'Not now')) + '</button>') + '</div></div>' +
+    agExampleHtml() + '</div>';
+}
+
+/** The invitation's example: built from this fleet's own data, so it is never
+ *  mistaken for someone else's lab; a plainly labelled sample when there's no data. */
+function agExampleFromFleet(fleet) {
+  const hosts = (fleet && fleet.hosts) || [];
+  if (!hosts.length) return null;
+  const on = hosts.filter(h => h.online || h.is_local), off = hosts.filter(h => !h.online && !h.is_local);
+  let top = null;
+  on.forEach(h => ((h.host && h.host.disks) || []).forEach(d => { if (!top || (d.pct || 0) > top.pct) top = { host: h.label || h.name, mount: d.mount, pct: d.pct || 0, free: d.total && d.used != null ? Math.round(d.total - d.used) : null }; }));
+  if (!top) return null;
+  let a = (top.pct >= 90 ? agT('agent.ex.full', 'One disk needs a clean-up.') : agT('agent.ex.ok', 'Nothing is close to full.')) + ' ' +
+    agTf(top.free != null ? 'agent.ex.top_free' : 'agent.ex.top', 'The fullest is **{h} {m}** at **{p}%**' + (top.free != null ? ' ({f} GB free).' : '.'), { h: top.host, m: top.mount, p: top.pct, f: top.free });
+  if (off.length) a += ' ' + (off.length === 1 ? agTf('agent.ex.off1', '{h} is offline, so I couldn\'t check it.', { h: off[0].label || off[0].name }) : agTf('agent.ex.offn', '{n} machines are offline, so I couldn\'t check them.', { n: off.length }));
+  return { a, w: (on.length === 1 ? agT('agent.work.machine1', '1 machine') : agTf('agent.work.machines', '{n} machines', { n: on.length })) };
+}
+
+function agExampleHtml() {
+  const ex = agExampleFromFleet(typeof FLEET !== 'undefined' ? FLEET : null);
+  return '<div class="ag-inv-r" aria-label="' + agEsc(agT('agent.example', 'Example')) + '"><div class="ag-kicker">' +
+    agEsc(ex ? agT('agent.example_yours', 'Example, from your fleet\'s data') : agT('agent.example_sample', 'Example (a sample lab)')) + '</div>' +
+    '<div class="ag-msg u">' + agEsc(agT('agent.example_q', 'How are my disks?')) + '</div>' +
+    '<div class="ag-exa">' + agMarkdown(ex ? ex.a : agT('agent.example_a', 'Everything is healthy. The fullest is **vader /** at **67%** (291 GB free). ardi **/data** is at 72% and growing about 1 GB a day, so it is the one to watch. Two machines are offline, so I couldn\'t check them.')) + '</div>' +
+    '<div class="ag-work static">' + AG_ICON_SM + '<span>' + agEsc(ex ? agTf('agent.work.checked', 'Checked {what}', { what: ex.w + ' · ' + agT('agent.work.lookup1', '1 look-up') }) : agT('agent.example_w', 'Checked 4 machines · 1 look-up · 6 s')) + '</span></div></div>';
+}
+
+function agRenderHome() {
+  const el = agHomeMount();
+  if (!el) return;
+  const state = agHomeState(AG.setup, agHomePref());
+  el.dataset.state = state;
+  if (state === 'none') { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  if (state === 'invite') {
+    el.innerHTML = '<div class="ag-homecard">' + agInviteHtml(false) + '</div>';
+    el.querySelector('#agh-later').onclick = async () => {
+      if (AG.setup.password_set) { const r = await agApi('/api/agent/setup/dismiss', 'POST', { dismissed: true }); if (r.ok) AG.setup = r.body; }
+      agHomePref('folded');
+      agRenderHome();
+      agWhatsNewLater();
+    };
+  } else if (state === 'strip') {
+    el.innerHTML = '<div class="ag-strip">' + AG_ICON_SM + '<span>' + agEsc(agT('agent.strip', 'Your lab can answer questions — set up the agent in about a minute.')) + '</span><span class="ag-sp"></span>' +
+      '<button type="button" class="ag-btn sm" data-agsetup="1">' + agEsc(agT('agent.setup_go', 'Set it up')) + '</button>' +
+      '<button type="button" class="ag-x" id="agh-hide" aria-label="' + agEsc(agT('agent.hide', 'Hide')) + '">✕</button></div>';
+    el.querySelector('#agh-hide').onclick = () => { agHomePref('hidden'); agRenderHome(); };
+  } else {
+    el.innerHTML = agAskCardHtml();
+    agWireAskCard(el);
+  }
+  el.querySelectorAll('[data-agsetup]').forEach(b => b.onclick = () => agSetupOpen());
+}
+
+function agModelLine(o) {
+  const m = (o && o.model) || {};
+  if (!m.model) return '';
+  return m.model + (m.provider ? ' · ' + m.provider : '') + ' · ' + (m.local ? agT('agent.local_free', 'local · free') : agT('agent.cloud', 'cloud'));
+}
+
+function agAskCardHtml() {
+  const o = AG.overview || { waiting: [], lately: [], pending_count: 0 };
+  const dot = st => st === 'done' ? 'ok' : st === 'waiting_approval' ? 'warn' : st === 'failed' || st === 'refused' ? 'crit' : 'info';
+  const waiting = o.waiting.length ? o.waiting.map(a => '<div class="ag-wait"><div class="ag-grow"><div class="t">' + agEsc(agT('agent.act.' + (a.action || ''), a.title)) +
+      (a.params && Object.keys(a.params).length ? ' ' + agEsc(Object.values(a.params).join(' ')) : '') + ' · ' + agEsc(a.host) + '</div>' +
+      '<div class="s">' + agEsc((a.task ? agTf('agent.from_task', 'From “{t}”', { t: a.task }) + ' · ' : '') + agWhen(a.created_at) + ' · ' + ({ low: agT('agent.risk.low', 'low risk'), medium: agT('agent.risk.medium', 'medium risk'), high: agT('agent.risk.high', 'high risk') }[a.risk] || a.risk)) + '</div></div>' +
+      '<a class="ag-btn sm outline" href="#agent/approvals">' + agEsc(agT('agent.review', 'Review')) + '</a></div>').join('') +
+      (o.pending_count > o.waiting.length ? '<a class="ag-small" href="#agent/approvals">' + agEsc(agTf('agent.more_waiting', '+{n} more', { n: o.pending_count - o.waiting.length })) + '</a>' : '')
+    : '<p class="ag-mut ag-small">' + agEsc(agT('agent.nothing_waits', 'Nothing waits for you.')) + '</p>';
+  const lately = o.lately.length ? o.lately.map(r => '<a class="ag-late" href="#agent/run/' + agEsc(r.run_id) + '"><span class="ag-dot ' + dot(r.status) + '"></span><span class="ag-grow">' +
+      (r.task ? '<b>' + agEsc(r.task) + ':</b> ' : '') + agEsc(r.line || agStatusLabel(r.status)) + '</span><span class="ag-mono ag-mut">' + agEsc(agWhen(r.at)) + '</span></a>').join('')
+    : '<p class="ag-mut ag-small">' + agEsc(o.next && o.next.length ? agTf('agent.next_first', 'No routine has run yet. Next: {t}, {when}.', { t: o.next[0].task, when: agWhen(o.next[0].at) })
+      : o.routines ? agT('agent.no_lately', 'No routine ran in the last day and a half.') : agT('agent.no_routines', 'No routines yet — switch one on under Routines.')) + '</p>';
+  return '<div class="ag-homecard ag-ask"><div class="ag-ask-l"><div class="ag-titlerow">' + AG_ICON + '<h2>' + agEsc(agT('agent.hello', 'Ask your lab')) + '</h2>' +
+    '<span class="ag-mut ag-small">' + agEsc(agModelLine(o)) + '</span></div>' +
+    '<form class="ag-askform" id="agh-form"><label class="ag-vh" for="agh-q">' + agEsc(agT('agent.hello', 'Ask your lab')) + '</label>' +
+    '<input id="agh-q" autocomplete="off" placeholder="' + agEsc(agT('agent.home_ph', 'How are my disks? What is using the GPU? Is anything wrong?')) + '">' +
+    '<button class="ag-btn pri lg" type="submit">' + agEsc(agT('agent.ask', 'Ask')) + '</button></form>' +
+    '<div class="ag-sugs">' + agSuggestChips() + '</div></div>' +
+    '<div class="ag-ask-r"><div class="ag-kicker">' + agEsc(agT('agent.waiting_you', 'Waiting for you')) + '</div>' + waiting +
+    '<div class="ag-kicker" style="margin-top:8px">' + agEsc(agT('agent.lately', 'Lately')) + '</div>' + lately +
+    '<a class="ag-small" href="#agent">' + agEsc(agT('agent.open_agent', 'Open the agent →')) + '</a></div></div>';
+}
+
+function agWireAskCard(el) {
+  const form = el.querySelector('#agh-form');
+  form.onsubmit = e => { e.preventDefault(); const q = el.querySelector('#agh-q').value.trim(); if (q) agAskInWidget(q); };
+  el.querySelectorAll('[data-sug]').forEach(b => b.onclick = () => agAskInWidget(b.dataset.sug));
+}
+
+async function agAskInWidget(text) {
+  AG.widgetConv = null; AG.widgetDetail = null;
+  await agOpenWidget();
+  const ta = document.getElementById('agw-ta'), send = document.getElementById('agw-send');
+  if (!ta || !send) return;
+  ta.value = text;
+  send.click();
+}
+
+function agPwScore(pw) {
+  pw = String(pw || '');
+  if (pw.length < 10) return pw.length ? 1 : 0;
+  // "aaaaaaaaaa" is long but guessable: few different characters weigh it down
+  if (new Set(pw.toLowerCase()).size < 6) return 1;
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter(r => r.test(pw)).length;
+  return Math.min(4, 2 + (pw.length >= 14 ? 1 : 0) + (classes >= 3 ? 1 : 0));
+}
+
+function agPwLabel(score) {
+  return [agT('agent.pw.empty', 'At least 10 characters'), agT('agent.pw.weak', 'Too easy to guess — at least 10 characters, with some variety'),
+    agT('agent.pw.ok', 'Good enough'), agT('agent.pw.good', 'Strong enough'), agT('agent.pw.great', 'Strong')][score];
+}
+
+function agPickModel(models, current) {
+  const ok = (models || []).filter(m => m.tools === 'yes');
+  if (current && ok.some(m => m.provider_id + '|' + m.model === current)) return current;
+  const rec = ok.find(m => m.recommended) || ok[0];
+  return rec ? rec.provider_id + '|' + rec.model : '';
+}
+
+async function agSetupOpen() {
+  const s = await agApi('/api/agent/setup');
+  AG.setup = s.ok ? s.body : (AG.setup || { password_set: false });
+  AG.wizFocused = false;
+  const W = AG.wiz = { step: !AG.setup.password_set ? 1 : !AG.setup.model_ready ? 2 : 3, models: null, probing: {}, choice: '',
+    preset: AG.setup.preset || 'ask', starters: null, picked: null, busy: false, err: '' };
+  if (AG.setup.model_ready && AG.status && AG.status.default) W.choice = AG.status.default.provider_id + '|' + AG.status.default.model;
+  let scrim = document.querySelector('.ag-wizard');
+  if (!scrim) {
+    scrim = document.createElement('div');
+    scrim.className = 'ag-scrim ag-root ag-wizard';
+    document.body.appendChild(scrim);
+    scrim.addEventListener('keydown', e => { if (e.key === 'Escape') agSetupClose(); });
+  }
+  agSetupRender();
+  if (W.step === 2) agSetupModels();
+  if (W.step === 3) agSetupStarters();
+}
+
+function agSetupClose() {
+  const s = document.querySelector('.ag-wizard'); if (s) s.remove();
+  AG.wiz = null;
+  agHomeRefresh();
+  if (TAB === 'agent') agRender();
+}
+
+function agSetupRender() {
+  const scrim = document.querySelector('.ag-wizard'), W = AG.wiz;
+  if (!scrim || !W) return;
+  const names = [agT('agent.wz.secure', 'Secure'), agT('agent.wz.model', 'Model'), agT('agent.wz.perm', 'Permissions')];
+  const stepper = '<div class="ag-stepper">' + names.map((n, i) => '<span class="' + (W.step > i + 1 ? 'done' : W.step === i + 1 ? 'cur' : '') + '"><span class="ag-num">' + (W.step > i + 1 ? AG_CHECK : i + 1) + '</span>' + agEsc(n) + '</span>').join('<span class="ag-line"></span>') + '</div>';
+  let body = '', foot = '';
+  const err = '<div class="ag-err" role="alert">' + agEsc(W.err || '') + '</div>';
+  if (W.step === 1) {
+    body = '<h2>' + agEsc(agT('agent.wz.pw_h', 'First, protect the dashboard')) + '</h2><p class="ag-lead">' + agEsc(agT('agent.wz.pw_p', 'The agent can change things on your machines, so the dashboard needs a password before it switches on. You\'ll be asked for it once per browser.')) + '</p>' +
+      '<div class="ag-fld"><label for="agz-pw">' + agEsc(agT('agent.wz.pw', 'Password')) + '</label><input id="agz-pw" type="password" autocomplete="new-password">' +
+      '<div class="ag-meter" aria-hidden="true"><span></span><span></span><span></span><span></span></div><span class="ag-small ag-mut" id="agz-pwlabel" aria-live="polite">' + agEsc(agPwLabel(0)) + '</span></div>' +
+      '<div class="ag-fld"><label for="agz-pw2">' + agEsc(agT('agent.wz.pw2', 'Type it again')) + '</label><input id="agz-pw2" type="password" autocomplete="new-password"></div>' + err;
+    foot = '<span class="ag-small ag-mut ag-grow">' + agEsc(agT('agent.wz.forgot', 'Forgot it later? One command resets it.')) + ' <a href="https://sikamikanikobg.github.io/homelab-monitor/security/" target="_blank" rel="noopener">' + agEsc(agT('agent.wz.how', 'How')) + '</a></span>' +
+      '<button type="button" class="ag-btn ghost" data-wz="cancel">' + agEsc(agT('agent.cancel', 'Cancel')) + '</button><button type="button" class="ag-btn pri" data-wz="pw">' + agEsc(agT('agent.wz.continue', 'Continue')) + '</button>';
+  } else if (W.step === 2) {
+    const ms = W.models;
+    let list;
+    if (ms === null) list = '<div class="ag-loading">' + agEsc(agT('agent.wz.looking', 'Looking for models on your network…')) + '</div>';
+    else if (!ms.length) list = '<div class="ag-card ag-empty"><h3>' + agEsc(agT('agent.wz.none_h', 'No model server found')) + '</h3><p>' + agEsc(agT('agent.wz.none_p', 'Start Ollama, vLLM, llama.cpp or LM Studio on a machine the hub watches, or use a cloud model with your own key below.')) + '</p></div>';
+    else list = '<div class="ag-radios" role="radiogroup" aria-label="' + agEsc(agT('agent.model', 'Model')) + '">' + ms.slice(0, 12).map(m => {
+      const v = m.provider_id + '|' + m.model, testing = W.probing[v] === 'run' || (m.tools === 'unknown' && W.probing[v] !== 'done');
+      const ok = m.tools === 'yes', no = !testing && !ok;
+      const win = m.context_window ? agTf('agent.wz.ctx', '{n}k context', { n: Math.round(m.context_window / 1024) }) : '';
+      const sub = [m.provider, win, ok ? (m.multi_step === 'yes' ? agT('agent.wz.multi', 'handles multi-step questions') : agT('agent.wz.single', 'fine for single questions')) : no ? agT('agent.wz.cant_p', 'it answered without calling tools, so it can\'t look at your lab') : ''].filter(Boolean).join(' · ');
+      return '<label class="ag-radio' + (W.choice === v ? ' on' : '') + (no ? ' off' : '') + '"><input type="radio" name="agz-m" value="' + agEsc(v) + '"' + (W.choice === v ? ' checked' : '') + (ok ? '' : ' disabled') + '>' +
+        '<span class="ag-grow"><span class="ag-rt"><b>' + agEsc(m.model) + '</b>' + (m.recommended ? '<span class="ag-tag">' + agEsc(agT('agent.wz.recommended', 'RECOMMENDED')) + '</span>' : '') + '</span><span class="ag-rs">' + agEsc(sub) + '</span></span>' +
+        '<span class="ag-state ' + (testing ? '' : ok ? 'ok' : 'no') + '">' + agEsc(testing ? agT('agent.m.testing', 'Testing…') : ok ? agT('agent.wz.works', 'Works with the agent') : agT('agent.wz.cant', 'Can\'t be used')) + '</span></label>';
+    }).join('') + '</div>';
+    const cloud = (AG.presets || []).filter(p => !p.local);
+    body = '<h2>' + agEsc(agT('agent.wz.m_h', 'Pick the model that does the thinking')) + '</h2><p class="ag-lead">' + agEsc(agT('agent.wz.m_p', 'Found on your network and tested just now. Local models are free and nothing leaves your lab.')) + '</p>' + list +
+      '<details class="ag-cloud"' + (ms && !ms.length ? ' open' : '') + '><summary>' + agEsc(agT('agent.wz.cloud', 'Use a cloud model with your own key instead')) + '</summary>' +
+      '<p class="ag-small ag-mut">' + agEsc(agT('agent.wz.cloud_p', 'OpenAI, Anthropic, Groq, Mistral, OpenRouter and more. Your key stays on the server.')) + '</p>' +
+      '<div class="ag-row"><label class="ag-vh" for="agz-cp">' + agEsc(agT('agent.wz.provider', 'Provider')) + '</label><select id="agz-cp">' + cloud.map(p => '<option value="' + agEsc(p.id) + '">' + agEsc(p.label) + '</option>').join('') + '</select>' +
+      '<label class="ag-vh" for="agz-ck">' + agEsc(agT('agent.m.paste_key', 'Paste API key')) + '</label><input id="agz-ck" type="password" autocomplete="off" placeholder="' + agEsc(agT('agent.m.paste_key', 'Paste API key')) + '">' +
+      '<button type="button" class="ag-btn" data-wz="cloud">' + agEsc(agT('agent.m.add', 'Add')) + '</button></div></details>' +
+      '<details class="ag-byurl"><summary>' + agEsc(agT('agent.wz.byurl', 'My model server isn\'t listed')) + '</summary>' +
+      '<p class="ag-small ag-mut">' + agEsc(agT('agent.wz.byurl_p', 'Give its address, like http://192.168.1.20:11434 for Ollama or http://192.168.1.20:8000/v1 for vLLM.')) + '</p>' +
+      '<div class="ag-row"><label class="ag-vh" for="agz-lp">' + agEsc(agT('agent.wz.server', 'Server')) + '</label><select id="agz-lp">' + (AG.presets || []).filter(p => p.local).map(p => '<option value="' + agEsc(p.id) + '">' + agEsc(p.label) + '</option>').join('') + '</select>' +
+      '<label class="ag-vh" for="agz-lu">' + agEsc(agT('agent.wz.address', 'Address')) + '</label><input id="agz-lu" autocomplete="off" placeholder="http://host:port/v1">' +
+      '<button type="button" class="ag-btn" data-wz="byurl">' + agEsc(agT('agent.m.add', 'Add')) + '</button></div></details>' + err;
+    foot = '<button type="button" class="ag-btn ghost" data-wz="cancel">' + agEsc(agT('agent.cancel', 'Cancel')) + '</button><span class="ag-sp"></span>' +
+      '<button type="button" class="ag-btn pri" data-wz="model"' + (W.choice ? '' : ' disabled') + '>' + agEsc(agT('agent.wz.continue', 'Continue')) + '</button>';
+  } else {
+    const n = (AG.policy && AG.policy.hosts) ? AG.policy.hosts.length : null;
+    const presets = [['look', agT('agent.preset.look', 'Look only'), agT('agent.preset.look_p', 'Answers questions and writes reports. Never changes anything.')],
+      ['ask', agT('agent.preset.ask', 'Ask me first'), agT('agent.preset.ask_p', 'It can suggest restarts and clean-ups. Nothing runs until you tap Approve.')],
+      ['small', agT('agent.preset.small', 'Handle the small stuff'), agT('agent.preset.small_p', 'Safe tidy-ups, like removing unused images or restarting a crashed container, run by themselves, at most 3 times a day per target. Anything bigger still waits for you.')]];
+    const st = W.starters;
+    body = '<h2>' + agEsc(agT('agent.wz.p_h', 'How much may it do on its own?')) + '</h2><p class="ag-lead">' + agEsc(n ? agTf('agent.wz.p_p', 'Applies to all {n} machines, and to machines you add later. You can change it per machine and per action in Settings.', { n }) : agT('agent.wz.p_p0', 'Applies to every machine, and to machines you add later. You can change it per machine and per action in Settings.')) + '</p>' +
+      '<div class="ag-radios" role="radiogroup" aria-label="' + agEsc(agT('agent.v.permissions', 'Permissions')) + '">' + presets.map(([id, t, d]) =>
+        '<label class="ag-radio' + (W.preset === id ? ' on' : '') + '"><input type="radio" name="agz-p" value="' + id + '"' + (W.preset === id ? ' checked' : '') + '><span class="ag-grow"><span class="ag-rt"><b>' + agEsc(t) + '</b>' +
+        (id === 'ask' ? '<span class="ag-tag">' + agEsc(agT('agent.wz.recommended', 'RECOMMENDED')) + '</span>' : '') + '</span><span class="ag-rs">' + agEsc(d) + '</span></span></label>').join('') + '</div>' +
+      (st && st.length ? '<div class="ag-fld"><span class="lbl">' + agEsc(agT('agent.wz.routines', 'Switch on a ready-made routine')) + ' <span class="ag-mut">' + agEsc(agT('agent.wz.optional', '(optional)')) + '</span></span><div class="ag-checks">' +
+        st.map(t => '<label><input type="checkbox" data-starter="' + agEsc(t.id) + '"' + (W.picked.indexOf(t.id) >= 0 ? ' checked' : '') + '> ' + agEsc(agT('agent.tpl.' + t.id + '.name', t.name)) + ' · ' + agEsc(agCronLabel(t.default_cron)) + '</label>').join('') + '</div></div>' : '') + err;
+    foot = '<button type="button" class="ag-btn ghost" data-wz="back">' + agEsc(agT('agent.wz.back', 'Back')) + '</button><span class="ag-sp"></span>' +
+      '<button type="button" class="ag-btn pri" data-wz="finish"' + (W.busy ? ' disabled' : '') + '>' + agEsc(W.busy ? agT('agent.wz.finishing', 'Switching on…') : agT('agent.wz.finish', 'Finish and ask something')) + '</button>';
+  }
+  // A repaint (a test result arriving) must not lose what is being typed or opened.
+  const focusId = document.activeElement && scrim.contains(document.activeElement) ? document.activeElement.id : null;
+  const kept = {};
+  scrim.querySelectorAll('input[id],select[id]').forEach(i => { if (i.type !== 'radio' && i.type !== 'checkbox') kept[i.id] = i.value; });
+  const openDetails = [...scrim.querySelectorAll('details[open]')].map(d => d.className);
+  scrim.innerHTML = '<div class="ag-dialog ag-wiz" role="dialog" aria-modal="true" aria-label="' + agEsc(agT('agent.wz.aria', 'Set up the agent')) + '">' + stepper + '<div class="ag-wbody">' + body + '</div><div class="ag-wfoot">' + foot + '</div></div>';
+  Object.entries(kept).forEach(([id, v]) => { const i = scrim.querySelector('#' + id); if (i && v) i.value = v; });
+  openDetails.forEach(c => { const d = c && scrim.querySelector('details.' + c.split(' ')[0]); if (d) d.open = true; });
+  agSetupWire(scrim);
+  const f = focusId && scrim.querySelector('#' + focusId);
+  if (f) f.focus(); else if (!AG.wizFocused) { const first = scrim.querySelector('input:not([disabled]),button.pri'); if (first) first.focus(); }
+  AG.wizFocused = true;
+}
+
+function agSetupWire(scrim) {
+  const W = AG.wiz;
+  const $ = s => scrim.querySelector(s);
+  scrim.querySelectorAll('[data-wz="cancel"]').forEach(b => b.onclick = agSetupClose);
+  const pw = $('#agz-pw');
+  if (pw) {
+    const meter = () => {
+      const sc = agPwScore(pw.value);
+      scrim.querySelectorAll('.ag-meter span').forEach((s, i) => s.className = i < sc ? 'on s' + sc : '');
+      $('#agz-pwlabel').textContent = agPwLabel(sc);
+    };
+    const clearErr = () => { if (W.err) { W.err = ''; const e = scrim.querySelector('.ag-err'); if (e) e.textContent = ''; } };
+    pw.oninput = () => { meter(); clearErr(); };
+    $('#agz-pw2').oninput = clearErr;
+    meter();
+    const go = $('[data-wz="pw"]');
+    const submit = async () => {
+      const a = pw.value, b = $('#agz-pw2').value;
+      if (agPwScore(a) < 2) { W.err = agT('agent.pw.weak', 'Too easy to guess — at least 10 characters, with some variety'); agSetupRender(); return; }
+      if (a !== b) { W.err = agT('agent.wz.mismatch', 'The two passwords are different.'); agSetupRender(); return; }
+      go.disabled = true;
+      const r = await agApi('/api/auth/setup', 'POST', { password: a });
+      if (!r.ok) { W.err = r.body.message || agT('agent.failed', 'Something went wrong.'); go.disabled = false; agSetupRender(); return; }
+      if (typeof HLM_AUTH !== 'undefined') { HLM_AUTH.forget(); await HLM_AUTH.status(true); }
+      await agRefreshStatus();
+      W.err = ''; W.step = 2; AG.wizFocused = false;
+      scrim.querySelectorAll('input[type=password]').forEach(i => { i.value = ''; });
+      agSetupRender(); agSetupModels();
+    };
+    go.onclick = submit;
+    $('#agz-pw2').onkeydown = e => { if (e.key === 'Enter') submit(); };
+  }
+  scrim.querySelectorAll('input[name="agz-m"]').forEach(r => r.onchange = () => { W.choice = r.value; agSetupRender(); });
+  const cloudBtn = $('[data-wz="cloud"]');
+  if (cloudBtn) cloudBtn.onclick = async () => {
+    const key = $('#agz-ck').value.trim();
+    if (!key) { W.err = agT('agent.wz.need_key', 'Paste the key first.'); agSetupRender(); return; }
+    cloudBtn.disabled = true;
+    const r = await agApi('/api/agent/providers', 'POST', { preset: $('#agz-cp').value, api_key: key });
+    if (!r.ok) { W.err = r.body.message || agT('agent.failed', 'Something went wrong.'); agSetupRender(); return; }
+    const t = await agApi('/api/agent/providers/' + r.body.provider.id + '/test', 'POST', {});
+    W.err = t.body.ok ? '' : agTestText(t.body);
+    agSetupModels(true);
+  };
+  const byUrl = $('[data-wz="byurl"]');
+  if (byUrl) byUrl.onclick = async () => {
+    const url = $('#agz-lu').value.trim();
+    if (!url) { W.err = agT('agent.wz.need_url', 'Type the server\'s address first.'); agSetupRender(); return; }
+    byUrl.disabled = true;
+    const r = await agApi('/api/agent/providers', 'POST', { preset: $('#agz-lp').value, base_url: url });
+    if (!r.ok) { W.err = r.body.message || agT('agent.failed', 'Something went wrong.'); agSetupRender(); return; }
+    const t = await agApi('/api/agent/providers/' + r.body.provider.id + '/test', 'POST', {});
+    W.err = t.body.ok ? '' : agTestText(t.body);
+    $('#agz-lu').value = '';
+    agSetupModels(true);
+  };
+  const next = $('[data-wz="model"]');
+  if (next) next.onclick = () => { W.step = 3; W.err = ''; AG.wizFocused = false; agSetupRender(); agSetupStarters(); };
+  scrim.querySelectorAll('input[name="agz-p"]').forEach(r => r.onchange = () => { W.preset = r.value; agSetupRender(); });
+  scrim.querySelectorAll('[data-starter]').forEach(c => c.onchange = () => {
+    W.picked = W.picked.filter(x => x !== c.dataset.starter); if (c.checked) W.picked.push(c.dataset.starter);
+  });
+  const back = $('[data-wz="back"]');
+  if (back) back.onclick = () => { W.step = 2; W.err = ''; agSetupRender(); if (W.models === null) agSetupModels(); };
+  const fin = $('[data-wz="finish"]');
+  if (fin) fin.onclick = async () => {
+    const [pid, model] = String(W.choice || '').split('|');
+    W.busy = true; agSetupRender();
+    const r = await agApi('/api/agent/setup/finish', 'POST', { provider_id: pid || undefined, model: model || undefined, preset: W.preset, templates: W.picked });
+    W.busy = false;
+    if (!r.ok) { W.err = r.body.message || agT('agent.failed', 'Something went wrong.'); if (r.body.error === 'model_not_ready') W.step = 2; agSetupRender(); return; }
+    agSetupClose();
+    await agRefreshStatus();
+    agWhatsNewLater();
+    AG.view = 'chat'; AG.convId = null; AG.detail = null;
+    if (TAB !== 'agent') showTab('agent'); else agRender();
+  };
+}
+
+/** Step 2: find model servers, add them, then test every untested model in the
+ *  background — one at a time per server, so a model server never loads several. */
+async function agSetupModels(again) {
+  const W = AG.wiz;
+  if (!W) return;
+  const pr = await agApi('/api/agent/presets');
+  if (pr.ok) AG.presets = pr.body.presets || [];
+  const r = await agApi('/api/agent/setup/models', again ? 'GET' : 'POST', again ? undefined : {});
+  if (AG.wiz !== W) return;
+  W.models = r.ok ? r.body.models || [] : [];
+  W.choice = agPickModel(W.models, W.choice);
+  agSetupRender();
+  const byProv = {};
+  W.models.filter(m => m.tools === 'unknown' && !m.probed).slice(0, 10).forEach(m => { (byProv[m.provider_id] = byProv[m.provider_id] || []).push(m); });
+  await Promise.all(Object.values(byProv).map(async list => {
+    for (const m of list) {
+      const v = m.provider_id + '|' + m.model;
+      W.probing[v] = 'run'; agSetupRender();
+      const p = await agApi('/api/agent/models/probe', 'POST', { provider_id: m.provider_id, model: m.model });
+      if (AG.wiz !== W) return;
+      W.probing[v] = 'done';
+      if (p.ok) { m.tools = p.body.tools; m.multi_step = p.body.multi_step; }
+      agSetupRender();
+    }
+  }));
+  if (AG.wiz !== W) return;
+  const again2 = await agApi('/api/agent/setup/models');
+  if (again2.ok) { W.models = again2.body.models || []; W.choice = agPickModel(W.models, W.choice); }
+  agSetupRender();
+}
+
+async function agSetupStarters() {
+  const W = AG.wiz;
+  const [t] = await Promise.all([agApi('/api/agent/templates'), agLoadPolicy()]);
+  if (AG.wiz !== W) return;
+  W.starters = t.ok ? (t.body.templates || []).filter(x => x.starter && (x.eligible_hosts || []).length) : [];
+  if (W.picked === null) W.picked = W.starters.slice(0, 1).map(x => x.id);
+  agSetupRender();
 }
 
 agBoot();

@@ -35,7 +35,8 @@ function takeConst(name) {
 
 const ctx = { console, JSON, Object, Array, String, Number, Math, Date, RegExp, TAB: 'gpu', CURRENT_HOST: 'lab1' };
 vm.createContext(ctx);
-vm.runInContext([takeConst('AG_TABS'), take('agT'), take('agTf'), take('agEsc'), take('agDeepLink'), take('agMarkdown'),
+vm.runInContext([takeConst('AG_TABS'), take('agT'), take('agTf'), take('agEsc'), take('agDeepLink'), take('agMarkdown'), take('agLinkLabel'), take('agToolLabel'),
+  "var AG = { policy: { actions: [{ id: 'container.restart', title: 'Restart a container' }] } };",
   take('agContext'), take('agFabVisible'), take('agUnattended'), take('agReduce'), take('agChatItems'),
   take('agChipLabel'), take('agStepLine')].join('\n'), ctx);
 
@@ -141,13 +142,13 @@ check('chat items: chips carry their result and their approval card', () => {
   assert.strictEqual(items.length, 3);
   assert.strictEqual(items[1].chips[0].result.content, '{"tool":"x"}');
   assert.strictEqual(items[1].chips[0].card.id, 'a1');
-  assert.strictEqual(ctx.agChipLabel(items[1].chips[0]).text, '✓ container.restart · lab1');
+  assert.strictEqual(ctx.agChipLabel(items[1].chips[0]).text, '✓ Restart a container · lab1');
   assert.strictEqual(ctx.agChipLabel({ name: 'x', args: {}, result: { content: 'not allowed: y' } }).bad, true);
 });
 
 check('activity lines name what, where and why', () => {
   const l = ctx.agStepLine({ kind: 'policy', tool: 'container.stop', host: 'nas', target: 'smb', decision: 'deny', decision_reason: 'host_passive', excerpt: 'nas is Passive' });
-  assert.ok(l.text.includes('container.stop · nas → smb'));
+  assert.ok(l.text.includes('Container stop · nas → smb'), l.text);
   assert.ok(l.text.includes('host_passive'));
   assert.strictEqual(ctx.agStepLine({ kind: 'model', tokens_in: 10, tokens_out: 2 }).tag, 'model');
 });
@@ -203,7 +204,7 @@ check('alpha #1/#36: automations offer the catalogue actions; channels need to b
 });
 
 check('alpha #24/#31/#36: outcomes and provider errors read as sentences, not raw text', () => {
-  vm.runInContext([take('agApprovalOutcome'), take('agTestText'), take('agProbeText'), take('agStatusLabel'),
+  vm.runInContext([take('agModelsN'), take('agApprovalOutcome'), take('agTestText'), take('agProbeText'), take('agStatusLabel'),
     take('agTriggerLabel'), take('agWhenFull')].join('\n'), ctx);
   assert.strictEqual(ctx.agApprovalOutcome({ status: 'refused', result: 'lab1 is Passive' }), 'Refused at run time: lab1 is Passive');
   assert.strictEqual(ctx.agTestText({ ok: false, error_kind: 'protocol', detail: '<html>' }).includes('<'), false);
@@ -223,7 +224,7 @@ check('pass 2 N1: under each run, the actions it really took, from its records',
   assert.ok(html.includes('href="#agent/approvals"'));
   assert.ok(!html.includes('<b>w</b>'));                                       // names are escaped
   assert.ok(SRC.includes('agRunFacts(r) +'), 'run detail shows the list');
-  assert.ok(/factsAfter\(i\)/.test(take('agPaintMessages')), 'chat and widget show the list');
+  assert.ok(/agFactsChip\(r\)/.test(take('agPaintMessages')), 'chat and widget show what the run did, as a chip');
 });
 
 check('pass 2 N3/N4/N5: filters load with Activity; no Use for models without tool calls; Since has a label', () => {
@@ -234,6 +235,143 @@ check('pass 2 N3/N4/N5: filters load with Activity; no Use for models without to
   assert.ok(!no.includes('<button') && /title="[^"]*without calling tools/.test(no));
   assert.ok(ctx.agUseBtn('data-use', 'p|m', { tools: 'yes' }).includes('<button'));
   assert.ok(ctx.agUseBtn('data-disc-use', '0|m', null).includes('data-disc-use="0|m"'));
+});
+
+check('UAT-1: markdown tables, headings, ordered lists, italics — escaped first', () => {
+  const out = ctx.agMarkdown('## Disks\n| Host | Use |\n|---|---:|\n| ardi | **72%** |\n| <b>x</b> | 1 |\n\n1. one\n2. two\n*note*');
+  assert.ok(out.includes('<h4>Disks</h4>'));
+  assert.ok(out.includes('<div class="ag-tbl"><table><thead><tr><th>Host</th><th>Use</th></tr></thead>'));
+  assert.ok(out.includes('<td>ardi</td><td><b>72%</b></td>'));
+  assert.ok(out.includes('&lt;b&gt;x&lt;/b&gt;') && !out.includes('<b>x</b>'));
+  assert.ok(out.includes('<ol><li>one</li><li>two</li></ol>'));
+  assert.ok(out.includes('<i>note</i>'));
+  assert.ok(!ctx.agMarkdown('a | b').includes('<table'), 'a lone pipe is not a table');
+});
+
+check('UAT-1: conversations grouped by Today / Yesterday / Earlier', () => {
+  vm.runInContext([take('agDayBucket'), take('agGroupConvs')].join('\n'), ctx);
+  const now = new Date(2026, 9, 25, 10, 0).getTime();
+  const at = (d, h) => new Date(2026, 9, d, h, 0).getTime() / 1000;
+  const g = plain(ctx.agGroupConvs([{ id: 'a', updated_at: at(25, 9) }, { id: 'b', updated_at: at(24, 23) }, { id: 'c', updated_at: at(20, 9) }, { id: 'd', updated_at: at(25, 1) }], now));
+  assert.deepStrictEqual(g.map(x => [x[0], x[1].map(c => c.id)]), [['today', ['a', 'd']], ['yesterday', ['b']], ['earlier', ['c']]]);
+});
+
+check('UAT-1: one line for the work a run did, one chip for its actions', () => {
+  vm.runInContext([take('agWorkLine'), take('agFactsChip')].join('\n'), ctx);
+  assert.strictEqual(ctx.agWorkLine({ work: { machines: 4, lookups: 1, seconds: 6 } }, 1), 'Checked 4 machines · 1 look-up · 6 s');
+  assert.strictEqual(ctx.agWorkLine(null, 3), 'Checked 3 look-ups');
+  assert.ok(ctx.agFactsChip({ actions: [] }).includes('No actions proposed'));
+  const w = ctx.agFactsChip({ actions: [{ outcome: 'pending', title: 'Restart a container', host: 'lab1', target: 'web' }] });
+  assert.ok(w.includes('href="#agent/approvals"') && w.includes('1 action waiting for your approval'));
+  assert.strictEqual(ctx.agFactsChip({ status: 'running' }), '');
+});
+
+check('UAT-1: chat turns per run, approval card with one primary Approve', () => {
+  vm.runInContext([take('agRunGroups'), take('agApprovalCard'), take('agApprovalOutcome')].join('\n'), ctx);
+  const g = plain(ctx.agRunGroups({ messages: [
+    { role: 'user', content: 'q1', run_id: 'r1' }, { role: 'assistant', content: 'looking', run_id: 'r1', tool_calls: [{ id: 'c1', name: 'list_hosts' }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'x' }, { role: 'assistant', content: 'a1', run_id: 'r1' },
+    { role: 'user', content: 'q2', run_id: 'r2' }, { role: 'assistant', content: 'a2', run_id: 'r2' }], approvals: [] }));
+  assert.deepStrictEqual(g.map(x => [x.run_id, x.user, x.chips.length, x.texts]), [['r1', 'q1', 1, ['looking', 'a1']], ['r2', 'q2', 0, ['a2']]]);
+  const card = ctx.agApprovalCard({ id: 'a1', action: 'container.restart', title: 'Restart a container', host: 'lab1', params: { name: 'web' }, risk: 'low', status: 'pending' }, false);
+  assert.strictEqual((card.match(/class="ag-btn pri"/g) || []).length, 1);
+  assert.ok(/class="ag-btn pri" data-ap="a1">Approve/.test(card));
+  assert.ok(card.includes('role="group"'));
+});
+
+check('UAT-1: Overview card state, password meter, model pre-selection', () => {
+  vm.runInContext([take('agHomeState'), take('agPwScore'), take('agPwLabel'), take('agPickModel')].join('\n'), ctx);
+  assert.strictEqual(ctx.agHomeState(null, ''), 'none');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, ''), 'invite');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false, dismissed: true }, ''), 'strip');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, 'folded'), 'strip');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: false }, 'hidden'), 'none');
+  assert.strictEqual(ctx.agHomeState({ allowed: true, done: true, dismissed: true }, 'hidden'), 'ask');
+  assert.strictEqual(ctx.agPwScore(''), 0);
+  assert.strictEqual(ctx.agPwScore('short'), 1);
+  assert.strictEqual(ctx.agPwScore('longenough'), 2);
+  assert.strictEqual(ctx.agPwScore('Long-Enough-2026!'), 4);
+  const ms = [{ provider_id: 'p', model: 'emb', tools: 'no' }, { provider_id: 'p', model: 'small', tools: 'yes' }, { provider_id: 'p', model: 'big', tools: 'yes', recommended: true }];
+  assert.strictEqual(ctx.agPickModel(ms, ''), 'p|big');
+  assert.strictEqual(ctx.agPickModel(ms, 'p|small'), 'p|small');
+  assert.strictEqual(ctx.agPickModel(ms, 'p|emb'), 'p|big', 'a model that cannot call tools is never kept');
+  assert.strictEqual(ctx.agPickModel([], ''), '');
+});
+
+check('UAT-1: suggestions are a declared list; the Agent sits in the AI group; the card hides in kiosk mode', () => {
+  assert.ok(/const AG_SUGGEST = \[\['agent\.sug\./.test(SRC));
+  assert.ok(SRC.includes("zone: 'ai'"));
+  assert.ok(fs.readFileSync(path.join(ROOT, 'static', 'agent.css'), 'utf8').includes('body.display .ag-home{display:none!important}'));
+  assert.ok(SRC.includes("const AG_VIEWS = ['chat', 'auto', 'approvals', 'activity', 'settings'];"));
+});
+
+check('UAT-1 pass 2: code fences, page names for links, readable tokens and plurals', () => {
+  const out = ctx.agMarkdown('Run:\n```\ndocker system df\n<x>\n```\nthen `ls` — see #disks');
+  assert.ok(out.includes('<pre class="ag-pre"><code>docker system df\n&lt;x&gt;</code></pre>'));
+  assert.ok(out.includes('<code>ls</code>'));
+  assert.ok(out.includes('data-ag-link="#disks">Disks</a>'), out);
+  assert.ok(!out.includes('```'));
+  vm.runInContext([take('agTokens'), take('agModelsN'), take('agActorLabel')].join('\n'), ctx);
+  assert.strictEqual(ctx.agTokens(950), '950 tokens');
+  assert.strictEqual(ctx.agTokens(86512), '86.5k tokens');
+  assert.strictEqual(ctx.agModelsN(1), '1 model');
+  assert.strictEqual(ctx.agModelsN(3), '3 models');
+  assert.strictEqual(ctx.agActorLabel('session:4e86abcdef'), 'you');
+  assert.strictEqual(ctx.agActorLabel('scheduler'), '');
+  const card = ctx.agApprovalCard({ id: 'a', action: 'x', title: 'Restart', host: 'lab1', params: {}, risk: 'low', status: 'done', decided_by: 'session:4e86' }, false);
+  assert.ok(card.includes('by you') && !card.includes('session:') && !card.includes('Nothing runs until you approve'));
+});
+
+check('UAT-1 pass 2: a weak password is weak; the example and suggestions come from the lab', () => {
+  vm.runInContext([take('agPwScore')].join('\n'), ctx);
+  assert.strictEqual(ctx.agPwScore('aaaaaaaaaa'), 1);
+  assert.strictEqual(ctx.agPwScore('abababababab'), 1);
+  assert.ok(ctx.agPwScore('correct horse 7') >= 2);
+  vm.runInContext([take('agExampleFromFleet'), take('agLabHas'), takeConst('AG_SUGGEST'), take('agSuggestChips')].join('\n'), ctx);
+  const ex = ctx.agExampleFromFleet({ hosts: [
+    { name: 'ardi', online: true, is_local: true, host: { disks: [{ mount: '/data', pct: 72, used: 315, total: 438 }] } },
+    { name: 'cloudy', online: false, host: null }] });
+  assert.ok(ex.a.includes('**ardi /data** at **72%** (123 GB free)') && ex.a.includes('cloudy is offline'), ex.a);
+  assert.strictEqual(ctx.agExampleFromFleet({ hosts: [] }), null);
+  vm.runInContext("var FLEET = { hosts: [{ name: 'a', host: { docker: { containers: [{ name: 'web' }] } } }] }; var HH = { now: { gpu: { available: false } } };", ctx);
+  const chips = ctx.agSuggestChips();
+  assert.ok(!chips.includes('GPU') && chips.includes('memory'), chips);
+});
+
+// Real answers from the owner's session (UAT-1): they must render, not show as markdown source.
+const FIX = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
+
+check('real answer (Bulgarian): headings, a GFM table with bold, emoji and Cyrillic, lists with code and bold', () => {
+  const out = ctx.agMarkdown(FIX('agent_answer_bg.md'));
+  assert.ok(out.includes('<h4>Проблеми</h4>') && out.includes('<h4>Направени действия</h4>'));
+  assert.ok(out.includes('<th>#</th><th>Проблем</th><th>Хост</th><th>Статус</th>'));
+  assert.ok(out.includes('<td><b>nginx.service failed</b> (exit 1)</td><td>local</td><td>✅ <b>Рестартиран</b></td>'), out);
+  assert.ok(out.includes('<td>❌ Не мога — policy е <b>Deny</b> за service.restart на vader</td>'));
+  assert.ok(out.includes('<li>✅ <code>nginx.service</code> restart на <b>local</b> — успешно</li>'));
+  assert.strictEqual((out.match(/<tr>/g) || []).length, 3);
+  assert.ok(!/\*\*|\|---|^##/m.test(out), 'no markdown source left');
+});
+
+check('real answer (mixed): aligned columns, emoji, inline code in cells, nested bold lists, a rule, a fenced block', () => {
+  const out = ctx.agMarkdown(FIX('agent_answer_mixed.md'));
+  assert.ok(out.includes('<h4>Fleet check</h4>'));
+  assert.ok(out.includes('<td><b>ardi</b></td><td><code>/data</code> 72%</td><td>✅ ok</td><td>ℹ️ growing ~1 GB/day</td>'), out);
+  assert.ok(out.includes('<td>⚠️ <b>full soon</b></td>') && out.includes('<td>облак</td>'));
+  assert.ok(out.includes('<li><b>lab1</b>: <code>web</code>, <code>worker</code></li>') && out.includes('<i>nothing</i>'));
+  assert.ok(out.includes('<hr>'));
+  assert.ok(out.includes('<pre class="ag-pre"><code>docker image prune -f\necho &quot;&lt;done&gt;&quot;</code></pre>'), out);
+  assert.ok(!out.includes('```') && !out.includes('**') && !/<p>---<\/p>/.test(out));
+  assert.ok(out.includes('<p>Done.</p>'));
+});
+
+check('tables scroll sideways on a phone instead of overflowing the chat', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'static', 'agent.css'), 'utf8');
+  assert.ok(/\.ag-tbl\{[^}]*overflow-x:auto/.test(css));
+  assert.ok(css.includes('.ag-msg.a,.ag-md{min-width:0;max-width:100%}'));
+});
+
+check('the UI language goes with every question (the fallback reply language)', () => {
+  assert.ok(SRC.includes('context: Object.assign({}, getContext() || {}, { lang: agUiLang() })'));
 });
 
 console.log('\n' + n + ' agent UI checks passed');

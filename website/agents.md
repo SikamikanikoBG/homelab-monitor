@@ -21,15 +21,35 @@ threads start, no tables are created and the dashboard looks exactly as it did.
 
 ## Turning it on
 
-1. Set `AGENT_ENABLED: "1"` in `docker-compose.yml` and recreate the container.
-2. Set a dashboard password (**Settings → Security**). The agent can act on your machines, so it
-   only runs behind a login. See [Security](security.md#dashboard-login).
-3. Open the **Agent** tab and click **Enable the agent**.
-4. Pick a model under **Agent → Models & keys** (next section).
+Set `AGENT_ENABLED: "1"` in `docker-compose.yml` and recreate the container. The **Overview** then
+shows **Your lab can answer you now** with three steps and a **Set it up** button (about a minute):
+
+1. **Secure** — set the dashboard password (with a strength meter; forgot it later? see
+   [Security](security.md#dashboard-login)). The agent can act on your machines, so it only runs
+   behind a login; you stay logged in in this browser.
+2. **Model** — the model servers the hub already knows about are found, added and tested while
+   you watch. Each model says **Works with the agent** or **Can't be used**; the recommended one
+   (calls tools, local first, the largest context) is picked for you. A cloud model with your own
+   key, or a server by its address, are one click away.
+3. **Permissions** — one preset for every machine, and for machines you add later:
+   **Look only** (all Passive), **Ask me first** (Active, every action asks — recommended) or
+   **Handle the small stuff** (low-risk actions that need no root run by themselves, within the
+   unattended rules below; the rest asks). Optionally switch on a starter routine (container
+   health, Docker cleanup, disk space watch) with sensible defaults.
+
+**Finish and ask something** switches the agent on and opens the chat with suggestions. The setup
+resumes where you left it; **Not now** folds the invitation to one line (remembered for your login,
+or in this browser before there is one). Everything the setup does is also an API call
+(`/api/agent/setup`, `/api/agent/setup/models`, `/api/agent/policy/preset`, `/api/agent/setup/finish`)
+and the server checks each step. **Agent → Settings → Run the setup again** reopens it.
+
+Once it is set up, the Overview shows **Ask your lab**: a question box, suggestions, the model in
+use, approvals **waiting for you**, and one line per routine run lately. It is hidden on a wall
+display (kiosk mode).
 
 ## Picking a model
 
-Local model servers the hub already knows about (Ollama, vLLM, llama.cpp, LM Studio, LocalAI, and
+The setup does this for you; **Agent → Settings → Models & keys** is where to change it. Local model servers the hub already knows about (Ollama, vLLM, llama.cpp, LM Studio, LocalAI, and
 any custom AI server from Settings → General) are listed under **Found on your lab**. Click
 **Add**, then **Test** on a model:
 
@@ -159,6 +179,15 @@ everything on your network.
 
 Agent settings (time zone, budgets, spend caps, approval expiry, GPU courtesy thresholds) live in
 the Agent tab and in `GET/PUT /api/agent/settings`.
+
+**Budgets always end with an answer.** A chat run gets 12 model calls, 300 s and 120,000 tokens
+by default; an automation 25 calls, 600 s and 200,000 tokens. The token budget counts what the
+model really reads and writes: the first prompt, then only what each call adds (new tool
+results and replies), not the whole conversation re-sent at every step. When a budget is reached,
+or tool calls keep failing, the agent makes one more call with no tools and writes its answer
+from what it has gathered, saying what it didn't get to check. A follow-up in the same chat
+("summarise", "and lab2?") sees the previous answer and the previous run's results, so it can
+answer without collecting everything again.
 
 ## Troubleshooting
 

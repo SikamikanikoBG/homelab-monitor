@@ -25,6 +25,7 @@
           "linux"
         ],
         "runs_alone": [],
+        "starter": false,
         "tools": [
           "list_hosts"
         ],
@@ -61,6 +62,7 @@
         "runs_alone": [
           "container.restart"
         ],
+        "starter": true,
         "tools": [
           "list_hosts",
           "get_containers",
@@ -89,6 +91,7 @@
         "prompt": "Report this week's power cost: get_costs (range 7d) for the fleet and per host, and get_entity_cost for the three most expensive containers, services or models. Compare with what you can see of the previous period and name what changed most. Keep it to a few lines with numbers and the currency the tool reports.",
         "requires": [],
         "runs_alone": [],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_costs",
@@ -148,6 +151,7 @@
           "docker.prune_dangling_images",
           "docker.prune_build_cache"
         ],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_host",
@@ -182,6 +186,7 @@
         "prompt": "For each selected host, check disk use with the host.disk_usage probe (and get_host for the hub's disks). List every filesystem above 85% full, the largest consumers you can see (scan_disk on the hub for the fullest mount, docker.system_df where Docker runs), and whether anything grew fast. If nothing is above 85%, say so in one line. Keep the report short.",
         "requires": [],
         "runs_alone": [],
+        "starter": true,
         "tools": [
           "list_hosts",
           "get_host",
@@ -235,6 +240,7 @@
           "docker.prune_dangling_images",
           "docker.prune_build_cache"
         ],
+        "starter": true,
         "tools": [
           "list_hosts",
           "get_containers"
@@ -266,6 +272,7 @@
         "prompt": "Check GPU health over the last 24 hours: get_gpu (range 24h) for utilisation, temperatures, power and VRAM per model; get_events (range 24h) for OOM kills; the gpu.kernel_errors_24h probe on each selected Linux host for driver errors. Flag temperatures above 83 C, cards pinned at their power limit, OOM kills, kernel GPU errors and models holding VRAM without being used. If all is well, say so in one line.",
         "requires": [],
         "runs_alone": [],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_gpu",
@@ -310,6 +317,7 @@
         "runs_alone": [
           "ollama.unload_model"
         ],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_installed_models",
@@ -363,6 +371,7 @@
         "runs_alone": [
           "docker.prune_dangling_images"
         ],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_host",
@@ -396,6 +405,7 @@
         "prompt": "For each selected host: pending package updates (updates.list where available), whether a reboot is pending (host.reboot_required: exit code 0 means yes), and the OS-upgrade hints in get_host. Also say whether a new HomeLab Monitor release is available (get_snapshot). Suggest a safe order (least important box first, the hub and anything serving models last). Do not apply anything.",
         "requires": [],
         "runs_alone": [],
+        "starter": false,
         "tools": [
           "list_hosts",
           "get_host",

@@ -95,12 +95,12 @@ class TestAgentSmoke(unittest.TestCase):
         before = self.api("GET", "/api/agent/status")["j"]["pending_approvals"]
         self.chat('#stub [{"tool_calls":[{"name":"container__restart","arguments":{"host":"lab1","name":"web",'
                   '"reason":"browser smoke"}}]},{"text":"Restarted web on lab1."}]')
-        self.page.wait_for_selector("#ag-msgs .ag-confirm [data-ap]", timeout=30000)
-        self.assertIn("lab1", self.page.inner_text("#ag-msgs .ag-confirm"))
+        self.page.wait_for_selector("#ag-msgs .ag-appr [data-ap]", timeout=30000)
+        self.assertIn("lab1", self.page.inner_text("#ag-msgs .ag-appr"))
         self.shot("10-confirm-card")
         # a locator, not a handle: live updates repaint the chat, so re-resolve on click
-        self.page.locator("#ag-msgs .ag-confirm [data-ap]").click()
-        self.page.wait_for_selector("#ag-msgs .ag-confirm.done", timeout=30000)
+        self.page.locator("#ag-msgs .ag-appr [data-ap]").click()
+        self.page.wait_for_selector("#ag-msgs .ag-appr.done", timeout=30000)
         self.page.wait_for_function("() => document.querySelector('#ag-msgs').innerText.includes('Restarted web on lab1.')",
                                     timeout=30000)
         self.shot("11-approved")
@@ -109,10 +109,11 @@ class TestAgentSmoke(unittest.TestCase):
                   '{"text":"Not allowed on lab2."}]')
         self.page.wait_for_function("() => document.querySelector('#ag-msgs').innerText.includes('Not allowed on lab2.')",
                                     timeout=30000)
+        self.page.locator("#ag-msgs .ag-work").last.click()      # the steps fold into one line (UAT-1)
         self.page.locator("#ag-msgs .ag-chip").first.click()
         self.assertIn("Passive", self.page.inner_text("#ag-msgs .ag-chipbody"))
         self.shot("12-passive-refusal")
-        for v in ("auto", "approvals", "activity", "policy", "models"):
+        for v in ("auto", "approvals", "activity", "settings"):
             self.page.click('[data-agv="%s"]' % v)
             self.page.wait_for_timeout(800)
             self.shot("13-view-" + v)
@@ -147,6 +148,8 @@ class TestAgentSmoke(unittest.TestCase):
         self.page.wait_for_timeout(2500)
         disp = self.page.evaluate("() => { const f = document.querySelector('.ag-fab'); return f ? getComputedStyle(f).display : 'none'; }")
         self.assertEqual(disp, "none")
+        home = self.page.evaluate("() => { const h = document.getElementById('ag-home'); return h ? getComputedStyle(h).display : 'none'; }")
+        self.assertEqual(home, "none")                       # no Ask card on a wall display either
 
 
 if __name__ == "__main__":

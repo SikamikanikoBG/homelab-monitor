@@ -244,6 +244,19 @@ def message_list(cid):
     return rows
 
 
+def run_questions(run_ids):
+    """{run_id: the user's message that started it}, in one query."""
+    ids = [i for i in run_ids if i]
+    if not ids:
+        return {}
+    out = {}
+    with ports.db() as c:
+        for rid, content in c.execute("SELECT run_id, content FROM agent_messages WHERE role='user' AND run_id IN (%s) "
+                                      "ORDER BY id" % ",".join("?" * len(ids)), ids):
+            out.setdefault(rid, content)
+    return out
+
+
 # ── runs ─────────────────────────────────────────────────────────────────────
 
 def run_create(conversation_id, trigger, attended, mode, provider_id=None, model=None, task_id=None,
@@ -568,6 +581,14 @@ def action_rules():
     for host, action, rule, unlocked in rows:
         out.setdefault(host, {})[action] = {"rule": rule, "unattended_unlocked": bool(unlocked)}
     return out
+
+
+def policy_clear():
+    """Every explicit host mode and action rule goes (a preset takes over)."""
+    with ports.db() as c:
+        c.execute("DELETE FROM agent_host_policy")
+        c.execute("DELETE FROM agent_action_rules")
+        c.commit()
 
 
 def set_action_rule(host, action, rule, unlocked):

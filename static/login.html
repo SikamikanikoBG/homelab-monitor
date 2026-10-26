@@ -40,7 +40,9 @@ code{font-size:12px}
   if (theme === 'dark' || theme === 'light') document.documentElement.setAttribute('data-theme', theme);
   // Only same-site paths are followed after login; anything else goes home.
   function nextUrl() {
-    const n = new URLSearchParams(location.search).get('next') || '/';
+    let n = new URLSearchParams(location.search).get('next') || '/';
+    // A server redirect can't see "#agent"; the browser carries it over to this page, so carry it on.
+    if (n.indexOf('#') < 0 && location.hash) n += location.hash;
     return (n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/login')) ? n : '/';
   }
   async function localize() {

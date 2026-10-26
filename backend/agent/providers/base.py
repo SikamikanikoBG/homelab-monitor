@@ -58,6 +58,7 @@ class ChatRequest:
     max_tokens: int = 2048
     temperature: float = 0.2
     num_ctx: Optional[int] = None
+    no_tools: bool = False     # answer in text: the tools are described (history needs them) but not callable
 
 
 @dataclass

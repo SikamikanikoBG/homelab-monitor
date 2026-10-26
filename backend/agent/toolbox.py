@@ -30,7 +30,8 @@ def install_transport():
 class Scope:
     """Everything a run's tool layer needs to know, read once per model step."""
 
-    def __init__(self, hosts=None, run_mode="act", task_actions=None, task_tools=None, controls=None):
+    def __init__(self, hosts=None, run_mode="act", task_actions=None, task_tools=None, controls=None,
+                 agent_model=None, agent_server=None):
         all_hosts = ports.host_names()
         self.hosts = [h for h in (hosts or all_hosts) if h in all_hosts]
         self.modes = store.host_modes()
@@ -39,9 +40,11 @@ class Scope:
         self.task_actions = task_actions
         self.task_tools = task_tools
         self.controls = ports.controls_enabled() if controls is None else controls
+        self.agent_model = agent_model          # the model this run thinks with, and where it is served
+        self.agent_server = agent_server
 
     def mode(self, host):
-        return self.modes.get(host, policy.DEFAULT_MODE)
+        return policy.mode_for(host, self.modes)
 
     def visible(self, host):
         return host in self.hosts and self.mode(host) != "off"
@@ -86,7 +89,7 @@ def specs(scope):
             if not probe:
                 if not scope.controls or scope.mode(h) != "active":
                     continue
-                if (scope.rules.get(h, {}).get(a["id"]) or {}).get("rule") not in ("ask", "allow"):
+                if policy.rule_for(h, a["id"], scope.rules)[0] not in ("ask", "allow"):
                     continue
             eligible.append(h)
         if not eligible:
@@ -97,7 +100,8 @@ def specs(scope):
         params["required"] = ["host"] + list(params.get("required") or [])
         if not probe:
             params["properties"]["reason"] = REASON_PARAM
-        desc = a["title"] + (" (read-only check)" if probe else " — risk: %s" % a["risk"])
+        desc = a["title"] + (" (read-only check run on the host over SSH; slower than the hub's data — use "
+                             "it when list_hosts/get_host can't answer)" if probe else " — risk: %s" % a["risk"])
         name = catalog.tool_name(a["id"])
         out.append({"name": name, "description": desc, "parameters": params})
         kinds[name] = ("probe" if probe else "action", a["id"])
@@ -136,7 +140,49 @@ def call_read(scope, name, args):
         return False, "error: %s" % str(e)[:300]
     if spec.host_scope == "fleet":
         data = _filter_rows(data, scope.off_hosts(), _ROW_HOST_KEY.get(name, "host"))
+    data = mark_agent_model(data, getattr(scope, "agent_model", None))
+    data = place_custom_servers(data)
     return True, wrap(name, data)
+
+
+def place_custom_servers(obj, servers=None):
+    """Rows of a custom AI server that the dashboard files under the hub only
+    because no fleet host was given for it say where it really is: its address
+    (UAT-1). Matched by the server's name, from the custom_ai_servers setting."""
+    if servers is None:
+        servers = {s.get("name"): s.get("host") for s in ports.custom_ai_servers()
+                   if s.get("name") and not s.get("fleet_host") and ports.host_for_address(s.get("host")) != "local"}
+    if not servers:
+        return obj
+    if isinstance(obj, list):
+        return [place_custom_servers(x, servers) for x in obj]
+    if isinstance(obj, dict):
+        out = {k: place_custom_servers(v, servers) for k, v in obj.items()}
+        addr = servers.get(out.get("service")) or servers.get(out.get("server"))
+        if addr and out.get("host") in (None, "local"):
+            out["host"] = ports.host_for_address(addr) or addr
+            out["not_on_the_hub"] = True
+        return out
+    return obj
+
+
+# The fields a model is named by in the read tools' rows.
+_MODEL_FIELDS = ("model", "name", "id")
+
+
+def mark_agent_model(obj, model):
+    """Every row that names the agent's own model says so (UAT-1): it is busy
+    answering, never idle, and never something to unload."""
+    if not model:
+        return obj
+    if isinstance(obj, list):
+        return [mark_agent_model(x, model) for x in obj]
+    if isinstance(obj, dict):
+        out = {k: mark_agent_model(v, model) for k, v in obj.items()}
+        if any(out.get(f) == model for f in _MODEL_FIELDS):
+            out["in_use_by_agent"] = True
+        return out
+    return obj
 
 
 def wrap(name, data):
