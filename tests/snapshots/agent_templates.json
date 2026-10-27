@@ -1,0 +1,420 @@
+{
+  "body": {
+    "templates": [
+      {
+        "actions": [],
+        "budget": {
+          "max_seconds": 360,
+          "max_steps": 12
+        },
+        "default_cron": "0 9 * * *",
+        "default_mode": "report",
+        "desc": "Checks that the backup folders you list got new files recently. Report only.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 8000,
+        "id": "backup-age",
+        "name": "Backup freshness",
+        "probes": [
+          "files.changed_within"
+        ],
+        "prompt": "For each selected host, check each watched path with files.changed_within and days 2. A path with no files changed in the last 2 days is stale: say so clearly. If a path is fresh, say how many files changed. If a host has no watched paths, say they can be added under Agent policy.",
+        "requires": [
+          "linux"
+        ],
+        "runs_alone": [],
+        "starter": false,
+        "tools": [
+          "list_hosts"
+        ],
+        "version": 2,
+        "waits_for_approval": []
+      },
+      {
+        "actions": [
+          {
+            "id": "container.restart",
+            "risk": "low",
+            "title": "Restart a container"
+          }
+        ],
+        "budget": {
+          "max_seconds": 480,
+          "max_steps": 20
+        },
+        "default_cron": "30 7 * * *",
+        "default_mode": "propose",
+        "desc": "Unhealthy, restart-looping and long-exited containers across your hosts. Restarts an unhealthy container once (low risk, rate-limited); everything else is reported.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 12000,
+        "id": "container-health",
+        "name": "Container health",
+        "probes": [],
+        "prompt": "For each selected host, list containers with get_containers (pass the host). Report containers that are unhealthy, exited with a non-zero code, or restarting. For a container that is running but unhealthy, restart it once with container.restart and say so; do not restart containers that are restarting by themselves or exited, report them instead. List containers that have been exited for more than 14 days as cleanup candidates.",
+        "requires": [
+          "docker"
+        ],
+        "runs_alone": [
+          "container.restart"
+        ],
+        "starter": true,
+        "tools": [
+          "list_hosts",
+          "get_containers",
+          "get_events"
+        ],
+        "version": 1,
+        "waits_for_approval": []
+      },
+      {
+        "actions": [],
+        "budget": {
+          "max_seconds": 360,
+          "max_steps": 12
+        },
+        "default_cron": "0 8 * * 1",
+        "default_mode": "report",
+        "desc": "What each box, container and model cost in power this week, and what changed. Report only.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 9000,
+        "id": "cost-report",
+        "name": "Cost report",
+        "probes": [],
+        "prompt": "Report this week's power cost: get_costs (range 7d) for the fleet and per host, and get_entity_cost for the three most expensive containers, services or models. Compare with what you can see of the previous period and name what changed most. Keep it to a few lines with numbers and the currency the tool reports.",
+        "requires": [],
+        "runs_alone": [],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_costs",
+          "get_entity_cost"
+        ],
+        "version": 1,
+        "waits_for_approval": []
+      },
+      {
+        "actions": [
+          {
+            "id": "docker.prune_dangling_images",
+            "risk": "low",
+            "title": "Remove dangling (untagged) images"
+          },
+          {
+            "id": "docker.prune_build_cache",
+            "risk": "low",
+            "title": "Remove the Docker build cache"
+          },
+          {
+            "id": "journal.vacuum",
+            "risk": "medium",
+            "title": "Shrink the systemd journal to the last N days"
+          },
+          {
+            "id": "docker.prune_stopped_containers",
+            "risk": "medium",
+            "title": "Remove stopped containers older than N hours"
+          }
+        ],
+        "budget": {
+          "max_seconds": 600,
+          "max_steps": 25
+        },
+        "default_cron": "0 5 * * 0",
+        "default_mode": "propose",
+        "desc": "Old files under the paths you list (with sizes), journal and Docker leftovers. Cleans build cache and dangling images; proposes a journal vacuum and a stopped-container prune. Deleting files is not in this version.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 20000,
+        "id": "data-log-cleanup",
+        "name": "Data & log cleanup",
+        "probes": [
+          "files.list_older_than",
+          "journal.disk_usage",
+          "docker.system_df",
+          "host.disk_usage"
+        ],
+        "prompt": "For each selected host: list files older than 30 days under each watched path with files.list_older_than (only the paths configured for that host; if none are set, say so) and add up their sizes. Check the journal (journal.disk_usage) and Docker leftovers (docker.system_df). Remove dangling images and build cache with docker.prune_dangling_images and docker.prune_build_cache. Propose journal.vacuum (days 30) when the journal is over 1 GB, and docker.prune_stopped_containers (older_than_h 720) when old stopped containers exist. Report the old files found per path with total size; do not delete files.",
+        "requires": [
+          "linux"
+        ],
+        "runs_alone": [
+          "docker.prune_dangling_images",
+          "docker.prune_build_cache"
+        ],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_host",
+          "get_containers"
+        ],
+        "version": 1,
+        "waits_for_approval": [
+          "journal.vacuum",
+          "docker.prune_stopped_containers"
+        ]
+      },
+      {
+        "actions": [],
+        "budget": {
+          "max_seconds": 480,
+          "max_steps": 15
+        },
+        "default_cron": "0 */6 * * *",
+        "default_mode": "report",
+        "desc": "Checks every filesystem; flags any over 85% and what grew. Report only.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 12000,
+        "id": "disk-space-watch",
+        "name": "Disk space watch",
+        "probes": [
+          "host.disk_usage",
+          "docker.system_df"
+        ],
+        "prompt": "For each selected host, check disk use with the host.disk_usage probe (and get_host for the hub's disks). List every filesystem above 85% full, the largest consumers you can see (scan_disk on the hub for the fullest mount, docker.system_df where Docker runs), and whether anything grew fast. If nothing is above 85%, say so in one line. Keep the report short.",
+        "requires": [],
+        "runs_alone": [],
+        "starter": true,
+        "tools": [
+          "list_hosts",
+          "get_host",
+          "scan_disk",
+          "get_history"
+        ],
+        "version": 1,
+        "waits_for_approval": []
+      },
+      {
+        "actions": [
+          {
+            "id": "docker.prune_dangling_images",
+            "risk": "low",
+            "title": "Remove dangling (untagged) images"
+          },
+          {
+            "id": "docker.prune_build_cache",
+            "risk": "low",
+            "title": "Remove the Docker build cache"
+          },
+          {
+            "id": "docker.prune_stopped_containers",
+            "risk": "medium",
+            "title": "Remove stopped containers older than N hours"
+          }
+        ],
+        "budget": {
+          "max_seconds": 600,
+          "max_steps": 20
+        },
+        "default_cron": "0 3 * * 0",
+        "default_mode": "act",
+        "desc": "Finds dangling images, build cache and long-stopped containers. Prunes dangling images and build cache on its own; proposes removing stopped containers.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 18000,
+        "id": "docker-cleanup",
+        "name": "Docker cleanup",
+        "probes": [
+          "docker.system_df",
+          "docker.list_dangling"
+        ],
+        "prompt": "On each selected host, check Docker disk use with the docker.system_df probe and look for dangling images with docker.list_dangling. If dangling images or build cache take space, remove them with docker.prune_dangling_images and docker.prune_build_cache. Look at the container list (get_containers with the host) for containers that have been stopped for more than 14 days; if there are any, propose docker.prune_stopped_containers with older_than_h 336 and name them in the reason. Never touch running containers or volumes. Finish with a short report per host: space before, what was cleaned, what waits for approval.",
+        "requires": [
+          "docker"
+        ],
+        "runs_alone": [
+          "docker.prune_dangling_images",
+          "docker.prune_build_cache"
+        ],
+        "starter": true,
+        "tools": [
+          "list_hosts",
+          "get_containers"
+        ],
+        "version": 1,
+        "waits_for_approval": [
+          "docker.prune_stopped_containers"
+        ]
+      },
+      {
+        "actions": [],
+        "budget": {
+          "max_seconds": 480,
+          "max_steps": 15
+        },
+        "default_cron": "0 8 * * *",
+        "default_mode": "report",
+        "desc": "Throttling, temperatures, kernel GPU errors, OOM kills and VRAM squatters over the last 24 h. Report only.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 14000,
+        "id": "gpu-health",
+        "name": "GPU health check",
+        "probes": [
+          "gpu.kernel_errors_24h"
+        ],
+        "prompt": "Check GPU health over the last 24 hours: get_gpu (range 24h) for utilisation, temperatures, power and VRAM per model; get_events (range 24h) for OOM kills; the gpu.kernel_errors_24h probe on each selected Linux host for driver errors. Flag temperatures above 83 C, cards pinned at their power limit, OOM kills, kernel GPU errors and models holding VRAM without being used. If all is well, say so in one line.",
+        "requires": [],
+        "runs_alone": [],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_gpu",
+          "get_events",
+          "get_history",
+          "get_ai_models"
+        ],
+        "version": 1,
+        "waits_for_approval": []
+      },
+      {
+        "actions": [
+          {
+            "id": "ollama.unload_model",
+            "risk": "low",
+            "title": "Unload an Ollama model from memory"
+          },
+          {
+            "id": "ollama.remove_model",
+            "risk": "high",
+            "title": "Delete an Ollama model from disk"
+          }
+        ],
+        "budget": {
+          "max_seconds": 600,
+          "max_steps": 25
+        },
+        "default_cron": "0 2 * * 6",
+        "default_mode": "propose",
+        "desc": "Inventory of every AI model across your hosts: duplicates, models unused for 30 days, models that don't fit VRAM. Unloads idle models; proposes one removal per model, with the space it frees.",
+        "eligible_hosts": [],
+        "est_tokens": 25000,
+        "id": "model-housekeeping",
+        "name": "Model housekeeping",
+        "probes": [
+          "ollama.list_models"
+        ],
+        "prompt": "Build an inventory of the AI models on the selected hosts with get_installed_models and get_ai_models (range 30d), and the ollama.list_models probe per host. Use get_benchmarks to see which models fit in VRAM. Flag: the same model installed on several hosts, models not loaded in the last 30 days, and models that don't fit the host's VRAM. Unload models that are loaded but idle with ollama.unload_model. For each model worth deleting, propose ollama.remove_model on that host, one call per model, with a reason that states its size and why. Never remove a model that is loaded. Finish with a short summary: host, model, size, verdict.",
+        "requires": [
+          "ollama"
+        ],
+        "runs_alone": [
+          "ollama.unload_model"
+        ],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_installed_models",
+          "get_ai_models",
+          "get_benchmarks",
+          "get_gpu"
+        ],
+        "version": 1,
+        "waits_for_approval": [
+          "ollama.remove_model"
+        ]
+      },
+      {
+        "actions": [
+          {
+            "id": "journal.vacuum",
+            "risk": "medium",
+            "title": "Shrink the systemd journal to the last N days"
+          },
+          {
+            "id": "docker.prune_dangling_images",
+            "risk": "low",
+            "title": "Remove dangling (untagged) images"
+          }
+        ],
+        "budget": {
+          "max_seconds": 600,
+          "max_steps": 25
+        },
+        "default_cron": "0 4 * * 0",
+        "default_mode": "propose",
+        "desc": "Disk, journal size, pending updates, reboot needed, failed services. Proposes a journal vacuum and dangling-image cleanup.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 20000,
+        "id": "system-maintenance",
+        "name": "System maintenance",
+        "probes": [
+          "host.disk_usage",
+          "journal.disk_usage",
+          "updates.list",
+          "host.reboot_required",
+          "docker.system_df"
+        ],
+        "prompt": "For each selected host: check disk use (host.disk_usage), journal size (journal.disk_usage), pending updates (updates.list where available), whether a reboot is pending (host.reboot_required: exit code 0 means yes), and failed services (get_services with the host). If the journal is larger than 1 GB, propose journal.vacuum with days 14. If Docker has dangling images, propose docker.prune_dangling_images. Never reboot or update anything. Finish with a short per-host report.",
+        "requires": [
+          "linux"
+        ],
+        "runs_alone": [
+          "docker.prune_dangling_images"
+        ],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_host",
+          "get_services"
+        ],
+        "version": 1,
+        "waits_for_approval": [
+          "journal.vacuum"
+        ]
+      },
+      {
+        "actions": [],
+        "budget": {
+          "max_seconds": 480,
+          "max_steps": 20
+        },
+        "default_cron": "0 8 * * 1",
+        "default_mode": "report",
+        "desc": "Pending OS updates, reboots needed and the monitor's own version, per host, with a safe order to apply them. Report only.",
+        "eligible_hosts": [
+          "local",
+          "lab1"
+        ],
+        "est_tokens": 14000,
+        "id": "update-report",
+        "name": "Update report",
+        "probes": [
+          "updates.list",
+          "host.reboot_required"
+        ],
+        "prompt": "For each selected host: pending package updates (updates.list where available), whether a reboot is pending (host.reboot_required: exit code 0 means yes), and the OS-upgrade hints in get_host. Also say whether a new HomeLab Monitor release is available (get_snapshot). Suggest a safe order (least important box first, the hub and anything serving models last). Do not apply anything.",
+        "requires": [],
+        "runs_alone": [],
+        "starter": false,
+        "tools": [
+          "list_hosts",
+          "get_host",
+          "get_snapshot"
+        ],
+        "version": 1,
+        "waits_for_approval": []
+      }
+    ]
+  },
+  "status": 200
+}

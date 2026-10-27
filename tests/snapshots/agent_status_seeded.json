@@ -1,0 +1,18 @@
+{
+  "body": {
+    "allowed": true,
+    "controls_enabled": true,
+    "default": {
+      "model": "m1",
+      "provider_id": "id0001"
+    },
+    "enabled": true,
+    "has_provider": true,
+    "password_set": true,
+    "paused": false,
+    "pending_approvals": 1,
+    "running": 0,
+    "version": "0.37.0"
+  },
+  "status": 200
+}
