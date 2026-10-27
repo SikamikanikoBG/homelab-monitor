@@ -1,0 +1,28 @@
+from ui import *
+import hlm, json, time
+api = hlm.Client(); api.login()
+info = json.load(open("out_collapse.json"))
+with sync_playwright() as p:
+    b = browser(p)
+    pg = page(b, 390, 844, dark=True, url="/#overview")
+    pg.wait_for_timeout(1500)
+    print("phone nav badge:", pg.evaluate("() => [...document.querySelectorAll('.ag-badge, #ndot-agent, .ndot-agent')].map(e=>[e.className, e.innerText, !!e.offsetParent])"))
+    shot(pg, "i-phone-overview-badge")
+    agent(pg, "approvals")
+    shot(pg, "i-phone-approvals", full=True)
+    pg.context.close()
+    pg = page(b, 1440, 900)
+    agent(pg, "approvals")
+    shot(pg, "i-desk-approvals")
+    print("inbox text:", pg.inner_text("#ag-cockpit")[:900].replace("\n", " | "))
+    before = hlm.ardi("docker exec hlm-target1 docker inspect -f '{{.State.Status}}' worker").strip()
+    pg.locator("[data-ap]").first.click(); pg.wait_for_timeout(6000)
+    after = hlm.ardi("docker exec hlm-target1 docker inspect -f '{{.State.Status}}' worker").strip()
+    print("worker", before, "->", after)
+    shot(pg, "i-desk-approvals-after")
+    print("inbox after:", pg.inner_text("#ag-cockpit")[:600].replace("\n", " | "))
+    dump_errors()
+r = api.call("GET", "/api/agent/runs/" + info["runs"][0])[1]
+print("original run steps:", [(s["kind"], s["decision_reason"], s["ok"], s["actor"]) for s in r["steps"] if s["kind"] != "model"])
+hlm.ardi("docker exec hlm-target1 docker start worker")
+api.call("DELETE", "/api/agent/tasks/" + info["task"])

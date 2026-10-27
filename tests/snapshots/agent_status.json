@@ -1,0 +1,18 @@
+{
+  "body": {
+    "allowed": true,
+    "controls_enabled": true,
+    "default": {
+      "model": null,
+      "provider_id": null
+    },
+    "enabled": true,
+    "has_provider": false,
+    "password_set": true,
+    "paused": false,
+    "pending_approvals": 0,
+    "running": 0,
+    "version": "0.37.0"
+  },
+  "status": 200
+}

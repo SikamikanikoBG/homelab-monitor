@@ -3,6 +3,7 @@
 <title>HomeLab Monitor</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
+<script src="/static/csrf.js"></script>
 <script src="/static/chart.min.js" onerror="this.remove();var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';document.head.appendChild(s)"></script>
 <script src="/static/html2canvas.min.js" onerror="this.remove();var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';document.head.appendChild(s)"></script>
 <style>
@@ -2264,6 +2265,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <button type="button" class="subtab"    data-sp="costs" data-i18n="set.tab_costs">💰 Costs</button>
       <button type="button" class="subtab"    data-sp="integrations" data-i18n="set.tab_integrations">🧪 Integrations</button>
       <button type="button" class="subtab"    data-sp="general" data-i18n="set.tab_general" data-i18n-def="⚙️ General">⚙️ General</button>
+      <button type="button" class="subtab"    data-sp="security" data-i18n="set.tab_security">🔒 Security</button>
     </div>
 
     <!-- ── Alerts sub-page ── -->
@@ -2601,6 +2603,10 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
             <option value="90">90 days</option><option value="365">1 year</option>
           </select>
         </div>
+        <div style="flex:1;min-width:120px" id="intg_key_scope_wrap" hidden>
+          <div class="flabel" data-i18n="set.key_scope">Scope</div>
+          <select id="intg_key_scope" class="field"><option value="push" data-i18n="set.scope_push">push (experiments)</option><option value="read" data-i18n="set.scope_read">read (Grafana, MCP)</option><option value="admin" data-i18n="set.scope_admin">admin (everything)</option></select>
+        </div>
         <button class="rb on" id="intg_key_create" data-i18n="btn.create_key">Create key</button>
       </div>
       <div id="intg_key_reveal" hidden style="margin:6px 0">
@@ -2706,6 +2712,7 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
         </div>
       </div>
     </div><!-- /set-pane-general -->
+    <div id="set-pane-security" hidden></div><!-- rendered by static/csrf.js -->
   </div>
 </section>
 
@@ -3211,7 +3218,8 @@ const TABS = [
   {id:'backup',     label:'Backup',     charts:false, settings:true, zone:'settings'},
 ];
 let R = localStorage.getItem('hl_range') || '6h';
-let TAB = (location.hash.slice(1)) || localStorage.getItem('hl_tab') || 'overview';
+const INITIAL_TAB = (location.hash.slice(1)) || localStorage.getItem('hl_tab') || 'overview';   // kept for tabs added later (agent.js)
+let TAB = INITIAL_TAB;
 if(!TABS.some(t=>t.id===TAB)) TAB='overview';
 // Settings drawer: the monitoring tab to return to when leaving Settings, plus
 // whether the drawer is currently open (kept in sync by showTab()).
@@ -3467,7 +3475,9 @@ function applyIcons(scope){
   });
 }
 const sev = p => p>=90?'var(--crit)':p>=75?'var(--warn)':'var(--ok)';
-const esc = s => (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// Escapes quotes too: values land inside attribute="…" as often as in text, and a
+// name with a " in it must not be able to close the attribute (#354).
+const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ICON={critical:'⛔',warning:'⚠️',ok:'✅',info:'ℹ️'};
 // Stable per-name colour, returned as HEX rather than hsl(). Several call sites
 // append a two-digit alpha (`colorFor(x)+'cc'`) for chart fills, and
@@ -3539,6 +3549,7 @@ function buildNav(){
   };
   nl.innerHTML = group(I18N.t('nav.group.monitoring','Monitoring'),'monitoring')
                + group(I18N.t('nav.group.ai','AI'),'ai')
+               + group(I18N.t('nav.group.agents','Agent'),'agents')
                + group(I18N.t('nav.group.settings','Settings'),'settings');
   nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
 }
@@ -3659,6 +3670,7 @@ function showTab(id){
   // straight into #benchmarks this runs before that block has parsed, so guard
   // the call (the Lab block self-renders when it loads; see its static wiring).
   if(id==='benchmarks' && typeof renderBenchmarks==='function') renderBenchmarks(true);
+  document.dispatchEvent(new CustomEvent('hl:tab', {detail: id}));   // static/agent.js listens
 }
 
 // ── Data loaders ────────────────────────────────────────────────────────────
@@ -5620,7 +5632,8 @@ function renderHealth(){
   if(banner){
     const bad = checks.filter(c=>c.status==='warn'||c.status==='fail');
     if((overall==='warn'||overall==='fail') && bad.length && !DIAG_DISMISSED){
-      const _lead = I18N.tf('diag.banner_lead', `⚠️ ${bad.length} setup item${bad.length>1?'s':''} need attention — some features are limited.`, {n:bad.length});
+      const _lead = bad.length===1 ? I18N.t('diag.banner_lead1', '⚠️ 1 setup item needs attention — some features are limited.')
+        : I18N.tf('diag.banner_lead', `⚠️ ${bad.length} setup items need attention — some features are limited.`, {n:bad.length});
       banner.innerHTML = _lead + ` `
         + `<a href="#" id="diaggo">${I18N.t('diag.banner_link','See Setup &amp; requirements')}</a><button class="x" id="diagx" title="${I18N.t('common.dismiss','Dismiss')}">×</button>`;
       banner.hidden = false;
@@ -10610,7 +10623,7 @@ function verGt(a, b){                    // a > b ? (tolerant numeric semver)
 // **bold**, `code`, [links](url)). Everything is escaped first, so it's safe to
 // set as innerHTML even though the source is our own bundled file.
 function mdMini(md){
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const inline = s => esc(s)
     .replace(/`([^`]+)`/g, (_,c)=>`<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, (_,b)=>`<strong>${b}</strong>`)
@@ -10663,6 +10676,10 @@ function showWhatsNew(data, curVersion){
 async function maybeWhatsNew(curVersion){
   if(WN_DONE || !curVersion) return;
   WN_DONE = true;                                // never re-run this page load
+  // The AI agent's first-visit invitation goes first; agent.js shows the notes once it is set up or put off.
+  try{ if((await HLM_AUTH.status()).agent){ const s = await (await fetch('/api/agent/setup')).json();
+    const pref = localStorage.getItem('hlm.agent.home') || '';
+    if(s.allowed && !s.done && !s.dismissed && !pref){ WN_DONE = false; return; } } }catch(e){ /* no agent: as before */ }
   let seen;
   try{ seen = localStorage.getItem(WN_KEY); }catch(e){ return; }
   if(seen === curVersion) return;                // same version (redeploy) → nothing
@@ -10727,18 +10744,20 @@ function setSettingsPane(name){
   document.querySelectorAll('#set-subtabs .subtab').forEach(b=>b.classList.toggle('on', b.dataset.sp===name));
   document.querySelectorAll('[id^="set-pane-"]').forEach(p=>p.hidden = p.id !== 'set-pane-'+name);
   if(name==='integrations') loadIntegrations();
+  if(name==='security') HLM_AUTH.renderSecurity(document.getElementById('set-pane-security'));
 }
 document.querySelectorAll('#set-subtabs .subtab').forEach(b=>b.onclick=()=>setSettingsPane(b.dataset.sp));
 
 // ── Integrations settings (API keys + MLflow) ─────────────────────────────────
 async function loadIntegrations(){
   let j; try{ j=await(await fetch('/api/integration/keys')).json(); }catch(e){ return; }
+  const sw=document.getElementById('intg_key_scope_wrap'); if(sw) sw.hidden = !(await HLM_AUTH.status()).password_set;   // scopes exist once there is a login
   const tb=document.getElementById('intg_key_tbody'); if(tb){
     const keys=j.keys||[];
     const fmtD=ts=>ts?new Date(ts*1000).toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'}):'—';
     const fmtU=ts=>ts?fmtMcpAge(Math.max(0,Math.floor(Date.now()/1000)-ts)):'never';
     tb.innerHTML = keys.length ? keys.map(k=>`<tr>
-      <td><b>${esc(k.name)}</b></td>
+      <td><b>${esc(k.name)}</b>${k.scope?` <span class="badge">${esc(k.scope)}</span>`:''}</td>
       <td><code>${esc(k.prefix)}…</code></td>
       <td>${fmtD(k.created_at)}</td>
       <td>${k.expires_at?(k.expired?'<span class="badge crit">expired</span> ':'')+fmtD(k.expires_at):'never'}</td>
@@ -10773,7 +10792,7 @@ function intgStatus(level,msg){
     const name=(document.getElementById('intg_key_name').value||'').trim();
     const exp=document.getElementById('intg_key_exp').value;
     let j; try{ j=await(await fetch('/api/integration/keys',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name:name||'key', expires_in_days: exp?parseInt(exp,10):null})})).json(); }catch(e){ intgStatus('err','Failed: '+e); return; }
+      body:JSON.stringify({name:name||'key', expires_in_days: exp?parseInt(exp,10):null, scope:(document.getElementById('intg_key_scope')||{}).value||'push'})})).json(); }catch(e){ intgStatus('err','Failed: '+e); return; }
     if(j.key){ document.getElementById('intg_key_reveal').hidden=false; document.getElementById('intg_key_value').value=j.key;
       document.getElementById('intg_key_name').value=''; loadIntegrations(); intgStatus('ok','Key created — copy it now, it won’t be shown again.'); } };
   const cp=document.getElementById('intg_key_copy');
@@ -10824,6 +10843,12 @@ document.getElementById('updcopy').onclick = async () => {
 document.getElementById('updnowbtn').onclick = startSelfUpdate;
 showTab(TAB);
 loadData(); loadHealth(); loadFleet();
+// AI agent (#354): its UI lives in static/agent.js + agent.css and is only
+// loaded when the server says the agent exists (AGENT_ENABLED=1); otherwise
+// /api/agent/status is a 404 and nothing more is fetched.
+(async () => { try{ if(!(await HLM_AUTH.status()).agent) return; const r=await fetch('/api/agent/status'); if(!r.ok) return; const v=encodeURIComponent((await r.json()).version||'');
+  const css=document.createElement('link'); css.rel='stylesheet'; css.href='/static/agent.css?v='+v; document.head.appendChild(css);
+  const js=document.createElement('script'); js.src='/static/agent.js?v='+v; document.body.appendChild(js); }catch(e){} })();
 // Pick up the reduced-motion preference before the Settings tab is ever
 // opened — otherwise gauges would animate on first paint regardless of it.
 (async () => { try{ const j=await(await fetch('/api/settings')).json(); applyReducedMotion(j&&j.settings&&j.settings.reduced_motion==='1'); }catch(e){} })();
@@ -11062,6 +11087,7 @@ function openLiveStream(){
   // healthy connection dead. Handler errors are logged, not swallowed — a silent
   // catch here is how a broken live path looks exactly like a quiet homelab.
   es.addEventListener('now',   e => { noteLiveFrame(); if(autoOn()){ try{ applyLive(JSON.parse(e.data)); }catch(err){ console.error('live frame failed', err); } } });
+  es.addEventListener('agent', e => { noteLiveFrame(); document.dispatchEvent(new CustomEvent('hl:agent', {detail: e.data})); });
   es.addEventListener('fleet', e => { noteLiveFrame(); if(autoOn()){ try{ applyFleet(JSON.parse(e.data)); }catch(err){ console.error('fleet frame failed', err); } } });
   es.onopen  = () => { LIVE_ON = true; LIVE_LAST_FRAME = Date.now(); scheduleHistory(); };
   // EventSource reconnects on its own; until it does, LIVE_ON=false pulls the
