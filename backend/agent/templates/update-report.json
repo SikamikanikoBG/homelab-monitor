@@ -1,0 +1,25 @@
+{
+  "id": "update-report",
+  "version": 1,
+  "name": "Update report",
+  "desc": "Pending OS updates, reboots needed and the monitor's own version, per host, with a safe order to apply them. Report only.",
+  "prompt": "For each selected host: pending package updates (updates.list where available), whether a reboot is pending (host.reboot_required: exit code 0 means yes), and the OS-upgrade hints in get_host. Also say whether a new HomeLab Monitor release is available (get_snapshot). Suggest a safe order (least important box first, the hub and anything serving models last). Do not apply anything.",
+  "tools": [
+    "list_hosts",
+    "get_host",
+    "get_snapshot"
+  ],
+  "probes": [
+    "updates.list",
+    "host.reboot_required"
+  ],
+  "actions": [],
+  "requires": [],
+  "default_cron": "0 8 * * 1",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 20,
+    "max_seconds": 480
+  },
+  "est_tokens": 14000
+}

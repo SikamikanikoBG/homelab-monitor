@@ -2,7 +2,9 @@
 from flask import Blueprint, request, jsonify, Response, send_file, send_from_directory, after_this_request, g, abort
 import time
 
-bp = Blueprint('uptime_api', __name__)
+from backend.auth.marks import open_access
+
+bp = Blueprint("uptime_api", __name__)
 
 
 @bp.route("/api/uptime", methods=["GET", "POST"])
@@ -115,6 +117,7 @@ def api_brief_test():
 
 
 @bp.route("/api/public-status")
+@open_access
 def api_public_status():
     import app as _app
     if not _app._public_status_enabled():
@@ -146,6 +149,7 @@ def api_public_status():
 
 
 @bp.route("/api/public-status/<cid>")
+@open_access
 def api_public_status_one(cid):
     import app as _app
     if not _app._public_status_enabled():
@@ -158,6 +162,7 @@ def api_public_status_one(cid):
 
 @bp.route("/public/<cid>")
 @bp.route("/public")
+@open_access
 def public_status(cid=None):
     import app as _app
     if not _app._public_status_enabled():

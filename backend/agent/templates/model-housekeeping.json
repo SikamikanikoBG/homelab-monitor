@@ -1,0 +1,31 @@
+{
+  "id": "model-housekeeping",
+  "version": 1,
+  "name": "Model housekeeping",
+  "desc": "Inventory of every AI model across your hosts: duplicates, models unused for 30 days, models that don't fit VRAM. Unloads idle models; proposes one removal per model, with the space it frees.",
+  "prompt": "Build an inventory of the AI models on the selected hosts with get_installed_models and get_ai_models (range 30d), and the ollama.list_models probe per host. Use get_benchmarks to see which models fit in VRAM. Flag: the same model installed on several hosts, models not loaded in the last 30 days, and models that don't fit the host's VRAM. Unload models that are loaded but idle with ollama.unload_model. For each model worth deleting, propose ollama.remove_model on that host, one call per model, with a reason that states its size and why. Never remove a model that is loaded. Finish with a short summary: host, model, size, verdict.",
+  "tools": [
+    "list_hosts",
+    "get_installed_models",
+    "get_ai_models",
+    "get_benchmarks",
+    "get_gpu"
+  ],
+  "probes": [
+    "ollama.list_models"
+  ],
+  "actions": [
+    "ollama.unload_model",
+    "ollama.remove_model"
+  ],
+  "requires": [
+    "ollama"
+  ],
+  "default_cron": "0 2 * * 6",
+  "default_mode": "propose",
+  "budget": {
+    "max_steps": 25,
+    "max_seconds": 600
+  },
+  "est_tokens": 25000
+}

@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "weak_password",
+    "message": "Please use at least 10 characters.",
+    "ok": false
+  },
+  "status": 400
+}

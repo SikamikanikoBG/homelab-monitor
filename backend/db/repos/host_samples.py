@@ -181,5 +181,8 @@ def heatmap(host: str, ts: int, conn=None) -> list:
 def rename_host(old: str, new: str, conn=None):
     """Follow a host rename so its power history doesn't split."""
     c = conn or connection()
-    c.execute("UPDATE host_samples SET host=? WHERE host=?", (new, old))
-    c.execute("UPDATE host_samples_1h SET host=? WHERE host=?", (new, old))
+    # OR IGNORE + delete: a name used before (rename back, or a sample the
+    # poller wrote mid-rename) already owns some (ts, host) keys; keep those.
+    for tbl in ("host_samples", "host_samples_1h"):
+        c.execute(f"UPDATE OR IGNORE {tbl} SET host=? WHERE host=?", (new, old))
+        c.execute(f"DELETE FROM {tbl} WHERE host=?", (old,))

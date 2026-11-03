@@ -1,0 +1,51 @@
+{
+  "body": {
+    "items": [
+      {
+        "actions": [
+          "docker.prune_dangling_images",
+          "docker.prune_build_cache",
+          "docker.prune_stopped_containers"
+        ],
+        "budget": {
+          "max_seconds": 600,
+          "max_steps": 20
+        },
+        "catch_up": "skip",
+        "created_at": 1735689600,
+        "cron": "0 3 * * 0",
+        "delivery": {
+          "channels": [
+            "inapp"
+          ]
+        },
+        "enabled": true,
+        "hosts": [
+          "lab1"
+        ],
+        "id": "id0005",
+        "last_run": null,
+        "mode": "act",
+        "model": "m1",
+        "name": "Docker cleanup",
+        "next_fire": 1736046000,
+        "next_fire_local": "2025-01-05T03:00+00:00",
+        "prompt": "On each selected host, check Docker disk use with the docker.system_df probe and look for dangling images with docker.list_dangling. If dangling images or build cache take space, remove them with docker.prune_dangling_images and docker.prune_build_cache. Look at the container list (get_containers with the host) for containers that have been stopped for more than 14 days; if there are any, propose docker.prune_stopped_containers with older_than_h 336 and name them in the reason. Never touch running containers or volumes. Finish with a short report per host: space before, what was cleaned, what waits for approval.",
+        "provider_id": "id0001",
+        "template_id": "docker-cleanup",
+        "template_version": 1,
+        "tools": [
+          "list_hosts",
+          "get_containers",
+          "docker.system_df",
+          "docker.list_dangling"
+        ],
+        "tz": "UTC",
+        "update_available": false,
+        "updated_at": 1735689600,
+        "warning": null
+      }
+    ]
+  },
+  "status": 200
+}

@@ -153,6 +153,7 @@ app.register_blueprint(_hosts_api_bp)
 app.register_blueprint(_integrations_bp)
 app.register_blueprint(_icons_bp)
 app.register_blueprint(_benchmarks_bp)
+import backend.wiring as _wiring; _wiring.install(app)   # login gate + AI agent (#354), dormant by default
 
 # ── Prometheus gauges (defined once at module level) ──────────────────────────
 _GAUGES: dict = {}
@@ -548,8 +549,13 @@ def fleet_payload():
     """Compact per-host summary rows for the All-hosts table: local first, then
     registered hosts in the order they were added. Served by /api/fleet and
     pushed on the SSE `fleet` event — one builder, so poll and push can't drift."""
+    local_host = enrich_os_upgrade(_local_now_snapshot())
+    local_gpus = list((local_host or {}).get("gpus") or [])
+    local_containers = ((local_host or {}).get("docker") or {}).get("containers") or []
     rows = [{"name": "local", "label": socket.gethostname() + " (this hub)",
-             "ssh_target": None, "host": enrich_os_upgrade(_local_now_snapshot()),
+             "ssh_target": None, "host": local_host,
+             "gpus": local_gpus,
+             "containers": list(local_containers),
              "at": int(time.time()), "online": True, "is_local": True,
              "last_check": {"summary": {"overall": "ok"}},
              # Verdict on whether this host's GPUs are actually being watched —
@@ -560,11 +566,14 @@ def fleet_payload():
         for h in hosts:
             entry = HOST_DATA.get(h["name"]) or {}
             data  = entry.get("data") or {}
+            host = enrich_os_upgrade(data.get("host")) if data else None
             rows.append({
                 "name": h["name"],
                 "label": h["name"],
                 "ssh_target": h["ssh_target"],
-                "host": enrich_os_upgrade(data.get("host")) if data else None,
+                "host": host,
+                "gpus": list((host or {}).get("gpus") or []),
+                "containers": list(((host or {}).get("docker") or {}).get("containers") or []),
                 "at": entry.get("at"),
                 "online": _host_is_online(entry),
                 "is_local": False,
@@ -3602,10 +3611,13 @@ def add_host(name, ssh_target, tags=""):
             return None, f"A host named '{name}' already exists."
     return {"name": name, "ssh_target": ssh_target.strip()}, None
 
+import backend.agent.hosts as _agent_hosts
 def delete_host(name):
     from backend.db.repos import hosts as _hosts_repo
     with LOCK:
-        rowcount = _hosts_repo.delete(name, conn=DB)
+        rowcount = _hosts_repo.delete(name, conn=DB, commit=False)
+        _agent_hosts.deleted(name, conn=DB)          # agent policy goes with the host, same transaction
+        DB.commit()
     return rowcount > 0
 
 def rename_host(old, new):
@@ -3624,7 +3636,7 @@ def rename_host(old, new):
         return None, "Nothing to update."
     with LOCK:
         try:
-            rowcount = _hosts_repo.rename(old, new, conn=DB)
+            rowcount = _hosts_repo.rename(old, new, conn=DB, commit=False)
         except sqlite3.IntegrityError:
             return None, f"A host named '{new}' already exists."
         if rowcount == 0:
@@ -3638,6 +3650,7 @@ def rename_host(old, new):
         # name while the renamed host shows an empty GPU tab.
         from backend.db.repos import gpu_samples as _gs_repo
         _gs_repo.rename_host(old, new, conn=DB)
+        _agent_hosts.renamed(old, new, conn=DB)      # agent policy follows, same transaction (#354)
         DB.commit()
     with HOST_DATA_LOCK:
         if old in HOST_DATA:
@@ -3868,6 +3881,15 @@ def _local_now_snapshot():
     for k in ("os", "hw", "net", "sec"):
         if H.get(k):
             out[k] = H[k]
+    # Fleet probes keep per-card GPUs and Docker inventory in the host block.
+    # Mirror that shape locally so /api/fleet can expose the same assets for
+    # the hub and for remotes without inventing a second local-only contract.
+    # The hub's own inventory is HEALTH["docker"] (collect_docker) — LATEST["host"]
+    # never carries it — so read it from there.
+    out["gpus"] = list((LATEST or {}).get("gpus") or [])
+    docker = (HEALTH or {}).get("docker")
+    if docker is not None:
+        out["docker"] = docker
     # RAPL power — top-level in LATEST (not inside host), so pull explicitly.
     # Mirrors the shape probe.py emits for remotes (cpu_power/dram_power in host).
     for k in ("cpu_power", "dram_power"):
@@ -7609,6 +7631,7 @@ if "pytest" not in sys.modules:
     threading.Thread(target=brief_worker, daemon=True).start()
     threading.Thread(target=_collector_watchdog, daemon=True).start()
     ICON_STORE.refresh_index_async()
+    _wiring.start_workers()   # AI agent threads; nothing starts unless the agent is enabled
 
 
 import os as _os

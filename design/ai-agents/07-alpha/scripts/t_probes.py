@@ -1,0 +1,25 @@
+"""Read-only probes: watched paths, traversal, quoting."""
+import hlm, json
+c = hlm.Client(); c.login()
+def probe(tool, args):
+    cid = c.new_conv()
+    s, d = c.ask(cid, hlm.stub([{"tool_calls": [{"name": tool, "arguments": args}]}, {"text": "ok"}]))
+    msgs = c.call("GET", "/api/agent/conversations/" + cid)[1]["messages"]
+    said = " ".join(str(m.get("content")) for m in msgs if m["role"] == "tool")
+    print(f"{tool:24s} {json.dumps(args):55s} {said[:300]!r}")
+print(c.call("GET", "/api/agent/policy")[1]["watched_paths"])
+probe("files__list_older_than", {"host": "lab1", "path": "/etc", "days": 1})
+probe("files__list_older_than", {"host": "lab1", "path": "/tmp/../etc", "days": 1})
+probe("files__newest_mtime", {"host": "lab1", "path": "/root"})
+r = c.call("PUT", "/api/agent/policy/paths", {"host": "lab1", "paths": ["/tmp"]}); print("set watched", r)
+probe("files__list_older_than", {"host": "lab1", "path": "/tmp", "days": 1})
+probe("files__list_older_than", {"host": "lab1", "path": "/tmp/../etc", "days": 1})
+probe("files__list_older_than", {"host": "lab1", "path": "/tmpx", "days": 1})
+probe("host__disk_usage", {"host": "lab1"})
+probe("docker__system_df", {"host": "lab2"})
+probe("updates__list", {"host": "local"})
+probe("host__reboot_required", {"host": "lab1"})
+probe("host__reboot_required", {"host": "local"})
+probe("docker__list_dangling", {"host": "lab1"})
+probe("gpu__kernel_errors_24h", {"host": "lab1"})
+probe("ollama__list_models", {"host": "lab1"})

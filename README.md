@@ -84,6 +84,9 @@ Set these under `environment:` in `docker-compose.yml` (all optional):
 | `MCP_PORT` | `9810` | Port for the built-in read-only MCP server |
 | `ENABLE_MCP` | `1` | Set `0` to run the dashboard without the MCP server |
 | `ENABLE_CONTROLS` | `1` | Set `0` to remove the start/stop/restart buttons from the Containers and Services tabs |
+| `ENABLE_HOST_RUN` | `0` | `1` re-enables `/api/hosts/<name>/run` (run any command on a host; unused by the UI) |
+| `ADMIN_PASSWORD` | — | Set the optional dashboard password at boot (or in Settings → Security) |
+| `AGENT_ENABLED` | — | `1` makes the optional [AI agent](https://sikamikanikobg.github.io/homelab-monitor/agents/) available (needs a password) |
 | `ALLOW_SELF_UPDATE` | `1` | Set `0` to disable in-app updating |
 | `WATCH_CONTAINERS` | — | Extra containers to scan for OOM (comma-separated) |
 | `WATCH_SERVICES` | — | systemd units to always show, even vendor ones (comma-separated) |
@@ -130,7 +133,7 @@ Once connected, skip the tab-hunting and just **ask** — the agent picks the ri
 
 ## Security
 
-This is a host monitor: it runs with host access, plus a read-write Docker socket and D-Bus socket (self-update and the Containers/Services tabs' start/stop/restart controls are on by default — set `ALLOW_SELF_UPDATE=0`/`ENABLE_CONTROLS=0`, or use `docker-compose.readonly.yml`, to lock it down to pure monitoring) and a read-only root mount — a broad footprint by design. The dashboard itself has **no login/auth** — it's meant for a trusted LAN. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
+This is a host monitor: it runs with host access, plus a read-write Docker socket and D-Bus socket (self-update and the Containers/Services tabs' start/stop/restart controls are on by default — set `ALLOW_SELF_UPDATE=0`/`ENABLE_CONTROLS=0`, or use `docker-compose.readonly.yml`, to lock it down to pure monitoring) and a read-only root mount — a broad footprint by design. The dashboard has an **optional login** (Settings → Security; off until you set a password, and required for the AI agent) — without one it's meant for a trusted LAN. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
 
 ## ⭐ Support the project
 

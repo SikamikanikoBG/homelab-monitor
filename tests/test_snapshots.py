@@ -644,8 +644,11 @@ class TestSnapshots(unittest.TestCase):
 
     # ─── POST /api/hosts/<name>/run ──────────────────────────────────────────
 
+    # /run is opt-in since #354 (ENABLE_HOST_RUN=1); these baselines cover the
+    # opted-in behaviour, unchanged. The off-by-default answer has its own
+    # baseline in test_agent_snapshots.py.
     def test_api_hosts_run(self):
-        with patch("app.run_on_host", return_value=None):
+        with patch("app.run_on_host", return_value=None), patch.dict(os.environ, {"ENABLE_HOST_RUN": "1"}):
             r = self.client.post("/api/hosts/nonexistent/run",
                                  json={"cmd": "hostname"},
                                  content_type="application/json")
@@ -658,7 +661,7 @@ class TestSnapshots(unittest.TestCase):
                              json={"name": "testhost-run", "ssh_target": "user@10.0.0.6"},
                              content_type="application/json")
         run_result = {"ok": True, "stdout": "testhost-run\n", "stderr": "", "rc": 0}
-        with patch("app.run_on_host", return_value=run_result):
+        with patch("app.run_on_host", return_value=run_result), patch.dict(os.environ, {"ENABLE_HOST_RUN": "1"}):
             r = self.client.post("/api/hosts/testhost-run/run",
                                  json={"cmd": "hostname"},
                                  content_type="application/json")
