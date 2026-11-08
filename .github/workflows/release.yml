@@ -31,7 +31,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.event.inputs.tag || github.ref }}
 
@@ -44,7 +44,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: sikamikaniko123/homelab-monitor
           tags: |
