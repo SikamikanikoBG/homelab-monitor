@@ -131,6 +131,45 @@ def _resolve_fleet_host(stored, known_hosts):
         return "local"
     return stored if stored in known_hosts else "local"
 
+def _host_by_address(addr, hosts):
+    """The registered host whose ssh target is `addr` (the same box), else None.
+    A custom AI server with no fleet_host is stamped with it, so a vLLM on vader
+    shows under vader instead of the hub (UAT-1). Pure → unit-testable."""
+    a = (addr or "").strip().lower()
+    if not a:
+        return None
+    for h in hosts:
+        t = (h.get("ssh_target") or "").strip().lower()
+        t = t.split("@", 1)[-1].rsplit(":", 1)[0] if t else ""
+        if t and t == a:
+            return h.get("name")
+    return None
+
+
+def purge_finished_runs(conn, cutoff):
+    """Delete finished runs whose end predates `cutoff`, with their metrics.
+
+    Called by sample_once()'s retention pass, and directly by tests — the
+    behaviour lives here rather than inline so a test exercises the shipped
+    statements instead of a copy of them that can silently drift.
+
+    A run is eligible only when it is not 'running' AND its effective end
+    (ended_at, falling back to started_at) is older than the cutoff. Age alone
+    cannot decide: `runs` has no ts column, and a long-running experiment must
+    survive regardless of how long ago it started. Metrics go first so a crash
+    between the two statements leaves a childless run (harmless) rather than
+    orphaned metrics. The stale-run janitor flips crashed 'running' rows to
+    'killed' on a faster cadence, so the two compose rather than race.
+    """
+    dead = [r[0] for r in conn.execute(
+        "SELECT id FROM runs WHERE status!='running' AND COALESCE(ended_at,started_at)<?",
+        (cutoff,)).fetchall()]
+    if dead:
+        conn.executemany("DELETE FROM run_metrics WHERE run_id=?", [(rid,) for rid in dead])
+        conn.executemany("DELETE FROM runs WHERE id=?", [(rid,) for rid in dead])
+    return len(dead)
+
+
 def sample_once():
     import app as _app
     conts = _app.containers()
@@ -311,14 +350,15 @@ def sample_once():
     # Fleet names the per-host AI Models tab filters on: "local" (the hub) plus
     # the registered hosts. Read once per sample, not per row.
     try:
-        _known_hosts = {"local"} | {h["name"] for h in _app.list_hosts()}
+        _registered = _app.list_hosts()
+        _known_hosts = {"local"} | {h["name"] for h in _registered}
     except Exception:
-        _known_hosts = {"local"}
+        _registered, _known_hosts = [], {"local"}
     for s in custom:
         if any(c["name"] == s["name"] for c in ai):
             continue                                    # container discovery already covers it
-        fleet = _resolve_fleet_host(s.get("fleet_host"), _known_hosts)
-        if fleet != (s.get("fleet_host") or "local"):
+        fleet = _resolve_fleet_host(s.get("fleet_host") or _host_by_address(s["host"], _registered), _known_hosts)
+        if s.get("fleet_host") and fleet != s["fleet_host"]:
             print(f"custom_ai_servers '{s['name']}': host '{s.get('fleet_host')}' "
                   f"not registered — shown under the hub instead", flush=True)
         ai.append({"name": s["name"], "ip": s["host"], "port": s["port"],
@@ -457,15 +497,17 @@ def sample_once():
         # the host columns are always real.
         gcols = (util, mem_used, mem_total, power, temp) if gpu_avail else (None,)*5
         _app.DB.executemany(
-            "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,interval_sec)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(ts, *gcols, host["cpu"], host["ram_used"],
-              host["ram_total"], host["load1"], host["ctemp"], cpu_power, dram_power)])
+              host["ram_total"], host["load1"], host["ctemp"], cpu_power, dram_power, _app.INTERVAL)])
         _app.DB.executemany("INSERT INTO proc(ts,service,mem,host) VALUES(?,?,?,'local')",
                             [(ts, svc, mem) for svc, mem in procs.items()])
         pp_rows = _app._attribute_power_rows(ts, power, procs, cpu_power, top_cpu)
         if pp_rows:
-            _app.DB.executemany("INSERT INTO power_proc(ts,kind,name,watts) VALUES(?,?,?,?)", pp_rows)
+            _app.DB.executemany(
+                "INSERT INTO power_proc(ts,kind,name,watts,interval_sec) VALUES(?,?,?,?,?)",
+                [(*row, _app.INTERVAL) for row in pp_rows])
         _app.DB.executemany("INSERT INTO models(ts,service,model,vram,ram) VALUES(?,?,?,?,?)",
                             [(ts, svc, mdl, vram, ram) for svc, mdl, vram, ram, _ctx, _h in models if vram is not None])
         _app.DB.executemany("INSERT INTO edges VALUES(?,?,?,?)",
@@ -517,13 +559,14 @@ def sample_once():
                 _app.DB.executemany(f"DELETE FROM {t} WHERE ts<?", [(ts - _retention,)])
             _app.DB.executemany("DELETE FROM disk_io_samples WHERE ts<?", [(ts - _app._DISK_IO_RETENTION,)])
             _app.DB.executemany("DELETE FROM proc_io_samples WHERE ts<?", [(ts - _app._PROC_IO_RETENTION,)])
+            purge_finished_runs(_app.DB, ts - _retention)
         if ts % 60 < _app.INTERVAL:   # stale-run janitor: a crashed/disconnected push run -> killed
             _app.DB.executemany(
                 "UPDATE runs SET status='killed', ended_at=COALESCE(ended_at,heartbeat_at,?) "
                 "WHERE status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < ?",
                 [(ts, ts - 180)])
         # Phase 1.2a: keep rollup tables current after each raw insert
-        _app._rollup_now(_app.DB, ts, *gcols,
+        _app._rollup_now(_app.DB, ts, *gcols, _app.INTERVAL,
                     cpu=host["cpu"], ram_used=host["ram_used"], ram_total=host["ram_total"],
                     load1=host["load1"], ctemp=host["ctemp"],
                     cpu_power=cpu_power, dram_power=dram_power)

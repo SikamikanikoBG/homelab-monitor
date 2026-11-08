@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "acknowledge_required",
+    "message": "Unlocking lets automations do this with nobody watching. Confirm to go ahead.",
+    "ok": false
+  },
+  "status": 400
+}

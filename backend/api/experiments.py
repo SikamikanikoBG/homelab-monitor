@@ -8,10 +8,16 @@ bp = Blueprint('experiments', __name__)
 # decorator defined in _app.app.py — must import at module level (used as @require_api_key)
 from backend.auth import require_api_key  # no circular import — backend.auth uses lazy _app
 from backend.db.repos import auth as auth_repo
+from backend.auth import sessions, store as auth_store
+from backend.auth.marks import sensitive
 from backend.db.repos import experiments as exp_repo
+
+KEY_SCOPES = ("push", "read", "admin")
+ADMIN_KEY_DAYS = 90    # an admin key is a root key; it should not live forever by default
 
 
 @bp.route("/api/integration/keys", methods=["GET", "POST"])
+@sensitive
 def api_keys_route():
     import app as _app
     """GET -> {keys:[{id,name,prefix,created_at,expires_at,last_used_at,expired,runs}]}
@@ -25,7 +31,20 @@ def api_keys_route():
             days = None
         if days is not None and days <= 0:
             days = None
+        scope = body.get("scope") or "push"
+        if scope not in KEY_SCOPES:
+            return jsonify({"ok": False, "error": "scope must be one of: %s" % ", ".join(KEY_SCOPES)}), 400
+        if scope != "push" and not sessions.password_set():
+            # A read or admin key on an open dashboard would outlive the day a
+            # password is set; only push keys can be minted before that.
+            return jsonify({"ok": False, "error": "password_required",
+                            "message": "Set a dashboard password before creating read or admin keys."}), 403
+        if scope == "admin" and days is None:
+            days = ADMIN_KEY_DAYS
         kid, key = _app._create_api_key(_app._clip(body.get("name") or "key", 128), days)
+        if scope != "push":
+            with _app.LOCK:
+                auth_store.set_key_scope(kid, scope, _app.DB)
         return jsonify({"ok": True, "id": kid, "key": key})
     now = int(time.time())
     with _app.LOCK:
@@ -35,6 +54,13 @@ def api_keys_route():
              "expires_at": exp, "last_used_at": used, "expired": bool(exp and exp < now),
              "runs": counts.get(kid, 0)}
             for (kid, name, prefix, created, exp, used) in rows]
+    if sessions.password_set():
+        # Scopes only exist once there is a login; without one the listing
+        # stays exactly what it always was.
+        with _app.LOCK:
+            extra = auth_store.key_scopes(_app.DB)
+        for k in keys:
+            k["scope"], k["last_ip"] = extra.get(k["id"], ("push", None))
     return jsonify({"keys": keys, "has_key": bool(keys)})
 
 

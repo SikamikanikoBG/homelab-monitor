@@ -29,8 +29,8 @@ class TestHostSamplesRepo(unittest.TestCase):
     def test_record_writes_raw_and_rollup(self):
         ts = 1_700_000_000
         with app.LOCK:
-            hs_repo.record(app.DB, ts, "t1", cpu=10, gpu_power=100, cpu_power=50)
-            hs_repo.record(app.DB, ts + 10, "t1", cpu=30, gpu_power=300, cpu_power=70)
+            hs_repo.record(app.DB, ts, "t1", 10, cpu=10, gpu_power=100, cpu_power=50)
+            hs_repo.record(app.DB, ts + 10, "t1", 10, cpu=30, gpu_power=300, cpu_power=70)
             app.DB.commit()
             raw = app.DB.execute(
                 "SELECT COUNT(*) FROM host_samples WHERE host='t1'").fetchone()[0]
@@ -46,8 +46,8 @@ class TestHostSamplesRepo(unittest.TestCase):
     def test_absent_sensor_stays_null_not_zero(self):
         ts = 1_700_000_000
         with app.LOCK:
-            hs_repo.record(app.DB, ts, "t1", cpu=10)               # no GPU, no RAPL
-            hs_repo.record(app.DB, ts + 10, "t1", cpu=20, gpu_power=100)
+            hs_repo.record(app.DB, ts, "t1", 10, cpu=10)               # no GPU, no RAPL
+            hs_repo.record(app.DB, ts + 10, "t1", 10, cpu=20, gpu_power=100)
             app.DB.commit()
             row = app.DB.execute(
                 "SELECT gpu_power, cpu_power, cnt FROM host_samples_1h WHERE host='t1'"
@@ -98,7 +98,7 @@ class TestRenameFollowsHistory(unittest.TestCase):
     def test_rename_moves_host_samples(self):
         with app.LOCK:
             app.DB.execute("INSERT INTO hosts(name, ssh_target, added_at) VALUES('t3','u@h',0)")
-            hs_repo.record(app.DB, 1_700_000_000, "t3", gpu_power=100)
+            hs_repo.record(app.DB, 1_700_000_000, "t3", 10, gpu_power=100)
             app.DB.commit()
         app.rename_host("t3", "t3new")
         with app.LOCK:
@@ -120,7 +120,7 @@ class TestApiCostsHost(unittest.TestCase):
             # Six 10s polls of 200 W GPU + 60 W CPU + 8 W DRAM, pre-rolled to 1h
             # the same way the poller's upsert would land them.
             for i in range(6):
-                hs_repo.record(app.DB, self.now - 100 + i * 10, self.HOST,
+                hs_repo.record(app.DB, self.now - 100 + i * 10, self.HOST, 10,
                                cpu=30, gpu_power=200, cpu_power=60, dram_power=8)
             app.DB.commit()
         with app.HOST_DATA_LOCK:
@@ -152,7 +152,7 @@ class TestApiCostsHost(unittest.TestCase):
     def test_gpu_only_host_omits_rapl_components(self):
         _clean(self.HOST)
         with app.LOCK:
-            hs_repo.record(app.DB, self.now - 50, self.HOST, cpu=10, gpu_power=300)
+            hs_repo.record(app.DB, self.now - 50, self.HOST, 10, cpu=10, gpu_power=300)
             app.DB.commit()
         j = app.app.test_client().get(f"/api/costs?range=1h&host={self.HOST}").get_json()
         m = j["machines"][0]
@@ -163,7 +163,7 @@ class TestApiCostsHost(unittest.TestCase):
     def test_unmeasurable_host_reports_nothing_honestly(self):
         _clean(self.HOST)
         with app.LOCK:
-            hs_repo.record(app.DB, self.now - 50, self.HOST, cpu=10)   # vitals only
+            hs_repo.record(app.DB, self.now - 50, self.HOST, 10, cpu=10)   # vitals only
             app.DB.commit()
         j = app.app.test_client().get(f"/api/costs?range=1h&host={self.HOST}").get_json()
         m = j["machines"][0]

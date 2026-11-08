@@ -75,6 +75,7 @@ nav:
   - Install: install.md
   - Features: features.md
   - Security: security.md
+  - AI agent: agents.md
   - Multi-machine: multi-host.md
   - Configuration: configuration.md
   - Model servers: model-servers.md

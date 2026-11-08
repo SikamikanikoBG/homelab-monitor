@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "bad_password",
+    "message": "That password didn't match.",
+    "ok": false
+  },
+  "status": 401
+}

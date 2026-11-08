@@ -1,0 +1,34 @@
+{
+  "id": "data-log-cleanup",
+  "version": 1,
+  "name": "Data & log cleanup",
+  "desc": "Old files under the paths you list (with sizes), journal and Docker leftovers. Cleans build cache and dangling images; proposes a journal vacuum and a stopped-container prune. Deleting files is not in this version.",
+  "prompt": "For each selected host: list files older than 30 days under each watched path with files.list_older_than (only the paths configured for that host; if none are set, say so) and add up their sizes. Check the journal (journal.disk_usage) and Docker leftovers (docker.system_df). Remove dangling images and build cache with docker.prune_dangling_images and docker.prune_build_cache. Propose journal.vacuum (days 30) when the journal is over 1 GB, and docker.prune_stopped_containers (older_than_h 720) when old stopped containers exist. Report the old files found per path with total size; do not delete files.",
+  "tools": [
+    "list_hosts",
+    "get_host",
+    "get_containers"
+  ],
+  "probes": [
+    "files.list_older_than",
+    "journal.disk_usage",
+    "docker.system_df",
+    "host.disk_usage"
+  ],
+  "actions": [
+    "docker.prune_dangling_images",
+    "docker.prune_build_cache",
+    "journal.vacuum",
+    "docker.prune_stopped_containers"
+  ],
+  "requires": [
+    "linux"
+  ],
+  "default_cron": "0 5 * * 0",
+  "default_mode": "propose",
+  "budget": {
+    "max_steps": 25,
+    "max_seconds": 600
+  },
+  "est_tokens": 20000
+}

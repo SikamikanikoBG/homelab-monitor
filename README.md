@@ -8,11 +8,13 @@
 ![docker](https://img.shields.io/badge/deploy-docker--compose-2496ED?logo=docker&logoColor=white)
 [![docs](https://img.shields.io/badge/docs-website-d29922?logo=readthedocs&logoColor=white)](https://sikamikanikobg.github.io/homelab-monitor/)
 
-**One page for your whole home lab & AI rig — GPU truth (any vendor), tokens/sec, power cost by the hour, uptime, training runs, containers, disks. No agents, no separate metrics stack, no cloud.**
+**Ask your homelab.** One self-hosted page for every box and GPU you run — and an AI agent that reads all of it, answers in plain words, and fixes things only when you say so. It runs on the models already in your lab. No cloud, nothing to install on your machines.
 
-<img src="docs/screenshots/tour.gif" alt="HomeLab Monitor — a tour of the dashboard: Overview, GPU truth, Costs, AI Models and Experiments" width="860">
+<img src="docs/screenshots/agent-ask.gif" alt="Asking 'Anything wrong right now?' from the Overview: the agent checks four machines and answers with what is critical, what to watch and what is fine — offline host, a failed service, disk I/O spikes, stopped containers" width="860">
 
-Your home lab grew into a couple of machines, a Pi, and a GPU that's mysteriously always busy — and lately it's running models too. HomeLab Monitor gives you one self-hosted page that answers the real questions: **what's that GPU actually doing, which model is holding it, what's it costing you to run, which container is eating RAM, what's filling your disks**, and **is anything down** — across every box over SSH: Linux, a Pi, even Windows. Readable from your phone over the VPN.
+<sub>Real answer, real fleet: one click on the Overview, a local model on the lab's own GPUs, about 45 seconds (sped up here). Host names are anonymised.</sub>
+
+Your home lab grew into a couple of machines, a Pi, and a GPU that's mysteriously always busy — and lately it's running models too. HomeLab Monitor gives you one page that answers the real questions: **what's that GPU actually doing, which model is holding it, what's it costing you to run, which container is eating RAM, what's filling your disks**, and **is anything down** — across every box over SSH: Linux, a Pi, even Windows. And when you'd rather not click through tabs, **just ask**.
 
 ## Get started
 
@@ -22,15 +24,38 @@ curl -fsSLO https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/mai
 docker compose up -d
 ```
 
-Open `http://<your-host>:9800` and you're done. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
+Open `http://<your-host>:9800` and you're done. Want the agent? Uncomment `AGENT_ENABLED: "1"` in the compose file, and the Overview walks you through the rest in about a minute. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
 
 <!-- Deliberately not pinned to a version number: this line used to name a
      specific release and was three releases out of date within two months. -->
 > 🆕 **What's new** — every release is written up in full, with the reasoning behind it: [latest release](https://github.com/SikamikanikoBG/homelab-monitor/releases/latest) · [changelog](CHANGELOG.md). The dashboard also shows you the notes once, in-app, after it updates itself.
 
+## Ask your homelab — an AI agent that knows your lab
+
+![The Overview with the 'Ask your lab' card: a question box with suggestions, an action waiting for approval, and the routines that ran lately](docs/screenshots/agent-overview.png)
+
+**It answers from what the dashboard actually measures.** Ask from the **Ask your lab** card on the Overview, the floating **Ask** button on any page (it knows which page and host you're on), or the **Agent** tab. It reads your lab with the same tools the MCP server has, starts from the fleet overview and drills down only when it has to. The answer comes back as text and tables, never a wall of JSON. Every answer says what it checked ("Checked 4 machines · 2 look-ups · 46 s") and offers follow-ups. Ask in English, Bulgarian or anything else; it replies in your language.
+
+| | |
+|---|---|
+| ![A chat answer: a fleet table with CPU, RAM, fullest disk and containers per host, then what needs attention](docs/screenshots/agent-chat.png) | ![A confirm card: Restart a service nginx.service on the hub, medium risk, nothing runs until you approve, with Reject and Approve](docs/screenshots/agent-approval.png) |
+| **A real answer** — the whole fleet in one table, then what needs you. | **Nothing runs until you approve.** The exact command is one click away. |
+
+**Your models, your rules.** It finds the model servers already on your network — Ollama, vLLM, llama.cpp, LM Studio, LocalAI — and tests them while you watch, or takes your own key for OpenAI, Anthropic, Gemini, Groq, Mistral, OpenRouter and others. Keys never leave the hub.
+
+**You decide what it may do.** Each machine is *Look only*, *Ask me first* or *Handle the small stuff*. Actions come from a fixed catalogue — restart or stop a container, restart a service, prune dangling images and build cache, shrink the journal, unload or delete an Ollama model — **with no shell anywhere**. The server checks the policy when the agent proposes an action and again when it runs. The monitor's own container and whatever serves the model are always off-limits.
+
+**Routines that run while you sleep.** Ten ready-made ones — disk-space watch, GPU health, container health, Docker cleanup, model housekeeping, update and cost reports, backup freshness and more — or your own prompt, on a schedule. Each one can report, propose actions or act within your policy. Reports go to your alert channels, and proposals wait for you under **Approvals**.
+
+![The Routines tab: ten templates — backup freshness, container health, cost report, data and log cleanup, disk space watch, Docker cleanup, GPU health, model housekeeping, system maintenance — with schedules, token estimates and what each may do](docs/screenshots/agent-routines.png)
+
+**Every step on the record.** **Activity** shows what each run read, what the policy decided and why, and who approved it. You can export it as JSON or CSV, and every action is also written to `docker logs`.
+
+Off until you turn it on, and only ever behind the dashboard login → [**AI agent docs**](https://sikamikanikobg.github.io/homelab-monitor/agents/).
+
 ## What you get
 
-![The Overview — a mission-control cockpit: every host in the fleet at a glance, GPU/CPU/RAM gauges for any box (or the whole homelab), live power-to-money costs and an insight feed](docs/screenshots/overview.png)
+<img src="docs/screenshots/tour.gif" alt="HomeLab Monitor — a tour of the dashboard: Overview, GPU truth, Costs, AI Models and Experiments" width="860">
 
 One page, every box, the questions you actually have. The classics are all here — and a whole **AI cockpit** builds on top of them.
 
@@ -44,7 +69,7 @@ One page, every box, the questions you actually have. The classics are all here 
 
 ![The Costs page — per-component and per-process power & money](docs/screenshots/costs.png)
 
-**Your training runs, priced.** Push a run from Jupyter, Colab or Kaggle with a one-file client (or mirror it from MLflow), and it comes back with the loss curve *and* the real GPU energy it burned, on the same timeline. Create, name, expire and revoke API keys yourself.
+**Your training runs, priced.** Push a run from Jupyter, Colab or Kaggle with a one-file client (or mirror it from MLflow), and it comes back with the loss curve *and* the GPU energy the box drew over the run window, on the same timeline. That window figure is the whole card's draw, not a per-run measurement — GPUs do not meter per process. Create, name, expire and revoke API keys yourself.
 
 ![A run pushed from a notebook — its loss curve and the GPU power it actually used](docs/screenshots/experiment-detail.png)
 
@@ -66,7 +91,7 @@ Full tab-by-tab tour → [**Features**](https://sikamikanikobg.github.io/homelab
 
 ## Multi-machine, in two sentences
 
-Open the **Hosts** tab, paste the hub's auto-generated SSH key onto each remote, and the hub starts polling it — no agents, just SSH + Python 3 (PowerShell on Windows). The hub pipes a small self-contained probe over SSH; nothing persists on the remote. The same connection is what lets you open a remote's **GPU cockpit** and **scan its disks** from the hub — still with nothing installed on the far end.
+Open the **Hosts** tab, paste the hub's auto-generated SSH key onto each remote, and the hub starts polling it — nothing to install, just SSH + Python 3 (PowerShell on Windows). The hub pipes a small self-contained probe over SSH; nothing persists on the remote. The same connection is what lets you open a remote's **GPU cockpit** and **scan its disks** from the hub — still with nothing installed on the far end.
 
 Onboarding, Windows setup, and the security model → [**Multi-machine docs**](https://sikamikanikobg.github.io/homelab-monitor/multi-host/).
 
@@ -84,6 +109,9 @@ Set these under `environment:` in `docker-compose.yml` (all optional):
 | `MCP_PORT` | `9810` | Port for the built-in read-only MCP server |
 | `ENABLE_MCP` | `1` | Set `0` to run the dashboard without the MCP server |
 | `ENABLE_CONTROLS` | `1` | Set `0` to remove the start/stop/restart buttons from the Containers and Services tabs |
+| `ENABLE_HOST_RUN` | `0` | `1` re-enables `/api/hosts/<name>/run` (run any command on a host; unused by the UI) |
+| `ADMIN_PASSWORD` | — | Set the optional dashboard password at boot (or in Settings → Security) |
+| `AGENT_ENABLED` | — | `1` makes the optional [AI agent](https://sikamikanikobg.github.io/homelab-monitor/agents/) available (needs a password) |
 | `ALLOW_SELF_UPDATE` | `1` | Set `0` to disable in-app updating |
 | `WATCH_CONTAINERS` | — | Extra containers to scan for OOM (comma-separated) |
 | `WATCH_SERVICES` | — | systemd units to always show, even vendor ones (comma-separated) |
@@ -104,11 +132,11 @@ The hub stitches `nvidia-smi` (plus AMD GPUs via the in-kernel `amdgpu` sysfs in
 - **Standard `/metrics` endpoint** to scrape into whatever dashboards you already run → [Metrics export](https://sikamikanikobg.github.io/homelab-monitor/prometheus/)
 - **The full data pipeline + caller attribution** → [How it works](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/)
 
-## Connect an AI agent (MCP)
+## Bring your own AI client (MCP)
 
 **Your homelab is now legible to AI agents — point a client at one URL and it can see every host, container, GPU and disk. Read-only, no extra setup.**
 
-HomeLab Monitor isn't just a dashboard for *you* anymore; it's context for your AI agent too. A **read-only [MCP](https://modelcontextprotocol.io) server is built into the same container** (served on `:9810`) — so Claude, Claude Code, or any MCP client connects in one line and explores your whole lab through **19 named tools**, with the same coverage you see on the dashboard: hosts, containers, systemd services, GPU **and who's driving it**, per-process RAM, AI model servers, installed models, costs, experiment runs, model benchmarks, disk treemaps, history and alerts.
+Prefer your own assistant to the built-in one? A **read-only [MCP](https://modelcontextprotocol.io) server is built into the same container** (served on `:9810`) — so Claude, Claude Code, or any MCP client connects in one line and explores your whole lab through **20 named tools**, with the same coverage you see on the dashboard: hosts, containers, systemd services, GPU **and who's driving it**, per-process RAM, AI model servers, installed models, costs, experiment runs, model benchmarks, disk treemaps, history and alerts.
 
 <p align="center"><img src="docs/mcp-agents.svg" alt="HomeLab Monitor connects over MCP to AI agents and MCP clients — Claude, ChatGPT, agents on local Ollama models, or any MCP client; read-only, both directions are question and answer" width="720"></p>
 
@@ -130,7 +158,7 @@ Once connected, skip the tab-hunting and just **ask** — the agent picks the ri
 
 ## Security
 
-This is a host monitor: it runs with host access, plus a read-write Docker socket and D-Bus socket (self-update and the Containers/Services tabs' start/stop/restart controls are on by default — set `ALLOW_SELF_UPDATE=0`/`ENABLE_CONTROLS=0`, or use `docker-compose.readonly.yml`, to lock it down to pure monitoring) and a read-only root mount — a broad footprint by design. The dashboard itself has **no login/auth** — it's meant for a trusted LAN. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
+This is a host monitor: it runs with host access, plus a read-write Docker socket and D-Bus socket (self-update and the Containers/Services tabs' start/stop/restart controls are on by default — set `ALLOW_SELF_UPDATE=0`/`ENABLE_CONTROLS=0`, or use `docker-compose.readonly.yml`, to lock it down to pure monitoring) and a read-only root mount — a broad footprint by design. The dashboard has an **optional login** (Settings → Security; off until you set a password, and required for the AI agent) — without one it's meant for a trusted LAN. **Keep it behind your LAN/VPN/firewall and don't expose it to the public internet.** Details → [docs](https://sikamikanikobg.github.io/homelab-monitor/how-it-works/).
 
 ## ⭐ Support the project
 

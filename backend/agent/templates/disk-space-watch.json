@@ -1,0 +1,27 @@
+{
+  "id": "disk-space-watch",
+  "starter": true,
+  "version": 1,
+  "name": "Disk space watch",
+  "desc": "Checks every filesystem; flags any over 85% and what grew. Report only.",
+  "prompt": "For each selected host, check disk use with the host.disk_usage probe (and get_host for the hub's disks). List every filesystem above 85% full, the largest consumers you can see (scan_disk on the hub for the fullest mount, docker.system_df where Docker runs), and whether anything grew fast. If nothing is above 85%, say so in one line. Keep the report short.",
+  "tools": [
+    "list_hosts",
+    "get_host",
+    "scan_disk",
+    "get_history"
+  ],
+  "probes": [
+    "host.disk_usage",
+    "docker.system_df"
+  ],
+  "actions": [],
+  "requires": [],
+  "default_cron": "0 */6 * * *",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 15,
+    "max_seconds": 480
+  },
+  "est_tokens": 12000
+}

@@ -1,0 +1,19 @@
+{
+  "body": {
+    "discovered": [],
+    "models": [
+      {
+        "context_window": 32768,
+        "detail": "ok",
+        "model": "m1",
+        "multi_step": "yes",
+        "price_in": 0.0,
+        "price_out": 0.0,
+        "probed_at": 1735689600,
+        "provider_id": "id0001",
+        "tools": "yes"
+      }
+    ]
+  },
+  "status": 200
+}

@@ -58,8 +58,9 @@ INSTRUCTIONS = (
     "`get_installed_models` (every model available, by provider — not just loaded), "
     "`get_history` (charted time-series), `get_costs`/`get_entity_cost` (power "
     "turned into money, per machine and per process/container/service/model), "
-    "`get_experiments`/`get_experiment` (tracked runs priced by the GPU energy they "
-    "burned), `get_benchmarks`/`get_benchmark` (stored LLM benchmarks: tokens/sec, "
+    "`get_experiments`/`get_experiment` (tracked runs, with the whole-box GPU "
+    "energy over each run's window — not attributed per run), "
+    "`get_benchmarks`/`get_benchmark` (stored LLM benchmarks: tokens/sec, "
     "what fits in VRAM vs spills to RAM, the optimal context cap), "
     "`get_events`/`get_alerts` (OOM kills / threshold crossings), and "
     "`scan_disk(path)` (WizTree-style folder treemap). "
@@ -89,8 +90,9 @@ def _track(fn):
 def list_hosts() -> dict:
     """List every host in the fleet with headline vitals (hub listed first).
 
-    Returns the roster: name, online status, OS, CPU/RAM load, fullest disk and any
-    OS-upgrade/reboot hint per host. Start here, then drill in with `get_host`.
+    Returns the roster: name, online status, OS, CPU/RAM load, every disk, container
+    counts and any OS-upgrade/reboot hint per host, plus `attention`: the active
+    events the dashboard's Overview shows. Start here, then drill in with `get_host`.
     """
     return hc.list_hosts()
 
@@ -225,8 +227,9 @@ def get_entity_cost(name: str, kind: str = "", range: str = "7d") -> dict:
 @mcp.tool()
 @_track
 def get_experiments(range: str = "7d", status: str = "") -> dict:
-    """Tracked training/eval runs (Experiments tab), each priced with the real GPU
-    energy it burned. Optionally filter by `status` (running/finished/failed/killed).
+    """Tracked training/eval runs (Experiments tab), each with the GPU energy the
+    whole box drew over the run's window — NOT attributed per run, so concurrent
+    runs each report the same shared figure. Optionally filter by `status` (running/finished/failed/killed).
     Each row carries its params, latest metrics (loss/accuracy…, plus throughput as
     `tokens_per_sec` when an LLM training script logged it), duration and cost.
     Answers "which runs ran, how did they do, what did each one cost, and how many
@@ -240,7 +243,8 @@ def get_experiments(range: str = "7d", status: str = "") -> dict:
 def get_experiment(run_id: str) -> dict:
     """Full detail for one tracked run by `run_id` (from `get_experiments`): its
     logged-metric series (the loss curve, and a tokens/sec curve too if logged),
-    the GPU power/util time-series over the run, and the priced energy it burned.
+    the GPU power/util time-series over the run, and the whole-box energy drawn
+    over that window (not attributed to this run alone).
     An unknown id returns an HTTP 404 error.
     """
     return hc.get_experiment(run_id)
@@ -363,6 +367,16 @@ def _transport_security():
     )
 
 
+def _serve_http_behind_login():
+    """Streamable HTTP, wrapped so the port follows the dashboard's login: open
+    while no password is set (as before), bearer read/admin key once it is."""
+    import uvicorn
+    from login_guard import LoginGuard
+    app = LoginGuard(mcp.streamable_http_app(), hc.base_url(), os.environ.get("HLM_INTERNAL_TOKEN"))
+    uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port,
+                log_level=mcp.settings.log_level.lower())
+
+
 def main():
     transport = (os.environ.get("MCP_TRANSPORT") or "stdio").strip().lower()
     if transport in ("http", "streamable-http", "streamable_http"):
@@ -371,7 +385,7 @@ def main():
         mcp.settings.transport_security = _transport_security()
         print("homelab-monitor MCP on http://%s:%s/mcp -> %s"
               % (mcp.settings.host, mcp.settings.port, hc.base_url()), file=sys.stderr)
-        mcp.run(transport="streamable-http")
+        _serve_http_behind_login()
     elif transport == "sse":
         mcp.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")
         mcp.settings.port = int(os.environ.get("MCP_PORT", "9810"))

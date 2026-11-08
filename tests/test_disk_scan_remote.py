@@ -228,6 +228,43 @@ class TestEndpoint(unittest.TestCase):
         self.assertEqual(j["state"], "done")
         self.assertEqual(j["total"], 7)
 
+    def test_rescan_of_an_in_flight_scan_does_not_start_a_second_one(self):
+        """rescan=1 must not be a way around the one-scan-at-a-time rule."""
+        scanning = {"state": "scanning", "at": int(__import__("time").time())}
+        with patch("app._safe_host_dir", return_value="/tmp"), \
+             patch.dict(app._DISK_SCAN, {app._disk_scan_key("local", "/tmp"): scanning}), \
+             patch("app._disk_scan_worker") as w:
+            j = self.c.get("/api/disk_scan?path=/tmp&rescan=1").get_json()
+        self.assertEqual(j["state"], "scanning")
+        w.assert_not_called()
+
+    def test_rescan_within_cooldown_of_a_finished_scan_reuses_the_result(self):
+        """rescan=1 right after a scan just finished must not fire a second one —
+        that's the exact resource-exhaustion gap this test guards."""
+        done = {"state": "done", "at": int(__import__("time").time()), "total": 7,
+                "entries": [], "free": 1, "error": None}
+        with patch("app._safe_host_dir", return_value="/tmp"), \
+             patch.dict(app._DISK_SCAN, {app._disk_scan_key("local", "/tmp"): done}), \
+             patch("app._disk_scan_worker") as w:
+            j = self.c.get("/api/disk_scan?path=/tmp&rescan=1").get_json()
+        self.assertEqual(j["state"], "done")
+        self.assertEqual(j["total"], 7)
+        w.assert_not_called()
+
+    def test_rescan_past_cooldown_starts_a_fresh_scan(self):
+        """Non-regression: rescan=1 must still work once the cooldown has passed."""
+        stale = {"state": "done", "at": 0, "total": 7, "entries": [], "free": 1, "error": None}
+        with patch("app._safe_host_dir", return_value="/tmp"), \
+             patch.dict(app._DISK_SCAN, {app._disk_scan_key("local", "/tmp"): stale}), \
+             patch("app._disk_scan_worker") as w:
+            j = self.c.get("/api/disk_scan?path=/tmp&rescan=1").get_json()
+        self.assertEqual(j["state"], "scanning")
+        for _ in range(50):
+            if w.called:
+                break
+            import time as _t; _t.sleep(0.01)
+        self.assertTrue(w.called)
+
 
 if __name__ == "__main__":
     unittest.main()

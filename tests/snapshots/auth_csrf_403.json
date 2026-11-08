@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "csrf",
+    "message": "Missing or stale security token \u2014 reload the page.",
+    "ok": false
+  },
+  "status": 403
+}

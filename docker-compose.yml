@@ -65,6 +65,9 @@ services:
       # WATCH_CONTAINERS: "ollama,immich_machine_learning"  # extra containers to scan for OOM
       # WATCH_SERVICES: "tailscaled,sshd"   # always show these systemd units, even if vendor-shipped
       # ALLOW_SELF_UPDATE: "0"   # the one-click self-update button is ON by default — set to "0" to turn it off
+      # ADMIN_PASSWORD: "..."   # optional dashboard login (or set it in Settings → Security); no password = no login, as before
+      # AGENT_ENABLED: "1"      # optional AI agent (chat + automations); needs a password, then the Enable switch in the Agent tab
+      # ENABLE_HOST_RUN: "1"    # re-enable /api/hosts/<name>/run (arbitrary commands; off by default, unused by the UI)
       # ENABLE_CONTROLS: "0"     # container/service start/stop/restart controls are ON by default — set to "0" to turn them off
     volumes:
       # Read-write: powers container health/names/model APIs AND (by default,

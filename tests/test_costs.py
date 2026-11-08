@@ -70,17 +70,19 @@ class TestApiCosts(unittest.TestCase):
                 ts = self.now - 100 + i * 10
                 app.DB.execute(
                     "INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,cpu,ram_used,"
-                    "ram_total,load1,ctemp,cpu_power,dram_power) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (ts, 50, 8000, 24000, 200, 60, 30, 1000, 2000, 1.0, 50, 60, 8))
-                app.DB.execute("INSERT INTO power_proc VALUES(?,?,?,?)", (ts, "gpu", "ollama", 150))
-                app.DB.execute("INSERT INTO power_proc VALUES(?,?,?,?)", (ts, "cpu", "python", 20))
+                    "ram_total,load1,ctemp,cpu_power,dram_power,interval_sec) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ts, 50, 8000, 24000, 200, 60, 30, 1000, 2000, 1.0, 50, 60, 8, 10))
+                app.DB.execute("INSERT INTO power_proc(ts,kind,name,watts,interval_sec) VALUES(?,?,?,?,?)",
+                                (ts, "gpu", "ollama", 150, 10))
+                app.DB.execute("INSERT INTO power_proc(ts,kind,name,watts,interval_sec) VALUES(?,?,?,?,?)",
+                                (ts, "cpu", "python", 20, 10))
             app.DB.commit()
             app.DB.executescript("""
                 INSERT OR IGNORE INTO samples_1h(ts,util,mem_used,mem_total,power,temp,
-                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt)
+                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt,wsec)
                 SELECT (ts/3600)*3600, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp),
                     AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp),
-                    AVG(cpu_power), AVG(dram_power), COUNT(*)
+                    AVG(cpu_power), AVG(dram_power), COUNT(*), SUM(COALESCE(power,0)*interval_sec)
                 FROM samples GROUP BY (ts/3600)*3600;
             """)
             app.DB.commit()

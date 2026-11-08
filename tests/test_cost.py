@@ -18,15 +18,15 @@ class TestCost(unittest.TestCase):
             n = 3600 // app.INTERVAL
             for i in range(n):
                 ts = now - 3600 + i * app.INTERVAL
-                app.DB.execute("INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp) "
-                               "VALUES(?,?,?,?,?,?)", (ts, 0, 0, 0, watts, 0))
+                app.DB.execute("INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,interval_sec) "
+                               "VALUES(?,?,?,?,?,?,?)", (ts, 0, 0, 0, watts, 0, app.INTERVAL))
             app.DB.commit()
             app.DB.executescript("""
                 INSERT OR IGNORE INTO samples_1h(ts,util,mem_used,mem_total,power,temp,
-                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt)
+                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt,wsec)
                 SELECT (ts/3600)*3600, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp),
                     AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp),
-                    AVG(cpu_power), AVG(dram_power), COUNT(*)
+                    AVG(cpu_power), AVG(dram_power), COUNT(*), SUM(COALESCE(power,0)*interval_sec)
                 FROM samples GROUP BY (ts/3600)*3600;
             """)
             app.DB.commit()
@@ -89,15 +89,15 @@ class TestDualTariff(unittest.TestCase):
         with app.LOCK:
             for i in range(3600 // app.INTERVAL):
                 ts = base + i * app.INTERVAL
-                app.DB.execute("INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp) "
-                               "VALUES(?,?,?,?,?,?)", (ts, 0, 0, 0, watts, 0))
+                app.DB.execute("INSERT OR REPLACE INTO samples(ts,util,mem_used,mem_total,power,temp,interval_sec) "
+                               "VALUES(?,?,?,?,?,?,?)", (ts, 0, 0, 0, watts, 0, app.INTERVAL))
             app.DB.commit()
             app.DB.executescript("""
                 INSERT OR IGNORE INTO samples_1h(ts,util,mem_used,mem_total,power,temp,
-                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt)
+                    cpu,ram_used,ram_total,load1,ctemp,cpu_power,dram_power,cnt,wsec)
                 SELECT (ts/3600)*3600, AVG(util), AVG(mem_used), AVG(mem_total), AVG(power), AVG(temp),
                     AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp),
-                    AVG(cpu_power), AVG(dram_power), COUNT(*)
+                    AVG(cpu_power), AVG(dram_power), COUNT(*), SUM(COALESCE(power,0)*interval_sec)
                 FROM samples GROUP BY (ts/3600)*3600;
             """)
             app.DB.commit()

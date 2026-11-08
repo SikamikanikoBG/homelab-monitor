@@ -33,6 +33,13 @@ Everything the dashboard shows is reachable. Start with `list_hosts` → `get_ho
 | `get_installed_models()` | Every model available on the hub, by provider — not just loaded | `GET /api/models` |
 | `get_history(range="6h")` | Charted time-series (GPU + host) for trends | `GET /api/data` |
 | `get_events(range="6h")` / `get_alerts(...)` | Recent OOM kills / threshold crossings + insights | `GET /api/data` |
+| `get_uptime(range="24h")` | Uptime checks and maintenance windows, current state, availability, latency and silenced status | `GET /api/uptime` |
+| `get_costs(range="7d", host="")` | What the machine drew and cost, + a ranked per-process/container/service/model breakdown | `GET /api/costs` |
+| `get_entity_cost(name, kind="", range="7d")` | Cost drill-down for one process/container/service/model | `GET /api/costs/entity` |
+| `get_experiments(range="7d", status="")` | Tracked runs, each with the whole-box GPU energy over its window (not per-run attribution) | `GET /api/runs` |
+| `get_experiment(run_id)` | One run's loss-curve metrics, GPU power/util series and whole-box energy over its window | `GET /api/runs/<id>` |
+| `get_benchmarks(range="30d", model="")` | Stored model benchmarks — tokens/sec, VRAM fit, recommended context | `GET /api/bench` |
+| `get_benchmark(run_id)` | One benchmark's full context sweep (tok/s & VRAM at each context size) | `GET /api/bench/<id>` |
 | `scan_disk(path="/", rescan=False)` | WizTree-style nested folder-size treemap | `GET /api/disk_scan` |
 
 ## Resources

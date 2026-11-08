@@ -838,6 +838,49 @@ def _stats_mem_bytes(v):
         return None
 
 
+def _docker_stats(cid, sock_path=None, timeout=3):
+    """One-shot container stats straight from the Docker Engine API over its
+    AF_UNIX socket, mirrored from app.py's _docker_req/_docker — the remote
+    has no daemon TCP port, only the socket. Parsed JSON body, or None on any
+    failure (no docker, no permission, stuck daemon); short timeout so a wedged
+    call never blocks the poll cycle.
+
+    sock_path defaults to $DOCKER_SOCK (falling back to the standard path),
+    matching app.py's own DOCKER_SOCK override — a rootless Docker or custom
+    DOCKER_HOST setup can't be reached at the hardcoded default."""
+    if sock_path is None:
+        sock_path = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
+    c = http.client.HTTPConnection("localhost", timeout=timeout)
+    try:
+        c.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.sock.settimeout(timeout)
+        c.sock.connect(sock_path)
+        c.request("GET", "/containers/%s/stats?stream=false&one-shot=true" % cid)
+        resp = c.getresponse()
+        return json.loads(resp.read())
+    except Exception:
+        return None
+    finally:
+        c.close()
+
+
+def _stats_resident_mem(d):
+    """Same derivation as app.py's _container_stats: anon+shmem (cgroup v2) >
+    rss+rss_huge (cgroup v1) > usage-cache (docker-stats math, last resort).
+    Kept identical in shape/order so the two never silently drift apart."""
+    ms = (d or {}).get("memory_stats") or {}
+    st = ms.get("stats") or {}
+    if "anon" in st:                                   # cgroup v2
+        return (st.get("anon") or 0) + (st.get("shmem") or 0)
+    if "rss" in st:                                     # cgroup v1
+        return (st.get("rss") or 0) + (st.get("rss_huge") or 0)
+    usage = ms.get("usage")
+    if usage is None:
+        return None
+    cache = st.get("inactive_file", st.get("cache", 0)) or 0
+    return max(0, usage - cache)
+
+
 def _pid_container_id(pid):
     """The 64-hex docker container id a pid runs in, from /proc/<pid>/cgroup —
     the same signal the hub's service_for_pid uses. None for host processes."""
@@ -961,15 +1004,21 @@ def read_docker(gpu_procs=None):
                         s = stats.get(c["name"])
                         if not s:
                             continue
-                        mb = _stats_mem_bytes(s.get("MemUsage"))
-                        if mb is not None:
-                            c["mem_bytes"] = mb
                         try:
                             c["cpu_pct"] = float((s.get("CPUPerc") or "").rstrip("%"))
                         except ValueError:
                             pass
             except Exception:
                 pass
+            # RAM: a separate raw-socket call per running container, matching the
+            # hub's own derivation exactly (anon+shmem, not docker-stats' cache-
+            # inflated MemUsage) so the same column means the same thing fleet-wide.
+            for c in conts:
+                if c["state"] != "running":
+                    continue
+                mb = _stats_resident_mem(_docker_stats(c["id"]))
+                if mb is not None:
+                    c["mem_bytes"] = mb
         problems = sum(1 for c in conts
                        if "unhealthy" in c["status"].lower()
                        or c["state"] == "restarting"

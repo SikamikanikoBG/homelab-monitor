@@ -437,6 +437,176 @@ def _notify_gpu_missing(s, rules, now):
                            f"this clears itself after an hour.", rules=rules)
 
 
+# {name: wall-clock ts the current DOWN streak began}, keyed like
+# _uptime_down_since, so a recovery message can quote the real downtime. In
+# memory only: a hub restart mid-outage simply re-arms from now, the same
+# conservative direction _GPU_SINCE takes — it can delay a duration figure,
+# never invent one.
+_HOST_DOWN_SINCE = {}
+
+
+def notify_host_down(s, rules):
+    """Per-host reachability alerting, mirroring notify_uptime's discipline:
+      • DOWN      — fired once a registered remote's last successful poll falls
+                    outside its own staleness window (_host_is_online going False).
+                    That window already has hysteresis baked in (several poll
+                    intervals, or twice the host's learned probe budget), so this
+                    is inherently sustained, not one missed poll.
+      • RECOVERED — fired once it comes back, quoting the downtime duration.
+    Maintenance-window suppression and min-level gating come for free from
+    _emit's own key-prefix parsing — for the DOWN alert specifically: its key
+    is the plain two-part "host:<name>" (kind "host", matching RULE_KINDS in
+    dashboard.html and the existing routing/maintenance vocabulary), so a
+    maintenance window created with kind="host" actually suppresses it.
+    The RECOVERED key follows notify_uptime's own "kind:rec:<id>" shape
+    (here "host:rec:<name>") — recovery is good news a maintenance window
+    isn't meant to gate, same as uptime's rec_key already isn't cleanly
+    kind-matched by _emit's key.split(":", 1) (it passes the whole
+    "rec:<name>" remainder as the fnmatch name, not just the name) — an
+    existing, accepted asymmetry this mirrors rather than introduces.
+    The hub itself is never in HOST_DATA (it's tracked via LATEST), so it can
+    never be flagged down by this scan."""
+    import app as _app
+    with _app.HOST_DATA_LOCK:
+        items = list(_app.HOST_DATA.items())
+    now = int(time.time())
+    for name, entry in items:
+        key = f"host:{name}"
+        rec_key = f"host:rec:{name}"
+        if _app._host_is_online(entry):
+            with _app._NOTIFIER_LOCK:
+                was_down = key in _app._NOTIFIED
+            if was_down:
+                since = _HOST_DOWN_SINCE.pop(name, None)
+                dur = _app._fmt_dur(now - since) if since else "?"
+                _app._emit(s, rec_key, "warning", f"🟢 {name} is back",
+                           f"{name} recovered after {dur} unreachable.", rules=rules)
+                _app._clear(key)
+            else:
+                _app._clear(rec_key)
+            continue
+        last_ok = entry.get("at")
+        _HOST_DOWN_SINCE.setdefault(name, last_ok or now)
+        gone_for = now - (last_ok or now)
+        since = f" It last reported {_app._fmt_dur(gone_for)} ago." if last_ok else ""
+        err = entry.get("error")
+        detail = f"{name} has stopped responding.{since}" + (f" Last error: {err}" if err else "")
+        _app._emit(s, key, "critical", f"🔴 {name} is unreachable", detail, rules=rules)
+        _app._clear(rec_key)
+
+
+def notify_remote_containers(s, rules):
+    """Docker container alerts for every registered remote — mirrors the hub
+    block's edge-trigger/clear logic exactly, but keyed container:<host>:<name>
+    (host-infix) so it never collides with the hub's unprefixed container:<name>
+    keys and every existing routing rule/maintenance window keeps matching the
+    hub exactly as before. Skips a host whose data is stale (_host_is_online)
+    so an offline remote's last-known container state is never alerted on as
+    current — notify_host_down already covers "this host is unreachable"."""
+    import app as _app
+    with _app.HOST_DATA_LOCK:
+        items = list(_app.HOST_DATA.items())
+    for host, entry in items:
+        if not _app._host_is_online(entry):
+            continue
+        docker = ((entry["data"].get("host") or {}).get("docker")) or {}
+        if not docker.get("available"):
+            continue
+        for ct in docker.get("containers", []):
+            name = ct.get("name", "?")
+            key  = f"container:{host}:{name}"
+            st   = ct.get("status")
+            if st == "crit":
+                _app._emit(s, key, "critical", f"🔴 {host}: Container {name} {ct.get('label','')}".strip(),
+                      f"{name}: {ct.get('status_text','')}", rules=rules)
+            elif st == "warn":
+                _app._emit(s, key, "warning", f"🟠 {host}: Container {name} {ct.get('label','')}".strip(),
+                      f"{name}: {ct.get('status_text','')}", rules=rules)
+            elif st == "ok":
+                _app._clear(key)
+
+
+def notify_remote_systemd(s, rules):
+    """systemd unit alerts for every registered remote — mirrors the hub
+    block, keyed systemd:<host>:<name>. See notify_remote_containers for the
+    online-gating and key-shape rationale, identical here."""
+    import app as _app
+    with _app.HOST_DATA_LOCK:
+        items = list(_app.HOST_DATA.items())
+    for host, entry in items:
+        if not _app._host_is_online(entry):
+            continue
+        systemd = ((entry["data"].get("host") or {}).get("systemd")) or {}
+        if not systemd.get("available"):
+            continue
+        for svc in systemd.get("services", []):
+            name = svc.get("name", "?")
+            key  = f"systemd:{host}:{name}"
+            if svc.get("status") == "crit":
+                _app._emit(s, key, "critical", f"🔴 {host}: systemd unit failed: {name}",
+                      f"{name} — {svc.get('desc','')} (active={svc.get('active')}, sub={svc.get('sub')})",
+                      rules=rules)
+            elif svc.get("status") == "ok":
+                _app._clear(key)
+
+
+def notify_remote_disks(s, rules, disk_thr):
+    """Disk-threshold alerts for every registered remote — mirrors the hub
+    block, keyed disk:<host>:<mount>. See notify_remote_containers for the
+    online-gating and key-shape rationale, identical here."""
+    import app as _app
+    with _app.HOST_DATA_LOCK:
+        items = list(_app.HOST_DATA.items())
+    for host, entry in items:
+        if not _app._host_is_online(entry):
+            continue
+        hostd = (entry["data"].get("host")) or {}
+        for dk in (hostd.get("disks") or []):
+            mp   = dk.get("mount", "?")
+            key  = f"disk:{host}:{mp}"
+            pct  = dk.get("pct", 0)
+            if pct >= disk_thr:
+                level = "critical" if pct >= 95 else "warning"
+                _app._emit(s, key, level, f"{'🔴' if level=='critical' else '🟠'} {host}: Disk {mp} at {pct}%",
+                      f"{mp}: {dk.get('used',0)} GB / {dk.get('total',0)} GB used ({pct}%).",
+                      rules=rules)
+            else:
+                _app._clear(key)
+
+
+def notify_remote_vram(s, rules):
+    """VRAM-pressure alerts for every registered remote — mirrors the hub
+    block, keyed gpu:vram_pressure:<host> (suffix, since there is no
+    per-item name to infix — this is one pooled figure per host, same shape
+    the hub's own unprefixed gpu:vram_pressure key already has). See
+    notify_remote_containers for the online-gating rationale, identical
+    here. Reads the same pooled host.gpu.mem_used/mem_total shape probe.py
+    emits — probe.py's main() spreads read_gpu()'s {"gpu": agg, "gpus": [...]}
+    into the top-level "host" dict, so the aggregate lives at
+    data["host"]["gpu"], not data["gpu"] (confirmed against
+    fleet_gpu_cards/_record_host_sample, which read the same path)."""
+    import app as _app
+    with _app.HOST_DATA_LOCK:
+        items = list(_app.HOST_DATA.items())
+    for host, entry in items:
+        if not _app._host_is_online(entry):
+            continue
+        gpu = ((entry["data"].get("host") or {}).get("gpu")) or {}
+        mem_total = gpu.get("mem_total") or 0
+        mem_used  = gpu.get("mem_used")  or 0
+        key = f"gpu:vram_pressure:{host}"
+        if not mem_total:
+            _app._clear(key)
+            continue
+        free = mem_total - mem_used
+        if free < _app.PRESSURE_MB:
+            _app._emit(s, key, "warning", f"🟠 {host}: GPU VRAM pressure",
+                  f"Only {round(free)} MB free of {round(mem_total)} MB "
+                  f"({round(100*mem_used/mem_total)}% used).", rules=rules)
+        else:
+            _app._clear(key)
+
+
 def notify_scan():
     import app as _app
     s = _app.get_settings()
@@ -465,6 +635,10 @@ def notify_scan():
                       f"{name}: {ct.get('status_text','')}", rules=rules)
             elif st == "ok":
                 _app._clear(key)
+    try:
+        notify_remote_containers(s, rules)
+    except Exception as e:
+        print("notify_scan remote container error:", e, flush=True)
 
     # ── systemd units: edge-trigger on failed ─────────────────────────────────
     systemd = _app.HEALTH.get("systemd") or {}
@@ -478,6 +652,10 @@ def notify_scan():
                       rules=rules)
             elif svc.get("status") == "ok":
                 _app._clear(key)
+    try:
+        notify_remote_systemd(s, rules)
+    except Exception as e:
+        print("notify_scan remote systemd error:", e, flush=True)
 
     # ── GPU VRAM pressure ────────────────────────────────────────────────────
     mem_total = _app.LATEST.get("mem_total") or 0
@@ -491,12 +669,22 @@ def notify_scan():
                   f"({round(100*mem_used/mem_total)}% used).", rules=rules)
         else:
             _app._clear(key)
+    try:
+        notify_remote_vram(s, rules)
+    except Exception as e:
+        print("notify_scan remote vram error:", e, flush=True)
 
     # ── Per-card GPU health across the whole fleet ───────────────────────────
     try:
         notify_gpu_cards(s, rules)
     except Exception as e:
         print("notify_scan gpu error:", e, flush=True)
+
+    # ── Registered remote hosts going unreachable ────────────────────────────
+    try:
+        notify_host_down(s, rules)
+    except Exception as e:
+        print("notify_scan host_down error:", e, flush=True)
 
     # ── Disks crossing the configured threshold ───────────────────────────────
     try: disk_thr = int(s.get("disk_alert_pct") or 90)
@@ -515,6 +703,10 @@ def notify_scan():
                   rules=rules)
         else:
             _app._clear(key)
+    try:
+        notify_remote_disks(s, rules, disk_thr)
+    except Exception as e:
+        print("notify_scan remote disk error:", e, flush=True)
 
     # ── GPU OOM events from the _app.DB (each event_ts notified at most once) ─────
     try:

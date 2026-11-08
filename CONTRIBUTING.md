@@ -92,6 +92,15 @@ That's the whole pattern. The same shape applies to "add a model-server probe"
 (append to `PROBES` in `app.py`) and "add an alert channel" (extend the alert
 dispatcher).
 
+### Snapshot tests for new endpoints
+
+If your change adds or renames a JSON endpoint, add (or update) a snapshot
+test using `tests/snapshot_helper.py`'s `assert_snapshot`. A missing baseline
+is **not** created automatically — the test will fail on purpose, telling you
+to run `UPDATE_SNAPSHOTS=1 pytest` to write it deliberately. Do that, then
+**read the generated file in `tests/snapshots/`** before committing it, so a
+reviewed baseline — not an accidental one — is what ships.
+
 ## Extending the multi-host probe
 
 Since 0.8, the hub can monitor *other* boxes too. To extend what's collected
@@ -117,6 +126,25 @@ remotely:
 
 Keep `probe.py` self-contained — the hub pipes it over SSH on every cycle, so
 external deps would defeat the "agentless" promise.
+
+## Agent tools, actions and templates
+
+The AI agent (`backend/agent/`) is built so that extending it is data plus a
+test, never a special case in code:
+
+- **A read tool** is one `ToolSpec` in `backend/tools/read.py` (the same list
+  the MCP server mirrors — a parity test checks `mcp/server.py` matches).
+- **An action** is one entry in `backend/agent/catalog/actions.json`: an id, a
+  risk level, a parameter schema (every string needs an anchored `pattern` or an
+  `enum`) and an `argv` template per target (`local`, `linux`, `windows`) where
+  each element is a literal or exactly `{param}`. No shell, ever. Add a rendering
+  case to `tests/test_agent_policy.py`, and the English title to
+  `locales/en.json` as `agent.act.<id>`.
+- **A template** is one JSON file in `backend/agent/templates/` (prompt, read
+  tools, probes, actions it may propose, `requires`, default schedule/mode).
+  `tests/test_agent_scheduler.py` validates every file.
+- Behaviour comes from these declarations and the owner's policy — please don't
+  add keyword lists that match on what a user or a model wrote.
 
 ## Style
 

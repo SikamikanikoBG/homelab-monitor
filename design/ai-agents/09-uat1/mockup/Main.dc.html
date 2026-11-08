@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Overview with the agent</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0d1117}
+a{color:#58a6ff;text-decoration:none}a:hover{color:#79b8ff}
+input::placeholder{color:#6e7681}
+</style>
+</helmet>
+<div style="display:flex;flex-wrap:wrap;min-height:1000px;background:#0d1117;color:#e6edf3;font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+
+  <nav aria-label="Main" style="flex:1 1 212px;max-width:212px;background:#0b0f15;border-right:1px solid #30363d;padding:18px 14px;display:flex;flex-direction:column;gap:4px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 4px 18px;font-weight:600;font-size:15px">
+      <span style="width:22px;height:22px;border-radius:50%;background:#d29922;display:inline-block"></span>HomeLab Monitor
+    </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e;padding:8px 6px 6px">MONITORING</div>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:#1c232e;color:#e6edf3;font-size:14px">Overview</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">GPU</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">Costs</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">Containers</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">Disks</a>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e;padding:16px 6px 6px">AI</div>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#e6edf3;font-size:14px;font-weight:600">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d29922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+      Agent
+      <span style="margin-left:auto;background:#d29922;color:#1a1100;font-size:11px;font-weight:700;border-radius:10px;padding:0 7px">1</span>
+    </a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">AI Models</a>
+  </nav>
+
+  <main style="flex:999 1 560px;min-width:0;padding:22px 28px 48px;display:flex;flex-direction:column;gap:18px;box-sizing:border-box">
+
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px 18px">
+      <span style="width:9px;height:9px;border-radius:50%;background:#3fb950"></span>
+      <span style="font-size:12px;font-weight:700;letter-spacing:.06em;color:#8b949e">FLEET</span>
+      <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">4/6 online</span>
+      <span style="font-size:13px;color:#8b949e">cloudy and oldie offline</span>
+      <span style="margin-left:auto;font-size:13px;color:#8b949e">Fleet RAM <b style="color:#e6edf3;font-family:ui-monospace,Menlo,monospace">126.6 GB</b> / 188.4 GB</span>
+    </div>
+
+    <section aria-label="Agent" style="background:#161b22;border:1px solid #30363d;border-radius:14px;padding:22px 24px;display:flex;flex-wrap:wrap;gap:28px">
+      <div style="flex:3 1 520px;min-width:0;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d29922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+          <h2 style="margin:0;font-size:17px;font-weight:600">Ask your lab</h2>
+          <span style="font-size:12px;color:#8b949e;margin-left:6px">qwen3.8-27b on vader · local · free</span>
+        </div>
+        <form style="display:flex;gap:10px;margin:0">
+          <label for="ask" style="position:absolute;left:-9999px">Ask your lab</label>
+          <input id="ask" placeholder="How are my disks? What is using the GPU? Is anything wrong?" style="flex:1;min-width:0;height:48px;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:0 16px;color:#e6edf3;font-size:15px">
+          <button type="button" style="height:48px;padding:0 22px;border:0;border-radius:10px;background:#d29922;color:#1a1100;font-weight:700;font-size:15px;cursor:pointer">Ask</button>
+        </form>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:18px;padding:7px 14px;font-size:13px;cursor:pointer">How are my disks?</button>
+          <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:18px;padding:7px 14px;font-size:13px;cursor:pointer">Anything wrong right now?</button>
+          <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:18px;padding:7px 14px;font-size:13px;cursor:pointer">What is using the GPU?</button>
+          <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:18px;padding:7px 14px;font-size:13px;cursor:pointer">What can I clean up?</button>
+        </div>
+      </div>
+
+      <div style="flex:2 1 340px;min-width:0;display:flex;flex-direction:column;gap:10px;border-left:1px solid #30363d;padding-left:24px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e">WAITING FOR YOU</div>
+        <div style="display:flex;align-items:center;gap:12px;background:#d2992214;border:1px solid #d2992266;border-radius:10px;padding:12px 14px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:14px">Restart jarvis-memory on ardi</div>
+            <div style="font-size:12px;color:#8b949e">From “Stale containers” · 06:10 · low risk</div>
+          </div>
+          <a href="#" style="border:1px solid #d29922;color:#d29922;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600">Review</a>
+        </div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e;margin-top:6px">OVERNIGHT</div>
+        <div style="display:flex;gap:10px;align-items:baseline;font-size:14px">
+          <span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex:none;transform:translateY(-1px)"></span>
+          <span style="flex:1;min-width:0">Docker cleanup on vader freed <b>12.4 GB</b></span>
+          <span style="font-size:12px;color:#8b949e;font-family:ui-monospace,Menlo,monospace">03:00</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:baseline;font-size:14px">
+          <span style="width:8px;height:8px;border-radius:50%;background:#58a6ff;flex:none;transform:translateY(-1px)"></span>
+          <span style="flex:1;min-width:0">Model housekeeping: 3 models unused for 30 days</span>
+          <span style="font-size:12px;color:#8b949e;font-family:ui-monospace,Menlo,monospace">04:00</span>
+        </div>
+        <a href="#" style="font-size:13px;margin-top:4px">Open the agent →</a>
+      </div>
+    </section>
+
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;height:300px;box-sizing:border-box">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:#8b949e">FLEET</div>
+        <div style="margin-top:14px;height:56px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+        <div style="margin-top:10px;height:56px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+        <div style="margin-top:10px;height:56px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+      </div>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;height:300px;box-sizing:border-box">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:#8b949e">POWER &amp; COST</div>
+        <div style="margin-top:14px;height:200px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+      </div>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;height:300px;box-sizing:border-box">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:#8b949e">EVENT &amp; INSIGHT FEED</div>
+        <div style="margin-top:14px;height:60px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+        <div style="margin-top:10px;height:60px;border:1px solid #30363d;border-radius:8px;background:#0d1117"></div>
+      </div>
+    </div>
+    <div style="font-size:12px;color:#6e7681;text-align:center">The rest of Overview stays as it is today.</div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

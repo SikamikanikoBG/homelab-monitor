@@ -1,0 +1,11 @@
+import hlm, json
+a = hlm.Client()
+print("status anon:", a.call("GET", "/api/agent/status"))
+print("auth status:", a.call("GET", "/api/auth/status"))
+print("enable without password:", a.call("POST", "/api/agent/enable", {"enabled": True}))
+print("chat without password:", a.call("POST", "/api/agent/conversations"))
+print("approvals list without password:", a.call("GET", "/api/agent/approvals")[0])
+print("policy PUT without password:", a.call("PUT", "/api/agent/policy/hosts/lab1", {"mode": "active"}))
+print("mint admin key without password:", a.call("POST", "/api/integration/keys", {"name": "x", "scope": "admin"}))
+print("backup without password:", a.call("GET", "/api/backup", raw=True)[0])
+print("old session cookie still valid?")

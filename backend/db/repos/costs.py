@@ -42,11 +42,28 @@ def sum_power_cnt_since(ts: int, conn=None):
     return c.execute("SELECT SUM(power*cnt) FROM samples_1h WHERE ts>=?", (ts,)).fetchone()[0]
 
 
+def sum_wsec_since(ts: int, conn=None):
+    """Return SUM(wsec) from samples_1h since ts -- already-interval-correct
+    watt-seconds, so the caller need not multiply by any INTERVAL at all."""
+    c = conn or connection()
+    return c.execute("SELECT SUM(wsec) FROM samples_1h WHERE ts>=?", (ts,)).fetchone()[0]
+
+
 def samples_1h_power_cnt_since(ts: int, conn=None) -> list:
     """Return (ts, power, cnt) from samples_1h since ts where power is not null."""
     c = conn or connection()
     return c.execute(
         "SELECT ts,power,cnt FROM samples_1h WHERE ts>=? AND power IS NOT NULL", (ts,)
+    ).fetchall()
+
+
+def samples_1h_wsec_cnt_since(ts: int, conn=None) -> list:
+    """Return (ts, wsec, cnt) from samples_1h since ts where wsec is not null --
+    the wsec counterpart of samples_1h_power_cnt_since, used by the dual-tariff
+    day/night split so each row prices its own already-interval-correct energy."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT ts,wsec,cnt FROM samples_1h WHERE ts>=? AND wsec IS NOT NULL", (ts,)
     ).fetchall()
 
 
@@ -58,11 +75,28 @@ def samples_1h_power_cnt_since_ordered(ts: int, conn=None) -> list:
     ).fetchall()
 
 
+def samples_1h_wsec_cnt_since_ordered(ts: int, conn=None) -> list:
+    """Return (ts, wsec, cnt) from samples_1h since ts ordered by ts."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT ts,wsec,cnt FROM samples_1h WHERE ts>=? AND wsec IS NOT NULL ORDER BY ts", (ts,)
+    ).fetchall()
+
+
 def samples_1h_bucketed_power(ts: int, bk: int, conn=None) -> list:
     """Return (bucket, sum_power_cnt) bucketed from samples_1h since ts."""
     c = conn or connection()
     return c.execute(
         "SELECT (ts/?)*? b, SUM(power*cnt) FROM samples_1h WHERE ts>=? GROUP BY b ORDER BY b",
+        (bk, bk, ts)
+    ).fetchall()
+
+
+def samples_1h_bucketed_wsec(ts: int, bk: int, conn=None) -> list:
+    """Return (bucket, sum_wsec) bucketed from samples_1h since ts."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT (ts/?)*? b, SUM(wsec) FROM samples_1h WHERE ts>=? GROUP BY b ORDER BY b",
         (bk, bk, ts)
     ).fetchall()
 
@@ -84,10 +118,16 @@ def samples_1h_comp_bucketed(ts: int, bk: int, conn=None) -> list:
 
 
 def samples_1h_full_since(ts: int, conn=None) -> list:
-    """Return (ts, power, cpu_power, dram_power, cnt) from samples_1h since ts."""
+    """Return (ts, power, cpu_power, dram_power, cnt, wsec, cpu_wsec, dram_wsec)
+    from samples_1h since ts.
+
+    wsec/cpu_wsec/dram_wsec are already-interval-correct watt-second sums for
+    each of the three power columns, matching host_samples_1h's three-component
+    shape -- no per-row AVG*cnt*INTERVAL rescale needed for any of them."""
     c = conn or connection()
     return c.execute(
-        "SELECT ts,power,cpu_power,dram_power,cnt FROM samples_1h WHERE ts>=?", (ts,)
+        "SELECT ts,power,cpu_power,dram_power,cnt,wsec,cpu_wsec,dram_wsec "
+        "FROM samples_1h WHERE ts>=?", (ts,)
     ).fetchall()
 
 
@@ -99,11 +139,24 @@ def samples_1h_total_w_since(ts: int, conn=None) -> list:
     ).fetchall()
 
 
-def power_proc_since(ts: int, conn=None) -> list:
-    """Return (ts, kind, name, watts) from power_proc since ts."""
+def samples_1h_total_wsec_since(ts: int, conn=None) -> list:
+    """Return (ts, wsec) from samples_1h since ts -- already-interval-correct.
+    COALESCE guards rows the backfill hasn't reached yet (should not happen in
+    practice; apply_schema_migrations backfills on every boot)."""
     c = conn or connection()
     return c.execute(
-        "SELECT ts,kind,name,watts FROM power_proc WHERE ts>=?", (ts,)
+        "SELECT ts, COALESCE(wsec,0) FROM samples_1h WHERE ts>=?", (ts,)
+    ).fetchall()
+
+
+def power_proc_since(ts: int, conn=None) -> list:
+    """Return (ts, kind, name, watts, interval_sec) from power_proc since ts.
+
+    interval_sec lets the caller price each row at the cadence it was actually
+    sampled at, instead of one global multiplier applied after the fact."""
+    c = conn or connection()
+    return c.execute(
+        "SELECT ts,kind,name,watts,interval_sec FROM power_proc WHERE ts>=?", (ts,)
     ).fetchall()
 
 
@@ -114,9 +167,13 @@ def min_ts_power_proc(conn=None):
 
 
 def power_proc_entity(name: str, ts: int, bk: int, kind: str = None, conn=None) -> list:
-    """Return (bucket, avg_watts, max_watts) from power_proc for entity drilldown."""
+    """Return (bucket, wsec_sum, max_watts, avg_watts) from power_proc for entity
+    drilldown. wsec_sum = SUM(watts*interval_sec) per bucket -- each row's own
+    interval baked in, so the caller derives kWh without a global multiplier.
+    max_watts/avg_watts stay plain W for the peak_w field and the chart series."""
     c = conn or connection()
-    q = "SELECT (ts/?)*? b, AVG(watts), MAX(watts) FROM power_proc WHERE name=? AND ts>=?"
+    q = ("SELECT (ts/?)*? b, SUM(watts*interval_sec), MAX(watts), AVG(watts) "
+         "FROM power_proc WHERE name=? AND ts>=?")
     args = [bk, bk, name, ts]
     if kind:
         q += " AND kind=?"; args.append(kind)

@@ -1,6 +1,6 @@
 ---
 title: MCP server — connect Claude, ChatGPT & any AI agent to your homelab
-description: Connect Claude, ChatGPT or any MCP client to your homelab. HomeLab Monitor ships a read-only Model Context Protocol server with 19 tools — one line to connect.
+description: Connect Claude, ChatGPT or any MCP client to your homelab. HomeLab Monitor ships a read-only Model Context Protocol server with 20 tools — one line to connect.
 ---
 
 # MCP server — connect Claude, ChatGPT & any AI agent
@@ -41,11 +41,12 @@ Everything the dashboard shows is reachable through these tools. The usual path 
 | `get_history(range)` | Charted time-series (GPU + host) for trends | `/api/data` |
 | `get_costs(range)` | What the machine drew and cost, + a ranked per-process/container/service/model breakdown | `/api/costs` |
 | `get_entity_cost(name, kind, range)` | Cost drill-down for one process/container/service/model | `/api/costs/entity` |
-| `get_experiments(range, status)` | Tracked runs, each priced by the real GPU energy it burned | `/api/runs` |
-| `get_experiment(run_id)` | One run's loss-curve metrics, GPU power/util series and priced energy | `/api/runs/<id>` |
+| `get_experiments(range, status)` | Tracked runs, each with the whole-box GPU energy over its window (not per-run attribution) | `/api/runs` |
+| `get_experiment(run_id)` | One run's loss-curve metrics, GPU power/util series and whole-box energy over its window | `/api/runs/<id>` |
 | `get_benchmarks(range, model)` | Stored model benchmarks — tokens/sec, VRAM fit, recommended context | `/api/bench` |
 | `get_benchmark(run_id)` | One benchmark's full context sweep (tok/s & VRAM at each context size) | `/api/bench/<id>` |
 | `get_events(range)` / `get_alerts(range)` | Recent OOM kills / threshold crossings + insights | `/api/data` |
+| `get_uptime(range)` | Uptime checks and maintenance windows, including current state, availability percentage, latency and whether a check is silenced | `/api/uptime` |
 | `scan_disk(path, rescan)` | WizTree-style nested folder-size treemap | `/api/disk_scan` |
 
 `range` accepts the same windows as the dashboard, e.g. `6h`, `24h`, `7d`.
@@ -68,6 +69,15 @@ scan until it's done.
 | `HOMELAB_HTTP_TIMEOUT` | `10` | Per-request timeout (seconds) |
 | `MCP_TRANSPORT` | `stdio` | `stdio`, or `http` (streamable-http) for the sidecar |
 | `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `9810` | Bind address for the `http` transport |
+| `HOMELAB_API_TOKEN` | — | A **read** API key, needed once the dashboard has a [login](security.md#dashboard-login) |
+
+**With a dashboard login.** Once a password is set, the built-in HTTP server on
+`MCP_PORT` asks every client for `Authorization: Bearer <read or admin key>`
+(make one under Settings → Integrations → API keys) and answers 401 without it.
+It checks a key at most once a minute, so a revoked key stops working within a
+minute. A stdio client on your laptop sets `HOMELAB_API_TOKEN` to that key. The
+built-in server reaches the dashboard with a per-container token, so it keeps
+working with no setup. No password = no change.
 
 ## Run it
 
