@@ -10840,7 +10840,7 @@ document.getElementById('updnowbtn').onclick = startSelfUpdate;
 showTab(TAB);
 loadData(); loadHealth(); loadFleet();
 // AI agent (#354): its UI lives in static/agent.js + agent.css and is only
-// loaded when the server says the agent exists (AGENT_ENABLED=1); otherwise
+// loaded when the server says the agent exists (not AGENT_ENABLED=0); otherwise
 // /api/agent/status is a 404 and nothing more is fetched.
 (async () => { try{ if(!(await HLM_AUTH.status()).agent) return; const r=await fetch('/api/agent/status'); if(!r.ok) return; const v=encodeURIComponent((await r.json()).version||'');
   const css=document.createElement('link'); css.rel='stylesheet'; css.href='/static/agent.css?v='+v; document.head.appendChild(css);

@@ -1,8 +1,8 @@
 """Is the agent on, and its settings.
 
 Three switches, all must be on before anything runs:
-1. `AGENT_ENABLED=1` in the environment (the hard switch; unset = every
-   /api/agent/* route is a 404, no threads, no UI — the default);
+1. the environment allows it — on unless `AGENT_ENABLED=0` (the hard off
+   switch: every /api/agent/* route is a 404, no threads, no UI);
 2. an admin password (the agent never runs on an open dashboard);
 3. the owner's "Enable agent" toggle in the Agent tab (`enabled` below).
 
@@ -51,7 +51,9 @@ DEFAULTS = {
 
 
 def env_allowed():
-    return (os.environ.get("AGENT_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+    # On by default since 0.38.1: an opt-in env switch meant nobody found the agent.
+    # The password and the owner's toggle still have to be on before anything runs.
+    return (os.environ.get("AGENT_ENABLED") or "").strip().lower() not in ("0", "false", "no", "off")
 
 
 def password_set():

@@ -1,9 +1,9 @@
-"""EC-16: the agent ships disabled. Without AGENT_ENABLED=1:
+"""EC-16: the hard off switch. With AGENT_ENABLED=0:
 - every /api/agent/* route answers 404 (found by walking app.url_map),
 - no agent thread starts at boot and no agent table is created by requests,
 - /api/stream carries no agent frame even if something is published,
 - the dashboard page and existing snapshots are untouched (test_snapshots.py).
-With the env switch on but no password, the agent can't be enabled.
+With the env switch on (the default) but no password, the agent can't be enabled.
 """
 import json
 import os
@@ -24,13 +24,15 @@ def _path(rule):
     return re.sub(r"<(?:[^:<>]+:)?([^<>]+)>", "x", rule.rule)
 
 
-class TestDisabledByDefault(unittest.TestCase):
+class TestEnvOff(unittest.TestCase):
     def setUp(self):
-        os.environ.pop("AGENT_ENABLED", None)
+        self.env = patch.dict(os.environ, {"AGENT_ENABLED": "0"})
+        self.env.start()
         clear_login()
         self.c = app.app.test_client()
 
     def tearDown(self):
+        self.env.stop()
         clear_login()
 
     def test_every_agent_route_is_404(self):
@@ -84,6 +86,31 @@ class TestDisabledByDefault(unittest.TestCase):
         i = html.index("/api/agent/status")
         self.assertIn("if(!r.ok) return;", html[i:i + 200])
         self.assertNotIn('src="/static/agent.js', html)
+
+
+class TestOnByDefault(unittest.TestCase):
+    """0.38.1: an unset AGENT_ENABLED means the agent is available (an opt-in
+    env switch meant upgraders never found it)."""
+
+    def test_unset_and_off_values(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_ENABLED", None)
+            self.assertTrue(state.env_allowed())
+        for v in ("", "1", "yes", "on"):
+            with patch.dict(os.environ, {"AGENT_ENABLED": v}):
+                self.assertTrue(state.env_allowed(), v)
+        for v in ("0", "false", "No", " off "):
+            with patch.dict(os.environ, {"AGENT_ENABLED": v}):
+                self.assertFalse(state.env_allowed(), v)
+
+    def test_status_answers_without_the_env_var(self):
+        clear_login()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_ENABLED", None)
+            j = app.app.test_client().get("/api/agent/status").get_json()
+        self.assertTrue(j["allowed"])
+        self.assertFalse(j["password_set"])
+        self.assertFalse(j["enabled"])
 
 
 class TestEnvOnNeedsPassword(unittest.TestCase):

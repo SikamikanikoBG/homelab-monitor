@@ -30,12 +30,9 @@ class NoPasswordCase(unittest.TestCase):
         self.assertEqual((j["password_set"], j["next_step"], j["done"], j["found"]), (False, "password", False, 2))
         self.assertEqual(c.get("/api/agent/overview").status_code, 403)          # data needs the password
 
-    def test_off_without_the_env_switch(self):
-        self.env.stop()
-        try:
+    def test_off_with_the_env_switch_off(self):
+        with patch.dict(os.environ, {"AGENT_ENABLED": "0"}):
             self.assertEqual(app.app.test_client().get("/api/agent/setup").status_code, 404)
-        finally:
-            self.env.start()
 
 
 class PresetCase(unittest.TestCase):
