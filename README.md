@@ -24,7 +24,7 @@ curl -fsSLO https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/mai
 docker compose up -d
 ```
 
-Open `http://<your-host>:9800` and you're done. Want the agent? Uncomment `AGENT_ENABLED: "1"` in the compose file, and the Overview walks you through the rest in about a minute. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
+Open `http://<your-host>:9800` and you're done. The AI agent is already there: the Overview walks you through turning it on in about a minute. Full options (from source, GPU toolkit, Windows/WSL2) → [**Install docs**](https://sikamikanikobg.github.io/homelab-monitor/install/).
 
 <!-- Deliberately not pinned to a version number: this line used to name a
      specific release and was three releases out of date within two months. -->
@@ -111,7 +111,7 @@ Set these under `environment:` in `docker-compose.yml` (all optional):
 | `ENABLE_CONTROLS` | `1` | Set `0` to remove the start/stop/restart buttons from the Containers and Services tabs |
 | `ENABLE_HOST_RUN` | `0` | `1` re-enables `/api/hosts/<name>/run` (run any command on a host; unused by the UI) |
 | `ADMIN_PASSWORD` | — | Set the optional dashboard password at boot (or in Settings → Security) |
-| `AGENT_ENABLED` | — | `1` makes the optional [AI agent](https://sikamikanikobg.github.io/homelab-monitor/agents/) available (needs a password) |
+| `AGENT_ENABLED` | `1` | Set `0` to hide the [AI agent](https://sikamikanikobg.github.io/homelab-monitor/agents/) completely (it runs nothing until you set a password and switch it on) |
 | `ALLOW_SELF_UPDATE` | `1` | Set `0` to disable in-app updating |
 | `WATCH_CONTAINERS` | — | Extra containers to scan for OOM (comma-separated) |
 | `WATCH_SERVICES` | — | systemd units to always show, even vendor ones (comma-separated) |

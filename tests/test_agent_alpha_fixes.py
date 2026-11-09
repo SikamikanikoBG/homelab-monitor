@@ -341,7 +341,7 @@ class UiBackendCase(unittest.TestCase):
     def test_19_auth_status_tells_the_page_whether_to_load_the_agent(self):
         import os
         c = app.app.test_client()
-        with patch.dict(os.environ, {"AGENT_ENABLED": ""}):
+        with patch.dict(os.environ, {"AGENT_ENABLED": "0"}):
             self.assertFalse(c.get("/api/auth/status").get_json()["agent"])
         with patch.dict(os.environ, {"AGENT_ENABLED": "1"}):
             self.assertTrue(c.get("/api/auth/status").get_json()["agent"])

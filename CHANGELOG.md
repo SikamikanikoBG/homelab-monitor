@@ -7,6 +7,9 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Fixed**
+- **The AI agent is there after you update — no compose edit needed.** In 0.38.0 it only appeared with `AGENT_ENABLED=1`, so anyone who updated (Watchtower, the update button, `docker compose pull`) got the new version and never saw the agent. It is now available by default and the Overview offers to set it up; it still does nothing until you set a dashboard password and switch it on. `AGENT_ENABLED=0` hides it completely, as before.
+
 ## [0.38.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.38.0) — 2026-11-08 · **Your homelab gets an AI agent, and a lock on the door**
 
 **Added**

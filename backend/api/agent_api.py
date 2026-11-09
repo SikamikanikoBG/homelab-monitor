@@ -1,6 +1,6 @@
 """backend/api/agent_api.py — /api/agent/* (#354).
 
-Unless AGENT_ENABLED=1, every route here is a 404: the blueprint is registered
+With AGENT_ENABLED=0, every route here is a 404: the blueprint is registered
 but answers nothing. With the env switch on, `status` explains what is still
 missing; everything else needs an admin password; and starting or continuing
 work (chat, Run now, approvals) needs the owner's "Enable agent" toggle.
