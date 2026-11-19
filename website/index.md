@@ -191,5 +191,3 @@ Full install options (NVIDIA Container Toolkit, from-source, upgrade) →
 [**Install**](install.md){ .md-button }
 
 </div>
-
-<p style="text-align:center;margin-top:1.2em"><a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives"></a></p>
