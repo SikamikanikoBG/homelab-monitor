@@ -7,7 +7,6 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![docker](https://img.shields.io/badge/deploy-docker--compose-2496ED?logo=docker&logoColor=white)
 [![docs](https://img.shields.io/badge/docs-website-d29922?logo=readthedocs&logoColor=white)](https://sikamikanikobg.github.io/homelab-monitor/)
-[![As seen on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to)
 
 **Ask your homelab.** One self-hosted page for every box and GPU you run — and an AI agent that reads all of it, answers in plain words, and fixes things only when you say so. It runs on the models already in your lab. No cloud, nothing to install on your machines.
 
