@@ -4,6 +4,12 @@ services:
     # MONITOR_IMAGE lets the self-update helper pin an exact image (the versioned tag for the upgrade, the previous digest for rollback); default is identical to before for a normal `docker compose up`.
     image: ${MONITOR_IMAGE:-sikamikaniko123/homelab-monitor:latest}
     container_name: homelab-monitor
+    # In host network mode Docker inherits the HOST's hostname into $HOSTNAME,
+    # and the self-update helper identifies its own container via $HOSTNAME
+    # (_self_container_name in app.py) — on a machine named e.g. "cybrina" the
+    # inspect call 404s ("no such container") and self-update refuses to start.
+    # Pinning the hostname to the container name fixes that lookup.
+    hostname: homelab-monitor
     restart: unless-stopped
     # host networking lets it reach any model server's API (Ollama/vLLM/TGI/…)
     # and bind the dashboard directly on the host; pid:host maps GPU PIDs->containers.
