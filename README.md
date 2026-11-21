@@ -165,7 +165,7 @@ This is a host monitor: it runs with host access, plus a read-write Docker socke
 If HomeLab Monitor saves you a browser tab or two, a ⭐ on GitHub genuinely helps other home-labbers find it. Thank you!
 
 <!-- Rendered by .github/workflows/star-history.yml from our own stargazer data and
-     committed to the repo — not fetched from star-history.com. GitHub restricted the
+     committed to the orphan `star-history` branch — not fetched from star-history.com. GitHub restricted the
      stargazers API on 2026-06-30 to a repo's own admins and collaborators, so their
      servers can no longer build this chart for anyone; the embed returned a 200 whose
      entire content was "GitHub restricted access to star data". Their fix is to embed
@@ -173,9 +173,9 @@ If HomeLab Monitor saves you a browser tab or two, a ⭐ on GitHub genuinely hel
      push access to this repo. We render it ourselves instead. -->
 <a href="https://github.com/SikamikanikoBG/homelab-monitor/stargazers">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="docs/star-history-dark.svg" />
-   <source media="(prefers-color-scheme: light)" srcset="docs/star-history-light.svg" />
-   <img alt="Star history — cumulative stars over time" src="docs/star-history-light.svg" width="800" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/star-history/star-history-dark.svg" />
+   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/star-history/star-history-light.svg" />
+   <img alt="Star history — cumulative stars over time" src="https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/star-history/star-history-light.svg" width="800" />
  </picture>
 </a>
 
@@ -193,7 +193,7 @@ Issues and PRs are very welcome — especially new model-server probes, new moni
 
 ### Contributors
 
-Thanks to everyone who's filed an issue, opened a PR, or helped shape the roadmap. The entire AMD GPU back-end — per-process VRAM via DRM fdinfo and full panel parity in v0.28.0, real VRAM on unified-memory APUs in v0.26.0 — came from **[@andreahaku](https://github.com/andreahaku)**. v0.27.0's fleet-aware model registry and v0.23.0's maintenance windows came from **[@1HazyOne707](https://github.com/1HazyOne707)**. v0.27.0's RAPL CPU/DRAM power and v0.24.0's `backend/` module-tree refactor came from **[@pehota](https://github.com/pehota)**. See the [changelog](CHANGELOG.md) for the full, ongoing credit trail.
+Thanks to everyone who's filed an issue, opened a PR, or helped shape the roadmap. The entire AMD GPU back-end — per-process VRAM via DRM fdinfo and full panel parity in v0.28.0, real VRAM on unified-memory APUs in v0.26.0 — came from **[@andreahaku](https://github.com/andreahaku)**. v0.27.0's fleet-aware model registry and v0.23.0's maintenance windows came from **[@1HazyOne707](https://github.com/1HazyOne707)**. v0.27.0's RAPL CPU/DRAM power and v0.24.0's `backend/` module-tree refactor came from **[@pehota](https://github.com/pehota)**. Docker inventory on Windows hosts, the AI Models Hall of Fame and drop-in locale discovery came from **[@haigou-web](https://github.com/haigou-web)**; the Chinese translation from **[@WaldInsel](https://github.com/WaldInsel)**; llama.cpp context windows for the agent from **[@jmdjr](https://github.com/jmdjr)**. **[@pehota](https://github.com/pehota)** reviews most pull requests that come in. See the [changelog](CHANGELOG.md) for the full, ongoing credit trail.
 
 ## License
 

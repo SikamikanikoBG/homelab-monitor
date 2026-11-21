@@ -3,6 +3,10 @@
 A **host pill bar** at the top switches between the local box and any remote you've
 registered; every tab scopes to the active host. Here's what each one shows.
 
+The sidebar is yours to arrange: **✎ Customize** at its foot lets you drag tabs into the
+order you use them and hide the ones you don't (saved per browser, reset from
+**Settings → General**). A hidden tab still opens from search or a link.
+
 ??? tip "Screenshots are from a live 56-core / RTX 3090 host"
     Network identifiers are redacted; everything else is real data.
 
@@ -29,6 +33,14 @@ server's own API. Servers stay listed as **Idle** when their model unloads (noth
 flickers away), and a **"Driven by"** breakdown shows which services are calling each
 server. See the [full list of 30+ servers](model-servers.md).
 
+## Hall of Fame
+
+Every model that has held this host's GPU over the selected range, ranked by how long
+it stayed **loaded** — residency, not utilisation, so a model idling in VRAM still
+counts. The longest-resident model gets the hero card; the rest follow in a ranked
+table with their share of the range and when they were last seen.
+(Contributed by [@haigou-web](https://github.com/haigou-web).)
+
 ## Benchmark Lab
 
 Measure what your local models **actually** do on your GPUs, instead of guessing.
@@ -41,6 +53,8 @@ overlay stored runs to compare cards, and every run is priced by the same tariff
 engine as the rest of the app. Results are stored and sortable in a filterable
 table: benchmark once, re-run only when something changes. Benchmarking is an
 active, opt-in operation and single-flight, so it never stampedes the GPU.
+It benchmarks the ollama you registered under **Settings → AI servers** (the same one
+the connectivity Test checks); set `COPILOT_OLLAMA_URL` to point it elsewhere.
 
 ![Benchmark Lab](https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/main/docs/screenshots/benchmark-lab.png)
 
@@ -64,7 +78,7 @@ up), real on-disk footprint, a **table total**, and clickable port chips that op
 `host:port` in a new tab. Start, stop, restart and change the restart policy of
 local containers straight from the table — on by default, see
 [`ENABLE_CONTROLS`](configuration.md#write-actions-allow_self_update-enable_controls)
-to turn it off.
+to turn it off. Windows hosts with Docker Desktop fill this tab too.
 
 ![Containers](https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/main/docs/containers.png)
 
