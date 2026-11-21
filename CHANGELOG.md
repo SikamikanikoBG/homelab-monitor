@@ -7,10 +7,19 @@ release notes.
 
 ## [Unreleased] — `next`
 
+*Contributions in this release: [@haigou-web](https://github.com/haigou-web) (three PRs), [@WaldInsel](https://github.com/WaldInsel) (first PR) and [@jmdjr](https://github.com/jmdjr), with reviews from [@pehota](https://github.com/pehota). Thank you.*
+
 **Added**
+- **Windows hosts show their Docker containers** ([#279](https://github.com/SikamikanikoBG/homelab-monitor/issues/279), [#345](https://github.com/SikamikanikoBG/homelab-monitor/pull/345), thanks @haigou-web). `probe.ps1` now reads Docker Desktop the way `probe.py` reads Docker on Linux — the container list, CPU %, RAM, writable-layer disk and restart policy — so a Windows host's Containers tab is no longer empty. A host without Docker, or with a daemon that hangs, simply has no Containers tab, as on Linux.
+- **AI Models → Hall of Fame** ([#23](https://github.com/SikamikanikoBG/homelab-monitor/issues/23), [#347](https://github.com/SikamikanikoBG/homelab-monitor/pull/347), thanks @haigou-web). Every model that has held the GPU over the selected range, ranked by how long it stayed loaded.
 - **Make the sidebar yours: reorder tabs and hide the ones you don't use** ([#33](https://github.com/SikamikanikoBG/homelab-monitor/issues/33)). **✎ Customize** at the foot of the sidebar turns the nav into an editor: drag a tab to move it within its group (Monitoring, AI, …), or focus it and press `Alt`+`↑`/`↓`; the eye hides or shows it. No AI servers? Hide the whole AI group and its heading goes too. Settings-group tabs can be moved but not hidden, so the config is always one click away. A hidden tab isn't locked away: its URL and the search box still open it. The layout lives in this browser only (`hl_tab_order` / `hl_tab_hidden`), and **Settings → General → Sidebar layout** resets it. Tabs added by a future release still show up for you, at the end of their group.
 
+**Changed**
+- **A new locale is one file** ([#283](https://github.com/SikamikanikoBG/homelab-monitor/issues/283), [#346](https://github.com/SikamikanikoBG/homelab-monitor/pull/346), thanks @haigou-web). The language switcher discovers `locales/*.json` from `/api/locales` instead of a hardcoded list, and CI runs `scripts/i18n-sync.py --check`, so a key added to `en.json` without its translations fails the PR instead of the user.
+- **Simplified Chinese is complete and reads naturally** ([#281](https://github.com/SikamikanikoBG/homelab-monitor/issues/281), [#349](https://github.com/SikamikanikoBG/homelab-monitor/pull/349), thanks @WaldInsel). Placeholder English strings translated, terminology made consistent; zh-CN is at 97%, and what remains are terms like CPU, GPU and VRAM that read the same in Chinese.
+
 **Fixed**
+- **The agent assumed an 8k context on llama.cpp** ([#364](https://github.com/SikamikanikoBG/homelab-monitor/pull/364), thanks @jmdjr). llama-server reports its runtime context as `meta.n_ctx`, which the model list ignored, so the agent fell back to 8192 tokens even on a 64k server. It now reads it.
 - **Benchmarks said your ollama wasn't answering while its connectivity Test passed.** The Test probes the ollama you registered under Settings → AI servers; the Benchmark Lab only ever talked to `COPILOT_OLLAMA_URL`, which defaults to `127.0.0.1:11434` — so an ollama on another box was green in one place and "not responding" in the other. The lab now benchmarks the registered ollama, unless you set `COPILOT_OLLAMA_URL` yourself (that still wins), and the error names the address it actually tried.
 
 ## [0.38.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.38.1) — 2026-11-09 · **The agent shows up when you update**
