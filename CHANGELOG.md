@@ -7,6 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.0) — 2026-11-21 · **See where your watts went**
 *Contributions in this release: [@haigou-web](https://github.com/haigou-web) (three PRs), [@WaldInsel](https://github.com/WaldInsel) (first PR) and [@jmdjr](https://github.com/jmdjr), with reviews from [@pehota](https://github.com/pehota). Thank you.*
 
 **Added**
