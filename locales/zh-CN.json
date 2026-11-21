@@ -47,7 +47,7 @@
       "agent.ch.webhook",
       "login.title"
     ],
-    "coverage": 0.9706
+    "coverage": 0.9709
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -1444,5 +1444,17 @@
   "agent.sug.containers": "哪些容器占用内存最多？",
   "agent.ex.top": "最满的是 **{h} {m}**，占用 **{p}%**。",
   "agent.ex.top_free": "最满的是 **{h} {m}**，占用 **{p}%**（剩余 {f} GB）。",
-  "agent.tool.list_hosts": "机群概览"
+  "agent.tool.list_hosts": "机群概览",
+  "energy.title": "⚡ 用电量",
+  "energy.empty": "此时间范围内暂无用电记录——随着 hub 采集功率数据会逐步填充。",
+  "energy.cap": "每小时或每天实际消耗的电量（GPU + CPU + 内存，实测），来自 hub 的小时历史数据。空白处表示当时没有记录。费用按每小时适用的电价计算。最后一个点是尚未结束的小时或天。",
+  "energy.group": "分组方式",
+  "energy.by_hour": "按小时",
+  "energy.by_day": "按天",
+  "energy.span_hours": "最近 {n} 天，按小时",
+  "energy.span_days": "最近 {n} 天，按天",
+  "energy.since_hours": "自 {d} 起，按小时",
+  "energy.since_days": "自 {d} 起，按天",
+  "energy.kwh": "电量（kWh）",
+  "energy.cost": "费用（{c}）"
 }

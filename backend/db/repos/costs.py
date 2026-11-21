@@ -140,12 +140,16 @@ def samples_1h_total_w_since(ts: int, conn=None) -> list:
 
 
 def samples_1h_total_wsec_since(ts: int, conn=None) -> list:
-    """Return (ts, wsec) from samples_1h since ts -- already-interval-correct.
-    COALESCE guards rows the backfill hasn't reached yet (should not happen in
+    """Return (ts, total_wsec) from samples_1h since ts, oldest first --
+    already-interval-correct. `wsec` is the GPU's watt-seconds only (the
+    collector rolls up the GPU's `power`); CPU and DRAM have their own
+    accumulators, so the machine total is the sum of all three. COALESCE
+    guards rows the backfill hasn't reached yet (should not happen in
     practice; apply_schema_migrations backfills on every boot)."""
     c = conn or connection()
     return c.execute(
-        "SELECT ts, COALESCE(wsec,0) FROM samples_1h WHERE ts>=?", (ts,)
+        "SELECT ts, COALESCE(wsec,0)+COALESCE(cpu_wsec,0)+COALESCE(dram_wsec,0) "
+        "FROM samples_1h WHERE ts>=? ORDER BY ts", (ts,)
     ).fetchall()
 
 

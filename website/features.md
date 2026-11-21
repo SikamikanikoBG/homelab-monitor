@@ -58,6 +58,18 @@ the connectivity Test checks); set `COPILOT_OLLAMA_URL` to point it elsewhere.
 
 ![Benchmark Lab](https://raw.githubusercontent.com/SikamikanikoBG/homelab-monitor/main/docs/screenshots/benchmark-lab.png)
 
+## Costs
+
+Set an electricity price (one flat rate, or day and night) under **Settings → Costs**
+and power turns into money: what today, the last 7 and the last 30 days cost, power
+over time split into GPU, CPU and DRAM (measured, CPU/DRAM via RAPL where readable),
+and a ranked breakdown by process, container and model with a drill-down for each.
+**Energy used** charts the kWh the machine actually consumed — hour by hour for the
+last week, or day by day for the last three months — with the cost alongside, so a
+heavy night or a quiet weekend stands out; gaps mark times nothing was recorded.
+**Busy hours** folds the same history into an average week (day × hour) to show when
+your lab usually burns power. Both work per host and without a price set (energy only).
+
 ## Containers
 
 Health of **every** Docker container with uptime, **RAM and GPU-VRAM in separate

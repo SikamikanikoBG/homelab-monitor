@@ -2053,6 +2053,14 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
       <p class="cap" id="costs-comp-cap" data-i18n="costs.comp_cap">GPU power is measured (nvidia-smi); CPU/DRAM are measured via RAPL when readable. "Other" appears only if you set a baseline in Settings — wall power is never guessed.</p>
     </div>
   </div>
+  <div class="card" id="energy-card" hidden>
+    <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span data-i18n="energy.title">⚡ Energy used</span>
+      <span class="muted" id="energy-sub" style="font-size:12px;font-weight:400;text-transform:none"></span>
+      <span id="energy-by" style="margin-left:auto"></span></h2>
+    <div id="energy-empty" class="topproc-empty" hidden data-i18n="energy.empty">No energy history in this window yet — it fills in as the hub collects power readings.</div>
+    <div class="chartbox short" id="energy-box"><canvas id="energychart" role="img" aria-describedby="energy-cap"></canvas></div>
+    <p class="cap" id="energy-cap" data-i18n="energy.cap">kWh actually consumed (GPU + CPU + DRAM, measured) in each hour or day, from the hub's hourly history. Gaps are times nothing was recorded. Cost uses your tariff for each hour. The last point is the hour or day still in progress.</p>
+  </div>
   <div class="card" id="heatmap-card" hidden>
     <h2>🗓️ Busy hours — when your lab burns power
       <span class="muted" id="heat-mode-chip" style="font-size:12px;font-weight:400;text-transform:none" hidden></span></h2>
@@ -5134,6 +5142,60 @@ async function renderHeatmap(force){
   }
 }
 
+// ── Energy used: kWh per hour / per day over time ───────────────────────────
+// The heatmap averages history into one week; this keeps the timeline. Reads
+// /api/costs/energy (hour: last 7 days, day: last 90). The Hours/Days toggle is
+// built here, after boot: the boot-time `.rb` binding (range buttons) would
+// otherwise take over its onclick.
+let ENERGY_AT=0, ENERGY_BY=(()=>{ try{ return localStorage.getItem('hl_energy_by')==='day'?'day':'hour'; }catch(e){ return 'hour'; } })();
+async function renderEnergy(force){
+  const card=document.getElementById('energy-card'); if(!card) return;
+  const host = CURRENT_HOST!=='local' ? CURRENT_HOST : null, key=(host||'local')+'|'+ENERGY_BY;
+  if(!force && Date.now()-ENERGY_AT<60000 && card.dataset.loaded===key) return;   // hourly data: no need to refetch often
+  ENERGY_AT=Date.now();
+  const by=ENERGY_BY;
+  let j; try{ j=await(await fetch('/api/costs/energy?by='+by+(host?'&host='+encodeURIComponent(host):''))).json(); }
+  catch(e){ card.hidden=true; return; }
+  if((host||'local')!==(CURRENT_HOST!=='local'?CURRENT_HOST:'local') || by!==ENERGY_BY) return;   // switched mid-fetch
+  if(!j||!j.ok){ card.hidden=true; return; }
+  card.hidden=false; card.dataset.loaded=key;
+  const seg=document.getElementById('energy-by');
+  if(seg && !seg.firstChild){
+    seg.innerHTML='<span class="seg" role="group" aria-label="'+esc(I18N.t('energy.group','Group by'))+'" style="display:inline-flex;border:1px solid var(--bd);border-radius:7px;overflow:hidden">'
+      +'<button type="button" class="rb" data-energy-by="hour" style="border:0;border-radius:0">'+esc(I18N.t('energy.by_hour','Hours'))+'</button>'
+      +'<button type="button" class="rb" data-energy-by="day" style="border:0;border-radius:0;border-left:1px solid var(--bd)">'+esc(I18N.t('energy.by_day','Days'))+'</button></span>';
+    seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+      ENERGY_BY=b.dataset.energyBy; try{ localStorage.setItem('hl_energy_by',ENERGY_BY); }catch(e){}
+      renderEnergy(true); });
+  }
+  if(seg) seg.querySelectorAll('button').forEach(b=>{ const on=b.dataset.energyBy===by; b.classList.toggle('on',on); b.setAttribute('aria-pressed',on?'true':'false'); });
+  const cur=j.currency||'$', money=v=>cur+(+v).toFixed(v<1?3:2), kwhS=v=>(+v).toFixed(v<10?2:1)+' kWh';
+  const sub=document.getElementById('energy-sub');
+  // History shorter than the window starts at its first reading: say "since <date>", not "last 90 days".
+  const pts0=(j.points||[])[0], full=(j.points||[]).length >= (by==='hour' ? j.days*24 : j.days);
+  const sinceD = pts0 ? new Date(pts0.ts*1000).toLocaleDateString([], {month:'short',day:'numeric'}) : '';
+  const span = full || !pts0
+    ? (by==='hour' ? I18N.tf('energy.span_hours','last {n} days, by hour',{n:j.days}) : I18N.tf('energy.span_days','last {n} days, by day',{n:j.days}))
+    : (by==='hour' ? I18N.tf('energy.since_hours','since {d}, by hour',{d:sinceD}) : I18N.tf('energy.since_days','since {d}, by day',{d:sinceD}));
+  sub.textContent='· '+span+(j.filled ? ' · '+kwhS(j.total_kwh)+(j.enabled?' · '+money(j.total_cost):'') : '');
+  const empty=document.getElementById('energy-empty'), box=document.getElementById('energy-box');
+  if(!j.filled){ empty.hidden=false; box.hidden=true; return; }
+  empty.hidden=true; box.hidden=false;
+  const pts=j.points||[];
+  const labels=pts.map(p=>{ const d=new Date(p.ts*1000);
+    return by==='hour' ? d.toLocaleDateString([], {weekday:'short'})+' '+d.toLocaleTimeString([], {hour:'numeric'})
+                       : d.toLocaleDateString([], {month:'short',day:'numeric'}); });
+  const ds=[{label:I18N.t('energy.kwh','Energy (kWh)'),data:pts.map(p=>p.kwh),borderColor:'#3fb950',backgroundColor:'rgba(63,185,80,.15)',
+    fill:true,tension:.25,pointRadius:by==='day'?2:0,borderWidth:1.6,spanGaps:false,yAxisID:'y'}];
+  if(j.enabled) ds.push({label:I18N.tf('energy.cost','Cost ({c})',{c:cur}),data:pts.map(p=>p.cost),borderColor:'#e3b341',backgroundColor:'transparent',
+    borderDash:[4,3],tension:.25,pointRadius:0,borderWidth:1.4,spanGaps:false,yAxisID:'y2'});
+  const scales={x:{grid:{color:cv('--free')},ticks:{color:cv('--mut'),maxTicksLimit:window.innerWidth<600?4:(by==='hour'?8:10),autoSkip:true,maxRotation:0}},
+    y:{min:0,grid:{color:cv('--free')},ticks:{color:cv('--mut'),callback:v=>v+' kWh'}}};
+  if(j.enabled) scales.y2={min:0,position:'right',grid:{drawOnChartArea:false},ticks:{color:cv('--mut'),callback:v=>cur+v}};
+  mk('energychart',{type:'line',data:{labels,datasets:ds},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    scales, plugins:{legend:{labels:{color:cv('--tx'),boxWidth:12}},
+      tooltip:{callbacks:{label:c=>c.raw==null ? c.dataset.label+': —' : (c.dataset.yAxisID==='y2' ? c.dataset.label+': '+money(c.raw) : c.dataset.label+': '+kwhS(c.raw))}}}},plugins:[areaBg]});
+}
 async function renderCosts(force){
   const card=document.getElementById('costs-card'); if(!card) return;
   // Per-host mode: the same /api/costs shape served for a registered remote,
@@ -5141,6 +5203,7 @@ async function renderCosts(force){
   // per-entity breakdown and drilldown stay hub-only for now.
   const remote = CURRENT_HOST!=='local' ? CURRENT_HOST : null;
   renderHeatmap(force);   // busy-hours heatmap renders even with no tariff (power-only) — per-host too
+  renderEnergy(force);    // energy timeline (kWh by hour / day) — also without a tariff, per-host too
   if(!force && Date.now()-COSTS_AT < 20000 && COSTS_HOST===CURRENT_HOST) return;   // throttle live refresh
   COSTS_AT=Date.now(); COSTS_HOST=CURRENT_HOST;
   let j; try{ j=await(await fetch('/api/costs?range='+encodeURIComponent(R)
