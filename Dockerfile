@@ -48,6 +48,7 @@ COPY locales/ /app/locales/
 # the dashboard and the MCP server side-by-side in this one container.
 COPY mcp/server.py         /app/mcp_server.py
 COPY mcp/homelab_client.py /app/homelab_client.py
+COPY mcp/login_guard.py     /app/login_guard.py
 COPY CHANGELOG.md          /app/CHANGELOG.md
 COPY launch.py             /app/launch.py
 

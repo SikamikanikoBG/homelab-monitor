@@ -1,0 +1,66 @@
+{
+  "exported_at": "<frozen>",
+  "runs": [
+    {
+      "actor": "session:738c6e2b82c4",
+      "attended": 1,
+      "completion_tokens": 10,
+      "cost_micros": 0,
+      "created_at": 1735689600,
+      "ended_at": null,
+      "id": "id0003",
+      "mode": "act",
+      "model": "m1",
+      "prompt_tokens": 100,
+      "provider_id": "id0001",
+      "started_at": 1735689600,
+      "status": "waiting_approval",
+      "status_reason": "rule_ask",
+      "steps": 2,
+      "task_id": null,
+      "trigger": "chat"
+    }
+  ],
+  "steps": [
+    {
+      "actor": null,
+      "approval_id": null,
+      "args_json": "{\"tool_calls\": [\"container__restart\"]}",
+      "decision": null,
+      "decision_reason": null,
+      "duration_ms": 0,
+      "host": null,
+      "kind": "model",
+      "ok": null,
+      "result_bytes": null,
+      "result_excerpt": null,
+      "run_id": "id0003",
+      "seq": 1,
+      "target": null,
+      "tokens_in": 100,
+      "tokens_out": 10,
+      "tool": "m1",
+      "ts": 1735689600
+    },
+    {
+      "actor": "session:738c6e2b82c4",
+      "approval_id": "id0004",
+      "args_json": "{\"name\": \"web\"}",
+      "decision": "ask",
+      "decision_reason": "rule_ask",
+      "duration_ms": null,
+      "host": "lab1",
+      "kind": "approval",
+      "ok": null,
+      "result_bytes": null,
+      "result_excerpt": "it is stuck",
+      "run_id": "id0003",
+      "seq": 2,
+      "target": "web",
+      "tokens_in": null,
+      "tokens_out": null,
+      "tool": "container.restart",
+      "ts": 1735689600
+    }
+  ]
+}

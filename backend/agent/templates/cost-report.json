@@ -1,0 +1,22 @@
+{
+  "id": "cost-report",
+  "version": 1,
+  "name": "Cost report",
+  "desc": "What each box, container and model cost in power this week, and what changed. Report only.",
+  "prompt": "Report this week's power cost: get_costs (range 7d) for the fleet and per host, and get_entity_cost for the three most expensive containers, services or models. Compare with what you can see of the previous period and name what changed most. Keep it to a few lines with numbers and the currency the tool reports.",
+  "tools": [
+    "list_hosts",
+    "get_costs",
+    "get_entity_cost"
+  ],
+  "probes": [],
+  "actions": [],
+  "requires": [],
+  "default_cron": "0 8 * * 1",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 12,
+    "max_seconds": 360
+  },
+  "est_tokens": 9000
+}
