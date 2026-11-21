@@ -12,7 +12,7 @@
     "paused": false,
     "pending_approvals": 1,
     "running": 0,
-    "version": "0.37.0"
+    "version": "<VERSION>"
   },
   "status": 200
 }

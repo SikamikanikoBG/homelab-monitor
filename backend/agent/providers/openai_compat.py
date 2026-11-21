@@ -204,7 +204,10 @@ class OpenAICompatAdapter:
             mid = m.get("id") or m.get("name")
             if not mid:
                 continue
-            window = m.get("max_model_len") or m.get("context_length") or m.get("context_window")
+            # llama.cpp exposes runtime context under non-standard meta.n_ctx, not max_model_len/context_length.
+            meta = m.get("meta") if isinstance(m.get("meta"), dict) else {}
+            window = (m.get("max_model_len") or m.get("context_length")
+                      or m.get("context_window") or meta.get("n_ctx"))
             out.append(ModelInfo(str(mid).replace("models/", "", 1) if self.preset.get("strip_models_prefix") else str(mid),
                                  int(window) if isinstance(window, (int, float)) else None))
         return out

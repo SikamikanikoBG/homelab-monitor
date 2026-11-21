@@ -50,6 +50,10 @@ class TestAgentSnapshots(unittest.TestCase):
         text = r.get_data(as_text=True)
         self.assertNotIn(KEY, text, name)
         data = {"status": r.status_code, "body": r.get_json(silent=True)}
+        body = data["body"]
+        if isinstance(body, dict) and "version" in body:     # changes every release; asserted here instead
+            self.assertEqual(body["version"], app.VERSION)
+            body["version"] = "<VERSION>"
         assert_snapshot(self, name, data)
         return data
 
