@@ -7,6 +7,12 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Added**
+- **Make the sidebar yours: reorder tabs and hide the ones you don't use** ([#33](https://github.com/SikamikanikoBG/homelab-monitor/issues/33)). **✎ Customize** at the foot of the sidebar turns the nav into an editor: drag a tab to move it within its group (Monitoring, AI, …), or focus it and press `Alt`+`↑`/`↓`; the eye hides or shows it. No AI servers? Hide the whole AI group and its heading goes too. Settings-group tabs can be moved but not hidden, so the config is always one click away. A hidden tab isn't locked away: its URL and the search box still open it. The layout lives in this browser only (`hl_tab_order` / `hl_tab_hidden`), and **Settings → General → Sidebar layout** resets it. Tabs added by a future release still show up for you, at the end of their group.
+
+**Fixed**
+- **Benchmarks said your ollama wasn't answering while its connectivity Test passed.** The Test probes the ollama you registered under Settings → AI servers; the Benchmark Lab only ever talked to `COPILOT_OLLAMA_URL`, which defaults to `127.0.0.1:11434` — so an ollama on another box was green in one place and "not responding" in the other. The lab now benchmarks the registered ollama, unless you set `COPILOT_OLLAMA_URL` yourself (that still wins), and the error names the address it actually tried.
+
 ## [0.38.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.38.1) — 2026-11-09 · **The agent shows up when you update**
 
 **Fixed**

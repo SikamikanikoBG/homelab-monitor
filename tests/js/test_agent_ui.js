@@ -158,7 +158,8 @@ check('every page global agent.js uses exists in dashboard.html', () => {
     'function setHost(', 'function buildNav(', 'function toast(', 'let FLEET =', 'const INITIAL_TAB =', 'function setSettingsPane(']) {
     assert.ok(DASH.includes(g), 'dashboard.html lost: ' + g);
   }
-  assert.ok(DASH.includes("group(I18N.t('nav.group.agents','Agent'),'agents')"), 'agents nav group');
+  // Zones come from TABS (#33), so the agent tab's zone gets its group heading without a hardcoded entry.
+  assert.ok(DASH.includes("I18N.t('nav.group.'+z"), 'nav group headings come from each tab zone');
   assert.ok(DASH.includes("new CustomEvent('hl:tab'"), 'hl:tab hook');
   assert.ok(DASH.includes("es.addEventListener('agent'"), 'agent frames on the stream');
 });
