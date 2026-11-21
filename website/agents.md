@@ -16,13 +16,13 @@ HomeLab Monitor can host an **AI agent** that knows your lab. It has two halves:
   freshness, data & log cleanup) or write your own from a prompt. They run on a schedule and send
   you a report.
 
-**It ships switched off.** If you never turn it on, nothing changes: no new routes answer, no
-threads start, no tables are created and the dashboard looks exactly as it did.
+**It does nothing until you turn it on.** It needs a dashboard password and the Enable switch;
+until then it only offers to be set up. `AGENT_ENABLED: "0"` hides it completely: no agent routes
+answer, no threads start and the dashboard looks exactly as it did before 0.38.
 
 ## Turning it on
 
-Set `AGENT_ENABLED: "1"` in `docker-compose.yml` and recreate the container. The **Overview** then
-shows **Your lab can answer you now** with three steps and a **Set it up** button (about a minute):
+Nothing to edit in `docker-compose.yml`: the **Overview** shows **Your lab can answer you now** with three steps and a **Set it up** button (about a minute):
 
 1. **Secure** — set the dashboard password (with a strength meter; forgot it later? see
    [Security](security.md#dashboard-login)). The agent can act on your machines, so it only runs
@@ -172,7 +172,7 @@ everything on your network.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_ENABLED` | — | `1` makes the agent available. Unset: every `/api/agent/*` route is a 404. |
+| `AGENT_ENABLED` | `1` | `0` hides the agent: every `/api/agent/*` route is a 404. |
 | `AGENT_MAX_RUNS` | `2` | Runs at once; the rest queue (chat goes first). |
 | `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE` | — | Set the dashboard password at boot, only if none is set. |
 | `ENABLE_HOST_RUN` | `0` | The old `/api/hosts/<name>/run` arbitrary-command route; off by default. The agent never uses it. |
@@ -191,7 +191,7 @@ answer without collecting everything again.
 
 ## Troubleshooting
 
-- **No Agent tab** — `AGENT_ENABLED` isn't `1`, or you aren't logged in.
+- **No Agent tab** — `AGENT_ENABLED` is `0`, or you aren't logged in.
 - **"Set a dashboard password first"** — Settings → Security.
 - **Model says "no tool calls"** — pick another model; Qwen 2.5/3, Llama 3.1+, Mistral Nemo and most
   cloud models call tools.
