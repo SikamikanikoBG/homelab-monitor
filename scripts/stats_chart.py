@@ -22,7 +22,7 @@ def fetch_commits(repo, token, per_page=100):
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
                                                    "Accept": "application/vnd.github+json",
                                                    "User-Agent": "stats-chart"})
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             batch = json.load(r)
         if not batch:
             break
