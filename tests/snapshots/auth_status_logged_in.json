@@ -1,5 +1,5 @@
 {
-  "agent": false,
+  "agent": true,
   "authenticated": true,
   "csrf": "<random>",
   "password_set": true,

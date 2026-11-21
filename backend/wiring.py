@@ -2,8 +2,8 @@
 
 app.py calls `install(app)` once, next to its other blueprints, so the feature
 costs app.py one line. Both halves are dormant by default: the gate is a no-op
-until an admin password is set, and every /api/agent/* route answers 404 unless
-AGENT_ENABLED=1.
+until an admin password is set, and the agent runs nothing until a password is set
+and the owner switches it on (AGENT_ENABLED=0 turns its routes off entirely).
 """
 import os
 

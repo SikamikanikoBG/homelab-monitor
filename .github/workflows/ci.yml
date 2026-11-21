@@ -40,7 +40,7 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -84,7 +84,7 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -123,6 +123,11 @@ jobs:
       - name: Dashboard TFLOPS cells
         run: node tests/js/test_tflops_cells.js
 
+      # Sidebar customisation (#33): zone-bound reorder, unhideable Settings
+      # tabs, tabs/zones added after an order was saved.
+      - name: Dashboard sidebar customisation
+        run: node tests/js/test_nav_customize.js
+
       - name: Build the image
         run: docker build -t homelab-monitor:ci .
 
@@ -150,7 +155,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-qemu-action@v4
 
@@ -162,7 +167,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: sikamikaniko123/homelab-monitor
           tags: |
