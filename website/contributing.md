@@ -77,4 +77,22 @@ so external deps would defeat the "agentless" promise.
 - Leave the **version bump** to the maintainer; it happens on release, not
   per-PR.
 
+## Translations
+
+A locale is one file: drop `locales/<tag>.json` into the repo and it appears in the
+language switcher once it is at least 90% translated — there is no list to edit.
+`python scripts/i18n-sync.py` adds new keys and reports coverage, and CI fails a PR
+that leaves a locale out of sync. Simplified Chinese (`zh-CN`) ships today.
+
+## Thank you
+
+Recent contributions came from
+[@haigou-web](https://github.com/haigou-web) (Docker on Windows hosts, the Hall of Fame,
+locale discovery and the CI locale check),
+[@WaldInsel](https://github.com/WaldInsel) (the Chinese translation),
+[@jmdjr](https://github.com/jmdjr) (llama.cpp context windows),
+[@1HazyOne707](https://github.com/1HazyOne707), [@Ashutosh-Panda2004](https://github.com/Ashutosh-Panda2004),
+[@andreahaku](https://github.com/andreahaku) and [@pehota](https://github.com/pehota) — who also
+reviews most pull requests. The full trail is in the [changelog](https://github.com/SikamikanikoBG/homelab-monitor/blob/main/CHANGELOG.md).
+
 Thanks. Every issue, suggestion and PR makes it better. 📡

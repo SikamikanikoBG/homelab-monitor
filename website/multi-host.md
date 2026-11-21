@@ -91,8 +91,9 @@ remote it pipes a PowerShell probe (`probe.ps1`) instead of `probe.py` — over 
 SSH key, with nothing to install: PowerShell and WMI are already on every
 Windows 10/11 / Server box, the way Python 3 is on Linux. You get the same fleet row
 plus the **System** (CPU/RAM/disk/hardware), **Network** (NICs, listening ports, DNS,
-gateway) and **Services** (Windows services) tabs, and the **GPU** tab too when
-`nvidia-smi` is on the host.
+gateway) and **Services** (Windows services) tabs, the **Containers** tab when Docker
+Desktop is running (the same list, CPU, RAM, disk and restart policy as on Linux), and
+the **GPU** tab too when `nvidia-smi` is on the host.
 
 To add one:
 
@@ -107,8 +108,7 @@ To add one:
 3. Add it on the **Hosts** tab as `user@windows-host`.
 
 SELinux/AppArmor, load-average and systemd rows are simply omitted — they have no Windows
-analogue. The Memory-map treemap groups RAM by **Windows service** (handy here, since a
-Windows box has no containers).
+analogue. The Memory-map treemap groups RAM by **Windows service**.
 
 ## Reliability
 
