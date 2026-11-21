@@ -230,9 +230,9 @@ def api_costs():
             comp_kwh["cpu"] += cpu_kwh
             comp_kwh["dram"] += dram_kwh
             cost_range += (gpu_kwh + cpu_kwh + dram_kwh) * price
-        # today/d7/d30 total-cost windows (machine total watts, tariff-aware).
-        # wsec pools the WHOLE machine's draw (GPU+CPU+DRAM, see rollup_now), so
-        # this window total is fully history-proof, unlike comp_kwh's cpu/dram legs.
+        # today/d7/d30 total-cost windows (machine total: GPU + CPU + DRAM
+        # watt-seconds, tariff-aware). Each leg is its own interval-correct
+        # accumulator, so the window totals are history-proof.
         def win_cost(start):
             tot = 0.0
             for ts, wsec in costs_repo.samples_1h_total_wsec_since(start, conn=_app.DB):
@@ -446,6 +446,96 @@ def api_cost_heatmap():
         "span": {"min": span_min, "max": span_max},
         "tariff": {"mode": ctx["mode"], "price_day": ctx["day"], "price_night": ctx["night"],
                    "night_start": ctx["night_start"], "night_end": ctx["night_end"]},
+    })
+
+
+@bp.route("/api/costs/energy")
+def api_costs_energy():
+    import app as _app
+    """Energy the machine actually used, hour by hour or day by day.
+
+    The heatmap folds history into an average week; this keeps the timeline.
+    Each point is the kWh consumed in that local hour (`by=hour`, last 7 days
+    by default, up to 31) or local calendar day (`by=day`, last 90 days by
+    default, up to 730), from the hourly rollups' interval-correct watt-second
+    sums (GPU + CPU + DRAM), so the numbers add up to the Costs page's totals.
+    Cost is priced per hourly rollup row at the tariff in force for that hour,
+    the same `_price_at` the rest of the page uses. Buckets with no samples are
+    `null`, not 0, so the line shows a gap where the hub wasn't collecting;
+    leading empty buckets are dropped, so a young hub's chart starts at its
+    first reading. The last bucket is the current, unfinished hour or day.
+    ?host=<name> reads that host's own history. Always 200; with no tariff the
+    energy still comes back and `enabled` is false.
+    """
+    by = request.args.get("by", "hour")
+    if by not in ("hour", "day"):
+        by = "hour"
+    default_days, max_days = (7, 31) if by == "hour" else (90, 730)
+    try:
+        days = int(request.args.get("days", default_days))
+    except (TypeError, ValueError):
+        days = default_days
+    days = max(1, min(days, max_days))
+    host = (request.args.get("host") or "").strip()
+    ctx = _app._cost_ctx()
+    now = int(time.time())
+
+    def midnight(ts, back=0):
+        lt = time.localtime(ts)
+        # mktime normalises a day-of-month below 1 and handles DST changes
+        return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday - back, 0, 0, 0, 0, 0, -1)))
+
+    if by == "hour":
+        cur_hour = (now // 3600) * 3600
+        keys = [cur_hour - i * 3600 for i in range(days * 24 - 1, -1, -1)]
+        key_of = lambda ts: (ts // 3600) * 3600
+    else:
+        keys = [midnight(now, back) for back in range(days - 1, -1, -1)]
+        key_of = midnight
+    since = keys[0]
+
+    try:
+        with _app.LOCK:
+            if host and host not in ("local", "all"):
+                from backend.db.repos import host_samples as hs_repo
+                rows = hs_repo.total_wsec_since(host, since, conn=_app.DB)
+            else:
+                rows = costs_repo.samples_1h_total_wsec_since(since, conn=_app.DB)
+    except Exception:
+        rows = []
+
+    acc = {}
+    for ts, wsec in rows:
+        kwh = (wsec or 0) / 3_600_000.0
+        a = acc.setdefault(key_of(ts), [0.0, 0.0])
+        a[0] += kwh
+        a[1] += kwh * _app._price_at(ctx, ts)
+
+    points, total_kwh, total_cost, peak = [], 0.0, 0.0, None
+    for k in keys:
+        if k in acc:
+            kwh, cost = acc[k]
+            total_kwh += kwh
+            total_cost += cost
+            p = {"ts": k, "kwh": round(kwh, 4), "cost": round(cost, 4)}
+            if peak is None or kwh > peak["kwh"]:
+                peak = p
+        else:
+            p = {"ts": k, "kwh": None, "cost": None}
+        points.append(p)
+    # A hub younger than the window would otherwise draw weeks of nothing and
+    # squeeze its real history into a corner: start at the first bucket with
+    # data. Gaps after that stay, since they are real outages.
+    first = next((i for i, p in enumerate(points) if p["kwh"] is not None), len(points))
+    points = points[first:]
+
+    return jsonify({
+        "ok": True, "by": by, "days": days,
+        "enabled": ctx["day"] > 0, "currency": ctx["currency"],
+        "points": points,
+        "filled": len(acc),
+        "total_kwh": round(total_kwh, 3), "total_cost": round(total_cost, 2),
+        "peak": peak,
     })
 
 
