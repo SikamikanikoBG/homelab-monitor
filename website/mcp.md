@@ -69,6 +69,15 @@ scan until it's done.
 | `HOMELAB_HTTP_TIMEOUT` | `10` | Per-request timeout (seconds) |
 | `MCP_TRANSPORT` | `stdio` | `stdio`, or `http` (streamable-http) for the sidecar |
 | `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `9810` | Bind address for the `http` transport |
+| `HOMELAB_API_TOKEN` | — | A **read** API key, needed once the dashboard has a [login](security.md#dashboard-login) |
+
+**With a dashboard login.** Once a password is set, the built-in HTTP server on
+`MCP_PORT` asks every client for `Authorization: Bearer <read or admin key>`
+(make one under Settings → Integrations → API keys) and answers 401 without it.
+It checks a key at most once a minute, so a revoked key stops working within a
+minute. A stdio client on your laptop sets `HOMELAB_API_TOKEN` to that key. The
+built-in server reaches the dashboard with a per-container token, so it keeps
+working with no setup. No password = no change.
 
 ## Run it
 

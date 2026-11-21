@@ -1,0 +1,8 @@
+{
+  "body": {
+    "csrf": "<random>",
+    "ok": true,
+    "revoked_keys": 0
+  },
+  "status": 200
+}

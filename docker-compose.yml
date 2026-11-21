@@ -4,6 +4,12 @@ services:
     # MONITOR_IMAGE lets the self-update helper pin an exact image (the versioned tag for the upgrade, the previous digest for rollback); default is identical to before for a normal `docker compose up`.
     image: ${MONITOR_IMAGE:-sikamikaniko123/homelab-monitor:latest}
     container_name: homelab-monitor
+    # In host network mode Docker inherits the HOST's hostname into $HOSTNAME,
+    # and the self-update helper identifies its own container via $HOSTNAME
+    # (_self_container_name in app.py) — on a machine named e.g. "cybrina" the
+    # inspect call 404s ("no such container") and self-update refuses to start.
+    # Pinning the hostname to the container name fixes that lookup.
+    hostname: homelab-monitor
     restart: unless-stopped
     # host networking lets it reach any model server's API (Ollama/vLLM/TGI/…)
     # and bind the dashboard directly on the host; pid:host maps GPU PIDs->containers.
@@ -65,6 +71,9 @@ services:
       # WATCH_CONTAINERS: "ollama,immich_machine_learning"  # extra containers to scan for OOM
       # WATCH_SERVICES: "tailscaled,sshd"   # always show these systemd units, even if vendor-shipped
       # ALLOW_SELF_UPDATE: "0"   # the one-click self-update button is ON by default — set to "0" to turn it off
+      # ADMIN_PASSWORD: "..."   # optional dashboard login (or set it in Settings → Security); no password = no login, as before
+      # AGENT_ENABLED: "0"      # the AI agent is available by default (it runs nothing until you set a password and switch it on) — "0" hides it completely
+      # ENABLE_HOST_RUN: "1"    # re-enable /api/hosts/<name>/run (arbitrary commands; off by default, unused by the UI)
       # ENABLE_CONTROLS: "0"     # container/service start/stop/restart controls are ON by default — set to "0" to turn them off
     volumes:
       # Read-write: powers container health/names/model APIs AND (by default,

@@ -1,0 +1,9 @@
+{
+  "body": {
+    "error": "bad_url",
+    "field": "base_url",
+    "message": "Use an http:// or https:// URL.",
+    "ok": false
+  },
+  "status": 400
+}

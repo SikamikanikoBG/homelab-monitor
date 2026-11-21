@@ -1,0 +1,7 @@
+{
+  "body": {
+    "error": "Running arbitrary commands is off by default. Set ENABLE_HOST_RUN=1 to turn it on (see website/configuration.md).",
+    "ok": false
+  },
+  "status": 403
+}
