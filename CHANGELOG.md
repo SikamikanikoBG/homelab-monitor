@@ -7,6 +7,9 @@ release notes.
 
 ## [Unreleased] — `next`
 
+**Fixed**
+- **Benchmarks said your ollama wasn't answering while its connectivity Test passed.** The Test probes the ollama you registered under Settings → AI servers; the Benchmark Lab only ever talked to `COPILOT_OLLAMA_URL`, which defaults to `127.0.0.1:11434` — so an ollama on another box was green in one place and "not responding" in the other. The lab now benchmarks the registered ollama, unless you set `COPILOT_OLLAMA_URL` yourself (that still wins), and the error names the address it actually tried.
+
 ## [0.38.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.38.1) — 2026-11-09 · **The agent shows up when you update**
 
 **Fixed**
