@@ -697,6 +697,19 @@ body{background:var(--canvas)}
 .nrow:hover .hic,.nrow.on .hic{opacity:1}
 .nrow.on .hic{color:var(--accent)}
 .nrow .tdot{width:7px;height:7px;border-radius:2px;margin-left:auto}
+/* sidebar customise mode (#33) */
+.nedithint{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;color:var(--mut);padding:4px 9px 6px}
+.nedithint span{flex:1 1 100%}
+.nedithint .rb{font-size:11px;padding:3px 9px}
+.nrow.nedit{cursor:grab;outline:1px dashed var(--bd);outline-offset:-1px;margin:2px 0}
+.nrow.nedit.noff{opacity:.45}
+.nrow.nedit.noff span:not(.ngrip){text-decoration:line-through}
+.nrow.nedit.ndrag{opacity:.35}
+.nrow.nedit.nover{outline:2px dashed var(--accent)}
+.nrow .ngrip{color:var(--mut);font-size:12px;line-height:1}
+.nrow .neye{margin-left:auto;display:inline-flex;border:0;background:none;color:var(--mut);padding:2px;border-radius:4px;cursor:pointer}
+.nrow .neye:hover{color:var(--tx);background:var(--hover)}
+.thtoggle.on{color:var(--accent)}
 .foot{border-top:1px solid var(--bd);padding:10px;display:flex;flex-direction:column;gap:9px}
 .foot .ghstar{align-self:flex-start}
 .footrow{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap}
@@ -850,6 +863,9 @@ th{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
   .navlist{display:flex;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1 1 100%;order:3;padding:5px 8px;gap:3px;scrollbar-width:thin}
   .navgroup{display:none}
   .nrow{width:auto;flex:none;white-space:nowrap}.nrow .tdot{margin-left:6px}
+  .navlist.editing{align-items:center}
+  .nedithint{flex:none;flex-wrap:nowrap;padding:0 4px}.nedithint span{display:none}
+  .nrow .neye{margin-left:4px}
   /* engagement cluster: keep it on mobile, but as a compact horizontal row that
      sits under the nav (the verbose star-CTA blurb is the only thing dropped). */
   .side .star-cta{display:none}
@@ -2092,6 +2108,12 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
   <p class="cap" data-i18n-html="models.section_cap">One panel per model <b>server</b>: its VRAM timeline (shared by the models it hosts) plus each model's own peak &amp; average. <b>Runs</b> counts contiguous load sessions over the selected range and how many <b>spilled into system RAM</b> (didn't fully fit VRAM — the Now column shows the live VRAM + RAM split). <b>Used by</b> names the apps whose connections to the server overlapped the model's residency — approximate when several models share one server. A server is shown even while <b>Idle</b> (model unloaded / between requests), so nothing vanishes when VRAM is released. Recognised: Ollama, vLLM, SGLang, llama.cpp, LocalAI, HF TGI/TEI, LoRAX, mistral.rs, Aphrodite, koboldcpp, tabbyAPI, text-generation-webui, LM Studio, xinference, OpenLLM, LiteLLM, GPUStack, Cortex/Jan, Ramalama, Nexa, Triton, Infinity, faster-whisper/Speaches, Whisper ASR webservice/WhisperX, Wyoming (HA voice), OpenedAI-Speech, Stable Diffusion (A1111/Forge/SD.Next), InvokeAI, ComfyUI.</p>
 </section>
 
+<!-- ───────── AI Models Hall of Fame ───────── -->
+<section data-tab="hof" hidden>
+  <div id="hofbody"></div>
+  <p class="cap" data-i18n-html="hof.cap">Every model that has held this host's GPU during the selected range, ranked by total loaded time (residency samples × the sampling interval) — residency, not utilisation: a model sitting idle in VRAM still counts. Hub-local only, since the models table carries no host column. Retention trims the oldest history, so <b>All</b> reaches back only as far as this hub still keeps rows.</p>
+</section>
+
 <!-- ───────── Experiments / Runs ───────── -->
 <section data-tab="experiments" hidden>
   <div class="card" id="runs-card">
@@ -2140,7 +2162,7 @@ body.mc-customizing .mc-board .mc-widget{ border-radius:12px }
 <section data-tab="benchmarks" hidden>
   <div id="bench-disabled" class="card" hidden>
     <h2>📊 Benchmark Lab</h2>
-    <p class="cap" id="bench-disabled-msg">Benchmarking needs a reachable ollama endpoint. Set <b>COPILOT_OLLAMA_URL</b> (and keep <b>BENCH_ENABLED</b> on), then reopen this tab.</p>
+    <p class="cap" id="bench-disabled-msg">Benchmarking needs a reachable ollama endpoint. Register one under <b>Settings → AI servers</b> or set <b>COPILOT_OLLAMA_URL</b> (and keep <b>BENCH_ENABLED</b> on), then reopen this tab.</p>
   </div>
 
   <div class="card" id="bench-launch" hidden>
@@ -2707,6 +2729,11 @@ with homelab.run("my-finetune", params={"lr":2e-4}) as r:
             <button class="rb" id="ai_add" type="button" data-i18n="general.ai_add" data-i18n-def="Add">Add</button>
           </div>
         </div>
+        <div id="set-sidebar-layout">
+          <div class="card-sub" style="font-weight:600;margin-bottom:2px" data-i18n="general.sidebar_title" data-i18n-def="Sidebar layout">Sidebar layout</div>
+          <p class="cap" style="margin:0 0 8px" data-i18n-html="general.sidebar_cap" data-i18n-def="Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.">Reorder or hide sidebar tabs with <b>✎ Customize</b> at the foot of the sidebar. Saved in this browser only. Reset applies immediately — no Save needed.</p>
+          <button class="rb" id="nav_reset" type="button" data-i18n="general.sidebar_reset" data-i18n-def="Reset sidebar to default">Reset sidebar to default</button>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
           <button class="rb on" id="al_save_general" data-i18n="btn.save">Save</button>
         </div>
@@ -3069,7 +3096,6 @@ const I18N = {
   dict: {},                 // active non-English strings ({} for English)
   available: [{code:'en', name:'English', nativeName:'English', dir:'ltr'}],
   COVERAGE_MIN: 0.9,        // a locale must translate ≥90% of its keys to appear in the switcher
-  KNOWN: ['zh-CN'],         // non-English locale files to probe (mirror scripts/i18n-sync.py)
   debug: new URLSearchParams(location.search).has('i18n'),
 
   t(key, fallback){
@@ -3085,24 +3111,29 @@ const I18N = {
   },
   saved(){ return localStorage.getItem('hl_lang') || 'en'; },
 
-  // Coverage = fraction of keys actually translated. A scaffold straight from
-  // i18n-sync.py lists still-English keys in _meta.untranslated, so an unfinished
-  // translation reports low coverage and stays hidden (no half-Chinese UI shipped).
-  _coverage(d){
-    const todo = (d._meta && d._meta.untranslated) || [];
-    const keys = Object.keys(d).filter(k => k !== '_meta');
-    if(!keys.length) return 0;
-    return Math.max(0, (keys.length - todo.length) / keys.length);
-  },
   async discover(){
-    for(const code of this.KNOWN){
-      try{
-        const d = await (await fetch('/locales/'+code+'.json',{cache:'no-cache'})).json();
-        const meta = d._meta || {}, cov = this._coverage(d);
-        if(this.debug || cov >= this.COVERAGE_MIN)
-          this.available.push({code, name:meta.name||code, nativeName:meta.nativeName||code,
-                               dir:meta.dir||'ltr', coverage:cov, _dict:d});
-      }catch(e){ /* missing / malformed locale — skip */ }
+    // Ask the hub which locale files it actually has (issue #283). This used to
+    // be a hardcoded array, so a locale dropped into locales/ stayed invisible
+    // until someone edited that array to match it. English is inlined and needs
+    // no file, so the server only reports the non-English ones.
+    //
+    // The hub already measured each locale's coverage while reading the file, so
+    // take its numbers rather than downloading every locale here to measure them
+    // again: that was a round trip per locale, and it pulled down the unfinished
+    // locales we were about to hide anyway. set() fetches the dictionary on
+    // demand — one request, and only for the locale actually chosen.
+    let metas = [];
+    try{
+      const j = await (await fetch('/api/locales',{cache:'no-cache'})).json();
+      metas = ((j && j.locales) || []).filter(l => l && l.code);
+    }catch(e){ /* older server / offline — English still renders */ }
+    for(const m of metas){
+      // The bar is applied here, not server-side, on purpose: ?i18n=1 has to
+      // reveal a half-finished locale to whoever is translating it, and the hub
+      // may be an older build that reports every locale regardless.
+      if(!this.debug && !(m.coverage >= this.COVERAGE_MIN)) continue;
+      this.available.push({code:m.code, name:m.name||m.code, nativeName:m.nativeName||m.code,
+                           dir:m.dir||'ltr', coverage:m.coverage});
     }
   },
   async set(code){
@@ -3207,6 +3238,7 @@ const TABS = [
   {id:'security',   label:'Security',   charts:false, zone:'monitoring'},
   {id:'uptime',     label:'Uptime',     charts:false, zone:'monitoring'},
   {id:'models',     label:'AI Models',  charts:false, zone:'ai'},
+  {id:'hof',        label:'🏆 Hall of Fame', charts:false, zone:'ai'},
   {id:'benchmarks', label:'Benchmarks', charts:false, zone:'ai'},
   {id:'experiments',label:'Experiments', charts:false, zone:'ai'},
   {id:'hosts',      label:'Hosts',      charts:false, settings:true, zone:'settings'},
@@ -3534,20 +3566,116 @@ const NAV_ICON = {
 };
 const tabBtn = t => `<button class="nrow" data-t="${t.id}">${svgIc(NAV_ICON[t.id]||'')}<span>${I18N.t('nav.'+t.id, t.label)}</span><span class="tdot" id="ndot-${t.id}" style="display:none"></span></button>`;
 const isSettingsTab = id => !!(TABS.find(t=>t.id===id)||{}).settings;
+// ── Sidebar customisation (#33) ──────────────────────────────────────────────
+// Per-browser, like the display-mode widget picks: reorder tabs within their
+// zone and hide the ones you never open. Zones are read off TABS, so a tab in a
+// brand-new zone needs no change here. Hidden tabs stay reachable by URL hash
+// and global search — hiding declutters the nav, it doesn't lock anything away.
+const NAV_ORDER_KEY = 'hl_tab_order', NAV_HIDDEN_KEY = 'hl_tab_hidden';
+const NAV_ZONE_LABEL = {monitoring:'Monitoring', ai:'AI', settings:'Settings'};
+let NAV_EDITING = false, NAV_DRAG = null;
+function navLoad(key){
+  try{ const v = JSON.parse(localStorage.getItem(key)); return Array.isArray(v) ? v : []; }catch(e){ return []; }
+}
+function navStore(key, ids){
+  try{ ids.length ? localStorage.setItem(key, JSON.stringify(ids)) : localStorage.removeItem(key); }catch(e){}
+}
+function tabZone(t){ return t.zone || 'monitoring'; }
+// Settings-zone tabs can move but not hide: they hold the config, and the reset.
+function navHideable(t){ return tabZone(t) !== 'settings'; }
+function navZones(){ return [...new Set(TABS.map(tabZone))]; }
+function navHiddenSet(){
+  const ids = navLoad(NAV_HIDDEN_KEY);
+  return new Set(TABS.filter(t => navHideable(t) && ids.includes(t.id)).map(t => t.id));
+}
+// A zone's tabs in the saved order. Tabs the saved order has never seen (a
+// later release added them) go after it, in their TABS order.
+function navOrdered(z){
+  const order = navLoad(NAV_ORDER_KEY);
+  const rank = t => { const i = order.indexOf(t.id); return i < 0 ? order.length + TABS.indexOf(t) : i; };
+  return TABS.filter(t => tabZone(t) === z).sort((a, b) => rank(a) - rank(b));
+}
+// Move `id` to where `toId` sits (before it when moving up, after it when
+// moving down), within one zone; a cross-zone move is ignored.
+function navMove(id, toId){
+  const t = TABS.find(x => x.id === id), to = TABS.find(x => x.id === toId);
+  if(!t || !to || id === toId || tabZone(t) !== tabZone(to)) return false;
+  const ids = navOrdered(tabZone(t)).map(x => x.id);
+  const ti = ids.indexOf(toId);
+  ids.splice(ids.indexOf(id), 1); ids.splice(ti, 0, id);
+  navStore(NAV_ORDER_KEY, navZones().flatMap(z => z === tabZone(t) ? ids : navOrdered(z).map(x => x.id)));
+  return true;
+}
+function navToggleHidden(id){
+  const t = TABS.find(x => x.id === id); if(!t || !navHideable(t)) return;
+  const h = navHiddenSet(); h.has(id) ? h.delete(id) : h.add(id);
+  navStore(NAV_HIDDEN_KEY, [...h]);
+}
+function navReset(){
+  navStore(NAV_ORDER_KEY, []); navStore(NAV_HIDDEN_KEY, []);
+  buildNav();
+  toast('ok', I18N.t('nav.reset_done', 'Sidebar reset to the default layout'));
+}
+function navSetEditing(on){
+  NAV_EDITING = on; buildNav();
+}
+const NAV_EYE = '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>';
+const NAV_EYE_OFF = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>';
+function navEditRow(t, off){
+  const label = I18N.t('nav.'+t.id, t.label);
+  const eye = navHideable(t)
+    ? `<button type="button" class="neye" data-eye="${t.id}" aria-pressed="${off ? 'false' : 'true'}" title="${off ? I18N.t('nav.show', 'Show in sidebar') : I18N.t('nav.hide', 'Hide from sidebar')}" aria-label="${(off ? I18N.t('nav.show', 'Show in sidebar') : I18N.t('nav.hide', 'Hide from sidebar'))+': '+label}">${svgIc(off ? NAV_EYE_OFF : NAV_EYE)}</button>`
+    : '';
+  return `<div class="nrow nedit${off ? ' noff' : ''}" data-t="${t.id}" data-z="${tabZone(t)}" draggable="true" tabindex="0" aria-label="${label}"><span class="ngrip" aria-hidden="true">⠿</span>${svgIc(NAV_ICON[t.id]||'')}<span>${label}</span>${eye}</div>`;
+}
+function navWireEdit(nl){
+  nl.querySelectorAll('.neye').forEach(b => b.onclick = e => { e.stopPropagation(); navToggleHidden(b.dataset.eye); buildNav(); });
+  const back = id => { const r = nl.querySelector(`.nedit[data-t="${id}"]`); if(r) r.focus(); };
+  nl.querySelectorAll('.nedit').forEach(row => {
+    row.ondragstart = e => { NAV_DRAG = {id: row.dataset.t, z: row.dataset.z}; row.classList.add('ndrag');
+      e.dataTransfer.effectAllowed = 'move'; try{ e.dataTransfer.setData('text/plain', row.dataset.t); }catch(_){} };
+    row.ondragend = () => { NAV_DRAG = null; nl.querySelectorAll('.ndrag,.nover').forEach(x => x.classList.remove('ndrag','nover')); };
+    // Only a row in the same zone is a drop target, so the cursor says "no" elsewhere.
+    row.ondragover = e => { if(!NAV_DRAG || NAV_DRAG.z !== row.dataset.z) return; e.preventDefault(); row.classList.add('nover'); };
+    row.ondragleave = () => row.classList.remove('nover');
+    row.ondrop = e => { e.preventDefault(); const id = NAV_DRAG && NAV_DRAG.id; NAV_DRAG = null;
+      if(id && navMove(id, row.dataset.t)){ buildNav(); back(id); } };
+    // Keyboard reorder: Alt+↑/↓ (Alt+←/→ on the phone-width strip).
+    row.onkeydown = e => {
+      if(!e.altKey || !['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) return;
+      const up = e.key === 'ArrowUp' || e.key === 'ArrowLeft';
+      const sib = up ? row.previousElementSibling : row.nextElementSibling;
+      if(!sib || !sib.classList.contains('nedit')) return;
+      e.preventDefault();
+      if(navMove(row.dataset.t, sib.dataset.t)){ buildNav(); back(row.dataset.t); }
+    };
+  });
+  const r = document.getElementById('navResetInline'); if(r) r.onclick = navReset;
+  const d = document.getElementById('navDoneInline'); if(d) d.onclick = () => navSetEditing(false);
+}
 function buildNav(){
   const nl = document.getElementById('navlist'); if(!nl) return;
-  // Three zones so AI/Data-Science features live in their own area — a pure
-  // homelab admin can ignore it. Falls back to Monitoring for any tab w/o a zone.
-  const zone = id => (TABS.find(t=>t.id===id)||{}).zone || 'monitoring';
-  const group = (label, z) => {
-    const rows = TABS.filter(t => (t.zone||'monitoring')===z);
-    return rows.length ? `<div class="navgroup">${label}</div>` + rows.map(tabBtn).join('') : '';
-  };
-  nl.innerHTML = group(I18N.t('nav.group.monitoring','Monitoring'),'monitoring')
-               + group(I18N.t('nav.group.ai','AI'),'ai')
-               + group(I18N.t('nav.group.agents','Agent'),'agents')
-               + group(I18N.t('nav.group.settings','Settings'),'settings');
-  nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
+  // Zones keep AI/Data-Science features in their own area — a pure homelab
+  // admin can ignore it. Falls back to Monitoring for any tab w/o a zone.
+  const hidden = navHiddenSet();
+  const head = NAV_EDITING
+    ? `<div class="nedithint"><span>${I18N.t('nav.edit_hint', 'Drag to reorder within a group · eye to hide')}</span>`
+      + `<button type="button" class="rb" id="navResetInline">${I18N.t('nav.reset', 'Reset')}</button>`
+      + `<button type="button" class="rb on" id="navDoneInline">${I18N.t('nav.edit_done', 'Done')}</button></div>`
+    : '';
+  nl.classList.toggle('editing', NAV_EDITING);
+  const eb = document.getElementById('navEditBtn');
+  if(eb){ eb.classList.toggle('on', NAV_EDITING); eb.setAttribute('aria-pressed', NAV_EDITING ? 'true' : 'false');
+    const l = eb.querySelector('.nelabel'); if(l) l.textContent = NAV_EDITING ? I18N.t('nav.edit_done', 'Done') : I18N.t('nav.edit', 'Customize'); }
+  nl.innerHTML = head + navZones().map(z => {
+    const rows = navOrdered(z).filter(t => NAV_EDITING || !hidden.has(t.id));
+    if(!rows.length) return '';
+    const label = I18N.t('nav.group.'+z, NAV_ZONE_LABEL[z] || z.charAt(0).toUpperCase() + z.slice(1));
+    return `<div class="navgroup">${label}</div>` + rows.map(t => NAV_EDITING ? navEditRow(t, hidden.has(t.id)) : tabBtn(t)).join('');
+  }).join('');
+  if(NAV_EDITING) navWireEdit(nl);
+  else nl.querySelectorAll('.nrow').forEach(b => b.onclick = () => showTab(b.dataset.t));
+  const on = nl.querySelector(`.nrow[data-t="${TAB}"]`); if(on) on.classList.add('on');
 }
 // Drawer is gone; keep the name as a no-op so showTab() needn't change shape.
 function setSettingsMode(on){ SETTINGS_OPEN = on; }
@@ -3596,8 +3724,10 @@ function mountShell(){
   foot.insertAdjacentHTML('beforeend',
     '<div class="footrow">'
     + '<button class="thtoggle" id="themeBtn"><span class="thicon">☾</span><span class="thlabel" data-i18n="footer.theme.dark">Dark</span></button>'
-    + '<button class="thtoggle" id="densityBtn">▤ <span class="dlabel" data-i18n="footer.density.compact">Compact</span></button></div>'
+    + '<button class="thtoggle" id="densityBtn">▤ <span class="dlabel" data-i18n="footer.density.compact">Compact</span></button>'
+    + '<button class="thtoggle" id="navEditBtn" aria-pressed="false" title="'+I18N.t('nav.edit_title','Reorder or hide sidebar tabs')+'">✎ <span class="nelabel">'+I18N.t('nav.edit','Customize')+'</span></button></div>'
     + '<div class="themeswitch" id="themeswitch"><button data-th="dark" data-i18n="footer.theme.dark">Dark</button><button data-th="light" data-i18n="footer.theme.light">Light</button><button data-th="system" data-i18n="footer.theme.system">System</button></div>');
+  const neb = document.getElementById('navEditBtn'); if(neb) neb.addEventListener('click', () => navSetEditing(!NAV_EDITING));
   ['header', '.topnav', '.sub'].forEach(sel => { const el = document.querySelector('.content > ' + sel); if(el) el.remove(); });
 }
 
@@ -3662,6 +3792,7 @@ function showTab(id){
   if(id==='security') renderSecurity();
   if(id==='services') renderServicesTab();
   if(id==='models'){ _wireRegistry(); loadRegistry(); }   // on-disk model inventory (load on view; no aggressive poll)
+  if(id==='hof') renderHof();   // its own endpoint (/api/models/hof), not /api/data
   // LLM Benchmark Lab lives in a later <script> block — on a deep link/reload
   // straight into #benchmarks this runs before that block has parsed, so guard
   // the call (the Lab block self-renders when it loads; see its static wiring).
@@ -5409,6 +5540,64 @@ function renderModels(){
     const table=`<table style="margin-top:12px"><thead><tr><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('col.status','Status')}</th><th>${I18N.t('col.now','Now')}</th><th>${I18N.t('col.compute','Compute')}</th><th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('col.runs','Runs')}</th><th>${I18N.t('col.used_by','Used by')}</th><th>${I18N.t('col.peak_avg','Peak·Avg')}</th></tr></thead><tbody>${rows}</tbody></table>`;
     patchParts(card, [header, servingFor(svc,'local'), modelSpark(svc,tot), callersFor(svc), table]);
   });
+}
+// ── AI Models Hall of Fame ───────────────────────────────────────────────────
+// Every model that has held the GPU over the selected range, ranked by how long
+// it stayed resident (Steam most-played, for local LLMs). Reads its own endpoint
+// (/api/models/hof) instead of the shared /api/data, so the range buttons can
+// call straight back into it without a page reload. Hub-local by construction:
+// the `models` table carries no host column.
+async function renderHof(){
+  if(CURRENT_HOST!=='local'){ renderLocalOnlyNotice('hof'); return; }
+  clearLocalOnlyNotice('hof');
+  const el = document.getElementById('hofbody'); if(!el) return;
+  let j = null;
+  try{ j = await (await fetch('/api/models/hof?range='+encodeURIComponent(R))).json(); }catch(e){ j = null; }
+  if(CURRENT_HOST!=='local') return;   // host switched away mid-fetch
+  const list = (j && j.models) || [];
+  if(!list.length){
+    el.innerHTML = '<div class="card"><div class="muted">'
+      + I18N.t('hof.empty','No model server has held the GPU yet — start Ollama and pour yourself a coffee. ☕')
+      + '</div></div>';
+    return;
+  }
+  const total = j.total_loaded_sec || 0;
+  const pct = m => total ? (m.loaded_for_sec / total * 100) : 0;
+  const bar = m => Math.max(2, pct(m)).toFixed(1);   // geometry: keep a sliver visible
+  const share = m => pct(m).toFixed(1);              // label: the real share, unclamped
+  const top = list[0], c0 = colorFor(top.server);
+  // #1 gets the hero card; the table ranks the rest (#2 onwards).
+  const workhorse = `<div class="card" style="text-align:center">
+    <div class="muted" style="font-size:11px;letter-spacing:.09em;text-transform:uppercase">${I18N.t('hof.workhorse','Workhorse')}</div>
+    <div style="font-size:26px;font-weight:800;margin:8px 0 4px">🏆 ${copyable(top.model)}</div>
+    <div><span class="dot" style="background:${c0}"></span> ${esc(top.server)}</div>
+    <div style="font-size:22px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums">${fmtDur(top.loaded_for_sec)}</div>
+    <div class="muted" style="font-size:12px">${I18N.tf('hof.workhorse_meta','{pct}% of the loaded time in this range · peak {peak} VRAM',{pct:(top.share_pct||0).toFixed(1),peak:fmtMB(top.peak_vram_mb)})}</div>
+  </div>`;
+  const rest = list.slice(1);
+  const rows = rest.map((m,i)=>{
+    const c = colorFor(m.server);
+    return `<tr>
+      <td class="muted">${i+2}</td>
+      <td><span class="dot" style="background:${c}"></span>${copyable(m.model)}</td>
+      <td>${esc(m.server)}</td>
+      <td style="font-variant-numeric:tabular-nums">${fmtDur(m.loaded_for_sec)}</td>
+      <td class="vbars"><div class="vbar" title="${I18N.tf('hof.share_t','{pct}% of the loaded time in this range',{pct:share(m)})}"><i style="width:${bar(m)}%;background:${c}"></i></div></td>
+      <td>${fmtMB(m.peak_vram_mb)}</td>
+      <td>${fmtMB(m.avg_vram_mb)}</td>
+      <td class="muted">${relTime(m.last_seen)}</td></tr>`;
+  }).join('');
+  const table = rest.length ? `<div class="card">
+    <h2>${I18N.t('hof.ranked','🏆 Ranked — every other model')}</h2>
+    <table><thead><tr>
+      <th>#</th><th>${I18N.t('col.model','Model')}</th><th>${I18N.t('hof.server','Server')}</th>
+      <th>${I18N.t('hof.loaded','Loaded time')}</th><th>${I18N.t('hof.share','Share')}</th>
+      <th>${I18N.t('col.peak','Peak')}</th><th>${I18N.t('col.avg','Avg')}</th><th>${I18N.t('hof.last_seen','Last seen')}</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    <p class="cap">${I18N.tf('hof.total','{n} models held the GPU in this range — {total} of loaded time in total.',{n:(j.model_count||list.length),total:fmtDur(total)})}</p>
+  </div>` : '';
+  el.innerHTML = workhorse + table;
+  pulseLive();
 }
 // Model metadata badges (Ollama /api/show): param size, quantization, context
 // length, capabilities. From D.now.model_meta, keyed by model name. Cheap polish
@@ -7402,7 +7591,7 @@ async function deleteHost(name){
 
 // ── Fleet + per-host (Issue #35 slice 2) ─────────────────────────────────────
 const HOST_SCOPED_TABS = new Set(['host','services','gpu']); // tabs that render from any host
-const LOCAL_ONLY_TABS  = new Set(['models','experiments','containers']);  // tabs not yet probed per-host (costs and GPU went per-host)
+const LOCAL_ONLY_TABS  = new Set(['models','hof','experiments','containers']);  // tabs not yet probed per-host (costs and GPU went per-host)
 
 function fmtMBshort(v){
   if(v==null) return '—';
@@ -9815,6 +10004,12 @@ function describeMissingCapability(tabId){
       title:`Docker info not yet probed for ${CURRENT_HOST}`,
       detail:'Open the <b>Hosts</b> tab and click <b>Test</b> on this host first.'};
   }
+  if(tabId === 'hof'){
+    // The HOF ranks the hub's own `models` table, which carries no host column.
+    return {ic:'🏆',
+      title:'The Hall of Fame is hub-local',
+      detail:`Residency history comes from the hub's own model samples, which aren't split per host yet — so ${CURRENT_HOST}'s models can't be ranked here. The Local view still has them.`};
+  }
   return {ic:'ℹ️',
     title:`${tabId[0].toUpperCase()+tabId.slice(1)} is local-only for now`,
     detail:'Per-host support lands in the next slice.'};
@@ -10002,6 +10197,13 @@ function renderLocalOnlyNotice(tabId){
   const sec = document.querySelector(`section[data-tab="${tabId}"]`);
   if(!sec) return;
   sec.querySelectorAll(':scope > .card, :scope > .cols').forEach(el => el.style.display='none');
+  if(tabId === 'hof'){
+    // The HOF body is a bare <div>, not a .card/.cols, so the hide-all above
+    // misses it — without this the hub's leaderboard stays painted under a
+    // remote host's name.
+    const hb=document.getElementById('hofbody');
+    if(hb) hb.style.display='none';
+  }
   if(tabId === 'containers'){
     const rc = remoteContainersData();
     if(rc){
@@ -10137,7 +10339,7 @@ function showScopeNotice(sec, tabId){
   // "register a custom AI server for this host" so it isn't a dead end.
   const link = m.link ? `<br><a href="#" data-scope-link="1">${esc(m.link.text)}</a>` : '';
   notice.innerHTML = `<div class="ic">${m.ic}</div>
-    <div><b>${esc(m.title)}</b><br><span class="muted">${m.detail}</span>${link}</div>`;
+    <div><b>${esc(m.title)}</b><br><span class="muted">${esc(m.detail)}</span>${link}</div>`;
   const a = notice.querySelector('[data-scope-link]');
   if(a && m.link) a.onclick = (e)=>{ e.preventDefault(); m.link.action(); };
 }
@@ -10150,6 +10352,8 @@ function clearLocalOnlyNotice(tabId){
   sec.querySelectorAll(':scope > .card, :scope > .cols').forEach(el => el.style.display='');
   const mb=document.getElementById('modelsbody');
   if(mb && tabId==='models') mb.style.display='';
+  const hb=document.getElementById('hofbody');
+  if(hb && tabId==='hof') hb.style.display='';
 }
 // Re-apply notices on host switch — necessary so that when the user
 // switches from Local→remote while currently *on* a local-only tab, the
@@ -10388,6 +10592,7 @@ document.addEventListener('lang:changed', ()=>{
   if(TAB==='costs')       safe(()=>renderCosts(true));
   if(TAB==='network')     safe(()=>renderNetwork());
   if(TAB==='security')    safe(()=>renderSecurity());
+  if(TAB==='hof')         safe(()=>renderHof());
   if(TAB==='hosts')       safe(()=>loadHosts());
   if(TAB==='disks')       safe(()=>{ const r=document.getElementById('disksbody'); if(r) r.dataset.sig=''; renderDisksTab(); });
 });
@@ -10401,6 +10606,7 @@ document.querySelectorAll('.rb').forEach(b=>b.onclick=()=>{R=b.dataset.r;localSt
   if(TAB==='experiments') renderExperiments(true);
   if(TAB==='costs') renderCosts(true);
   if(TAB==='gpu') renderGpuTab(true);
+  if(TAB==='hof') renderHof();   // own endpoint, so loadData() above doesn't re-range it
   // A remote's System-tab chart has its own feed, so loadData() above doesn't
   // re-range it — refetch here or the buttons look dead on every host but the hub.
   if(TAB==='host' && CURRENT_HOST!=='local') renderHostChart(true);});
@@ -10729,6 +10935,8 @@ const al_save_costs = document.getElementById('al_save_costs');
 if(al_save_costs) al_save_costs.onclick = saveAlerts;   // both panes persist all settings
 const al_save_general = document.getElementById('al_save_general');
 if(al_save_general) al_save_general.onclick = saveAlerts;
+const nav_reset = document.getElementById('nav_reset');
+if(nav_reset) nav_reset.onclick = navReset;
 const ai_add = document.getElementById('ai_add');
 if(ai_add) ai_add.onclick = addAiServer;
 wireAutoSave();   // settings also persist on field focus-out (no Save-button hunt)
@@ -11490,7 +11698,7 @@ async function loadBenchTargets(){
   const disabled=document.getElementById('bench-disabled'), launch=document.getElementById('bench-launch');
   if(!j.enabled || !j.reachable){
     disabled.hidden=false; launch.hidden=true;
-    if(j.enabled && !j.reachable) document.getElementById('bench-disabled-msg').innerHTML='ollama is enabled but not answering at its configured URL. Start it (or fix <b>COPILOT_OLLAMA_URL</b>) and reopen this tab.';
+    if(j.enabled && !j.reachable) document.getElementById('bench-disabled-msg').innerHTML='ollama is not answering at <b>'+bEsc(j.endpoint||'its configured URL')+'</b>. Start it, register the right one under <b>Settings → AI servers</b> (or set <b>COPILOT_OLLAMA_URL</b>), and reopen this tab.';
     return;
   }
   disabled.hidden=true; launch.hidden=false;
