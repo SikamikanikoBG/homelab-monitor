@@ -120,9 +120,7 @@ class TestCostWindowsCountTheWholeMachine(unittest.TestCase):
 
     def setUp(self):
         with app.LOCK:
-            app.DB.execute("DELETE FROM samples_1h")
-            app.DB.execute("DELETE FROM samples")
-            app.DB.execute("DELETE FROM power_proc")
+            app.DB.execute("DELETE FROM samples_1h")   # the cards read only the rollup
             app.DB.commit()
         app.save_settings({"kwh_price": "0.30", "currency": "$", "tariff_mode": "single",
                            "system_idle_watts": ""})
