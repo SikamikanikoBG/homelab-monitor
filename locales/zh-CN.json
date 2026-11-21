@@ -27,7 +27,6 @@
       "os.linux",
       "sys.cpu",
       "sys.gpu",
-      "models.ctx",
       "net.sub_dns",
       "sec.selinux",
       "sec.apparmor",
@@ -48,7 +47,7 @@
       "agent.ch.webhook",
       "login.title"
     ],
-    "coverage": 0.9697
+    "coverage": 0.9704
   },
   "nav.group.monitoring": "监控",
   "nav.group.ai": "AI",
@@ -436,7 +435,7 @@
   "models.meta_params": "参数量",
   "models.meta_quant": "量化",
   "models.meta_ctx": "上下文长度",
-  "models.ctx": "ctx",
+  "models.ctx": "上下文",
   "models.meta_cap": "能力",
   "models.cap_vision": "👁 视觉",
   "models.cap_tools": "🛠 工具",
