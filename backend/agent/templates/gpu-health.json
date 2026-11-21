@@ -1,0 +1,26 @@
+{
+  "id": "gpu-health",
+  "version": 1,
+  "name": "GPU health check",
+  "desc": "Throttling, temperatures, kernel GPU errors, OOM kills and VRAM squatters over the last 24 h. Report only.",
+  "prompt": "Check GPU health over the last 24 hours: get_gpu (range 24h) for utilisation, temperatures, power and VRAM per model; get_events (range 24h) for OOM kills; the gpu.kernel_errors_24h probe on each selected Linux host for driver errors. Flag temperatures above 83 C, cards pinned at their power limit, OOM kills, kernel GPU errors and models holding VRAM without being used. If all is well, say so in one line.",
+  "tools": [
+    "list_hosts",
+    "get_gpu",
+    "get_events",
+    "get_history",
+    "get_ai_models"
+  ],
+  "probes": [
+    "gpu.kernel_errors_24h"
+  ],
+  "actions": [],
+  "requires": [],
+  "default_cron": "0 8 * * *",
+  "default_mode": "report",
+  "budget": {
+    "max_steps": 15,
+    "max_seconds": 480
+  },
+  "est_tokens": 14000
+}

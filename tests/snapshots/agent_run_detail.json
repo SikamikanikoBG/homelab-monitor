@@ -1,0 +1,121 @@
+{
+  "body": {
+    "approvals": [
+      {
+        "action": "container.restart",
+        "attended": true,
+        "call_id": "call_1",
+        "command_preview": "docker restart -- web",
+        "created_at": 1735689600,
+        "decided_at": null,
+        "decided_by": null,
+        "expires_at": 1735691400,
+        "host": "lab1",
+        "host_mode": "active",
+        "id": "id0004",
+        "last_proposed_at": 1735689600,
+        "params": {
+          "name": "web"
+        },
+        "rationale": "it is stuck",
+        "result": null,
+        "risk": "low",
+        "rule": "ask",
+        "run_id": "id0003",
+        "seen_count": 1,
+        "status": "pending",
+        "task_id": null,
+        "title": "Restart a container"
+      }
+    ],
+    "run": {
+      "actions": [
+        {
+          "action": "container.restart",
+          "approval_id": "id0004",
+          "detail": null,
+          "host": "lab1",
+          "outcome": "pending",
+          "target": "web",
+          "title": "Restart a container"
+        }
+      ],
+      "actions_text": "Actions in this run:\n- Waiting for your approval: Restart a container on lab1 (web) \u2014 /#agent/approvals",
+      "actor": "session:738c6e2b82c4",
+      "attended": true,
+      "completion_tokens": 10,
+      "context": null,
+      "conversation_id": "id0002",
+      "cost": 0.0,
+      "created_at": 1735689600,
+      "ended_at": null,
+      "followups": [],
+      "hosts": null,
+      "id": "id0003",
+      "mode": "act",
+      "model": "m1",
+      "prompt_tokens": 100,
+      "provider_id": "id0001",
+      "scheduled_for": null,
+      "started_at": 1735689600,
+      "status": "waiting_approval",
+      "status_reason": "rule_ask",
+      "steps": 2,
+      "task_id": null,
+      "title": "restart web",
+      "trigger": "chat",
+      "work": {
+        "lookups": 1,
+        "machines": 1,
+        "seconds": 0
+      }
+    },
+    "steps": [
+      {
+        "actor": null,
+        "approval_id": null,
+        "args": {
+          "tool_calls": [
+            "container__restart"
+          ]
+        },
+        "decision": null,
+        "decision_reason": null,
+        "duration_ms": 0,
+        "excerpt": null,
+        "host": null,
+        "kind": "model",
+        "ok": null,
+        "result_bytes": null,
+        "seq": 1,
+        "target": null,
+        "tokens_in": 100,
+        "tokens_out": 10,
+        "tool": "m1",
+        "ts": 1735689600
+      },
+      {
+        "actor": "session:738c6e2b82c4",
+        "approval_id": "id0004",
+        "args": {
+          "name": "web"
+        },
+        "decision": "ask",
+        "decision_reason": "rule_ask",
+        "duration_ms": null,
+        "excerpt": "it is stuck",
+        "host": "lab1",
+        "kind": "approval",
+        "ok": null,
+        "result_bytes": null,
+        "seq": 2,
+        "target": "web",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tool": "container.restart",
+        "ts": 1735689600
+      }
+    ]
+  },
+  "status": 200
+}

@@ -1,0 +1,170 @@
+{
+  "body": {
+    "presets": [
+      {
+        "adapter": "ollama",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "ollama",
+        "label": "Ollama",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "vllm",
+        "label": "vLLM",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "llamacpp",
+        "label": "llama.cpp server",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "lmstudio",
+        "label": "LM Studio",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "localai",
+        "label": "LocalAI",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "openai_compatible",
+        "label": "Any OpenAI-compatible URL",
+        "local": true,
+        "needs_key": false
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.openai.com/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "openai",
+        "label": "OpenAI",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "anthropic",
+        "label": "Anthropic",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "experimental": true,
+        "extra_fields": [],
+        "id": "gemini",
+        "label": "Google Gemini",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "",
+        "experimental": false,
+        "extra_fields": [
+          "deployment",
+          "api_version"
+        ],
+        "id": "azure_openai",
+        "label": "Azure OpenAI",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.groq.com/openai/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "groq",
+        "label": "Groq",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.mistral.ai/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "mistral",
+        "label": "Mistral",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.deepseek.com/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "deepseek",
+        "label": "DeepSeek",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.x.ai/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "xai",
+        "label": "xAI",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://openrouter.ai/api/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "openrouter",
+        "label": "OpenRouter",
+        "local": false,
+        "needs_key": true
+      },
+      {
+        "adapter": "openai_compat",
+        "base_url": "https://api.together.xyz/v1",
+        "experimental": false,
+        "extra_fields": [],
+        "id": "together",
+        "label": "Together",
+        "local": false,
+        "needs_key": true
+      }
+    ]
+  },
+  "status": 200
+}

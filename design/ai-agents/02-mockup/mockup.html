@@ -1,0 +1,346 @@
+<title>Homelab Agents Mockup</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: an option switcher on top; each option is a framed replica of the dashboard shell (sidebar + content) walking the same five flows. Tokens copied from static/dashboard.html. */
+:root{--bg:#ffffff;--card:#ffffff;--bd:#d0d7de;--tx:#1f2328;--mut:#636c76;--accent:#9a6700;--free:#eaeef2;
+--crit:#cf222e;--warn:#9a6700;--ok:#1a7f37;--info:#0969da;--canvas:#f6f8fa;--inset:#f6f8fa;--hover:#eef1f4;--sel:#e7ebf0;--sb:#f6f8fa;
+--okbg:#1a7f3714;--warnbg:#9a670014;--critbg:#cf222e14;--infobg:#0969da12;--onaccent:#1a1100;--accentbtn:#d29922;
+--mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code",Menlo,Consolas,monospace;--sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;--canvas:#0a0e14;--inset:#0d1117;--hover:#1b222c;--sel:#1c232e;--sb:#0b0f15;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--infobg:#58a6ff14;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--bd:#30363d;--tx:#e6edf3;--mut:#8b949e;--accent:#d29922;--free:#21262d;
+--crit:#f85149;--warn:#d29922;--ok:#3fb950;--info:#58a6ff;--canvas:#0a0e14;--inset:#0d1117;--hover:#1b222c;--sel:#1c232e;--sb:#0b0f15;
+--okbg:#3fb95018;--warnbg:#d2992218;--critbg:#f8514918;--infobg:#58a6ff14;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--canvas);color:var(--tx);font:14px/1.5 var(--sans);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:18px 60px}
+h1{font-size:20px;margin:0;text-wrap:balance}
+.top{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;max-width:1240px;margin:0 auto 14px}
+.top p{margin:0;color:var(--mut);flex-basis:100%;max-width:75ch}
+.seg{display:inline-flex;border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--card)}
+.seg button{border:0;background:transparent;color:var(--mut);padding:6px 12px;font:600 13px var(--sans);cursor:pointer;border-right:1px solid var(--bd)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--sel);color:var(--tx)}
+.seg button:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--info);outline-offset:1px}
+.optnote{max-width:1240px;margin:0 auto 12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.optnote div{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:9px 12px;font-size:13px}
+.optnote b{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin-bottom:2px}
+.frame{max-width:1240px;margin:0 auto;border:1px solid var(--bd);border-radius:10px;background:var(--bg);overflow:hidden;display:flex;min-height:640px;position:relative}
+.frame.phone{max-width:380px;flex-direction:column;min-height:720px}
+.side{width:200px;flex:none;background:var(--sb);border-right:1px solid var(--bd);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.brand{font-weight:700;padding:2px 8px 10px;font-size:14px}
+.zone{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--mut);padding:10px 8px 4px;text-transform:uppercase}
+.nav{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:7px;color:var(--mut);cursor:pointer;border:0;background:none;font:14px var(--sans);text-align:left;width:100%}
+.nav:hover{background:var(--hover);color:var(--tx)}
+.nav.on{background:var(--sel);color:var(--tx);font-weight:600}
+.nav .badge{margin-left:auto}
+.nav.dim{opacity:.55;cursor:default}
+.phone .side{width:auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--bd);padding:6px;gap:4px}
+.phone .side .zone,.phone .side .brand,.phone .side .nav.dim{display:none}
+.phone .nav{white-space:nowrap;width:auto;padding:5px 9px;font-size:13px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.hdr{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.hostpill{font:12px var(--mono);border:1px solid var(--bd);border-radius:6px;padding:2px 8px;color:var(--tx);display:inline-flex;align-items:center;gap:5px}
+.dot{width:7px;height:7px;border-radius:2px;background:var(--ok);display:inline-block}
+.dot.off{background:var(--crit)}
+.hdr .sp{flex:1}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:7px;padding:5px 11px;font:600 13px var(--sans);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--hover)}
+.btn.pri{background:var(--accentbtn);border-color:var(--accentbtn);color:var(--onaccent)}
+.btn.pri:hover{filter:brightness(1.06)}
+.btn.ok{color:var(--ok);border-color:var(--ok)}
+.btn.no{color:var(--crit)}
+.btn.sm{padding:3px 8px;font-size:12px}
+.content{padding:16px;flex:1;min-width:0;overflow:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px}
+.ch{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.mut{color:var(--mut)}
+.mono{font-family:var(--mono);font-size:12.5px}
+.badge{font:700 11px var(--sans);border-radius:999px;padding:1px 7px;background:var(--critbg);color:var(--crit);border:1px solid var(--crit)}
+.pill{display:inline-block;font:600 11px var(--sans);border-radius:6px;padding:1px 7px;border:1px solid var(--bd);color:var(--mut);white-space:nowrap}
+.pill.low{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.pill.med{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.pill.high{color:var(--crit);border-color:var(--crit);background:var(--critbg)}
+.pill.info{color:var(--info);border-color:var(--info);background:var(--infobg)}
+/* chat */
+.chat{display:flex;flex-direction:column;gap:12px;max-width:760px}
+.msg{max-width:92%}
+.msg.u{align-self:flex-end;background:var(--sel);border-radius:12px 12px 2px 12px;padding:8px 12px}
+.msg.a{align-self:flex-start}
+.msg.a p{margin:6px 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 4px}
+.chip{font:12px var(--mono);border:1px solid var(--bd);background:var(--inset);border-radius:6px;padding:2px 8px;color:var(--mut);cursor:pointer}
+.chip:hover{color:var(--tx)}
+.chip.open{color:var(--tx);border-color:var(--info)}
+.chipbody{font:12px/1.45 var(--mono);background:var(--inset);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;margin:4px 0;white-space:pre-wrap;overflow-x:auto;color:var(--mut)}
+.confirm{border:1px solid var(--warn);background:var(--warnbg);border-radius:10px;padding:12px;display:grid;gap:8px;margin-top:6px}
+.confirm .q{font-weight:600}
+.confirm .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.done{border-color:var(--ok);background:var(--okbg)}
+.rejected{border-color:var(--bd);background:var(--inset)}
+.composer{display:flex;gap:8px;border-top:1px solid var(--bd);padding:10px 14px;align-items:flex-end}
+.composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--bd);border-radius:8px;background:var(--inset);color:var(--tx);font:14px var(--sans);padding:8px 10px;height:40px}
+.modelsel{font:12px var(--mono);border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx);padding:3px 6px;max-width:100%}
+.link{color:var(--info);text-decoration:none;cursor:pointer}
+/* tables */
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;font-weight:600;padding:6px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--bd);vertical-align:middle;font-variant-numeric:tabular-nums}
+tr.clk{cursor:pointer}tr.clk:hover td{background:var(--hover)}
+.tri{display:inline-flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden}
+.tri button{border:0;background:var(--card);color:var(--mut);font:600 11px var(--sans);padding:3px 7px;cursor:pointer;border-right:1px solid var(--bd)}
+.tri button:last-child{border-right:0}
+.tri button.on.d{background:var(--critbg);color:var(--crit)}
+.tri button.on.a{background:var(--warnbg);color:var(--warn)}
+.tri button.on.y{background:var(--okbg);color:var(--ok)}
+.tri button.on.n{background:var(--sel);color:var(--tx)}
+.tri button.on.p{background:var(--infobg);color:var(--info)}
+.tri.locked{opacity:.45;pointer-events:none}
+/* templates */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.tpl{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.tpl h4{margin:0;font-size:14px}
+.tpl p{margin:0;color:var(--mut);font-size:13px}
+.tpl .meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:auto;padding-top:6px}
+.tpl.on{border-color:var(--ok)}
+.tabs2{display:flex;gap:4px;border-bottom:1px solid var(--bd);margin-bottom:12px;flex-wrap:wrap}
+.tabs2 button{border:0;background:none;color:var(--mut);padding:6px 10px;font:600 13px var(--sans);cursor:pointer;border-bottom:2px solid transparent}
+.tabs2 button.on{color:var(--tx);border-bottom-color:var(--accent)}
+/* modal / drawer */
+.scrim{position:absolute;inset:0;background:#0006;display:flex;align-items:center;justify-content:center;padding:16px;z-index:5}
+.dialog{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;width:min(520px,100%);display:grid;gap:10px;max-height:100%;overflow:auto}
+.dialog h3{margin:0;font-size:16px}
+.fld{display:grid;gap:4px}
+.fld label{font-size:12px;color:var(--mut);font-weight:600}
+.fld select,.fld input{border:1px solid var(--bd);border-radius:7px;background:var(--inset);color:var(--tx);font:13px var(--sans);padding:6px 8px}
+.checks{display:flex;flex-wrap:wrap;gap:6px}
+.checks label{display:inline-flex;gap:5px;align-items:center;border:1px solid var(--bd);border-radius:6px;padding:3px 8px;font:12px var(--mono)}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:min(440px,100%);background:var(--bg);border-left:1px solid var(--bd);box-shadow:-18px 0 40px -24px #0009;display:flex;flex-direction:column;z-index:4}
+.drawer .dh{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--bd)}
+.drawer .content{padding:12px 14px}
+.ctx{font-size:12px;color:var(--mut);border:1px dashed var(--bd);border-radius:6px;padding:3px 8px;display:inline-block}
+.cols3{display:grid;grid-template-columns:200px minmax(0,1fr) 290px;flex:1;min-height:0}
+.cols3>*{min-width:0;border-right:1px solid var(--bd);overflow:auto}
+.cols3>*:last-child{border-right:0}
+.convlist{padding:10px;display:flex;flex-direction:column;gap:2px}
+.conv{padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--mut)}
+.conv.on{background:var(--sel);color:var(--tx)}
+.conv small{display:block;font-size:11px}
+.rail{padding:12px;display:grid;gap:12px;align-content:start}
+.mini{display:grid;gap:6px}
+.mini .r{display:flex;align-items:center;gap:6px;font-size:13px}
+.mini .r .sp{flex:1}
+.timeline{display:grid;gap:0;font-size:13px}
+.step{display:grid;grid-template-columns:70px 1fr;gap:10px;padding:7px 0;border-bottom:1px solid var(--bd)}
+.step:last-child{border-bottom:0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-size:13px}
+.kv dt{color:var(--mut)}.kv dd{margin:0}
+.banner{border:1px solid var(--info);background:var(--infobg);border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:12px}
+.flows{max-width:1240px;margin:16px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.flows .card ol{margin:6px 0 0;padding-left:18px;font-size:13px;color:var(--mut)}
+.flows .card ol b{color:var(--tx);font-weight:600}
+@media (max-width:820px){.optnote{grid-template-columns:1fr}.cols3{grid-template-columns:minmax(0,1fr)}.cols3>.convlist,.cols3>.rail{display:none}.side{width:auto}.frame{flex-direction:column}.side{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--bd)}.side .zone,.side .brand,.side .nav.dim{display:none}.nav{white-space:nowrap;width:auto}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="top">
+  <h1>Homelab Agents — layout options</h1>
+  <div class="seg" role="group" aria-label="Layout option">
+    <button id="optA" aria-pressed="true" data-opt="A">A · Agents zone</button>
+    <button id="optB" aria-pressed="false" data-opt="B">B · Ask drawer</button>
+    <button id="optC" aria-pressed="false" data-opt="C">C · Agent cockpit</button>
+  </div>
+  <div class="seg" role="group" aria-label="Width">
+    <button id="wD" aria-pressed="true" data-w="d">Desktop</button>
+    <button id="wP" aria-pressed="false" data-w="p">Phone</button>
+  </div>
+  <p>Clickable mockup with example data. Walk the flows: ask in chat, approve the restart card, activate a template, set a box to Active, open an audit run. The same screens appear in all three options; only where they live changes.</p>
+</div>
+<div class="optnote" id="optnote"></div>
+<div class="frame" id="frame"></div>
+
+<div class="flows">
+  <div class="card"><div class="ch">Flow · US-6/7 chat → act</div><ol>
+    <li><b>Ask</b> "Why is gpu-box slow?" → streamed answer with tool chips (get_gpu, get_containers).</li>
+    <li><b>Ask</b> "restart ollama there" → policy check: gpu-box Active, restart = Ask → <b>confirm card</b>.</li>
+    <li><b>Approve</b> → runs, chip shows result; <b>Reject</b> → model told "rejected by user".</li>
+    <li>Error: box Passive → "Not allowed: gpu-box is Passive. Change in Agent policy." Empty: no model → setup card.</li></ol></div>
+  <div class="card"><div class="ch">Flow · US-8/10 template → approval</div><ol>
+    <li><b>Automations</b> → gallery → <b>Docker cleanup</b> → Activate.</li>
+    <li>Pick hosts, schedule (Sun 03:00), mode (Act within policy), model, delivery.</li>
+    <li>03:00 run: prune dangling images (low, Allow) runs; remove unused volumes (med) → <b>pending approval</b> + ntfy.</li>
+    <li>Morning: <b>Approvals</b> badge → approve → executes, audited against the night run.</li></ol></div>
+  <div class="card"><div class="ch">Flow · US-4/5/11 policy &amp; audit</div><ol>
+    <li><b>Agent policy</b>: per host Off / Passive / Active; per action Deny / Ask / Allow; high risk locked to Ask unattended.</li>
+    <li><b>Activity</b>: every run, filter by host/outcome; click → step timeline with args, policy decision, approver, result.</li>
+    <li>Export JSON/CSV. ENABLE_CONTROLS=0 → banner, all actions show Deny.</li></ol></div>
+</div>
+
+<script>
+const S={opt:'A',w:'d',screen:'chat',chatStage:0,confirm:'pending',chipOpen:-1,modal:null,drawer:false,tplOn:{},auditSel:0,
+ policy:{'hub':'p','gpu-box':'y','nas':'p','win-vm':'n','pi-4':'p'},
+ matrix:{'restart_container':'a','stop_container':'d','prune_images':'y','vacuum_journal':'y','remove_model':'a','reboot':'d'},
+ approvals:[{id:1,act:'Remove unused volumes (3 · 4.1 GB)',host:'gpu-box',risk:'med',run:'Docker cleanup · Sun 03:00',st:'pending'},
+            {id:2,act:'Remove model qwen2.5:32b-q8 (34 GB, unused 41 d)',host:'gpu-box',risk:'high',run:'Model housekeeping · Sat 02:00',st:'pending'}]};
+const HOSTS=[['hub','Linux · this hub'],['gpu-box','Linux · 3×RTX 3090'],['nas','Linux · Synology'],['win-vm','Windows 11'],['pi-4','Linux · arm64']];
+const ACTIONS=[['restart_container','Restart a container','low','docker restart <name>'],['stop_container','Stop a container','med','docker stop <name>'],
+ ['prune_images','Prune dangling images','low','docker image prune -f'],['vacuum_journal','Vacuum systemd journal','low','journalctl --vacuum-size=<N>'],
+ ['remove_model','Remove an Ollama model','high','ollama rm <model>'],['reboot','Reboot host','high','systemctl reboot']];
+const TPL=[['System maintenance','Checks disk, memory, failed units, pending updates, journal size; vacuums journal if over limit.','Weekly · Sun 04:00',['vacuum_journal','restart_container']],
+ ['Docker cleanup','Finds dangling images, stopped containers older than 14 d, unused volumes and build cache.','Weekly · Sun 03:00',['prune_images','remove_volumes']],
+ ['Model housekeeping','Lists every model across hosts; flags duplicates, unused 30 d+, models that do not fit VRAM (from benchmarks).','Weekly · Sat 02:00',['remove_model']],
+ ['Disk space watch','Finds what grew most this week with the disk treemap; flags runaway logs and caches.','Daily · 07:00',[]],
+ ['Data & log cleanup','Old logs, temp dirs, rotated archives in paths you list; reports size before deleting.','Weekly · Sun 03:30',['delete_old_files']],
+ ['GPU health check','Throttling, fan, temps, Xid errors, VRAM squatters over the last 24 h.','Daily · 08:00',[]],
+ ['Update report','Pending OS and container image updates per host, with a safe order.','Weekly · Mon 08:00',[]],
+ ['Cost report','What each box, container and model cost this week, and what changed.','Weekly · Mon 08:00',[]]];
+const RUNS=[['Sun 03:00','Docker cleanup','schedule','gpu-box, hub','qwen3:14b · local','2 actions · 1 pending','warn'],
+ ['Sat 21:14','Chat: restart ollama','chat · arsen','gpu-box','claude-sonnet · cloud','1 action approved','ok'],
+ ['Sat 02:00','Model housekeeping','schedule','gpu-box','qwen3:14b · local','1 pending','warn'],
+ ['Fri 08:00','GPU health check','schedule','gpu-box','qwen3:14b · local','report only','ok'],
+ ['Thu 22:40','Chat: why is nas slow','chat · arsen','nas','gpt-5 · cloud','refused: nas Passive','crit']];
+const NOTE={A:['Agents get their own sidebar zone (Chat, Automations, Approvals, Activity) next to Monitoring and AI. Policy lives in the existing Hosts settings as a column + matrix.','Pro: fits the current nav pattern, every screen has room, easy deep links. Con: chat is a page, so asking about the tab you are on means switching away.'],
+ B:['A global "Ask" button opens a right-side drawer over any tab; it knows the current tab and host. Automations is one page; approvals are a bell in the header; audit sits in Settings.','Pro: ask in context without leaving the GPU tab; least new nav. Con: drawer is narrow for long answers; approvals/audit are less discoverable.'],
+ C:['One "Agent" page as a cockpit: conversations | chat | right rail with pending approvals, fleet policy at a glance and next scheduled runs. Automations and Activity are tabs inside it.','Pro: everything agent-related in one place, approvals always visible. Con: dense on desktop, collapses to chat only on phone; a new pattern for this app.']};
+const $=(s,r=document)=>r.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function risk(r){return `<span class="pill ${r}">${r==='med'?'medium':r} risk</span>`}
+function pendingN(){return S.approvals.filter(a=>a.st==='pending').length}
+
+function chatView(){
+  const chips=[['get_gpu','gpu-box',`util 100% · power 349/350 W · throttle: SW power cap\nGPU1 VRAM 23.1/24 GB · temp 81 °C`],
+               ['get_containers','gpu-box',`ollama running · RAM 31.2 GB · VRAM 63 GB across 3 cards\ncomfyui exited (137) 3 d ago`],
+               ['get_memory','gpu-box',`RAM 61.8/64 GB · swap 7.9 GB used\ntop: ollama 31.2 GB, vllm-watcher 9.4 GB`]];
+  let h=`<div class="chat">`;
+  h+=`<div class="msg u">Why is gpu-box slow?</div>`;
+  h+=`<div class="msg a"><div class="chips">${chips.map((c,i)=>`<button class="chip ${S.chipOpen===i?'open':''}" data-chip="${i}">✓ ${c[0]} · ${c[1]}</button>`).join('')}</div>`;
+  if(S.chipOpen>=0)h+=`<div class="chipbody">${esc(chips[S.chipOpen][2])}</div>`;
+  h+=`<p>gpu-box is short on RAM, not GPU. It has <b>61.8 of 64 GB</b> in use and <b>7.9 GB in swap</b>. Ollama holds 31.2 GB of system RAM because qwen3-235b spills past the three cards' VRAM. The GPUs sit at their 350 W power cap, which is expected for your lowered limit.</p>
+  <p>Unloading the model, or restarting <span class="mono">ollama</span> to clear the spilled layers, would free about 30 GB. <a class="link" data-go="mem">Open the memory breakdown →</a></p></div>`;
+  if(S.chatStage>=1){
+    h+=`<div class="msg u">Restart ollama there</div><div class="msg a">`;
+    if(S.confirm==='pending')h+=`<div class="confirm"><div class="q">Restart container <span class="mono">ollama</span> on <span class="mono">gpu-box</span>?</div>
+      <div class="row">${risk('low')}<span class="pill">policy: gpu-box Active · restart = Ask</span></div>
+      <div class="mono mut">docker restart ollama</div>
+      <div class="row"><button class="btn ok" id="appr">Approve</button><button class="btn no" id="rej">Reject</button><span class="mut" style="font-size:12px">Nothing runs until you approve.</span></div></div>`;
+    else if(S.confirm==='ok')h+=`<div class="chips"><button class="chip">✓ restart_container · gpu-box · 4.2 s</button></div><div class="confirm done"><div class="q">Restarted <span class="mono">ollama</span> on gpu-box</div><div class="mut" style="font-size:13px">Approved by arsen at 21:14 · audit #4812</div></div><p>Done. RAM on gpu-box dropped to 29.4 GB and swap is draining. The model will reload on the next request.</p>`;
+    else h+=`<div class="confirm rejected"><div class="q">Rejected. Nothing was run.</div></div><p>Okay, I left ollama running.</p>`;
+    h+=`</div>`;
+  }
+  if(S.chatStage>=2&&S.confirm!=='pending'){h+=`<div class="msg u">And reboot the nas</div><div class="msg a"><p>I can't do that. <b>nas</b> is set to <b>Passive</b>, so I can only read it. To allow reboots, set nas to Active and Reboot to Ask in <a class="link" data-go="policy">Agent policy</a>.</p></div>`}
+  h+=`</div>`;
+  return h;
+}
+function composer(){
+  const next=S.chatStage===0?'Restart ollama there':(S.chatStage===1&&S.confirm!=='pending'?'And reboot the nas':'');
+  return `<div class="composer"><div style="display:grid;gap:6px;flex:1;min-width:0"><select class="modelsel" id="msel" aria-label="Model"><option>claude-sonnet · Anthropic (cloud)</option><option>qwen3:14b · ollama@gpu-box (local)</option><option>gpt-5 · OpenAI (cloud)</option></select>
+  <textarea id="ta" aria-label="Message" placeholder="Ask about your homelab…">${next}</textarea></div><button class="btn pri" id="send" ${next?'':'disabled'}>Send</button></div>`;
+}
+function autoView(){
+  let h=`<div class="tabs2"><button class="on">Templates</button><button>My automations (${Object.keys(S.tplOn).length})</button><button>+ New from prompt</button></div><div class="grid">`;
+  TPL.forEach((t,i)=>{const on=S.tplOn[i];h+=`<div class="tpl ${on?'on':''}"><h4>${t[0]}</h4><p>${t[1]}</p><div class="meta"><span class="pill">${on?on:t[2]}</span>${t[3].length?`<span class="pill med">may propose ${t[3].length} action${t[3].length>1?'s':''}</span>`:'<span class="pill low">report only</span>'}<span class="pill">local · €0</span></div>
+   <div style="display:flex;gap:6px;margin-top:6px">${on?'<span class="pill low">● Active</span><button class="btn sm">Run now</button>':`<button class="btn sm pri" data-act="${i}">Activate</button>`}<button class="btn sm">Duplicate</button></div></div>`});
+  return h+`</div>`;
+}
+function policyView(){
+  let h=`<div class="banner">Controls are on (<span class="mono">ENABLE_CONTROLS=1</span>). Turning them off makes every action Deny, whatever is set here.</div>`;
+  h+=`<div class="card" style="margin-bottom:12px"><div class="ch">Per box</div><div class="tw"><table><thead><tr><th>Host</th><th>Agent access</th><th>Meaning</th></tr></thead><tbody>`;
+  HOSTS.forEach(([n,d])=>{const v=S.policy[n];h+=`<tr><td><span class="mono">${n}</span><div class="mut" style="font-size:12px">${d}</div></td><td><div class="tri" data-host="${n}">
+   <button class="${v==='n'?'on n':''}" data-v="n">Off</button><button class="${v==='p'?'on p':''}" data-v="p">Passive</button><button class="${v==='y'?'on y':''}" data-v="y">Active</button></div></td>
+   <td class="mut" style="font-size:12px">${v==='n'?'Agent cannot see this box':v==='p'?'Read only':'Can act, within the actions below'}</td></tr>`});
+  h+=`</tbody></table></div></div>`;
+  h+=`<div class="card"><div class="ch">Allowed actions · gpu-box <span class="pill">copy to other Active boxes</span></div><div class="tw"><table><thead><tr><th>Action</th><th>Risk</th><th>Runs</th><th>In chat</th><th>Unattended</th></tr></thead><tbody>`;
+  ACTIONS.forEach(([k,l,r,cmd])=>{const v=S.matrix[k];const una=r==='low'?v:(v==='y'?'a':v);
+   h+=`<tr><td>${l}</td><td>${risk(r)}</td><td class="mono mut">${cmd}</td><td><div class="tri" data-act="${k}"><button class="${v==='d'?'on d':''}" data-v="d">Deny</button><button class="${v==='a'?'on a':''}" data-v="a">Ask</button><button class="${v==='y'?'on y':''}" data-v="y">Allow</button></div></td>
+   <td>${r==='low'?`<span class="pill">${{d:'Deny',a:'Ask',y:'Allow'}[una]}</span>`:`<span class="pill">${una==='d'?'Deny':'Ask'} · locked</span>`}</td></tr>`});
+  return h+`</tbody></table></div><p class="mut" style="font-size:12px;margin:8px 0 0">Medium and high risk actions never run unattended; scheduled runs park them as pending approvals. Unlock per action with a warning.</p></div>`;
+}
+function apprView(){
+  const p=S.approvals;
+  if(!p.length)return `<p class="mut">No pending approvals.</p>`;
+  return `<div style="display:grid;gap:10px;max-width:760px">`+p.map(a=>`<div class="confirm ${a.st==='ok'?'done':a.st==='no'?'rejected':''}"><div class="q">${a.act} on <span class="mono">${a.host}</span></div>
+  <div class="row">${risk(a.risk)}<span class="pill">from ${a.run}</span><span class="pill">expires in 19 h</span></div>
+  <div class="mut" style="font-size:13px">Why: ${a.risk==='high'?'Not used for 41 days, 34 GB, and a q4 copy of the same model exists on gpu-box.':'Not attached to any container since 2026-09-02.'}</div>
+  <div class="row">${a.st==='pending'?`<button class="btn ok" data-ap="${a.id}">Approve</button><button class="btn no" data-rj="${a.id}">Reject</button>`:a.st==='ok'?'<b>Approved · executed · audit #4830</b>':'<b>Rejected</b>'}</div></div>`).join('')+`</div>`;
+}
+function auditView(){
+  let h=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><select class="modelsel" aria-label="Host filter"><option>All hosts</option></select><select class="modelsel" aria-label="Outcome filter"><option>All outcomes</option></select><span class="sp" style="flex:1"></span><button class="btn sm">Export JSON</button><button class="btn sm">Export CSV</button></div>`;
+  h+=`<div class="card" style="padding:4px 6px;margin-bottom:12px"><div class="tw"><table><thead><tr><th>When</th><th>Run</th><th>Trigger</th><th>Hosts</th><th>Model</th><th>Outcome</th></tr></thead><tbody>`;
+  RUNS.forEach((r,i)=>{h+=`<tr class="clk" data-run="${i}" ${S.auditSel===i?'style="background:var(--sel)"':''}><td class="mono">${r[0]}</td><td>${r[1]}</td><td class="mut">${r[2]}</td><td class="mono">${r[3]}</td><td class="mono mut">${r[4]}</td><td><span class="pill ${r[6]==='ok'?'low':r[6]==='warn'?'med':'high'}">${r[5]}</span></td></tr>`});
+  h+=`</tbody></table></div></div>`;
+  const r=RUNS[S.auditSel];
+  h+=`<div class="card"><div class="ch">Run detail · ${r[1]}</div><dl class="kv"><dt>Trigger</dt><dd>${r[2]}</dd><dt>Model</dt><dd class="mono">${r[4]} · 6,214 in / 812 out tokens · €0.00</dd><dt>Duration</dt><dd>38 s · 7 steps</dd></dl>
+  <div class="timeline" style="margin-top:10px">
+  <div class="step"><span class="mono mut">03:00:02</span><span><b>read</b> get_containers · gpu-box → 51 rows (excerpt kept)</span></div>
+  <div class="step"><span class="mono mut">03:00:05</span><span><b>read</b> docker_disk_usage · gpu-box → images 212 GB, dangling 18.4 GB</span></div>
+  <div class="step"><span class="mono mut">03:00:11</span><span><b>act</b> prune_images · gpu-box · policy <span class="pill low">Allow · low risk</span> → freed 18.4 GB</span></div>
+  <div class="step"><span class="mono mut">03:00:19</span><span><b>act</b> remove_volumes · gpu-box · policy <span class="pill med">Ask · parked</span> → approval #812 pending, ntfy sent</span></div>
+  <div class="step"><span class="mono mut">03:00:40</span><span><b>report</b> sent to in-app + ntfy</span></div></div></div>`;
+  return h;
+}
+function settingsEmpty(){return `<div class="card" style="max-width:560px"><div class="ch">Agent model</div><p>Pick a model the agent can use. Local models were found on your lab.</p><div class="tw"><table><tbody>
+ <tr><td class="mono">qwen3:14b</td><td class="mono mut">ollama@gpu-box</td><td><span class="pill low">tool calls: works</span></td><td><button class="btn sm pri">Use</button></td></tr>
+ <tr><td class="mono">llama3.2:3b</td><td class="mono mut">ollama@pi-4</td><td><span class="pill high">no tool calls</span></td><td><button class="btn sm" disabled>Use</button></td></tr>
+ <tr><td class="mono">Qwen3.8-27B</td><td class="mono mut">vllm@gpu-box</td><td><span class="pill">untested</span></td><td><button class="btn sm">Test</button></td></tr></tbody></table></div>
+ <div class="ch" style="margin-top:14px">Cloud (your own key)</div><div class="checks"><label>Anthropic ✓</label><label>OpenAI ✓</label><label>Gemini</label><label>Mistral</label><label>Groq</label><label>OpenRouter</label><label>Azure OpenAI</label><label>Bedrock</label><label>DeepSeek</label><label>xAI</label><label>+ OpenAI-compatible URL</label></div></div>`}
+
+function screenBody(s){return {chat:chatView(),auto:autoView(),policy:policyView(),appr:apprView(),audit:auditView(),setup:settingsEmpty()}[s]}
+const TITLES={chat:'Chat',auto:'Automations',policy:'Agent policy',appr:'Approvals',audit:'Activity',setup:'Models & keys'};
+function hdr(extra=''){return `<div class="hdr"><span class="hostpill"><span class="dot"></span>hub</span><span class="hostpill"><span class="dot"></span>gpu-box</span><span class="hostpill"><span class="dot"></span>nas</span><span class="sp"></span>${extra}</div>`}
+function side(items){return `<nav class="side"><div class="brand">HomeLab Monitor</div><div class="zone">Monitoring</div><button class="nav dim">Overview</button><button class="nav dim">GPU</button><button class="nav dim">Containers</button><div class="zone">AI</div><button class="nav dim">AI Models</button>${items}</nav>`}
+function navBtn(id,label,badge){return `<button class="nav ${S.screen===id?'on':''}" data-s="${id}">${label}${badge?`<span class="badge">${badge}</span>`:''}</button>`}
+
+function render(){
+  const f=$('#frame');f.className='frame'+(S.w==='p'?' phone':'');
+  $('#optnote').innerHTML=`<div><b>Layout</b>${NOTE[S.opt][0]}</div><div><b>Trade-off</b>${NOTE[S.opt][1]}</div>`;
+  const pn=pendingN();let h='';
+  if(S.opt==='A'){
+    h=side(`<div class="zone">Agents</div>${navBtn('chat','Chat')}${navBtn('auto','Automations')}${navBtn('appr','Approvals',pn)}${navBtn('audit','Activity')}<div class="zone">Settings</div>${navBtn('policy','Agent policy')}${navBtn('setup','Models & keys')}`);
+    h+=`<div class="main">${hdr(`<span class="pill info">${TITLES[S.screen]}</span>`)}<div class="content">${screenBody(S.screen)}</div>${S.screen==='chat'?composer():''}</div>`;
+  } else if(S.opt==='B'){
+    const scr=S.screen==='chat'?'containers':S.screen;
+    h=side(`${navBtn('auto','Automations')}<div class="zone">Settings</div>${navBtn('policy','Agent policy')}${navBtn('audit','Agent activity')}${navBtn('setup','Models & keys')}`);
+    const page=scr==='containers'?`<div class="card"><div class="ch">Docker containers · gpu-box</div><div class="tw"><table><thead><tr><th>Container</th><th>State</th><th>RAM</th><th>VRAM</th></tr></thead><tbody><tr><td>ollama</td><td><span class="pill low">running</span></td><td>31.2 GB</td><td>63 GB</td></tr><tr><td>comfyui</td><td><span class="pill high">exited (137)</span></td><td>—</td><td>—</td></tr><tr><td>vllm-watcher</td><td><span class="pill low">running</span></td><td>9.4 GB</td><td>—</td></tr></tbody></table></div></div>`:screenBody(scr);
+    h+=`<div class="main">${hdr(`<button class="btn" data-s="appr" title="Approvals">🔔 ${pn?`<span class="badge">${pn}</span>`:''}</button><button class="btn pri" id="ask">✦ Ask</button>`)}<div class="content">${S.screen==='appr'?apprView():page}</div></div>`;
+    if(S.drawer)h+=`<aside class="drawer"><div class="dh"><b>Ask your homelab</b><span class="ctx">context: Containers · gpu-box</span><span style="flex:1"></span><button class="btn sm" id="closeD">Close</button></div><div class="content">${chatView()}</div>${composer()}</aside>`;
+  } else {
+    const inner=S.screen==='auto'?`<div class="content">${autoView()}</div>`:S.screen==='audit'?`<div class="content">${auditView()}</div>`:S.screen==='policy'?`<div class="content">${policyView()}</div>`:S.screen==='setup'?`<div class="content">${settingsEmpty()}</div>`:
+     `<div class="cols3"><div class="convlist"><button class="btn sm pri" style="margin-bottom:6px">+ New chat</button><div class="conv on">Why is gpu-box slow?<small>today</small></div><div class="conv">nas disk filling<small>Thu</small></div><div class="ch" style="margin:10px 0 4px">Automation runs</div><div class="conv">Docker cleanup<small>Sun 03:00 · 1 pending</small></div><div class="conv">Model housekeeping<small>Sat 02:00</small></div></div>
+      <div style="display:flex;flex-direction:column"><div class="content">${chatView()}</div>${composer()}</div>
+      <div class="rail"><div><div class="ch">Pending approvals <span class="badge">${pn}</span></div>${S.approvals.filter(a=>a.st==='pending').map(a=>`<div class="confirm" style="padding:8px"><div style="font-size:13px;font-weight:600">${a.act}</div><div class="row">${risk(a.risk)}<button class="btn sm ok" data-ap="${a.id}">Approve</button><button class="btn sm no" data-rj="${a.id}">Reject</button></div></div>`).join('')||'<p class="mut">None</p>'}</div>
+       <div><div class="ch">Fleet access</div><div class="mini">${HOSTS.map(([n])=>`<div class="r"><span class="mono">${n}</span><span class="sp"></span><span class="pill ${S.policy[n]==='y'?'low':S.policy[n]==='p'?'info':''}">${{n:'Off',p:'Passive',y:'Active'}[S.policy[n]]}</span></div>`).join('')}</div><a class="link" data-s="policy" style="font-size:12px">Edit policy →</a></div>
+       <div><div class="ch">Next runs</div><div class="mini"><div class="r">Disk space watch<span class="sp"></span><span class="mono mut">07:00</span></div><div class="r">GPU health check<span class="sp"></span><span class="mono mut">08:00</span></div></div></div></div></div>`;
+    h=side(`<div class="zone">Agents</div>${navBtn('chat','Agent',pn)}`);
+    h+=`<div class="main">${hdr()}<div class="tabs2" style="padding:0 14px;margin:8px 0 0">${['chat','auto','audit','policy','setup'].map(s=>`<button class="${S.screen===s?'on':''}" data-s="${s}">${TITLES[s]}</button>`).join('')}</div>${inner}</div>`;
+  }
+  if(S.modal!==null){const t=TPL[S.modal];h+=`<div class="scrim"><div class="dialog" role="dialog" aria-label="Activate template"><h3>Activate · ${t[0]}</h3><p class="mut" style="margin:0;font-size:13px">${t[1]}</p>
+   <div class="fld"><label>Hosts</label><div class="checks">${HOSTS.map(([n])=>`<label><input type="checkbox" ${n==='gpu-box'||n==='hub'?'checked':''} ${S.policy[n]==='n'?'disabled':''}> ${n}${S.policy[n]==='n'?' (Off)':''}</label>`).join('')}</div></div>
+   <div class="fld"><label for="sch">Schedule</label><select id="sch"><option>${t[2]}</option><option>Daily · 03:00</option><option>Custom cron…</option></select></div>
+   <div class="fld"><label for="mode">Mode</label><select id="mode"><option>Act within policy (low risk runs, others wait for approval)</option><option>Propose only (everything waits for approval)</option><option>Report only</option></select></div>
+   <div class="fld"><label for="mdl">Model</label><select id="mdl"><option>qwen3:14b · ollama@gpu-box (local, €0)</option><option>claude-sonnet · Anthropic (~€0.03 per run)</option></select></div>
+   <div class="fld"><label>Send the report to</label><div class="checks"><label><input type="checkbox" checked> In-app</label><label><input type="checkbox" checked> ntfy</label><label><input type="checkbox"> Discord</label><label><input type="checkbox"> Telegram</label></div></div>
+   <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" id="mcancel">Cancel</button><button class="btn" id="mdry">Run once now</button><button class="btn pri" id="mok">Activate</button></div></div></div>`}
+  f.innerHTML=h;
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button,a,tr');if(!b)return;
+  if(b.dataset.opt){S.opt=b.dataset.opt;S.screen='chat';S.drawer=false;document.querySelectorAll('[data-opt]').forEach(x=>x.setAttribute('aria-pressed',x===b));}
+  else if(b.dataset.w){S.w=b.dataset.w;document.querySelectorAll('[data-w]').forEach(x=>x.setAttribute('aria-pressed',x===b));}
+  else if(b.dataset.s){S.screen=b.dataset.s;S.drawer=false}
+  else if(b.dataset.go){S.screen=b.dataset.go==='policy'?'policy':S.screen;S.drawer=false}
+  else if(b.dataset.chip!==undefined){S.chipOpen=S.chipOpen==+b.dataset.chip?-1:+b.dataset.chip}
+  else if(b.id==='send'){S.chatStage++}
+  else if(b.id==='appr'){S.confirm='ok'}else if(b.id==='rej'){S.confirm='no'}
+  else if(b.id==='ask'){S.drawer=true}else if(b.id==='closeD'){S.drawer=false}
+  else if(b.dataset.act!==undefined&&b.closest('.tpl')){S.modal=+b.dataset.act}
+  else if(b.id==='mcancel'){S.modal=null}else if(b.id==='mok'||b.id==='mdry'){S.tplOn[S.modal]=b.id==='mok'?TPL[S.modal][2]:'ran once · report in Activity';S.modal=null}
+  else if(b.dataset.ap){S.approvals.find(a=>a.id==b.dataset.ap).st='ok'}
+  else if(b.dataset.rj){S.approvals.find(a=>a.id==b.dataset.rj).st='no'}
+  else if(b.dataset.run!==undefined){S.auditSel=+b.dataset.run}
+  else if(b.dataset.v){const tri=b.closest('.tri');if(tri.dataset.host)S.policy[tri.dataset.host]=b.dataset.v;else S.matrix[tri.dataset.act]=b.dataset.v}
+  else return;
+  render();
+});
+render();
+</script>

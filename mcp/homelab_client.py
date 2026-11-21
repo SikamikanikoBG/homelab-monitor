@@ -45,15 +45,51 @@ class MonitorError(RuntimeError):
     """
 
 
+# In-process transport (#354): the dashboard's own AI agent calls these same
+# functions without a network hop by installing a callable here that takes a
+# path and returns (status, body_text). Unset (the MCP server, any script) =
+# plain urllib, exactly as before.
+_transport = None
+
+
+def set_transport(fn):
+    global _transport
+    _transport = fn
+
+
+def _auth_headers():
+    """A bearer token when one is configured: HOMELAB_API_TOKEN (a read key an
+    external MCP client sets once the dashboard has a login) or the per-container
+    HLM_INTERNAL_TOKEN that launch.py hands the built-in MCP server."""
+    tok = os.environ.get("HOMELAB_API_TOKEN") or os.environ.get("HLM_INTERNAL_TOKEN")
+    return {"Authorization": "Bearer " + tok} if tok else {}
+
+
+def _via_transport(path):
+    status, raw = _transport(path)
+    if status >= 400:
+        raise MonitorError("monitor returned HTTP %s for %s" % (status, path))
+    return raw
+
+
 def _get(path):
     """GET a JSON endpoint and return the decoded object."""
+    if _transport is not None:
+        raw = _via_transport(path)
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise MonitorError("monitor returned a non-JSON body for %s" % path)
     url = base_url() + path
-    req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                               "User-Agent": "homelab-monitor-mcp"})
+    req = urllib.request.Request(url, headers=dict({"Accept": "application/json",
+                                                    "User-Agent": "homelab-monitor-mcp"}, **_auth_headers()))
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MonitorError("monitor needs a login (HTTP 401) — set HOMELAB_API_TOKEN to a read key "
+                               "from Settings → Integrations → API keys (see website/mcp.md)")
         raise MonitorError("monitor returned HTTP %s for %s" % (e.code, path))
     except urllib.error.URLError as e:
         raise MonitorError("cannot reach monitor at %s (%s)" % (base_url(), e.reason))
@@ -67,8 +103,10 @@ def _get(path):
 
 def _get_text(path):
     """GET a text endpoint (e.g. /metrics) and return the raw string."""
+    if _transport is not None:
+        return _via_transport(path)
     url = base_url() + path
-    req = urllib.request.Request(url, headers={"User-Agent": "homelab-monitor-mcp"})
+    req = urllib.request.Request(url, headers=dict({"User-Agent": "homelab-monitor-mcp"}, **_auth_headers()))
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             return resp.read().decode("utf-8", "replace")
@@ -102,11 +140,14 @@ def _host_summary(host):
         "cpu_temp_c": host.get("ctemp"),
         "uptime_sec": host.get("uptime"),
     }
-    # Fullest disk only, so the roster stays one line per host.
+    # The fullest disk, plus every filesystem the probe reports (it keeps at
+    # most six, fullest first), so one roster call answers "how are my disks".
     disks = host.get("disks") or []
     if disks:
         fullest = max(disks, key=lambda d: d.get("pct") or 0)
         out["fullest_disk"] = {"mount": fullest.get("mount"), "pct": fullest.get("pct")}
+        out["disks"] = [{"mount": d.get("mount"), "pct": d.get("pct"), "used_gb": d.get("used"),
+                         "total_gb": d.get("total")} for d in disks]
     # Surface an OS-upgrade hint when enrich_os_upgrade() attached one.
     if host.get("os_upgrade") or os_info.get("upgrade"):
         out["os_upgrade"] = host.get("os_upgrade") or os_info.get("upgrade")
@@ -117,11 +158,80 @@ def _host_summary(host):
 
 # ── tool implementations (each returns plain JSON-able data) ─────────────────
 
+def _containers(docker):
+    """Container counts for one host: how many, how many run, which don't (or are unhealthy)."""
+    if not docker:
+        return None
+    cs = docker.get("containers") or []
+    if docker.get("available") is False and not cs:
+        return {"available": False}
+    bad = [c.get("name") for c in cs
+           if (c.get("state") and c.get("state") != "running") or c.get("health") == "unhealthy"
+           or c.get("status") == "bad"]
+    return {"total": len(cs), "running": sum(1 for c in cs if c.get("state") == "running"),
+            "not_running_or_unhealthy": bad[:10]}
+
+
+def _try_get(path):
+    try:
+        return _get(path)
+    except MonitorError:
+        return {}
+
+
+def _attention(rows, health, data):
+    """What the dashboard's Overview event feed shows right now, as data: the
+    same rules (hosts offline, a disk at 90 % or more, GPU telemetry lost, GPU
+    too hot, hub containers not running or unhealthy, pending updates) plus the
+    monitor's own insights (memory, disk I/O, uptime checks down or slow)."""
+    out = []
+    off = [r.get("name") for r in rows if not r.get("is_local") and not r.get("online")]
+    if off:
+        out.append({"level": "critical", "title": "%d host(s) offline" % len(off), "detail": ", ".join(off)})
+    for r in rows:
+        for d in ((r.get("host") or {}).get("disks") or []):
+            if (d.get("pct") or 0) >= 90:
+                out.append({"level": "warning", "title": "%s disk %s at %s%%" % (r.get("name"), d.get("mount"), d.get("pct")),
+                            "detail": "Worth a clean-up before writes start failing."})
+                break
+        tele = r.get("gpu_telemetry") or {}
+        if tele.get("ok") is False:
+            out.append({"level": "critical", "title": "GPU telemetry lost on %s" % r.get("name"),
+                        "detail": tele.get("error") or "The host answers but reports no GPU."})
+    gpu = ((health.get("now") or {}).get("gpu") or {})
+    if (gpu.get("temp") or 0) >= 84:
+        out.append({"level": "critical", "title": "GPU running hot (%s °C)" % gpu.get("temp"), "detail": "Check cooling."})
+    hub = _containers(health.get("docker")) or {}
+    if hub.get("not_running_or_unhealthy"):
+        out.append({"level": "warning", "title": "%d container(s) need attention" % len(hub["not_running_or_unhealthy"]),
+                    "detail": ", ".join(hub["not_running_or_unhealthy"][:3])})
+    upd = sum((((r.get("host") or {}).get("sec") or {}).get("updates") or {}).get("count") or 0 for r in rows)
+    if upd:
+        out.append({"level": "info", "title": "%d package updates pending" % upd, "detail": "Across the fleet."})
+    seen = {a["title"] for a in out}
+    for i in data.get("insights") or []:
+        if isinstance(i, str):
+            i = {"level": "info", "title": i, "detail": ""}
+        if isinstance(i, dict) and i.get("title") not in seen:
+            out.append({"level": i.get("level"), "title": i.get("title"), "detail": i.get("detail")})
+            seen.add(i.get("title"))
+    return out
+
+
 def list_hosts():
-    """Fleet roster + headline vitals for every registered host (local hub first)."""
+    """Fleet roster + headline vitals for every registered host (local hub first),
+    with each host's container counts and the Overview's active events."""
     data = _get("/api/fleet")
+    health = _try_get("/api/health")
+    rows = data.get("hosts", [])
     hosts = []
-    for row in data.get("hosts", []):
+    for row in rows:
+        vitals = _host_summary(row.get("host"))
+        docker = health.get("docker") if row.get("is_local") else (row.get("host") or {}).get("docker")
+        cont = _containers(docker)
+        if vitals is not None and cont is not None:
+            vitals["containers"] = cont
+        tele = row.get("gpu_telemetry") or {}
         hosts.append({
             "name": row.get("name"),
             "label": row.get("label"),
@@ -130,10 +240,13 @@ def list_hosts():
             "ssh_target": row.get("ssh_target"),
             "last_seen_ts": row.get("at"),
             "overall": ((row.get("last_check") or {}).get("summary") or {}).get("overall"),
-            "vitals": _host_summary(row.get("host")),
+            "vitals": vitals,
+            "gpu_telemetry_lost": (tele.get("error") or True) if tele.get("ok") is False else None,
             "error": row.get("error"),
         })
-    return {"count": len(hosts), "sample_interval_sec": data.get("interval"), "hosts": hosts}
+    attention = _attention(rows, health, _try_get("/api/data?range=1h"))
+    return {"count": len(hosts), "sample_interval_sec": data.get("interval"), "hosts": hosts,
+            "attention": attention, "attention_count": len(attention)}
 
 
 def get_host(name):
