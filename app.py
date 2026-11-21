@@ -55,7 +55,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.38.1"
+VERSION      = "0.39.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS gpu_samples_1h(
 CREATE INDEX IF NOT EXISTS idx_gpu_1h_host_ts ON gpu_samples_1h(host, ts);
 CREATE TABLE IF NOT EXISTS net_samples(ts INTEGER, iface TEXT, bytes_in INTEGER, bytes_out INTEGER);
 CREATE TABLE IF NOT EXISTS proc(ts INTEGER, service TEXT, mem REAL);
-CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL, ram REAL);
+CREATE TABLE IF NOT EXISTS models(ts INTEGER, service TEXT, model TEXT, vram REAL, ram REAL, interval_sec INTEGER);
 CREATE INDEX IF NOT EXISTS idx_models_ts ON models(ts);
 CREATE TABLE IF NOT EXISTS edges(ts INTEGER, caller TEXT, server TEXT, conns INTEGER);
 CREATE INDEX IF NOT EXISTS idx_edges_ts ON edges(ts);
@@ -382,7 +382,10 @@ _UPTIME_MIGRATIONS = ("cert_days_remaining INTEGER", "cert_expires_at INTEGER")
 # Per-check opt-in to the public status page (off by default).
 _UPTIME_CHECK_MIGRATIONS = ("public INTEGER NOT NULL DEFAULT 0",)
 # RAM-spill split for loaded models (ollama size - size_vram). NULL = unknown (non-ollama).
-_MODELS_MIGRATIONS = ("ram REAL",)
+# `interval_sec` is the sampling interval this row actually covers, so a leaderboard
+# can sum real residency instead of assuming every sample spans the current interval
+# (rows predating the column stay NULL and fall back to the caller's interval).
+_MODELS_MIGRATIONS = ("ram REAL", "interval_sec INTEGER")
 # Per-card GPU history for every host (the GPU cockpit). `host` turns what was a
 # hub-only table into a fleet-wide one; existing rows are the hub's, so they
 # default to 'local' and stay valid. The rest is the telemetry the cockpit charts:
@@ -6608,23 +6611,28 @@ def _run_cost_window(cur, started, ended, ctx):
 # a small /api/ps (resident) + /api/tags (on-disk) poller, cached briefly so a
 # chatty UI can't hammer ollama. No generation, no GPU spin, no secret leak.
 COPILOT_OLLAMA_URL = os.environ.get("COPILOT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+# Whether the operator set COPILOT_OLLAMA_URL themselves. When they didn't, the
+# Benchmark Lab follows a registered ollama (Settings → AI servers) instead of
+# the localhost default — see backend/api/benchmarks.py::_default_endpoint (#350).
+COPILOT_OLLAMA_URL_SET = bool(os.environ.get("COPILOT_OLLAMA_URL", "").strip())
 COPILOT_ENABLED    = os.environ.get("COPILOT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 _REGISTRY_LOCK = threading.Lock()
 _REGISTRY_CACHE = None            # {"ts": int, "models": [...], "reachable": bool}
 _REGISTRY_TTL = float(os.environ.get("COPILOT_REGISTRY_TTL", "45"))  # seconds
 
 
-def _llm_resident_models():
+def _llm_resident_models(base=None):
     """Poll ollama GET /api/ps for currently-LOADED models. Read-only, short
     timeout, stdlib only. Returns (list, reachable). Each entry:
     {name, size_mb, vram_mb, gpu_fraction, keep_alive_sec}. gpu_fraction is the
     share of the model resident in VRAM (size_vram/size) — surfaces GPU vs CPU
     offload. keep_alive_sec is seconds until expires_at (keep-alive countdown).
+    `base` overrides COPILOT_OLLAMA_URL (the Benchmark Lab's resolved endpoint).
 
     MUST be called OUTSIDE any held LOCK (it does network I/O)."""
     if not COPILOT_ENABLED:
         return [], False
-    url = COPILOT_OLLAMA_URL + "/api/ps"
+    url = (base or COPILOT_OLLAMA_URL).rstrip("/") + "/api/ps"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
@@ -6718,13 +6726,14 @@ def _registry_totals(models):
     }
 
 
-def _fetch_model_registry():
+def _fetch_model_registry(base=None):
     """Poll ollama GET /api/tags for the on-disk catalogue, cross-referenced with
     the resident set. Returns (models, reachable). Read-only, short timeout,
-    stdlib only. MUST be called OUTSIDE any held LOCK (network I/O)."""
+    stdlib only. `base` overrides COPILOT_OLLAMA_URL. MUST be called OUTSIDE any
+    held LOCK (network I/O)."""
     if not COPILOT_ENABLED:
         return [], False
-    url = COPILOT_OLLAMA_URL + "/api/tags"
+    url = (base or COPILOT_OLLAMA_URL).rstrip("/") + "/api/tags"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=4) as r:
@@ -6733,7 +6742,7 @@ def _fetch_model_registry():
         return [], False
     # Resident cross-ref is best-effort: if /api/ps fails we still return the
     # on-disk list (just without loaded flags), never an error.
-    resident, _ = _llm_resident_models()
+    resident, _ = _llm_resident_models(base)
     return _parse_model_registry(tags, resident), True
 
 

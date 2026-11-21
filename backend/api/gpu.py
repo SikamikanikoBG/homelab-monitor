@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify, Response, send_file, send_from_di
 import time
 
 from backend.db.repos import samples as samples_repo
+from backend.db.repos import system as system_repo
 
 bp = Blueprint('gpu', __name__)
 
@@ -84,6 +85,47 @@ def api_models():
         "totals": _app._registry_totals(models),
         "providers": sorted({m["provider"] for m in models}),
     })
+
+
+@bp.route("/api/models/hof")
+def api_models_hof():
+    import app as _app
+    """The AI Models Hall of Fame: every model that has held the GPU over the
+    selected range, ranked by how long it stayed resident (Steam most-played for
+    local LLMs). Reads the hub-local `models` table — it has no host column, so
+    this is the hub's own residency history, not the fleet's. `range=all` starts
+    at the earliest models row (retention may already have pruned older history).
+    Always 200, empty list rather than an error.
+
+    loaded_for_sec sums the per-row `interval_sec` the collector stored (rows
+    predating that column fall back to SAMPLE_INTERVAL — see
+    system_repo.query_model_hof). share_pct is the share of the summed loaded
+    time and may add up past 100%: several models can sit in VRAM at once.
+    total_loaded_sec covers every model; shown_loaded_sec only the returned top
+    20, which is what the list is capped to."""
+    rng = request.args.get("range", "30d")
+    if rng not in _app.RANGES:
+        rng = "30d"                 # unknown range: echo the key actually used
+    span = _app.RANGES[rng]
+    now = int(time.time())
+    with _app.LOCK:
+        since = (system_repo.min_ts_models(conn=_app.DB) or now) if span is None else now - span
+        rows = system_repo.query_model_hof(since, _app.INTERVAL, conn=_app.DB)
+    models = [{"model": m, "server": s,
+               "loaded_for_sec": int(sec or 0),
+               "peak_vram_mb": round(pk or 0),
+               "avg_vram_mb": round(av or 0),
+               "first_seen": int(f or 0), "last_seen": int(l or 0)}
+              for s, m, sec, pk, av, f, l in rows]
+    total = sum(x["loaded_for_sec"] for x in models)
+    for x in models:
+        x["share_pct"] = round(100.0 * x["loaded_for_sec"] / total, 1) if total else 0.0
+    shown = models[:20]
+    # model_count is the *untruncated* total so the caption can say "N of M"
+    # instead of pairing a capped list length with an all-models duration.
+    return jsonify({"range": rng, "total_loaded_sec": total,
+                    "shown_loaded_sec": sum(x["loaded_for_sec"] for x in shown),
+                    "model_count": len(models), "models": shown})
 
 
 @bp.route("/api/ai/now")

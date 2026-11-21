@@ -187,6 +187,29 @@ class TestOpenAICompat(StubCase):
         self.assertEqual(ms[0].id, "stub-agent")
         self.assertEqual(ms[0].context_window, 32768)
 
+    def test_list_models_reads_llamacpp_meta_n_ctx(self):
+        # llama.cpp / llama-server reports its runtime context under the
+        # non-standard nested field meta.n_ctx and none of the standard keys.
+        rows = {"data": [{"id": "llm-fast", "meta": {"n_ctx": 65536, "size": 123}}]}
+        with patch.object(http, "get_json", return_value=rows):
+            ms = self.ad().list_models()
+        self.assertEqual(ms[0].context_window, 65536)
+
+    def test_list_models_context_field_precedence(self):
+        # Standard fields win over meta.n_ctx; meta.n_ctx is the last fallback;
+        # a non-dict meta must not crash and yields None when nothing matches.
+        rows = {"data": [
+            {"id": "a", "max_model_len": 32768, "meta": {"n_ctx": 65536}},
+            {"id": "b", "context_length": 8192, "meta": {"n_ctx": 65536}},
+            {"id": "c", "context_window": 4096, "meta": {"n_ctx": 65536}},
+            {"id": "d", "meta": {"n_ctx": 16384}},
+            {"id": "e", "meta": "not-a-dict"},
+        ]}
+        with patch.object(http, "get_json", return_value=rows):
+            ms = self.ad().list_models()
+        self.assertEqual([(m.id, m.context_window) for m in ms],
+                         [("a", 32768), ("b", 8192), ("c", 4096), ("d", 16384), ("e", None)])
+
     def test_context_400_shrink(self):
         msg = ("This model's maximum context length is 32768 tokens. However, you requested 16384 output tokens "
                "and your prompt contains at least 20000 input tokens")
