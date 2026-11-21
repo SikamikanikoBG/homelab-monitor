@@ -82,10 +82,11 @@ jobs:
           # which has no scripts/ — read the renderer from the commit this run
           # was triggered on instead.
           git show "${{ github.sha }}:scripts/stats_chart.py" > "$RUNNER_TEMP/stats_chart.py"
-          # The runner has no matplotlib (it is not in requirements.txt); install it
-          # for this step only. --user keeps it out of the system site-packages.
-          python3 -m pip install --quiet --user matplotlib
-          python3 "$RUNNER_TEMP/stats_chart.py" \
+          # The runner has no matplotlib (it is not in requirements.txt), and the
+          # system Python refuses pip installs (PEP 668), so use a throwaway venv.
+          python3 -m venv "$RUNNER_TEMP/chartenv"
+          "$RUNNER_TEMP/chartenv/bin/pip" install --quiet matplotlib
+          "$RUNNER_TEMP/chartenv/bin/python" "$RUNNER_TEMP/stats_chart.py" \
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --out usage.svg \
