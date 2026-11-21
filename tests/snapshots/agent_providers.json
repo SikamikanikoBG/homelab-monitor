@@ -1,0 +1,24 @@
+{
+  "body": {
+    "providers": [
+      {
+        "adapter": "openai_compat",
+        "base_url": "http://model:8000/v1",
+        "enabled": true,
+        "experimental": false,
+        "extra": {},
+        "id": "id0001",
+        "key_last4": "0001",
+        "key_ref": null,
+        "key_set": true,
+        "label": "model box",
+        "last_test": null,
+        "last_test_at": null,
+        "local": true,
+        "preset": "openai_compatible",
+        "source": "manual"
+      }
+    ]
+  },
+  "status": 200
+}

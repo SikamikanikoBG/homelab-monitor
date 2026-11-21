@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<title>Agent chat</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0d1117}
+a{color:#58a6ff;text-decoration:none}a:hover{color:#79b8ff}
+textarea::placeholder{color:#6e7681}
+</style>
+</helmet>
+<div style="display:flex;flex-wrap:wrap;min-height:1000px;background:#0d1117;color:#e6edf3;font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+
+  <nav aria-label="Main" style="flex:1 1 212px;max-width:212px;background:#0b0f15;border-right:1px solid #30363d;padding:18px 14px;display:flex;flex-direction:column;gap:4px;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 4px 18px;font-weight:600;font-size:15px">
+      <span style="width:22px;height:22px;border-radius:50%;background:#d29922;display:inline-block"></span>HomeLab Monitor
+    </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e;padding:8px 6px 6px">MONITORING</div>
+    <a href="Main.dc.html" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">Overview</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">GPU</a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">Containers</a>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#8b949e;padding:16px 6px 6px">AI</div>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:#1c232e;color:#e6edf3;font-size:14px;font-weight:600">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d29922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+      Agent
+      <span style="margin-left:auto;background:#d29922;color:#1a1100;font-size:11px;font-weight:700;border-radius:10px;padding:0 7px">1</span>
+    </a>
+    <a href="#" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#8b949e;font-size:14px">AI Models</a>
+  </nav>
+
+  <div style="flex:999 1 560px;min-width:0;display:flex;flex-direction:column">
+    <header style="display:flex;align-items:center;gap:22px;padding:16px 28px;border-bottom:1px solid #30363d;flex-wrap:wrap">
+      <h1 style="margin:0;font-size:18px;font-weight:600">Agent</h1>
+      <div role="tablist" style="display:flex;gap:4px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:3px">
+        <button type="button" role="tab" aria-selected="true" style="border:0;background:#30363d;color:#e6edf3;border-radius:7px;padding:6px 14px;font-size:13px;font-weight:600">Chat</button>
+        <button type="button" role="tab" style="border:0;background:transparent;color:#8b949e;border-radius:7px;padding:6px 14px;font-size:13px">Routines</button>
+        <button type="button" role="tab" style="border:0;background:transparent;color:#8b949e;border-radius:7px;padding:6px 14px;font-size:13px">Approvals <span style="background:#d29922;color:#1a1100;border-radius:8px;padding:0 6px;font-size:11px;font-weight:700">1</span></button>
+        <button type="button" role="tab" style="border:0;background:transparent;color:#8b949e;border-radius:7px;padding:6px 14px;font-size:13px">Activity</button>
+        <button type="button" role="tab" style="border:0;background:transparent;color:#8b949e;border-radius:7px;padding:6px 14px;font-size:13px">Settings</button>
+      </div>
+      <span style="margin-left:auto;font-size:12px;color:#8b949e">Ask me first · on 4 machines</span>
+    </header>
+
+    <div style="flex:1;display:flex;flex-wrap:wrap;min-height:0">
+      <aside aria-label="Conversations" style="flex:1 1 250px;max-width:270px;border-right:1px solid #30363d;padding:16px 12px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box">
+        <button type="button" style="display:flex;align-items:center;justify-content:center;gap:8px;height:38px;border:1px solid #30363d;background:transparent;color:#e6edf3;border-radius:9px;font-size:14px;margin-bottom:12px;cursor:pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>New chat
+        </button>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#6e7681;padding:6px 10px">TODAY</div>
+        <a href="#" style="display:block;padding:8px 10px;border-radius:8px;background:#1c232e;color:#e6edf3;font-size:14px">Disk space across the fleet</a>
+        <a href="#" style="display:block;padding:8px 10px;border-radius:8px;color:#c9d1d9;font-size:14px">What is using the GPU</a>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#6e7681;padding:14px 10px 6px">YESTERDAY</div>
+        <a href="#" style="display:block;padding:8px 10px;border-radius:8px;color:#c9d1d9;font-size:14px">Why is vader slow</a>
+        <a href="#" style="display:block;padding:8px 10px;border-radius:8px;color:#c9d1d9;font-size:14px">Morning health check</a>
+      </aside>
+
+      <main style="flex:999 1 480px;min-width:0;display:flex;flex-direction:column">
+        <div style="flex:1;padding:28px 32px;display:flex;flex-direction:column;gap:22px;max-width:860px;width:100%;box-sizing:border-box;margin:0 auto">
+
+          <div style="align-self:flex-end;background:#1c232e;border-radius:14px 14px 4px 14px;padding:10px 15px;max-width:75%">Как са дисковете във флийта ми?</div>
+
+          <article style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#8b949e">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d29922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+              <button type="button" style="border:0;background:transparent;color:#8b949e;font-size:12px;padding:0;cursor:pointer">Checked 4 machines · 1 look-up · 6 s ›</button>
+            </div>
+            <p style="margin:0;line-height:1.6">Всичко е наред, нищо не е близо до пълно. Най-заетият е <b>vader /</b> на 67%. Следи <b>ardi /data</b>: на 72% е и расте с около 1 GB на ден.</p>
+            <div style="border:1px solid #30363d;border-radius:10px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;font-size:12px;color:#8b949e;background:#161b22;padding:8px 14px"><span>Машина</span><span>Диск</span><span>Заето</span><span>Свободно</span></div>
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:center;padding:9px 14px;border-top:1px solid #21262d;font-size:14px"><span>ardi</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:13px">/data</span><span style="display:flex;align-items:center;gap:8px"><span style="flex:1;max-width:90px;height:6px;border-radius:3px;background:#21262d;overflow:hidden"><span style="display:block;width:72%;height:6px;background:#d29922"></span></span>72%</span><span>123 GB</span></div>
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:center;padding:9px 14px;border-top:1px solid #21262d;font-size:14px"><span>vader</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:13px">/</span><span style="display:flex;align-items:center;gap:8px"><span style="flex:1;max-width:90px;height:6px;border-radius:3px;background:#21262d;overflow:hidden"><span style="display:block;width:67%;height:6px;background:#3fb950"></span></span>67%</span><span>291 GB</span></div>
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:center;padding:9px 14px;border-top:1px solid #21262d;font-size:14px"><span>Workoholik</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:13px">C:</span><span style="display:flex;align-items:center;gap:8px"><span style="flex:1;max-width:90px;height:6px;border-radius:3px;background:#21262d;overflow:hidden"><span style="display:block;width:48%;height:6px;background:#3fb950"></span></span>48%</span><span>496 GB</span></div>
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:center;padding:9px 14px;border-top:1px solid #21262d;font-size:14px;color:#8b949e"><span>cloudy, oldie</span><span>—</span><span>офлайн от вчера</span><span>—</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:12px;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:2px 8px">No actions proposed</span>
+              <span style="flex:1"></span>
+              <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:16px;padding:5px 12px;font-size:13px;cursor:pointer">Какво пълни ardi /data?</button>
+              <button type="button" style="border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:16px;padding:5px 12px;font-size:13px;cursor:pointer">Какво мога да изчистя?</button>
+            </div>
+          </article>
+
+          <div style="align-self:flex-end;background:#1c232e;border-radius:14px 14px 4px 14px;padding:10px 15px;max-width:75%">Какво мога да изчистя?</div>
+
+          <article style="display:flex;flex-direction:column;gap:12px">
+            <div style="font-size:12px;color:#8b949e">Checked 2 machines · 2 look-ups · 9 s ›</div>
+            <p style="margin:0;line-height:1.6">На vader има <b>39.6 GB</b> неизползвани Docker образи. Мога да ги изтрия. Томовете (volumes) не пипам.</p>
+            <div role="group" aria-label="Approval needed" style="border:1px solid #d29922;background:#d2992212;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <div style="flex:1;min-width:220px">
+                <div style="font-weight:600">Remove unused Docker images on vader</div>
+                <div style="font-size:13px;color:#8b949e">Frees about 39.6 GB · low risk · images in use are kept</div>
+              </div>
+              <button type="button" style="height:40px;padding:0 18px;border:1px solid #30363d;background:transparent;color:#c9d1d9;border-radius:9px;font-size:14px;cursor:pointer">Not now</button>
+              <button type="button" style="height:40px;padding:0 20px;border:0;background:#d29922;color:#1a1100;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer">Approve</button>
+            </div>
+            <span style="font-size:12px;color:#8b949e">1 action waiting for your approval</span>
+          </article>
+        </div>
+
+        <div style="border-top:1px solid #30363d;padding:16px 32px 20px">
+          <div style="max-width:796px;margin:0 auto;border:1px solid #30363d;border-radius:12px;background:#161b22;padding:10px 12px;display:flex;flex-direction:column;gap:8px">
+            <label for="msg" style="position:absolute;left:-9999px">Message</label>
+            <textarea id="msg" rows="2" placeholder="Ask about your lab…" style="border:0;background:transparent;color:#e6edf3;font:inherit;resize:none;outline:none"></textarea>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button type="button" style="border:1px solid #30363d;background:transparent;color:#8b949e;border-radius:7px;padding:3px 10px;font-size:12px;cursor:pointer">qwen3.8-27b · vader</button>
+              <span style="flex:1"></span>
+              <button type="button" style="height:36px;padding:0 18px;border:0;background:#d29922;color:#1a1100;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer">Send</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

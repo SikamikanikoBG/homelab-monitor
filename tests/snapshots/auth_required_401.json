@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "auth_required",
+    "message": "Please log in to the dashboard.",
+    "ok": false
+  },
+  "status": 401
+}
