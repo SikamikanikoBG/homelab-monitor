@@ -7,6 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.1) — 2026-11-22 · **The GPU and AI Models tabs stay put**
 **Fixed**
 - **The GPU and AI Models tabs vanished a few seconds after load** ([#369](https://github.com/SikamikanikoBG/homelab-monitor/issues/369), thanks @dziban303 for the report). The sidebar hid both whenever the hub itself had no GPU, so a hub with only an integrated GPU lost them even with a graphics card on another host and AI servers registered. The GPU tab now stays when any host in the fleet has a GPU, and AI Models stays when the hub knows any model, GPU or not. A lab with neither still hides both.
 
