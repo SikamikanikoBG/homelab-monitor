@@ -3934,6 +3934,7 @@ async function loadHealth(){
 function renderData(){
   if(!D || !D.now) return;   // a degraded/malformed /api/data (no `now`) must not crash the page
   setVer(D.version);
+  applyGpuNavTabs();   // AI Models stays visible once the hub knows a model (#369)
 
   // insights & at-a-glance cards used to live on the old Overview; that tab is
   // now the fleet table. The IDs may no longer exist on the page — guard the
@@ -5815,6 +5816,34 @@ function renderDiskIo(){
   if(TAB==='diskio') pulseIfChanged('diskio', dio);
 }
 
+// Which of the GPU / AI Models nav tabs a box should show. They are hidden
+// only on a lab that has nothing for them, so a GPU-less setup doesn't show
+// empty "0% VRAM" panels. Hiding on the hub's own GPU alone was wrong (#369):
+// the GPU tab is per-host, so a GPU on any fleet host counts, and AI Models
+// also lists servers that need no local GPU (LM Studio on another box, a
+// custom server), so any model the hub knows of keeps it. A hub whose GPU
+// tool just broke is NOT a GPU-less box: hiding the tab then would bury the
+// one screen that says so — exactly how a driver auto-update made a working
+// 3-card box read as "no GPU" for a day. A payload that hasn't arrived yet
+// never hides anything: the tabs would flash off and back on.
+function navGpuTabs(hh, fleet, d){
+  if(!hh || !hh.now || !fleet || !d || !d.now) return {gpu:true, models:true};
+  const g = hh.now.gpu;
+  const hubGpu = !!(g && (g.available || teleLost({gpu_telemetry:g.telemetry})));
+  const fleetGpu = (fleet.hosts||[]).some(h => (h.gpus||[]).length > 0 || teleLost(h));
+  const gpu = hubGpu || fleetGpu;
+  const anyModel = (d.now.models||[]).length > 0 || (d.model_summary||[]).length > 0;
+  return {gpu, models: gpu || anyModel};
+}
+function applyGpuNavTabs(){
+  const show = navGpuTabs(HH, FLEET, D);
+  ['gpu','models'].forEach(id=>document.querySelectorAll(`[data-t="${id}"]`)
+    .forEach(el=>{ el.style.display = show[id] ? '' : 'none'; }));
+  // If we landed on a hidden tab (persisted hl_tab / #gpu), its nav button is
+  // gone but the section still shows zeroed panels — go to the Overview so the
+  // user isn't stranded on a dead tab.
+  if((TAB==='gpu' || TAB==='models') && !show[TAB]) showTab('overview');
+}
 function renderHealth(){
   if(!HH) return;
   setVer(HH.version);
@@ -5893,18 +5922,7 @@ function renderHealth(){
     }
   }
 
-  // Hide GPU-specific tabs when the hub has no GPU, so a GPU-less box doesn't show
-  // empty "0% VRAM" panels. (GPU is hub-local; remotes keep their own scope.)
-  // A hub whose GPU tool just broke is NOT a GPU-less box: hiding the tab
-  // then would bury the one screen that says so — exactly how a driver
-  // auto-update made a working 3-card box read as "no GPU" for a day.
-  const gpuPresent = !!(HH.now && HH.now.gpu && (HH.now.gpu.available || teleLost({gpu_telemetry:HH.now.gpu.telemetry})));
-  ['gpu','models'].forEach(id=>document.querySelectorAll(`[data-t="${id}"]`)
-    .forEach(el=>{ el.style.display = gpuPresent ? '' : 'none'; }));
-  // If we landed on a GPU-only tab (persisted hl_tab / #gpu) on a GPU-less host,
-  // its nav button is now hidden but the section still shows zeroed panels —
-  // redirect to Overview so the user isn't stranded on a dead tab.
-  if(!gpuPresent && (TAB==='gpu' || TAB==='models')) showTab('overview');
+  applyGpuNavTabs();
 
   // Overview status cards used to live here too — same guard as #insights.
   const ovEl = document.getElementById('ovcards');
