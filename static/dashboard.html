@@ -7745,6 +7745,7 @@ async function loadFleet(){
 function applyFleet(j){
   if(!j || !j.hosts) return;
   FLEET = j;
+  applyGpuNavTabs();   // a GPU on a fleet host keeps the GPU tab (#369)
   renderHostBar();
   loadAiFleetHosts();   // the "Runs on" picker mirrors the pill bar
   if(TAB==='overview'){ renderFleet(); renderMissionControl(); }
