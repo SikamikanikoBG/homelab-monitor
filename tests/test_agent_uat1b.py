@@ -109,8 +109,10 @@ if __name__ == "__main__":
 class CustomServerPlaceCase(LoopCase):
     def test_the_collector_files_a_custom_server_under_the_host_that_owns_its_address(self):
         from backend import collectors
-        hosts = [{"name": "vader", "ssh_target": "arsen@10.0.0.9:22"}, {"name": "nas", "ssh_target": "nas.lan"}]
+        hosts = [{"name": "vader", "ssh_target": "arsen@10.0.0.9:22"}, {"name": "nas", "ssh_target": "nas.lan"},
+                 {"name": "win", "ssh_target": "user@domain.com@winbox:2222"}]
         self.assertEqual(collectors._host_by_address("10.0.0.9", hosts), "vader")
+        self.assertEqual(collectors._host_by_address("winbox", hosts), "win")   # "@" in the login (#374)
         self.assertEqual(collectors._host_by_address("nas.lan", hosts), "nas")
         self.assertIsNone(collectors._host_by_address("100.76.27.18", hosts))
         self.assertEqual(collectors._resolve_fleet_host(collectors._host_by_address("10.0.0.9", hosts),

@@ -51,7 +51,7 @@ def api_hosts_one(name):
     # and a combined request must not commit the rename only to 400 on the
     # target — a non-ok PATCH has to mean "nothing changed".
     if ssh_target is not None and _app._parse_ssh_target(ssh_target) is None:
-        return jsonify({"ok": False, "error": "SSH target must look like user@host or user@host:port."}), 400
+        return jsonify({"ok": False, "error": _app.SSH_TARGET_ERROR}), 400
     host = None
     if new_name and new_name != name:
         host, err = _rolled_back_on_error(_app.rename_host, name, new_name)

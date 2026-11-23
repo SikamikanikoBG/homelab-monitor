@@ -112,7 +112,7 @@ def execute(run_id, host, action_id, params, *, attended, run_mode="act", task_a
                 user = None
                 for h in ports.registered_hosts():
                     if h["name"] == host:
-                        user = (h.get("ssh_target") or "").split("@")[0] or None
+                        user = (h.get("ssh_target") or "").rpartition("@")[0] or None
                 pre = ("%s needs passwordless sudo for exactly this command. Add this line with `visudo -f "
                        "/etc/sudoers.d/homelab-agent` on %s: %s" % (host, host, catalog.sudoers_line(a, user, params)))
         if pre:

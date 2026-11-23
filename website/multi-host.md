@@ -32,7 +32,8 @@ You'll see two main panels:
 
 Click **🔍 Scan LAN** to get suggestions from the kernel's ARP cache and a
 quick TCP-22 sweep across your local subnets. Click **Use →** to prefill the
-form, or just type `user@host[:port]` yourself.
+form, or just type `user@host[:port]` yourself. A login that contains an `@`
+works too (`user@domain.com@host`).
 
 ### 3. Hit **Add host**, then **Test**
 
