@@ -6,6 +6,8 @@ project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
 ## [Unreleased] — `next`
+**Fixed**
+- **A host whose SSH login contains an `@` can be added** ([#374](https://github.com/SikamikanikoBG/homelab-monitor/issues/374), thanks @dziban303 for the report). `user@domain.com@host` was refused with "must look like user@host". The target now splits on the last `@`, as OpenSSH does, and so do the AI-server host matching and the agent's sudoers hint.
 
 ## [0.39.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.1) — 2026-11-22 · **The GPU and AI Models tabs stay put**
 **Fixed**

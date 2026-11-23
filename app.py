@@ -3536,7 +3536,12 @@ def health_scan():
 # can fix it on the remote.
 
 _HOST_NAME_RE  = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$", re.I)
-_SSH_TARGET_RE = re.compile(r"^(?P<user>[a-z0-9_.-]+)@(?P<host>[a-z0-9._-]+)(?::(?P<port>\d{1,5}))?$", re.I)
+# Like OpenSSH, split on the LAST "@": the login itself may contain one
+# (user@domain.com@host, #374). Keep the charset shell-safe — the user part is
+# shown in copy-paste remedies.
+_SSH_TARGET_RE = re.compile(r"^(?P<user>[a-z0-9_.-]+(?:@[a-z0-9_.-]+)*)@(?P<host>[a-z0-9._-]+)(?::(?P<port>\d{1,5}))?$", re.I)
+SSH_TARGET_ERROR = ("SSH target must look like user@host or user@host:port "
+                    "(the user may contain '@', e.g. user@domain.com@host).")
 
 def _ensure_ssh_keypair():
     """Generate hub ed25519 keypair on first boot; idempotent across restarts."""
@@ -3606,7 +3611,7 @@ def add_host(name, ssh_target, tags=""):
     if not _HOST_NAME_RE.match(name or ""):
         return None, "Name must be 1–31 chars: letters, digits, '_' or '-', starting with a letter or digit."
     if _parse_ssh_target(ssh_target) is None:
-        return None, "SSH target must look like user@host or user@host:port."
+        return None, SSH_TARGET_ERROR
     with LOCK:
         try:
             _hosts_repo.insert(name, ssh_target.strip(), (tags or "").strip(), int(time.time()), conn=DB)
@@ -3670,7 +3675,7 @@ def update_host(name, ssh_target=None, tags=None):
     fields, params = [], []
     if ssh_target is not None:
         if _parse_ssh_target(ssh_target) is None:
-            return None, "SSH target must look like user@host or user@host:port."
+            return None, SSH_TARGET_ERROR
         fields.append("ssh_target=?"); params.append(ssh_target.strip())
     if tags is not None:
         fields.append("tags=?"); params.append((tags or "").strip())
