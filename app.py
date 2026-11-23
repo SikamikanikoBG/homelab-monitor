@@ -5943,6 +5943,48 @@ def _amd_hwmon_has(dev, fname):
         pass
     return False
 
+def _amd_dpm_levels(dev, fname):
+    """(current_mhz, max_mhz) from a pp_dpm_* table, or None when the table is
+    absent, has no starred row, or lists no clocks."""
+    cur, top = None, None
+    try:
+        with open(os.path.join(dev, fname)) as f:
+            for line in f:
+                m = re.search(r":\s*(\d+)\s*[Mm][Hh]z(\s*\*)?", line)
+                if m:
+                    mhz = int(m.group(1))
+                    top = mhz if top is None else max(top, mhz)
+                    if m.group(2):
+                        cur = mhz
+    except OSError:
+        return None
+    return (cur, top) if cur is not None and top else None
+
+def _amd_throttle(g, dev):
+    """Derive an NVIDIA-style throttle mask for an AMD card from sysfs, or None when
+    the driver gives us nothing to judge by (the caller then leaves the fields unset
+    instead of drawing a confident 0).
+
+    A card only counts as throttled while it is busy AND its sclk sits below the top
+    DPM level - an idle card parks at the lowest level by design. Given that:
+      * temp at/above hwmon temp1_crit  -> SW thermal (0x20), counted by _THERMAL_BITS
+      * power at/above ~98% of power1_cap -> Power cap (0x04), shown but, as on
+        NVIDIA, not counted as a fault (a deliberately lowered cap is normal)."""
+    lv = _amd_dpm_levels(dev, "pp_dpm_sclk")
+    crit = _amd_hwmon(dev, "temp1_crit")               # millidegrees C
+    cap = _amd_hwmon(dev, "power1_cap")                # microwatts
+    if lv is None or not (crit or cap):
+        return None
+    cur, top = lv
+    if g.get("util", 0) < 90 or cur >= top:
+        return 0
+    mask = 0
+    if crit and g.get("temp") and g["temp"] * 1000.0 >= crit:
+        mask |= 0x20
+    if cap and g.get("power") and g["power"] * 1e6 >= cap * 0.98:
+        mask |= 0x04
+    return mask
+
 def _amd_enrich_card(g, dev):
     """Best-effort AMD counterpart of _enrich_gpus: attach mem_util/clk_sm/clk_mem/
     power_limit/pstate/temp_mem to one card dict, from amdgpu sysfs instead of
@@ -5986,6 +6028,11 @@ def _amd_enrich_card(g, dev):
     tmem = _amd_hwmon_labeled(dev, "temp", "mem")      # millidegrees C
     if tmem:
         g["temp_mem"] = round(tmem / 1000.0, 1)
+    mask = _amd_throttle(g, dev)
+    if mask is not None:
+        g["throttle_mask"] = mask
+        g["throttle"] = [label for bit, label in _THROTTLE_BITS if mask & bit]
+        g["throttled"] = bool(g["throttle"])
 
 _DRM_UNITS = {"": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824, "TiB": 1099511627776}
 _DRM_MAJOR = 226        # /dev/dri/* — char-major-226, Documentation/admin-guide/devices.txt

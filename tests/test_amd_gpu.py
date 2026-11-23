@@ -249,6 +249,45 @@ class TestAmdEnrich(unittest.TestCase):
         self.assertEqual(g["power_limit"], 291.0)
         self.assertEqual(g["temp_mem"], 78.0)     # temp3 via its label, not its number
 
+    def _throttle_card(self, busy, sclk, temp_mc, crit_mc=95000, power_uw=100_000_000, cap_uw=None):
+        dev = _amd_card(self.drm, 0, total=24 * 1024**3, used=0, busy=busy,
+                        temp_mc=temp_mc, power_uw=power_uw)
+        _write(os.path.join(dev, "pp_dpm_sclk"), sclk)
+        if crit_mc is not None:
+            _write(os.path.join(dev, "hwmon", "hwmon3", "temp1_crit"), crit_mc)
+        if cap_uw is not None:
+            _write(os.path.join(dev, "hwmon", "hwmon3", "power1_cap"), cap_uw)
+        return dev
+
+    def test_hot_busy_card_below_top_clock_is_thermally_throttled(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 96000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertTrue(g["throttled"])
+        self.assertEqual(g["throttle"], ["SW thermal"])
+        self.assertTrue(g["throttle_mask"] & app._THERMAL_BITS)
+
+    def test_power_cap_is_reported_but_not_thermal(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 70000,
+                            power_uw=200_000_000, cap_uw=200_000_000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["Power cap"])
+        self.assertFalse(g["throttle_mask"] & app._THERMAL_BITS)
+
+    def test_idle_or_top_clock_card_is_not_throttled(self):
+        self._throttle_card(0, "0: 600Mhz *\n1: 2900Mhz\n", 96000)
+        self.assertEqual(app.amd_gpus(drm_root=self.drm)[0]["throttle_mask"], 0)
+        _write(os.path.join(self.drm, "card0", "device", "gpu_busy_percent"), 99)
+        _write(os.path.join(self.drm, "card0", "device", "pp_dpm_sclk"), "0: 600Mhz\n1: 2900Mhz *\n")
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle_mask"], 0)
+        self.assertFalse(g["throttled"])
+
+    def test_no_clock_table_omits_the_throttle_signal(self):
+        self._card()
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
     def test_perf_level_becomes_pstate(self):
         dev = self._card()
         _write(os.path.join(dev, "power_dpm_force_performance_level"), "auto\n")
