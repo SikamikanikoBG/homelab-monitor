@@ -18,6 +18,22 @@ def _http_json(ip, port, path, timeout=2):
         c.close()
     return json.loads(body) if status < 400 else None
 
+# Targets whose last probe failed. The sampler probes every few seconds, so a
+# down server must cost one log line when it goes down and one when it is back,
+# not one per attempt (#371).
+_PROBE_DOWN = set()
+
+def _log_probe_state(key, what, err):
+    """Log a probe failure only when the target's state changes. `err` is the
+    exception, or None when the probe worked."""
+    if err is None:
+        if key in _PROBE_DOWN:
+            _PROBE_DOWN.discard(key)
+            print(f"probes/{what}: answering again", flush=True)
+    elif key not in _PROBE_DOWN:
+        _PROBE_DOWN.add(key)
+        print(f"probes/{what} error: {err} (logged once until it answers again)", flush=True)
+
 def probe_ollama(ip, port=11434):
     """Ollama: models loaded *now* from /api/ps — live VRAM plus any spill into
     system RAM (`size` is the whole resident model, `size_vram` the GPU part; the
@@ -107,6 +123,7 @@ def probe_wyoming(ip):
     """Wyoming-protocol voice services (Home Assistant: wyoming-faster-whisper /
     -whisper ASR, -piper TTS, -openwakeword). Plain TCP + JSONL, not HTTP: send a
     `describe` event and read the `info` reply for the program/model names."""
+    last_err = None
     for port in (10300, 10200, 10400, 10500, 10700):
         try:
             with socket.create_connection((ip, port), timeout=2) as sk:
@@ -130,14 +147,17 @@ def probe_wyoming(ip):
                     rest += chunk
                 data = json.loads(rest[:need].decode("utf-8", "replace")) if need else {}
         except Exception as e:
-            print(f"probes/probe_wyoming error: {e}", flush=True)
+            last_err = e      # logged once below, if no port answers
             continue
         names = []
         for grp in ("asr", "tts", "wake", "handle", "intent"):
             for prog in (data.get(grp) or []):
                 got = [m.get("name") for m in (prog.get("models") or []) if m.get("name")]
                 names += got or ([prog["name"]] if prog.get("name") else [])
+        _log_probe_state(("wyoming", ip), f"probe_wyoming ({ip})", None)
         return [(n, None) for n in names] or [("Wyoming service", None)]
+    if last_err is not None:
+        _log_probe_state(("wyoming", ip), f"probe_wyoming ({ip})", last_err)
     return []
 
 def probe_comfy(ip):
@@ -261,10 +281,13 @@ def probe_models(ct):
     # Host-networked servers have no per-container IP; the hub shares the host net
     # namespace, so localhost reaches them on their published/default port.
     ip = ct.get("ip") or "127.0.0.1"
+    key, what = ("models", ct.get("name"), ip), f"probe_models ({ct.get('name')})"
     try:
-        return _normalize_model_rows(fn(ip), ct.get("name", ""))
+        rows = _normalize_model_rows(fn(ip), ct.get("name", ""))
+        _log_probe_state(key, what, None)
+        return rows
     except Exception as e:
-        print(f"probes/probe_models error: {e}", flush=True)
+        _log_probe_state(key, what, e)
         return []
 
 def _openai_models_at(ip, port):
@@ -309,11 +332,14 @@ def probe_custom_server(desc):
         port = 0
     if not ip or not (1 <= port <= 65535) or not provider:
         return []
+    key, what = ("custom", provider, ip, port), f"probe_custom_server ({desc.get('name')})"
     try:
-        return _normalize_model_rows(_probe_for_provider(provider, ip, port),
+        rows = _normalize_model_rows(_probe_for_provider(provider, ip, port),
                                      desc.get("name", provider))
+        _log_probe_state(key, what, None)
+        return rows
     except Exception as e:
-        print(f"probes/probe_custom_server error ({desc.get('name')}): {e}", flush=True)
+        _log_probe_state(key, what, e)
         return []
 
 def parse_custom_servers(raw):

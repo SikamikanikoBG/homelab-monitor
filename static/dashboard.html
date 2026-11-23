@@ -7060,9 +7060,11 @@ function collectAiServers(){
 // sit un-saved (a page refresh would drop it) and "Test" can't be mistaken for
 // "registered". A dedicated one-field POST rather than the whole form keeps the
 // blast radius to this setting.
-let _aiPersistBusy = false;
+// A change made while a save is in flight is saved right after it: dropping it
+// left a removed server registered, and probed, on the hub (#371).
+let _aiPersistBusy = false, _aiPersistAgain = false;
 async function persistAiServers(){
-  if(_aiPersistBusy) return;
+  if(_aiPersistBusy){ _aiPersistAgain = true; return; }
   _aiPersistBusy = true;
   try{
     let j; try{ j = await(await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -7070,7 +7072,10 @@ async function persistAiServers(){
     catch(e){ showAiStatus('warning','Not saved: '+e); return; }
     if(j && j.ok===false){ showAiStatus('warning', j.error||'Not saved — check the values.'); return; }
     AI_SERVERS_LOADED = true;   // the server now agrees with the draft
-  } finally{ _aiPersistBusy = false; }
+  } finally{
+    _aiPersistBusy = false;
+    if(_aiPersistAgain){ _aiPersistAgain = false; await persistAiServers(); }
+  }
 }
 async function testAiServer(i, btn){
   const s=AI_SERVERS_DRAFT[i]; if(!s) return;
