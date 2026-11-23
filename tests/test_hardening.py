@@ -15,6 +15,27 @@ class TestSshTargetDashGuard(unittest.TestCase):
         self.assertEqual(app._parse_ssh_target("ardi@192.168.1.12:2222"),
                          ("ardi", "192.168.1.12", 2222))
 
+    def test_user_may_contain_at(self):
+        # OpenSSH splits on the last "@" (#374).
+        self.assertEqual(app._parse_ssh_target("user@domain.com@host"),
+                         ("user@domain.com", "host", 22))
+        self.assertEqual(app._parse_ssh_target("user@domain.com@10.0.0.9:2222"),
+                         ("user@domain.com", "10.0.0.9", 2222))
+
+    def test_malformed_at_targets_rejected(self):
+        for t in ("@host", "user@", "user@@host", "@a@host", "user@domain.com@",
+                  "-oProxyCommand@domain.com@host", "user@domain.com@-evil",
+                  "user@dom;id@host", "user@$(id)@host", "us er@domain.com@host"):
+            self.assertIsNone(app._parse_ssh_target(t), t)
+
+    def test_user_with_at_reaches_ssh_intact(self):
+        user, host, port = app._parse_ssh_target("user@domain.com@host")
+        fake = MagicMock(returncode=0, stdout=b"ok", stderr=b"")
+        with patch("app.subprocess.run", return_value=fake) as run:
+            app._ssh(user, host, port, "echo ok")
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[argv.index("--") + 1], "user@domain.com@host")
+
     def test_user_starting_with_dash_rejected(self):
         self.assertIsNone(app._parse_ssh_target("-oProxyCommand@host"))
 

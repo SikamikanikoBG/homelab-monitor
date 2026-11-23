@@ -277,6 +277,13 @@ class TestExecutor(_FleetCase):
         self.assertIn("lab ALL=(root) NOPASSWD: journalctl --vacuum-time=7d", out["message"])
         self.assertEqual(self.fleet.commands, [("lab1", "sudo -n true")])
 
+    def test_sudoers_line_keeps_a_login_that_contains_an_at(self):
+        self.activate("lab1", journal__vacuum="ask")
+        app.DB.execute("UPDATE hosts SET ssh_target='lab@domain.com@lab1' WHERE name='lab1'")
+        self.fleet.result = {"ok": False, "exit_code": 1, "stdout": "", "stderr": "a password is required"}
+        out = executor.execute(self.run, "lab1", "journal.vacuum", {"days": 7}, attended=True, approval_id="x")
+        self.assertIn("lab@domain.com ALL=(root) NOPASSWD: ", out["message"])
+
     def test_failed_host_is_a_result_not_a_retry(self):
         self.activate("lab1", container__restart="allow")
         self.fleet.result = {"ok": False, "exit_code": 255, "stdout": "", "stderr": "ssh: timed out"}

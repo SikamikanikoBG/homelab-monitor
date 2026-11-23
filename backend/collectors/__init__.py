@@ -140,7 +140,7 @@ def _host_by_address(addr, hosts):
         return None
     for h in hosts:
         t = (h.get("ssh_target") or "").strip().lower()
-        t = t.split("@", 1)[-1].rsplit(":", 1)[0] if t else ""
+        t = t.rsplit("@", 1)[-1].rsplit(":", 1)[0] if t else ""
         if t and t == a:
             return h.get("name")
     return None

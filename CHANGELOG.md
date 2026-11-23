@@ -7,6 +7,12 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.2) — 2026-11-23 · **Logins with an @, and servers that stay removed**
+**Fixed**
+- **A host whose SSH login contains an `@` can be added** ([#374](https://github.com/SikamikanikoBG/homelab-monitor/issues/374), thanks @dziban303 for the report). `user@domain.com@host` was refused with "must look like user@host". The target now splits on the last `@`, as OpenSSH does, and so do the AI-server host matching and the agent's sudoers hint.
+- **Removing several AI servers quickly could leave some of them registered** ([#371](https://github.com/SikamikanikoBG/homelab-monitor/issues/371), thanks @dziban303 for the report). A **Remove** clicked while the previous one was still saving was dropped: the entry left the list, but the hub kept probing the server. Every change is saved now.
+- **A model server that's down no longer fills the log** ([#371](https://github.com/SikamikanikoBG/homelab-monitor/issues/371)). A probe that fails logs one line when the server stops answering and one when it's back, instead of one or more on every attempt.
+
 ## [0.39.1](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.1) — 2026-11-22 · **The GPU and AI Models tabs stay put**
 **Fixed**
 - **The GPU and AI Models tabs vanished a few seconds after load** ([#369](https://github.com/SikamikanikoBG/homelab-monitor/issues/369), thanks @dziban303 for the report). The sidebar hid both whenever the hub itself had no GPU, so a hub with only an integrated GPU lost them even with a graphics card on another host and AI servers registered. The GPU tab now stays when any host in the fleet has a GPU, and AI Models stays when the hub knows any model, GPU or not. A lab with neither still hides both.
