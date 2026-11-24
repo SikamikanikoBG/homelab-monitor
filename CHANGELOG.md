@@ -7,6 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.4](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.4) — 2026-11-24 · **A big database starts fast**
 **Fixed**
 - **A large database no longer holds up the start** ([#378](https://github.com/SikamikanikoBG/homelab-monitor/issues/378)). Every boot re-aggregated the whole network history to fill the hourly rollup, which took over a minute on a 5 GB database, long enough for the container to be marked unhealthy. Only the hours missing from the rollup are read now.
 
