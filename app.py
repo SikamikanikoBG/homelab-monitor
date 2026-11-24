@@ -5907,9 +5907,10 @@ def _amd_dpm_mhz(dev, fname):
         pass
     return None
 
-def _amd_hwmon_labeled(dev, prefix, label):
+def _amd_hwmon_labeled(dev, prefix, label, field="input"):
     """Value of the hwmon channel whose <prefix>N_label matches `label` (e.g. the
-    temp channel labelled 'mem'), or None. Channel numbers are not stable across
+    temp channel labelled 'mem'), or None. `field` picks the sibling file
+    (<prefix>N_input by default, or e.g. 'crit'). Channel numbers are not stable across
     cards/drivers, so matching by label is the only reliable way."""
     try:
         for h in sorted(os.listdir(os.path.join(dev, "hwmon"))):
@@ -5926,7 +5927,7 @@ def _amd_hwmon_labeled(dev, prefix, label):
                                 continue
                     except OSError:
                         continue
-                    v = _amd_read_int(os.path.join(hdir, e[:-6] + "_input"))
+                    v = _amd_read_int(os.path.join(hdir, e[:-6] + "_" + field))
                     if v is not None:      # unreadable input: keep scanning — another
                         return v           # hwmon dir may carry the same label
     except OSError:
@@ -5960,28 +5961,44 @@ def _amd_dpm_levels(dev, fname):
         return None
     return (cur, top) if cur is not None and top else None
 
+_AMD_CRIT_MARGIN_MC = 2000                            # 2 C, in millidegrees
+
 def _amd_throttle(g, dev):
     """Derive an NVIDIA-style throttle mask for an AMD card from sysfs, or None when
     the driver gives us nothing to judge by (the caller then leaves the fields unset
-    instead of drawing a confident 0).
+    instead of drawing a confident 0). A reason is only judged when both its reading
+    and its limit exist.
 
     A card only counts as throttled while it is busy AND its sclk sits below the top
     DPM level - an idle card parks at the lowest level by design. Given that:
-      * temp at/above hwmon temp1_crit  -> SW thermal (0x20), counted by _THERMAL_BITS
+      * any of edge/junction/mem within ~2 C of its own tempN_crit -> SW thermal
+        (0x20), counted by _THERMAL_BITS
       * power at/above ~98% of power1_cap -> Power cap (0x04), shown but, as on
         NVIDIA, not counted as a fault (a deliberately lowered cap is normal)."""
     lv = _amd_dpm_levels(dev, "pp_dpm_sclk")
-    crit = _amd_hwmon(dev, "temp1_crit")               # millidegrees C
-    cap = _amd_hwmon(dev, "power1_cap")                # microwatts
-    if lv is None or not (crit or cap):
+    # (reading, crit) per thermal channel; a channel only counts when it has both.
+    temps = []
+    for label in ("edge", "junction", "mem"):
+        t = _amd_hwmon_labeled(dev, "temp", label)
+        c = _amd_hwmon_labeled(dev, "temp", label, "crit")
+        if label == "edge":                            # unlabelled cards: temp1 is edge
+            t = t if t is not None else _amd_hwmon(dev, "temp1_input")
+            c = c if c is not None else _amd_hwmon(dev, "temp1_crit")
+        if t and c:
+            temps.append((t, c))
+    power = _amd_hwmon(dev, "power1_average")          # microwatts
+    cap = _amd_hwmon(dev, "power1_cap")
+    have_power = bool(power and cap)
+    if lv is None or not (temps or have_power):
         return None
     cur, top = lv
     if g.get("util", 0) < 90 or cur >= top:
         return 0
     mask = 0
-    if crit and g.get("temp") and g["temp"] * 1000.0 >= crit:
+    # a throttling card holds itself at the limit, so sampling lands a little below it
+    if any(t >= c - _AMD_CRIT_MARGIN_MC for t, c in temps):
         mask |= 0x20
-    if cap and g.get("power") and g["power"] * 1e6 >= cap * 0.98:
+    if have_power and power >= cap * 0.98:
         mask |= 0x04
     return mask
 

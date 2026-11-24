@@ -6,6 +6,8 @@ project follows semantic-ish versioning. Each entry links to its full GitHub
 release notes.
 
 ## [Unreleased] — `next`
+**Added**
+- **AMD cards report throttling** ([#285](https://github.com/SikamikanikoBG/homelab-monitor/issues/285)). Thermal throttling is judged from the edge, junction and memory temperatures against their own critical limits (within 2 °C), and the power cap is shown separately, as on NVIDIA. A card whose sensors can't be read reports nothing rather than "not throttled".
 
 ## [0.39.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.2) — 2026-11-23 · **Logins with an @, and servers that stay removed**
 **Fixed**

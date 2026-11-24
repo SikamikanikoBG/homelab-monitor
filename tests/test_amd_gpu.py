@@ -266,6 +266,32 @@ class TestAmdEnrich(unittest.TestCase):
         self.assertEqual(g["throttle"], ["SW thermal"])
         self.assertTrue(g["throttle_mask"] & app._THERMAL_BITS)
 
+    def test_junction_at_crit_with_cool_edge_is_thermal(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 60000, crit_mc=None)
+        h = os.path.join(dev, "hwmon", "hwmon3")
+        _write(os.path.join(h, "temp1_label"), "edge")
+        _write(os.path.join(h, "temp1_crit"), 100000)
+        _write(os.path.join(h, "temp2_label"), "junction")
+        _write(os.path.join(h, "temp2_input"), 110000)
+        _write(os.path.join(h, "temp2_crit"), 110000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+
+    def test_sample_just_under_crit_still_counts(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 94000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+        _write(os.path.join(self.drm, "card0", "device", "hwmon", "hwmon3", "temp1_input"), 92000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle_mask"], 0)
+
+    def test_cap_without_power_reading_omits_the_signal(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 70000,
+                            crit_mc=None, power_uw=None, cap_uw=200_000_000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
     def test_power_cap_is_reported_but_not_thermal(self):
         self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 70000,
                             power_uw=200_000_000, cap_uw=200_000_000)
