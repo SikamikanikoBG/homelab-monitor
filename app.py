@@ -55,7 +55,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.39.2"
+VERSION      = "0.39.3"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -2685,7 +2685,11 @@ def _self_update_script(working_dir, project, config_files, service,
     # to IPv6 ::1 first, but the monitor's Flask binds IPv4 0.0.0.0 only — so a
     # "localhost" gate gets connection-refused on [::1] and the update would
     # always roll back. Force IPv4 to actually reach the monitor on the host.
-    health = "http://127.0.0.1:%d/api/health" % port
+    # /healthz (not /api/health): /api/health needs a login once an admin
+    # password is set, so the unauthenticated wget got 401, never saw the target
+    # version and every update rolled back. /healthz is open and returns
+    # {"status":"ok","version":VERSION}.
+    health = "http://127.0.0.1:%d/healthz" % port
     # MONITOR_IMAGE=<ref> prefix feeds compose's ${MONITOR_IMAGE:-…}
     # interpolation. Forward = the versioned target tag; rollback = the
     # exact previous image ref/digest. Shell-quoted so digests are safe.
@@ -2725,7 +2729,7 @@ log "waiting for the new version to come up…"
 ok=0
 i=0
 while [ $i -lt 30 ]; do
-  cur=$(wget -qO- %(health)s 2>/dev/null | tr -d ' \n' | sed -n 's/.*"update":{[^}]*"current":"\([^"]*\)".*/\1/p')
+  cur=$(wget -qO- %(health)s 2>/dev/null | tr -d ' \n' | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
   if [ -n "$cur" ] && [ "$cur" = "$TARGET" ]; then ok=1; break; fi
   i=$((i+1)); sleep 2
 done
