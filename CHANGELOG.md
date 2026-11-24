@@ -7,6 +7,10 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.4](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.4) — 2026-11-24 · **A big database starts fast**
+**Fixed**
+- **A large database no longer holds up the start** ([#378](https://github.com/SikamikanikoBG/homelab-monitor/issues/378)). Every boot re-aggregated the whole network history to fill the hourly rollup, which took over a minute on a 5 GB database, long enough for the container to be marked unhealthy. Only the hours missing from the rollup are read now.
+
 ## [0.39.3](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.3) — 2026-11-24 · **Updates work with a password set**
 **Fixed**
 - **One-click update rolled back whenever an admin password was set.** The update helper checked the new version through `/api/health`, which needs a login, so it never saw the new version and restored the old one. It now checks the open `/healthz` endpoint, so updates complete with or without a password.
