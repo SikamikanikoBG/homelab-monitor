@@ -15,7 +15,10 @@ class TestMultiGpu(unittest.TestCase):
             if "query-gpu" in a:
                 return gpu_csv
             return ""   # no compute-apps
+        # amd_gpus is mocked empty so the test doesn't pick up the host's real
+        # /sys/class/drm AMD card (which would merge in as a hybrid GPU).
         with patch("app.smi", side_effect=fake_smi), \
+             patch("app.amd_gpus", return_value=[]), \
              patch("app.containers", return_value=[]), \
              patch("app.sample_callers", return_value={}), \
              patch("app.read_host", return_value={"cpu": 0, "ram_used": 0,

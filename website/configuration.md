@@ -60,8 +60,9 @@ path you actually leave enabled.
 When a newer release exists, the update modal shows an **Update now**
 button. On click (after a confirm) it pulls the new image, launches a detached
 `docker:cli` helper that recreates this container via your compose file, and the
-helper health-checks the result: if the new version doesn't report itself healthy
-within ~60s it rolls back to the image that was running. The dashboard streams the
+helper health-checks the result through the open `/healthz` endpoint (no login
+needed, so it works with an admin password set): if the new version doesn't report
+itself healthy within ~60s it rolls back to the image that was running. The dashboard streams the
 log live and reloads itself once the new version is up.
 
 Requirements / caveats:
