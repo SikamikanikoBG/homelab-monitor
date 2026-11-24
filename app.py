@@ -479,9 +479,19 @@ def _backfill_rollups(conn):
                AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp), AVG(cpu_power), AVG(dram_power)
         FROM samples GROUP BY (ts/3600)*3600;
 
+        -- net_samples is by far the largest table (one row per interface per
+        -- sample), so it is never scanned whole: walk the hours it spans and
+        -- aggregate only those missing from the rollup, through idx_net_ts (#378).
         INSERT OR IGNORE INTO net_samples_1h(ts,bytes_in,bytes_out,cnt)
-        SELECT (ts/3600)*3600, AVG(bytes_in), AVG(bytes_out), COUNT(*)
-        FROM net_samples GROUP BY (ts/3600)*3600;
+        WITH RECURSIVE hours(h) AS (
+            SELECT (MIN(ts)/3600)*3600 FROM net_samples
+            UNION ALL
+            SELECT h+3600 FROM hours WHERE h+3600 <= (SELECT MAX(ts) FROM net_samples)
+        )
+        SELECT hours.h, AVG(n.bytes_in), AVG(n.bytes_out), COUNT(*)
+        FROM hours CROSS JOIN net_samples n ON n.ts >= hours.h AND n.ts < hours.h+3600
+        WHERE hours.h NOT IN (SELECT ts FROM net_samples_1h)
+        GROUP BY hours.h;
     """)
     conn.commit()
 
