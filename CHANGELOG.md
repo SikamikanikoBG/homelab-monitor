@@ -7,6 +7,7 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.39.3](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.3) — 2026-11-24 · **Updates work with a password set**
 **Fixed**
 - **One-click update rolled back whenever an admin password was set.** The update helper checked the new version through `/api/health`, which needs a login, so it never saw the new version and restored the old one. It now checks the open `/healthz` endpoint, so updates complete with or without a password.
 
