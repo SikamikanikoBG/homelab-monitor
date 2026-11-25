@@ -5963,19 +5963,26 @@ def _amd_dpm_levels(dev, fname):
 
 _AMD_CRIT_MARGIN_MC = 2000                            # 2 C, in millidegrees
 
-def _amd_throttle(g, dev):
+def _amd_throttle(g, dev, clk_sm=None):
     """Derive an NVIDIA-style throttle mask for an AMD card from sysfs, or None when
-    the driver gives us nothing to judge by (the caller then leaves the fields unset
-    instead of drawing a confident 0). A reason is only judged when both its reading
-    and its limit exist.
+    nothing can be judged (the caller then leaves the fields unset instead of drawing
+    a confident 0). The mask only ever carries bits for reasons that were actually
+    judged: 0x20 needs a temp channel with both a reading and a crit, 0x04 needs
+    power1_average and power1_cap and a known top DPM level.
 
     A card only counts as throttled while it is busy AND its sclk sits below the top
-    DPM level - an idle card parks at the lowest level by design. Given that:
+    DPM level - an idle card parks at the lowest level by design. `clk_sm` is the
+    current clock as the caller resolved it (DPM table, else hwmon sclk); the top
+    level only comes from pp_dpm_sclk. Given that:
       * any of edge/junction/mem within ~2 C of its own tempN_crit -> SW thermal
-        (0x20), counted by _THERMAL_BITS
+        (0x20), counted by _THERMAL_BITS. Without a DPM table (most APUs, or a kernel
+        that locks pp_dpm_* down) the top level is unknown, so the clock gate is
+        skipped and thermal is judged on temperature + load alone.
       * power at/above ~98% of power1_cap -> Power cap (0x04), shown but, as on
-        NVIDIA, not counted as a fault (a deliberately lowered cap is normal)."""
+        NVIDIA, not counted as a fault (a deliberately lowered cap is normal). Needs
+        the clock gate, so it is not judged when the top level is unknown."""
     lv = _amd_dpm_levels(dev, "pp_dpm_sclk")
+    top = lv[1] if lv else None
     # (reading, crit) per thermal channel; a channel only counts when it has both.
     temps = []
     for label in ("edge", "junction", "mem"):
@@ -5988,17 +5995,16 @@ def _amd_throttle(g, dev):
             temps.append((t, c))
     power = _amd_hwmon(dev, "power1_average")          # microwatts
     cap = _amd_hwmon(dev, "power1_cap")
-    have_power = bool(power and cap)
-    if lv is None or not (temps or have_power):
+    judge_power = bool(power and cap and top)
+    if not temps and not judge_power:
         return None
-    cur, top = lv
-    if g.get("util", 0) < 90 or cur >= top:
+    if g.get("util", 0) < 90 or (top and clk_sm is not None and clk_sm >= top):
         return 0
     mask = 0
     # a throttling card holds itself at the limit, so sampling lands a little below it
     if any(t >= c - _AMD_CRIT_MARGIN_MC for t, c in temps):
         mask |= 0x20
-    if have_power and power >= cap * 0.98:
+    if judge_power and power >= cap * 0.98:
         mask |= 0x04
     return mask
 
@@ -6045,7 +6051,7 @@ def _amd_enrich_card(g, dev):
     tmem = _amd_hwmon_labeled(dev, "temp", "mem")      # millidegrees C
     if tmem:
         g["temp_mem"] = round(tmem / 1000.0, 1)
-    mask = _amd_throttle(g, dev)
+    mask = _amd_throttle(g, dev, clk)
     if mask is not None:
         g["throttle_mask"] = mask
         g["throttle"] = [label for bit, label in _THROTTLE_BITS if mask & bit]

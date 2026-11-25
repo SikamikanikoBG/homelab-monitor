@@ -314,6 +314,26 @@ class TestAmdEnrich(unittest.TestCase):
         for k in ("throttle_mask", "throttle", "throttled"):
             self.assertNotIn(k, g)
 
+    def test_clock_table_alone_is_not_a_judged_zero(self):
+        # APU shape: a pp_dpm_sclk but no temp crit and no power cap -> nothing judged.
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 96000, crit_mc=None)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
+    def test_no_clock_table_still_judges_thermal_on_temperature(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 2900Mhz *\n", 96000)
+        os.remove(os.path.join(dev, "pp_dpm_sclk"))
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+
+    def test_no_clock_table_does_not_judge_power_cap(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 2900Mhz *\n", 70000, crit_mc=None,
+                                  power_uw=200_000_000, cap_uw=200_000_000)
+        os.remove(os.path.join(dev, "pp_dpm_sclk"))
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertNotIn("throttle_mask", g)
+
     def test_perf_level_becomes_pstate(self):
         dev = self._card()
         _write(os.path.join(dev, "power_dpm_force_performance_level"), "auto\n")
