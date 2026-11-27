@@ -7,6 +7,12 @@ release notes.
 
 ## [Unreleased] — `next`
 
+## [0.40.0](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.40.0) — 2026-11-27 · **AMD cards report throttling**
+*Contributions in this release: [@deba310984](https://github.com/deba310984) (first PR). Thank you.*
+
+**Added**
+- **AMD cards report throttling** ([#285](https://github.com/SikamikanikoBG/homelab-monitor/issues/285), [#381](https://github.com/SikamikanikoBG/homelab-monitor/pull/381), thanks @deba310984). Thermal throttling is judged from the edge, junction and memory temperatures against their own critical limits (within 2 °C), and the power cap is shown separately, as on NVIDIA. A card whose sensors can't be read reports nothing rather than "not throttled".
+
 ## [0.39.4](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.4) — 2026-11-24 · **A big database starts fast**
 **Fixed**
 - **A large database no longer holds up the start** ([#378](https://github.com/SikamikanikoBG/homelab-monitor/issues/378)). Every boot re-aggregated the whole network history to fill the hourly rollup, which took over a minute on a 5 GB database, long enough for the container to be marked unhealthy. Only the hours missing from the rollup are read now.

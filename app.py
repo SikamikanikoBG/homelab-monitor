@@ -55,7 +55,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.39.4"
+VERSION      = "0.40.0"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -5921,9 +5921,10 @@ def _amd_dpm_mhz(dev, fname):
         pass
     return None
 
-def _amd_hwmon_labeled(dev, prefix, label):
+def _amd_hwmon_labeled(dev, prefix, label, field="input"):
     """Value of the hwmon channel whose <prefix>N_label matches `label` (e.g. the
-    temp channel labelled 'mem'), or None. Channel numbers are not stable across
+    temp channel labelled 'mem'), or None. `field` picks the sibling file
+    (<prefix>N_input by default, or e.g. 'crit'). Channel numbers are not stable across
     cards/drivers, so matching by label is the only reliable way."""
     try:
         for h in sorted(os.listdir(os.path.join(dev, "hwmon"))):
@@ -5940,7 +5941,7 @@ def _amd_hwmon_labeled(dev, prefix, label):
                                 continue
                     except OSError:
                         continue
-                    v = _amd_read_int(os.path.join(hdir, e[:-6] + "_input"))
+                    v = _amd_read_int(os.path.join(hdir, e[:-6] + "_" + field))
                     if v is not None:      # unreadable input: keep scanning — another
                         return v           # hwmon dir may carry the same label
     except OSError:
@@ -5956,6 +5957,70 @@ def _amd_hwmon_has(dev, fname):
     except OSError:
         pass
     return False
+
+def _amd_dpm_levels(dev, fname):
+    """(current_mhz, max_mhz) from a pp_dpm_* table, or None when the table is
+    absent, has no starred row, or lists no clocks."""
+    cur, top = None, None
+    try:
+        with open(os.path.join(dev, fname)) as f:
+            for line in f:
+                m = re.search(r":\s*(\d+)\s*[Mm][Hh]z(\s*\*)?", line)
+                if m:
+                    mhz = int(m.group(1))
+                    top = mhz if top is None else max(top, mhz)
+                    if m.group(2):
+                        cur = mhz
+    except OSError:
+        return None
+    return (cur, top) if cur is not None and top else None
+
+_AMD_CRIT_MARGIN_MC = 2000                            # 2 C, in millidegrees
+
+def _amd_throttle(g, dev, clk_sm=None):
+    """Derive an NVIDIA-style throttle mask for an AMD card from sysfs, or None when
+    nothing can be judged (the caller then leaves the fields unset instead of drawing
+    a confident 0). The mask only ever carries bits for reasons that were actually
+    judged: 0x20 needs a temp channel with both a reading and a crit, 0x04 needs
+    power1_average and power1_cap and a known top DPM level.
+
+    A card only counts as throttled while it is busy AND its sclk sits below the top
+    DPM level - an idle card parks at the lowest level by design. `clk_sm` is the
+    current clock as the caller resolved it (DPM table, else hwmon sclk); the top
+    level only comes from pp_dpm_sclk. Given that:
+      * any of edge/junction/mem within ~2 C of its own tempN_crit -> SW thermal
+        (0x20), counted by _THERMAL_BITS. Without a DPM table (most APUs, or a kernel
+        that locks pp_dpm_* down) the top level is unknown, so the clock gate is
+        skipped and thermal is judged on temperature + load alone.
+      * power at/above ~98% of power1_cap -> Power cap (0x04), shown but, as on
+        NVIDIA, not counted as a fault (a deliberately lowered cap is normal). Needs
+        the clock gate, so it is not judged when the top level is unknown."""
+    lv = _amd_dpm_levels(dev, "pp_dpm_sclk")
+    top = lv[1] if lv else None
+    # (reading, crit) per thermal channel; a channel only counts when it has both.
+    temps = []
+    for label in ("edge", "junction", "mem"):
+        t = _amd_hwmon_labeled(dev, "temp", label)
+        c = _amd_hwmon_labeled(dev, "temp", label, "crit")
+        if label == "edge":                            # unlabelled cards: temp1 is edge
+            t = t if t is not None else _amd_hwmon(dev, "temp1_input")
+            c = c if c is not None else _amd_hwmon(dev, "temp1_crit")
+        if t and c:
+            temps.append((t, c))
+    power = _amd_hwmon(dev, "power1_average")          # microwatts
+    cap = _amd_hwmon(dev, "power1_cap")
+    judge_power = bool(power and cap and top)
+    if not temps and not judge_power:
+        return None
+    if g.get("util", 0) < 90 or (top and clk_sm is not None and clk_sm >= top):
+        return 0
+    mask = 0
+    # a throttling card holds itself at the limit, so sampling lands a little below it
+    if any(t >= c - _AMD_CRIT_MARGIN_MC for t, c in temps):
+        mask |= 0x20
+    if judge_power and power >= cap * 0.98:
+        mask |= 0x04
+    return mask
 
 def _amd_enrich_card(g, dev):
     """Best-effort AMD counterpart of _enrich_gpus: attach mem_util/clk_sm/clk_mem/
@@ -6000,6 +6065,11 @@ def _amd_enrich_card(g, dev):
     tmem = _amd_hwmon_labeled(dev, "temp", "mem")      # millidegrees C
     if tmem:
         g["temp_mem"] = round(tmem / 1000.0, 1)
+    mask = _amd_throttle(g, dev, clk)
+    if mask is not None:
+        g["throttle_mask"] = mask
+        g["throttle"] = [label for bit, label in _THROTTLE_BITS if mask & bit]
+        g["throttled"] = bool(g["throttle"])
 
 _DRM_UNITS = {"": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824, "TiB": 1099511627776}
 _DRM_MAJOR = 226        # /dev/dri/* — char-major-226, Documentation/admin-guide/devices.txt

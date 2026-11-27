@@ -249,6 +249,91 @@ class TestAmdEnrich(unittest.TestCase):
         self.assertEqual(g["power_limit"], 291.0)
         self.assertEqual(g["temp_mem"], 78.0)     # temp3 via its label, not its number
 
+    def _throttle_card(self, busy, sclk, temp_mc, crit_mc=95000, power_uw=100_000_000, cap_uw=None):
+        dev = _amd_card(self.drm, 0, total=24 * 1024**3, used=0, busy=busy,
+                        temp_mc=temp_mc, power_uw=power_uw)
+        _write(os.path.join(dev, "pp_dpm_sclk"), sclk)
+        if crit_mc is not None:
+            _write(os.path.join(dev, "hwmon", "hwmon3", "temp1_crit"), crit_mc)
+        if cap_uw is not None:
+            _write(os.path.join(dev, "hwmon", "hwmon3", "power1_cap"), cap_uw)
+        return dev
+
+    def test_hot_busy_card_below_top_clock_is_thermally_throttled(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 96000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertTrue(g["throttled"])
+        self.assertEqual(g["throttle"], ["SW thermal"])
+        self.assertTrue(g["throttle_mask"] & app._THERMAL_BITS)
+
+    def test_junction_at_crit_with_cool_edge_is_thermal(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 60000, crit_mc=None)
+        h = os.path.join(dev, "hwmon", "hwmon3")
+        _write(os.path.join(h, "temp1_label"), "edge")
+        _write(os.path.join(h, "temp1_crit"), 100000)
+        _write(os.path.join(h, "temp2_label"), "junction")
+        _write(os.path.join(h, "temp2_input"), 110000)
+        _write(os.path.join(h, "temp2_crit"), 110000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+
+    def test_sample_just_under_crit_still_counts(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 94000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+        _write(os.path.join(self.drm, "card0", "device", "hwmon", "hwmon3", "temp1_input"), 92000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle_mask"], 0)
+
+    def test_cap_without_power_reading_omits_the_signal(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 70000,
+                            crit_mc=None, power_uw=None, cap_uw=200_000_000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
+    def test_power_cap_is_reported_but_not_thermal(self):
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 70000,
+                            power_uw=200_000_000, cap_uw=200_000_000)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["Power cap"])
+        self.assertFalse(g["throttle_mask"] & app._THERMAL_BITS)
+
+    def test_idle_or_top_clock_card_is_not_throttled(self):
+        self._throttle_card(0, "0: 600Mhz *\n1: 2900Mhz\n", 96000)
+        self.assertEqual(app.amd_gpus(drm_root=self.drm)[0]["throttle_mask"], 0)
+        _write(os.path.join(self.drm, "card0", "device", "gpu_busy_percent"), 99)
+        _write(os.path.join(self.drm, "card0", "device", "pp_dpm_sclk"), "0: 600Mhz\n1: 2900Mhz *\n")
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle_mask"], 0)
+        self.assertFalse(g["throttled"])
+
+    def test_no_clock_table_omits_the_throttle_signal(self):
+        self._card()
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
+    def test_clock_table_alone_is_not_a_judged_zero(self):
+        # APU shape: a pp_dpm_sclk but no temp crit and no power cap -> nothing judged.
+        self._throttle_card(99, "0: 600Mhz\n1: 1500Mhz *\n2: 2900Mhz\n", 96000, crit_mc=None)
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        for k in ("throttle_mask", "throttle", "throttled"):
+            self.assertNotIn(k, g)
+
+    def test_no_clock_table_still_judges_thermal_on_temperature(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 2900Mhz *\n", 96000)
+        os.remove(os.path.join(dev, "pp_dpm_sclk"))
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertEqual(g["throttle"], ["SW thermal"])
+
+    def test_no_clock_table_does_not_judge_power_cap(self):
+        dev = self._throttle_card(99, "0: 600Mhz\n1: 2900Mhz *\n", 70000, crit_mc=None,
+                                  power_uw=200_000_000, cap_uw=200_000_000)
+        os.remove(os.path.join(dev, "pp_dpm_sclk"))
+        g = app.amd_gpus(drm_root=self.drm)[0]
+        self.assertNotIn("throttle_mask", g)
+
     def test_perf_level_becomes_pstate(self):
         dev = self._card()
         _write(os.path.join(dev, "power_dpm_force_performance_level"), "auto\n")
