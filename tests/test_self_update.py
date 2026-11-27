@@ -6,6 +6,8 @@ the Flask test client, overriding ALLOW_SELF_UPDATE / collect_update / _data_dir
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -165,6 +167,54 @@ class TestRoutes(SelfUpdateBase):
         self.assertEqual(body["state"], "done")
         self.assertEqual(body["target"], "0.17.0")
         self.assertIn("line2", body["log"])
+
+
+class TestHealthGate(SelfUpdateBase):
+    """The helper's health gate must poll the open /healthz (no login), not
+    /api/health (401 when an admin password is set), and read `version`."""
+
+    TARGET = "0.17.0"
+
+    def _script(self):
+        return app._self_update_script(
+            "/srv/homelab", "homelab", ["/srv/homelab/docker-compose.yml"],
+            "homelab-monitor", self.TARGET,
+            "sikamikaniko123/homelab-monitor:" + self.TARGET,
+            "sikamikaniko123/homelab-monitor@sha256:abc", 5000)
+
+    def _wget_line(self):
+        lines = [l for l in self._script().splitlines() if "wget" in l]
+        self.assertEqual(len(lines), 1, lines)
+        return lines[0]
+
+    def _read_version(self, body):
+        """Run the script's real version-reading pipeline with sh, feeding
+        `body` in place of the wget call."""
+        m = re.search(r"cur=\$\(wget [^|]*\| (.*)\)\s*$", self._wget_line())
+        self.assertIsNotNone(m, self._wget_line())
+        pipeline = "printf '%s' \"$BODY\" | " + m.group(1)
+        out = subprocess.run(["sh", "-c", pipeline], env={"BODY": body, "PATH": os.environ["PATH"]},
+                             capture_output=True, text=True, check=True).stdout
+        return out.strip()
+
+    def test_polls_healthz_not_api_health(self):
+        line = self._wget_line()
+        self.assertIn("http://127.0.0.1:5000/healthz", line)
+        self.assertNotIn("/api/health", self._script())
+
+    def test_reads_version_from_healthz_body(self):
+        body = json.dumps({"status": "ok", "version": self.TARGET})
+        self.assertEqual(self._read_version(body), self.TARGET)
+
+    def test_auth_required_body_yields_no_version(self):
+        body = json.dumps({"ok": False, "error": "auth_required", "message": "Login required"})
+        self.assertEqual(self._read_version(body), "")
+
+    def test_other_version_does_not_match_target(self):
+        body = json.dumps({"status": "ok", "version": "0.16.0"})
+        got = self._read_version(body)
+        self.assertEqual(got, "0.16.0")
+        self.assertNotEqual(got, self.TARGET)
 
 
 if __name__ == "__main__":

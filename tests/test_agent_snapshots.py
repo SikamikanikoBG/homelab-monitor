@@ -18,6 +18,17 @@ from backend.agent import providers, store
 KEY = "sk-SNAPSHOT-SECRET-0001"
 
 
+def steady(v):
+    """A measured duration is real time (time.monotonic, which frozen_time leaves alone): 0 ms on a
+    fast machine, 1-2 ms on a slow one, where it broke the nightly arm64 run every day. Any
+    measurement is pinned to 0; a step that has none keeps its null."""
+    if isinstance(v, dict):
+        return {k: 0 if k == "duration_ms" and isinstance(x, int) else steady(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [steady(x) for x in v]
+    return v
+
+
 class TestAgentSnapshots(unittest.TestCase):
     def setUp(self):
         counter = itertools.count(1)
@@ -49,7 +60,7 @@ class TestAgentSnapshots(unittest.TestCase):
         r = getattr(self.on, method.lower())(path, body) if method != "GET" else self.on.get(path)
         text = r.get_data(as_text=True)
         self.assertNotIn(KEY, text, name)
-        data = {"status": r.status_code, "body": r.get_json(silent=True)}
+        data = {"status": r.status_code, "body": steady(r.get_json(silent=True))}
         body = data["body"]
         if isinstance(body, dict) and "version" in body:     # changes every release; asserted here instead
             self.assertEqual(body["version"], app.VERSION)
@@ -101,8 +112,16 @@ class TestAgentSnapshots(unittest.TestCase):
         r = self.on.get("/api/agent/audit/export")
         export = json.loads(r.get_data(as_text=True))
         export["exported_at"] = "<frozen>"
-        assert_snapshot(self, "agent_audit_export_json", export)
+        assert_snapshot(self, "agent_audit_export_json", steady(export))
         self.snap("agent_status_seeded", "/api/agent/status")
+
+    def test_slow_machine_gives_the_same_snapshot(self):
+        # Every look at the clock is 2 ms after the last, as on the emulated arm64 runner.
+        ticks = itertools.count()
+        with patch("backend.agent.loop.time.monotonic", lambda: next(ticks) * 0.002):
+            pid, cid, run, task = self.seed()
+        self.assertGreater(self.on.get("/api/agent/runs/" + run).get_json()["steps"][0]["duration_ms"], 0)
+        self.snap("agent_run_detail", "/api/agent/runs/" + run)
 
     def test_errors(self):
         self.snap("agent_provider_bad_url", "/api/agent/providers", "POST", {"preset": "vllm", "base_url": "ftp://x"})

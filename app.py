@@ -55,7 +55,7 @@ try:
 except ImportError:
     _PROM_OK = False
 
-VERSION      = "0.39.2"
+VERSION      = "0.39.4"
 DB_PATH      = os.environ.get("DB_PATH", "/data/gpu.db")
 MCP_IDLE_SEC = 45   # seconds without MCP activity before the pill shows idle
 INTERVAL     = int(os.environ.get("SAMPLE_INTERVAL", "10"))
@@ -479,9 +479,19 @@ def _backfill_rollups(conn):
                AVG(cpu), AVG(ram_used), AVG(ram_total), AVG(load1), AVG(ctemp), AVG(cpu_power), AVG(dram_power)
         FROM samples GROUP BY (ts/3600)*3600;
 
+        -- net_samples is by far the largest table (one row per interface per
+        -- sample), so it is never scanned whole: walk the hours it spans and
+        -- aggregate only those missing from the rollup, through idx_net_ts (#378).
         INSERT OR IGNORE INTO net_samples_1h(ts,bytes_in,bytes_out,cnt)
-        SELECT (ts/3600)*3600, AVG(bytes_in), AVG(bytes_out), COUNT(*)
-        FROM net_samples GROUP BY (ts/3600)*3600;
+        WITH RECURSIVE hours(h) AS (
+            SELECT (MIN(ts)/3600)*3600 FROM net_samples
+            UNION ALL
+            SELECT h+3600 FROM hours WHERE h+3600 <= (SELECT MAX(ts) FROM net_samples)
+        )
+        SELECT hours.h, AVG(n.bytes_in), AVG(n.bytes_out), COUNT(*)
+        FROM hours CROSS JOIN net_samples n ON n.ts >= hours.h AND n.ts < hours.h+3600
+        WHERE hours.h NOT IN (SELECT ts FROM net_samples_1h)
+        GROUP BY hours.h;
     """)
     conn.commit()
 
@@ -2685,7 +2695,11 @@ def _self_update_script(working_dir, project, config_files, service,
     # to IPv6 ::1 first, but the monitor's Flask binds IPv4 0.0.0.0 only — so a
     # "localhost" gate gets connection-refused on [::1] and the update would
     # always roll back. Force IPv4 to actually reach the monitor on the host.
-    health = "http://127.0.0.1:%d/api/health" % port
+    # /healthz (not /api/health): /api/health needs a login once an admin
+    # password is set, so the unauthenticated wget got 401, never saw the target
+    # version and every update rolled back. /healthz is open and returns
+    # {"status":"ok","version":VERSION}.
+    health = "http://127.0.0.1:%d/healthz" % port
     # MONITOR_IMAGE=<ref> prefix feeds compose's ${MONITOR_IMAGE:-…}
     # interpolation. Forward = the versioned target tag; rollback = the
     # exact previous image ref/digest. Shell-quoted so digests are safe.
@@ -2725,7 +2739,7 @@ log "waiting for the new version to come up…"
 ok=0
 i=0
 while [ $i -lt 30 ]; do
-  cur=$(wget -qO- %(health)s 2>/dev/null | tr -d ' \n' | sed -n 's/.*"update":{[^}]*"current":"\([^"]*\)".*/\1/p')
+  cur=$(wget -qO- %(health)s 2>/dev/null | tr -d ' \n' | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
   if [ -n "$cur" ] && [ "$cur" = "$TARGET" ]; then ok=1; break; fi
   i=$((i+1)); sleep 2
 done

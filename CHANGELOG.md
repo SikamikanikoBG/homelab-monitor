@@ -9,6 +9,14 @@ release notes.
 **Added**
 - **AMD cards report throttling** ([#285](https://github.com/SikamikanikoBG/homelab-monitor/issues/285)). Thermal throttling is judged from the edge, junction and memory temperatures against their own critical limits (within 2 °C), and the power cap is shown separately, as on NVIDIA. A card whose sensors can't be read reports nothing rather than "not throttled".
 
+## [0.39.4](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.4) — 2026-11-24 · **A big database starts fast**
+**Fixed**
+- **A large database no longer holds up the start** ([#378](https://github.com/SikamikanikoBG/homelab-monitor/issues/378)). Every boot re-aggregated the whole network history to fill the hourly rollup, which took over a minute on a 5 GB database, long enough for the container to be marked unhealthy. Only the hours missing from the rollup are read now.
+
+## [0.39.3](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.3) — 2026-11-24 · **Updates work with a password set**
+**Fixed**
+- **One-click update rolled back whenever an admin password was set.** The update helper checked the new version through `/api/health`, which needs a login, so it never saw the new version and restored the old one. It now checks the open `/healthz` endpoint, so updates complete with or without a password.
+
 ## [0.39.2](https://github.com/SikamikanikoBG/homelab-monitor/releases/tag/v0.39.2) — 2026-11-23 · **Logins with an @, and servers that stay removed**
 **Fixed**
 - **A host whose SSH login contains an `@` can be added** ([#374](https://github.com/SikamikanikoBG/homelab-monitor/issues/374), thanks @dziban303 for the report). `user@domain.com@host` was refused with "must look like user@host". The target now splits on the last `@`, as OpenSSH does, and so do the AI-server host matching and the agent's sudoers hint.
